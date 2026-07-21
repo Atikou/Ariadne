@@ -1,0 +1,17 @@
+node_modules/
+out/
+dist/
+coverage/
+*.log
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+.tmp-*/
+*-stderr.log
+*-stdout.log
+smoke-*.log
+diagnostic-*.log
+restore-stderr.log
+artifacts/ariadne-smoke.png
+artifacts/ariadne-loaded.png
+artifacts/ariadne-ui-dark.png
