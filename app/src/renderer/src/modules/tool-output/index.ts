@@ -10,5 +10,6 @@ export const toolOutputModule: FeatureModuleDefinition = {
   component: ToolOutputPanel,
   defaultOpen: true,
   defaultPlacement: { edge: { position: 'bottom', groupId: 'bottom-tools', initialSize: 230, collapsedSize: 44, collapsed: false } },
+  layoutConstraints: { minimumWidth: 320 },
   requiredCapabilities: []
 };

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Ellipsis, Maximize2, X } from 'lucide-react';
+import { Ellipsis, ExternalLink, Maximize2, X } from 'lucide-react';
 import type { IDockviewPanelHeaderProps } from 'dockview-react';
 import type { ModuleIcon } from '@renderer/core/modules/module-contract';
 import { ModuleGlyph } from '@renderer/shared/ui/ModuleGlyph';
@@ -20,11 +20,26 @@ interface MenuPosition {
 export function ModuleTab({ api, containerApi, params }: IDockviewPanelHeaderProps<ModuleTabParameters>): React.JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
+  const [menuDocument, setMenuDocument] = useState<Document>(() => document);
+  const [locationType, setLocationType] = useState(api.location.type);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuId = useId();
   const title = api.title ?? params.moduleId;
+
+  useEffect(() => api.onDidLocationChange((event) => {
+    setLocationType(event.location.type);
+    setMenuDocument(rootRef.current?.ownerDocument ?? document);
+  }).dispose, [api]);
+
+  const popout = useCallback((): void => {
+    const panel = containerApi.getPanel(api.id);
+    if (!panel || panel.api.location.type === 'popout') return;
+    void containerApi.addPopoutGroup(panel).catch((error: unknown) => {
+      console.error('Unable to open module in a separate window', error);
+    });
+  }, [api.id, containerApi]);
 
   const closeMenu = useCallback((restoreFocus = false): void => {
     setMenuOpen(false);
@@ -34,9 +49,12 @@ export function ModuleTab({ api, containerApi, params }: IDockviewPanelHeaderPro
 
   useEffect(() => {
     if (!menuOpen) return;
-    const isInsideMenu = (target: EventTarget | null): boolean => target instanceof Node && (
-      Boolean(rootRef.current?.contains(target)) || Boolean(menuRef.current?.contains(target))
-    );
+    const menuWindow = menuDocument.defaultView;
+    const OwnerNode = menuWindow?.Node;
+    const isInsideMenu = (target: EventTarget | null): boolean => {
+      if (!OwnerNode || !(target instanceof OwnerNode)) return false;
+      return Boolean(rootRef.current?.contains(target)) || Boolean(menuRef.current?.contains(target));
+    };
     const closeWhenOutside = (event: PointerEvent | FocusEvent): void => {
       if (!isInsideMenu(event.target)) closeMenu();
     };
@@ -48,21 +66,21 @@ export function ModuleTab({ api, containerApi, params }: IDockviewPanelHeaderPro
     };
     const closeOnViewportChange = (): void => closeMenu();
 
-    document.addEventListener('pointerdown', closeWhenOutside, true);
-    document.addEventListener('focusin', closeWhenOutside, true);
-    document.addEventListener('keydown', closeOnEscape);
-    document.addEventListener('scroll', closeOnViewportChange, true);
-    window.addEventListener('resize', closeOnViewportChange);
-    window.addEventListener('blur', closeOnViewportChange);
+    menuDocument.addEventListener('pointerdown', closeWhenOutside, true);
+    menuDocument.addEventListener('focusin', closeWhenOutside, true);
+    menuDocument.addEventListener('keydown', closeOnEscape);
+    menuDocument.addEventListener('scroll', closeOnViewportChange, true);
+    menuWindow?.addEventListener('resize', closeOnViewportChange);
+    menuWindow?.addEventListener('blur', closeOnViewportChange);
     return () => {
-      document.removeEventListener('pointerdown', closeWhenOutside, true);
-      document.removeEventListener('focusin', closeWhenOutside, true);
-      document.removeEventListener('keydown', closeOnEscape);
-      document.removeEventListener('scroll', closeOnViewportChange, true);
-      window.removeEventListener('resize', closeOnViewportChange);
-      window.removeEventListener('blur', closeOnViewportChange);
+      menuDocument.removeEventListener('pointerdown', closeWhenOutside, true);
+      menuDocument.removeEventListener('focusin', closeWhenOutside, true);
+      menuDocument.removeEventListener('keydown', closeOnEscape);
+      menuDocument.removeEventListener('scroll', closeOnViewportChange, true);
+      menuWindow?.removeEventListener('resize', closeOnViewportChange);
+      menuWindow?.removeEventListener('blur', closeOnViewportChange);
     };
-  }, [closeMenu, menuOpen]);
+  }, [closeMenu, menuDocument, menuOpen]);
 
   useLayoutEffect(() => {
     if (!menuOpen) return;
@@ -73,6 +91,9 @@ export function ModuleTab({ api, containerApi, params }: IDockviewPanelHeaderPro
     const triggerRect = trigger.getBoundingClientRect();
     const menuRect = menu.getBoundingClientRect();
     const group = rootRef.current?.closest('.dv-groupview');
+    const menuWindow = menuDocument.defaultView;
+    const viewportWidth = menuWindow?.innerWidth ?? window.innerWidth;
+    const viewportHeight = menuWindow?.innerHeight ?? window.innerHeight;
     const gap = 6;
     const viewportPadding = 8;
     let top = triggerRect.bottom + gap;
@@ -89,10 +110,10 @@ export function ModuleTab({ api, containerApi, params }: IDockviewPanelHeaderPro
     }
 
     setMenuPosition({
-      top: Math.round(Math.min(Math.max(top, viewportPadding), window.innerHeight - menuRect.height - viewportPadding)),
-      left: Math.round(Math.min(Math.max(left, viewportPadding), window.innerWidth - menuRect.width - viewportPadding))
+      top: Math.round(Math.min(Math.max(top, viewportPadding), viewportHeight - menuRect.height - viewportPadding)),
+      left: Math.round(Math.min(Math.max(left, viewportPadding), viewportWidth - menuRect.width - viewportPadding))
     });
-  }, [menuOpen]);
+  }, [menuDocument, menuOpen]);
 
   const maximize = (): void => {
     const group = containerApi.getPanel(api.id)?.group;
@@ -103,12 +124,13 @@ export function ModuleTab({ api, containerApi, params }: IDockviewPanelHeaderPro
 
   return <div
     className="module-tab"
+    data-module-id={api.id}
     ref={rootRef}
     onClickCapture={(event) => {
       const target = event.target;
       const isTabAction = target instanceof Element && Boolean(target.closest('.module-tab-actions'));
       const handled = activateEdgeTab({
-        isEdgeGroup: api.location.type === 'edge',
+        isEdgeGroup: locationType === 'edge',
         isTabAction,
         setActive: () => api.setActive(),
         expand: () => api.group.api.expand()
@@ -133,6 +155,7 @@ export function ModuleTab({ api, containerApi, params }: IDockviewPanelHeaderPro
           event.stopPropagation();
           if (menuOpen) closeMenu();
           else {
+            setMenuDocument(rootRef.current?.ownerDocument ?? document);
             setMenuPosition(null);
             setMenuOpen(true);
           }
@@ -155,10 +178,18 @@ export function ModuleTab({ api, containerApi, params }: IDockviewPanelHeaderPro
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => event.stopPropagation()}
       >
+        {locationType !== 'popout' && (
+          <button
+            type="button"
+            role="menuitem"
+            data-module-action="popout"
+            onClick={() => { closeMenu(); popout(); }}
+          ><ExternalLink size={13} /> 在独立窗口中打开</button>
+        )}
         <button type="button" role="menuitem" onClick={() => { closeMenu(); maximize(); }}><Maximize2 size={13} /> 最大化 / 恢复</button>
         <button type="button" role="menuitem" onClick={() => { closeMenu(); api.close(); }}><X size={13} /> 关闭模块</button>
       </div>,
-      document.body
+      menuDocument.body
     )}
   </div>;
 }

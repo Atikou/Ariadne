@@ -10,5 +10,6 @@ export const permissionsModule: FeatureModuleDefinition = {
   component: PermissionsPanel,
   defaultOpen: false,
   defaultPlacement: { direction: 'right', referenceModuleId: MODULE_IDS.chat, initialWidth: 340 },
+  layoutConstraints: { minimumWidth: 280 },
   requiredCapabilities: []
 };

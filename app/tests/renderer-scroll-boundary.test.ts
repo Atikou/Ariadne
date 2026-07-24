@@ -54,7 +54,10 @@ describe('renderer scroll boundaries', () => {
     expect(styles).toMatch(
       /\.dv-groupview:is\(\.dv-groupview-header-top, \.dv-groupview-header-bottom\) > \.dv-content-container \{[^}]*min-width:\s*0;[^}]*margin-inline-end:\s*1px;/
     );
-    expect(styles).toMatch(/\.chat-panel \{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/);
+    expect(styles).toMatch(
+      /\.chat-panel \{[^}]*grid-template-columns:\s*clamp\([^;]+\) minmax\(0, 1fr\);/
+    );
+    expect(styles).toMatch(/\.chat-conversation \{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;/);
     expect(styles).not.toMatch(/\.chat-(?:panel|header) \{[^}]*(?:border-right|margin-right:\s*-|width:\s*calc\()/);
   });
 });

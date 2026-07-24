@@ -2,7 +2,8 @@ import type { ComponentType } from 'react';
 import type { AriadneApi, SystemCapability } from '@shared/contract';
 import type { AppEventMap } from '../events/app-events';
 import type { TypedEventBus } from '../events/typed-event-bus';
-import type { MockScenarioStore } from '../mock/mock-scenario';
+import type { RuntimeStore } from '../runtime/runtime-store';
+import type { ConversationNavigationService } from '../conversations/conversation-navigation-service';
 
 export type ModuleId = string & { readonly __moduleId: unique symbol };
 export type ModuleIcon =
@@ -34,10 +35,16 @@ export interface ModulePlacement {
   edge?: EdgePlacement;
 }
 
+export interface ModuleLayoutConstraints {
+  minimumWidth: number;
+}
+
 export interface ModuleServices {
+  agentSettings: AriadneApi['agentSettings'];
   clipboard: AriadneApi['clipboard'];
+  conversationNavigation: ConversationNavigationService;
   events: TypedEventBus<AppEventMap>;
-  mock: MockScenarioStore;
+  runtime: RuntimeStore;
   preferences: AriadneApi['preferences'];
   system: AriadneApi['system'];
   terminal: AriadneApi['terminal'];
@@ -69,6 +76,7 @@ export interface FeatureModuleDefinition {
   component: ComponentType<FeaturePanelProps>;
   defaultOpen: boolean;
   defaultPlacement: ModulePlacement;
+  layoutConstraints: ModuleLayoutConstraints;
   requiredCapabilities: readonly SystemCapability[];
   lifecycle?: ModuleLifecycle;
 }

@@ -14,6 +14,7 @@ interface SessionMetadata {
 }
 
 interface TerminalSessionViewProps {
+  workspaceId: string;
   shell: TerminalShell;
   active: boolean;
   services: ModuleServices;
@@ -38,11 +39,36 @@ const INITIAL_METADATA: Record<TerminalShell, SessionMetadata> = {
 };
 
 export function TerminalPanel({ services }: FeaturePanelProps): React.JSX.Element {
+  const initialWorkspaceId = services.conversationNavigation.getSelectedWorkspaceId();
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(initialWorkspaceId);
   const [activeShell, setActiveShell] = useState<TerminalShell>('powershell');
   const [startedShells, setStartedShells] = useState<ReadonlySet<TerminalShell>>(() => new Set(['powershell']));
+  const [sessionWorkspaceIds, setSessionWorkspaceIds] = useState<Record<TerminalShell, string | null>>({
+    powershell: initialWorkspaceId,
+    cmd: initialWorkspaceId
+  });
   const [restartKeys, setRestartKeys] = useState<Record<TerminalShell, number>>({ powershell: 0, cmd: 0 });
   const [metadata, setMetadata] = useState<Record<TerminalShell, SessionMetadata>>(INITIAL_METADATA);
   const activeMetadata = metadata[activeShell];
+  const activeWorkspaceId = sessionWorkspaceIds[activeShell];
+
+  useEffect(() => {
+    const unsubscribe = services.conversationNavigation.onSelectedWorkspaceChanged((workspaceId) => {
+      setSelectedWorkspaceId(workspaceId);
+      if (!workspaceId) return;
+      setSessionWorkspaceIds((current) => ({
+        powershell: current.powershell ?? workspaceId,
+        cmd: current.cmd ?? workspaceId
+      }));
+    });
+    void services.conversationNavigation.listWorkspaces().catch(() => {
+      setMetadata({
+        powershell: { status: 'error', cwd: '' },
+        cmd: { status: 'error', cwd: '' }
+      });
+    });
+    return unsubscribe;
+  }, [services]);
 
   const updateMetadata = useCallback((shell: TerminalShell, next: SessionMetadata): void => {
     setMetadata((current) => {
@@ -53,6 +79,10 @@ export function TerminalPanel({ services }: FeaturePanelProps): React.JSX.Elemen
   }, []);
 
   const selectShell = (shell: TerminalShell): void => {
+    if (!selectedWorkspaceId) return;
+    if (!startedShells.has(shell)) {
+      setSessionWorkspaceIds((current) => ({ ...current, [shell]: selectedWorkspaceId }));
+    }
     setStartedShells((current) => {
       if (current.has(shell)) return current;
       return new Set([...current, shell]);
@@ -61,6 +91,11 @@ export function TerminalPanel({ services }: FeaturePanelProps): React.JSX.Elemen
   };
 
   const restartActiveShell = (): void => {
+    if (!selectedWorkspaceId) return;
+    setSessionWorkspaceIds((current) => ({
+      ...current,
+      [activeShell]: selectedWorkspaceId
+    }));
     setMetadata((current) => ({ ...current, [activeShell]: INITIAL_METADATA[activeShell] }));
     setRestartKeys((current) => ({ ...current, [activeShell]: current[activeShell] + 1 }));
   };
@@ -75,6 +110,7 @@ export function TerminalPanel({ services }: FeaturePanelProps): React.JSX.Elemen
               type="button"
               className={activeShell === option.value ? 'is-active' : ''}
               aria-pressed={activeShell === option.value}
+              disabled={!selectedWorkspaceId}
               onClick={() => selectShell(option.value)}
             >
               <SquareTerminal size={12} />
@@ -85,27 +121,37 @@ export function TerminalPanel({ services }: FeaturePanelProps): React.JSX.Elemen
         <div className="terminal-session-meta">
           <span className={`terminal-status terminal-status--${activeMetadata.status}`}>{STATUS_LABELS[activeMetadata.status]}</span>
           {activeMetadata.cwd && <span className="terminal-cwd" title={activeMetadata.cwd}>{activeMetadata.cwd}</span>}
-          <button type="button" className="terminal-restart" title="重新启动当前终端" aria-label="重新启动当前终端" onClick={restartActiveShell}>
+          <button
+            type="button"
+            className="terminal-restart"
+            title={activeWorkspaceId === selectedWorkspaceId ? '重新启动当前终端' : '在当前工作区重新启动终端'}
+            aria-label={activeWorkspaceId === selectedWorkspaceId ? '重新启动当前终端' : '在当前工作区重新启动终端'}
+            disabled={!selectedWorkspaceId}
+            onClick={restartActiveShell}
+          >
             <RotateCw size={13} />
           </button>
         </div>
       </header>
       <div className="terminal-session-stack">
-        {SHELLS.filter(({ value }) => startedShells.has(value)).map(({ value }) => (
-          <TerminalSessionView
-            key={`${value}-${restartKeys[value]}`}
+        {SHELLS.flatMap(({ value }) => {
+          const workspaceId = sessionWorkspaceIds[value];
+          if (!startedShells.has(value) || !workspaceId) return [];
+          return [<TerminalSessionView
+            key={`${value}-${workspaceId}-${restartKeys[value]}`}
+            workspaceId={workspaceId}
             shell={value}
             active={activeShell === value}
             services={services}
             onMetadata={updateMetadata}
-          />
-        ))}
+          />];
+        })}
       </div>
     </section>
   );
 }
 
-function TerminalSessionView({ shell, active, services, onMetadata }: TerminalSessionViewProps): React.JSX.Element {
+function TerminalSessionView({ workspaceId, shell, active, services, onMetadata }: TerminalSessionViewProps): React.JSX.Element {
   const viewportRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XtermTerminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -173,6 +219,7 @@ function TerminalSessionView({ shell, active, services, onMetadata }: TerminalSe
 
     void services.terminal.create({
       sessionId,
+      workspaceId,
       shell,
       columns: Math.max(2, terminal.cols),
       rows: Math.max(1, terminal.rows)
@@ -180,6 +227,10 @@ function TerminalSessionView({ shell, active, services, onMetadata }: TerminalSe
       if (disposed) {
         services.terminal.close({ sessionId });
         return;
+      }
+      if (session.workspaceId !== workspaceId) {
+        services.terminal.close({ sessionId });
+        throw new Error('终端工作区与请求不一致。');
       }
       sessionReadyRef.current = true;
       onMetadata(shell, { status: 'running', cwd: session.cwd });
@@ -208,7 +259,7 @@ function TerminalSessionView({ shell, active, services, onMetadata }: TerminalSe
       if (terminalRef.current === terminal) terminalRef.current = null;
       if (fitAddonRef.current === fitAddon) fitAddonRef.current = null;
     };
-  }, [onMetadata, services, shell]);
+  }, [onMetadata, services, shell, workspaceId]);
 
   useEffect(() => {
     if (!active) return;

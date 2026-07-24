@@ -1,131 +1,237 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { ArrowDown, Check, CircleStop, Copy, Hand, Send, Settings2, ShieldAlert, ShieldCheck, Sparkles } from 'lucide-react';
+import type {
+  ChatRoutingStrategy,
+  ModelInferenceOptions,
+  ModelSummary,
+} from '@ariadne/protocol/public';
 import {
-  ArrowDown, Bot, Check, CircleStop, Copy, Ellipsis, Image, Mic, Paperclip, Pencil, Send,
-  ShieldCheck, Sparkles, TriangleAlert, User, Wrench, X
-} from 'lucide-react';
-import { useMockScenario } from '@renderer/core/mock/mock-scenario';
+  AGENT_PROVIDER_IDS,
+  type AgentPermissionMode,
+  type AgentSettingsUpdate,
+  type AgentSettingsView
+} from '@shared/contract';
+import { useRuntimeSnapshot, type RuntimeMessage } from '@renderer/core/runtime/runtime-store';
+import { formatRuntimeAvailability } from '@renderer/core/runtime/runtime-labels';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import { SelectMenu, type SelectMenuOption } from '@renderer/shared/ui/SelectMenu';
 import { StatusPill } from '@renderer/shared/ui/StatusPill';
 import { getCenteredScrollDelta, isScrollNearBottom } from '@shared/scroll-geometry';
-import { AgentExecutionCard } from './AgentExecutionCard';
 import { ConversationOverviewRuler } from './ConversationOverviewRuler';
-import { getConversationNodes, type ConversationNode } from './mock-chat-data';
-import { PermissionRequestCard } from './PermissionRequestCard';
+import { ConversationSidebar } from './ConversationSidebar';
+import type { ConversationNode } from './conversation-node';
+import { MarkdownMessage } from './MarkdownMessage';
 
-type ModelId = 'gpt-5' | 'gpt-5-mini';
-
-interface LocalMessage {
-  id: string;
-  text: string;
-  time: string;
-}
-
-function formatMessageTime(date: Date): string {
-  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-}
-
-const modelOptions: readonly SelectMenuOption<ModelId>[] = [
-  { value: 'gpt-5', label: 'GPT-5', description: '高质量推理' },
-  { value: 'gpt-5-mini', label: 'GPT-5 mini', description: '快速响应' }
+const AUTO_MODEL_ID = '__auto__';
+const AUTO_ROUTING_PREFIX = `${AUTO_MODEL_ID}:`;
+const routingOptions: readonly SelectMenuOption<ChatRoutingStrategy>[] = [
+  { value: 'local-first', label: '本地模型优先' },
+  { value: 'cloud-first', label: '远程模型优先' },
+  { value: 'privacy-first', label: '隐私优先', description: '仅使用本地模型' },
+  { value: 'quality-first', label: '质量优先' }
+];
+const permissionModeOptions: readonly SelectMenuOption<AgentPermissionMode>[] = [
+  { value: 'request', label: '请求批准', description: 'AI 可开始处理，具体写入或运行操作由你批准', icon: <Hand size={16} /> },
+  { value: 'risk-based', label: '替我审批', description: '普通文件编辑自动执行，命令和高风险操作再询问', icon: <ShieldCheck size={16} /> },
+  { value: 'full-access', label: '完全访问权限', description: 'AI 请求的工具在设置范围内直接执行', icon: <ShieldAlert size={16} />, tone: 'warning' },
+  { value: 'custom', label: '自定义 (settings.toml)', description: '使用 settings.toml 中定义的权限', icon: <Settings2 size={16} /> }
 ];
 
 export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
-  const scenario = useMockScenario(services.mock);
-  const nodes = useMemo(() => getConversationNodes(scenario), [scenario]);
-  const [activeId, setActiveId] = useState<string | null>(nodes[0]?.id ?? null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const runtime = useRuntimeSnapshot(services.runtime);
   const [draft, setDraft] = useState('');
-  const [localMessages, setLocalMessages] = useState<LocalMessage[]>([]);
-  const [attachments, setAttachments] = useState<string[]>([]);
-  const [listening, setListening] = useState(false);
-  const [model, setModel] = useState<ModelId>('gpt-5');
+  const [selectedModelId, setSelectedModelId] = useState(AUTO_MODEL_ID);
+  const [routingStrategy, setRoutingStrategy] = useState<ChatRoutingStrategy>('local-first');
+  const [permissionMode, setPermissionMode] = useState<AgentPermissionMode>('request');
+  const [settingsSnapshot, setSettingsSnapshot] = useState<AgentSettingsView | null>(null);
+  const [savingPermissionMode, setSavingPermissionMode] = useState(false);
+  const [inferenceByModel, setInferenceByModel] = useState<Record<string, ModelInferenceOptions>>({});
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isAtLatest, setIsAtLatest] = useState(true);
   const viewportRef = useRef<HTMLDivElement>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
   const followLatestRef = useRef(true);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const localNodes = useMemo<ConversationNode[]>(() => localMessages.map((message) => ({
-    id: message.id,
-    kind: 'user',
-    sender: '你',
-    time: message.time,
-    summary: message.text,
-    content: message.text
-  })), [localMessages]);
-  const conversationNodes = useMemo(() => [...nodes, ...localNodes], [localNodes, nodes]);
-  const hasMessages = conversationNodes.length > 0;
+  const defaultsLoadedRef = useRef(false);
+  const selectedSession = runtime.sessions.find((session) => session.sessionId === runtime.selectedSessionId);
+  const availableModels = runtime.models.filter((model) => model.availability === 'ready');
+  const eligibleModels = routingStrategy === 'privacy-first'
+    ? availableModels.filter((model) => model.location === 'local')
+    : availableModels;
+  const selectedModel = eligibleModels.find((model) => model.id === selectedModelId);
+  const selectedInference = selectedModel
+    ? inferenceByModel[selectedModel.id] ?? defaultInference(selectedModel)
+    : undefined;
+  const reasoning = selectedModel?.inference?.reasoning;
+  const canChat = runtime.status.availability === 'ready' && eligibleModels.length > 0;
+  const modelOptions = useMemo<readonly SelectMenuOption<string>[]>(() => [
+    {
+      value: AUTO_MODEL_ID,
+      label: '自动选择模型',
+      description: '按路由策略选择',
+      children: routingOptions.map((option) => ({
+        ...option,
+        value: routingSelectionValue(option.value)
+      }))
+    },
+    ...eligibleModels.map((model) => ({
+      value: model.id,
+      label: model.label,
+      description: model.location === 'local' ? '本地模型' : '远程模型'
+    }))
+  ], [eligibleModels]);
+  const modelSelectionValue = selectedModelId === AUTO_MODEL_ID
+    ? routingSelectionValue(routingStrategy)
+    : selectedModelId;
+  const nodes = useMemo(() => runtime.messages.map(toConversationNode), [runtime.messages]);
+  const activeRun = runtime.runs.find((run) => run.sessionId === runtime.selectedSessionId && [
+    'queued', 'running', 'waiting_permission', 'waiting_plan_handoff'
+  ].includes(run.status));
+  const running = Boolean(activeRun);
+  const sending = runtime.messages.some((message) => message.deliveryState === 'pending');
+
+  useEffect(() => {
+    if (defaultsLoadedRef.current) return;
+    defaultsLoadedRef.current = true;
+    void services.agentSettings.load().then((settings) => {
+      setRoutingStrategy(settings.routingStrategy);
+      setPermissionMode(settings.permissionMode);
+      setSettingsSnapshot(settings);
+    }).catch(() => undefined);
+  }, [services.agentSettings]);
+
+  const changePermissionMode = async (nextPermissionMode: AgentPermissionMode): Promise<void> => {
+    if (savingPermissionMode || nextPermissionMode === permissionMode) return;
+    const previous = permissionMode;
+    setPermissionMode(nextPermissionMode);
+    setSavingPermissionMode(true);
+    try {
+      const settings = settingsSnapshot ?? await services.agentSettings.load();
+      const providers = Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => {
+        const provider = settings.providers[id];
+        return [id, {
+          enabled: provider.enabled,
+          baseUrl: provider.baseUrl,
+          model: provider.model,
+          inference: provider.inference,
+          clearApiKey: false
+        }];
+      })) as AgentSettingsUpdate['providers'];
+      const saved = await services.agentSettings.update({
+        routingStrategy: settings.routingStrategy,
+        permissionMode: nextPermissionMode,
+        customPermissions: settings.customPermissions,
+        workspaceRoot: settings.workspaceRoot,
+        workspaceAccess: settings.workspaceAccess,
+        localModelRoots: settings.localModelRoots,
+        providers
+      });
+      setSettingsSnapshot(saved);
+      setPermissionMode(saved.permissionMode);
+      services.events.emit('chat:workspace-access-changed', saved.workspaceAccess);
+    } catch (error) {
+      setPermissionMode(previous);
+      console.error('Unable to save the Agent permission mode.', error);
+    } finally {
+      setSavingPermissionMode(false);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedModelId !== AUTO_MODEL_ID && !eligibleModels.some((model) => model.id === selectedModelId)) {
+      setSelectedModelId(AUTO_MODEL_ID);
+    }
+  }, [eligibleModels, selectedModelId]);
+
+  useEffect(() => {
+    setInferenceByModel((current) => {
+      const next = { ...current };
+      let changed = false;
+      for (const model of availableModels) {
+        const existing = next[model.id];
+        if (existing && inferenceSupported(model, existing)) continue;
+        const defaults = defaultInference(model);
+        if (!existing && Object.keys(defaults).length === 0) continue;
+        if (Object.keys(defaults).length > 0) next[model.id] = defaults;
+        else delete next[model.id];
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [runtime.models]);
+
+  useEffect(() => {
+    setActiveId((current) => current && nodes.some((node) => node.id === current)
+      ? current
+      : nodes[0]?.id ?? null);
+  }, [nodes]);
 
   const setFollowingLatest = useCallback((value: boolean): void => {
     followLatestRef.current = value;
     setIsAtLatest((current) => current === value ? current : value);
   }, []);
 
-  useEffect(() => {
-    setActiveId((current) => (
-      current && conversationNodes.some((node) => node.id === current)
-        ? current
-        : conversationNodes[0]?.id ?? null
-    ));
-  }, [conversationNodes]);
-
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
-    if (!viewport) return;
-    if (!hasMessages) {
-      setFollowingLatest(true);
-      return;
-    }
-    if (!followLatestRef.current) return;
+    if (!viewport || !followLatestRef.current) return;
     viewport.scrollTop = viewport.scrollHeight;
     setFollowingLatest(true);
-  }, [conversationNodes.length, hasMessages, setFollowingLatest]);
+  }, [nodes.length, setFollowingLatest]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
-
+    let frame: number | null = null;
     const observer = new ResizeObserver(() => {
-      if (followLatestRef.current) {
+      if (!followLatestRef.current || frame !== null) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
         viewport.scrollTop = viewport.scrollHeight;
         setFollowingLatest(true);
-      } else if (isScrollNearBottom(viewport.scrollTop, viewport.clientHeight, viewport.scrollHeight)) {
-        setFollowingLatest(true);
-      }
+      });
     });
-
     observer.observe(viewport);
     if (messageListRef.current) observer.observe(messageListRef.current);
-    return () => observer.disconnect();
-  }, [hasMessages, setFollowingLatest]);
+    return () => {
+      observer.disconnect();
+      if (frame !== null) window.cancelAnimationFrame(frame);
+    };
+  }, [setFollowingLatest]);
 
-  const jumpToNode = (id: string): void => {
-    const viewport = viewportRef.current;
-    const target = document.getElementById(`chat-node-${id}`);
-    if (viewport && target && viewport.contains(target)) {
-      const viewportBounds = viewport.getBoundingClientRect();
-      const targetBounds = target.getBoundingClientRect();
-      const delta = getCenteredScrollDelta(
-        viewportBounds.top,
-        viewport.clientHeight,
-        targetBounds.top,
-        targetBounds.height
-      );
-      viewport.scrollTo({
-        top: Math.max(0, viewport.scrollTop + delta),
-        behavior: 'smooth'
+  const send = async (): Promise<void> => {
+    const message = draft;
+    if (!message.trim() || running || sending || !canChat) return;
+    setDraft('');
+    setFollowingLatest(true);
+    try {
+      const workspaceId = selectedSession?.workspaceId
+        ?? services.conversationNavigation.getSelectedWorkspaceId()
+        ?? undefined;
+      await services.runtime.sendMessage(message, {
+        ...(selectedModelId !== AUTO_MODEL_ID ? { modelId: selectedModelId } : {}),
+        ...(selectedInference ? { inference: selectedInference } : {}),
+        routingStrategy,
+        ...(workspaceId ? { workspaceId } : {})
       });
+    } catch {
+      setDraft(message);
     }
-    setSelectedId(id);
-    setActiveId(id);
   };
 
-  const updateActiveNode = (): void => {
+  const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      void send();
+    }
+  };
+
+  const handleViewportScroll = (): void => {
     const viewport = viewportRef.current;
-    if (!viewport || conversationNodes.length === 0) return;
+    if (!viewport) return;
+    setFollowingLatest(isScrollNearBottom(viewport.scrollTop, viewport.clientHeight, viewport.scrollHeight));
     const readingLine = viewport.getBoundingClientRect().top + viewport.clientHeight * 0.32;
     let nearest: { id: string; distance: number } | null = null;
-    for (const node of conversationNodes) {
+    for (const node of nodes) {
       const element = document.getElementById(`chat-node-${node.id}`);
       if (!element) continue;
       const distance = Math.abs(element.getBoundingClientRect().top - readingLine);
@@ -134,133 +240,160 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
     if (nearest) setActiveId(nearest.id);
   };
 
-  const handleViewportScroll = (): void => {
+  const jumpToNode = (id: string): void => {
     const viewport = viewportRef.current;
-    if (!viewport) return;
-    setFollowingLatest(isScrollNearBottom(viewport.scrollTop, viewport.clientHeight, viewport.scrollHeight));
-    updateActiveNode();
-  };
-
-  const scrollToLatest = (): void => {
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-    viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'smooth' });
-  };
-
-  const submitLocalMessage = (content: string): void => {
-    const normalized = content.trim();
-    if (!normalized) return;
-    setFollowingLatest(true);
-    setLocalMessages((messages) => [...messages, {
-      id: `local-user-${crypto.randomUUID()}`,
-      text: normalized,
-      time: formatMessageTime(new Date())
-    }]);
-    services.events.emit('agent:activity-recorded', {
-      id: crypto.randomUUID(), kind: 'agent-run', message: '已提交一条 Mock 消息', timestamp: new Date().toISOString()
-    });
-  };
-
-  const send = (): void => {
-    const content = draft.trim();
-    if (!content) return;
-    submitLocalMessage(content);
-    setDraft('');
-  };
-
-  const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      send();
+    const target = document.getElementById(`chat-node-${id}`);
+    if (viewport && target && viewport.contains(target)) {
+      const viewportBounds = viewport.getBoundingClientRect();
+      const targetBounds = target.getBoundingClientRect();
+      viewport.scrollTo({
+        top: Math.max(0, viewport.scrollTop + getCenteredScrollDelta(
+          viewportBounds.top,
+          viewport.clientHeight,
+          targetBounds.top,
+          targetBounds.height
+        )),
+        behavior: 'smooth'
+      });
     }
+    setSelectedId(id);
+    setActiveId(id);
   };
-
-  const running = scenario === 'running' || scenario === 'streaming';
 
   return (
     <section className="chat-panel" aria-labelledby={`${moduleId}-title`}>
-      <header className="chat-header">
-        <div>
-          <h1 id={`${moduleId}-title`}>完善桌面端模块化架构</h1>
-          <span className="chat-subtitle"><span className="presence-dot" /> 本地 Mock 会话</span>
-        </div>
-        <div className="chat-header-meta">
-          <StatusPill tone={running ? 'running' : scenario === 'complete' ? 'success' : 'neutral'}>
-            {running ? '执行中' : scenario === 'complete' ? '已完成' : '就绪'}
-          </StatusPill>
-          <span className="model-label">GPT-5</span>
-          <button className="bare-icon-button" type="button" aria-label="更多会话操作"><Ellipsis size={17} /></button>
-        </div>
-      </header>
+      <ConversationSidebar services={services} />
+      <div className="chat-conversation">
+        <header className="chat-header">
+          <div>
+            <h1 id={`${moduleId}-title`}>{selectedSession?.title ?? 'Ariadne 助手'}</h1>
+            <span className="chat-subtitle"><span className="presence-dot" /> Runtime {formatRuntimeAvailability(runtime.status.availability)}</span>
+          </div>
+          <div className="chat-header-meta">
+            <StatusPill tone={running
+              ? 'running'
+              : runtime.status.availability !== 'ready'
+                ? 'danger'
+                : availableModels.length > 0
+                  ? 'success'
+                  : 'warning'}>
+              {activeRun?.userFacingLabel
+                ?? (runtime.status.availability === 'ready' && availableModels.length === 0
+                  ? '未配置模型'
+                  : formatRuntimeAvailability(runtime.status.availability))}
+            </StatusPill>
+          </div>
+        </header>
 
-      <div className="message-stage">
-        <div className="message-viewport" ref={viewportRef} onScroll={handleViewportScroll}>
-          {conversationNodes.length === 0 ? <EmptyConversation /> : (
-            <div className="message-list" ref={messageListRef}>
-              {conversationNodes.map((node) => (
-                <div
-                  id={`chat-node-${node.id}`}
-                  data-conversation-node
-                  key={node.id}
-                  className={`conversation-node conversation-node--${node.kind}${selectedId === node.id ? ' is-selected' : ''}`}
-                  onClick={() => setSelectedId(node.id)}
-                >
-                  <ConversationNodeContent
-                    node={node}
-                    onCopy={(text) => services.clipboard.writeText({ text })}
-                    onRewriteSubmit={submitLocalMessage}
-                  />
-                </div>
-              ))}
-            </div>
+        <div className="message-stage">
+          <div className="message-viewport" ref={viewportRef} onScroll={handleViewportScroll}>
+            {nodes.length === 0 ? <EmptyConversation hasModel={availableModels.length > 0} /> : (
+              <div className="message-list" ref={messageListRef}>
+                {nodes.map((node) => (
+                  <div id={`chat-node-${node.id}`} data-conversation-node key={node.id} className={`conversation-node conversation-node--${node.kind}`}>
+                    <ConversationMessage
+                      node={node}
+                      onCopy={(text) => services.clipboard.writeText({ text })}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <ConversationOverviewRuler nodes={nodes} activeId={activeId} selectedId={selectedId} onSelect={jumpToNode} />
+          {!isAtLatest && nodes.length > 0 && (
+            <button type="button" className="jump-to-latest-button" aria-label="跳转到最新消息" onClick={() => {
+              viewportRef.current?.scrollTo({ top: viewportRef.current.scrollHeight, behavior: 'smooth' });
+            }}><ArrowDown size={18} strokeWidth={1.8} /></button>
           )}
         </div>
-        <ConversationOverviewRuler nodes={conversationNodes} activeId={activeId} selectedId={selectedId} onSelect={jumpToNode} />
-        {!isAtLatest && hasMessages && (
-          <button
-            type="button"
-            className="jump-to-latest-button"
-            aria-label="跳转到最新消息"
-            onClick={scrollToLatest}
-          >
-            <ArrowDown size={18} strokeWidth={1.8} />
-          </button>
-        )}
-      </div>
 
-      <div className="composer-wrap">
-        {attachments.length > 0 && <div className="attachment-row">{attachments.map((name) => <span key={name}>{name}<button onClick={() => setAttachments((items) => items.filter((item) => item !== name))}><X size={11} /></button></span>)}</div>}
-        <div className="composer">
-          <textarea
-            value={draft}
-            rows={1}
-            placeholder="向 Ariadne 发送消息，Shift + Enter 换行"
-            aria-label="消息输入"
-            onChange={(event) => {
-              setDraft(event.target.value);
-              event.target.style.height = 'auto';
-              event.target.style.height = `${Math.min(event.target.scrollHeight, 144)}px`;
-            }}
-            onKeyDown={onComposerKeyDown}
-          />
-          <div className="composer-toolbar">
-            <div>
-              <input ref={fileInputRef} hidden multiple type="file" onChange={(event) => setAttachments(Array.from(event.target.files ?? []).map((file) => file.name))} />
-              <button type="button" className="composer-tool" title="添加文件" onClick={() => fileInputRef.current?.click()}><Paperclip size={16} /></button>
-              <button type="button" className="composer-tool" title="添加图片" onClick={() => fileInputRef.current?.click()}><Image size={16} /></button>
-              <button type="button" className={`composer-tool${listening ? ' is-active' : ''}`} title="语音输入" onClick={() => setListening((value) => !value)}><Mic size={16} /></button>
-              <SelectMenu<ModelId> className="composer-model-menu" ariaLabel="选择模型" placement="top" value={model} options={modelOptions} onChange={setModel} />
-              <span className="composer-permission"><ShieldCheck size={13} /> 工作区受控</span>
+        <div className="composer-wrap">
+          <div className="composer">
+            <textarea
+              value={draft}
+              rows={1}
+              placeholder={runtime.status.availability !== 'ready'
+                ? 'Runtime 当前不可用'
+                : availableModels.length === 0
+                  ? '请先在设置中配置 API Key 或本地模型目录'
+                  : '向 Ariadne 发送消息；按 Shift + Enter 换行'}
+              aria-label="消息输入框"
+              disabled={!canChat}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={onComposerKeyDown}
+            />
+            <div className="composer-toolbar">
+              <div className="composer-model-controls">
+                <SelectMenu<string>
+                  className="composer-model-menu"
+                  ariaLabel="选择模型"
+                  placement="top"
+                  value={modelSelectionValue}
+                  options={modelOptions}
+                  onChange={(nextValue) => {
+                    const nextStrategy = parseRoutingSelectionValue(nextValue);
+                    if (nextStrategy) {
+                      setRoutingStrategy(nextStrategy);
+                      setSelectedModelId(AUTO_MODEL_ID);
+                    } else {
+                      setSelectedModelId(nextValue);
+                    }
+                  }}
+                />
+                {reasoning && reasoning.modes.length > 1 && selectedInference?.reasoningMode && (
+                  <SelectMenu
+                    className="composer-inference-menu"
+                    ariaLabel="选择推理模式"
+                    placement="top"
+                    value={selectedInference.reasoningMode}
+                    options={reasoning.modes.map((value) => ({ value, label: reasoningModeLabel(value) }))}
+                    onChange={(reasoningMode) => setInferenceByModel((current) => ({
+                      ...current,
+                      [selectedModelId]: { ...selectedInference, reasoningMode }
+                    }))}
+                  />
+                )}
+                {reasoning && reasoning.efforts.length > 1 && selectedInference?.reasoningEffort && (
+                  <SelectMenu
+                    className="composer-inference-menu"
+                    ariaLabel="选择推理强度"
+                    placement="top"
+                    value={selectedInference.reasoningEffort}
+                    options={reasoning.efforts.map((value) => ({ value, label: `推理 ${reasoningEffortLabel(value)}` }))}
+                    onChange={(reasoningEffort) => setInferenceByModel((current) => ({
+                      ...current,
+                      [selectedModelId]: { ...selectedInference, reasoningEffort }
+                    }))}
+                  />
+                )}
+                {reasoning && reasoning.modes.length === 1 && reasoning.efforts.length === 0 && (
+                  <span className="composer-inference-fixed">{reasoningModeLabel(reasoning.defaultMode)}</span>
+                )}
+              </div>
+              <div className="composer-action-controls">
+                <SelectMenu<AgentPermissionMode>
+                  className="composer-permission-mode-menu"
+                  ariaLabel="选择 Agent 权限模式"
+                  placement="top"
+                  value={permissionMode}
+                  options={permissionModeOptions}
+                  disabled={savingPermissionMode}
+                  onChange={(nextPermissionMode) => void changePermissionMode(nextPermissionMode)}
+                />
+                <button
+                  type="button"
+                  className={`send-button${running ? ' send-button--stop' : ''}`}
+                  disabled={sending || (!running && (!draft.trim() || !canChat))}
+                  onClick={() => running && activeRun
+                    ? void services.runtime.cancelRun(activeRun)
+                    : void send()}
+                  aria-label={running ? activeRun?.origin === 'agent' ? '取消 Agent 任务' : '停止生成' : '发送消息'}
+                >
+                  {running ? <CircleStop size={17} /> : <Send size={16} />}
+                </button>
+              </div>
             </div>
-            <button
-              type="button"
-              className={`send-button${running ? ' send-button--stop' : ''}`}
-              disabled={!running && !draft.trim()}
-              onClick={() => running ? services.mock.setScenario('cancelled') : send()}
-              aria-label={running ? '停止生成' : '发送消息'}
-            >
-              {running ? <CircleStop size={17} /> : <Send size={16} />}
-            </button>
           </div>
         </div>
       </div>
@@ -268,165 +401,108 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   );
 }
 
-function EmptyConversation(): React.JSX.Element {
-  return <div className="empty-conversation"><span><Sparkles size={21} /></span><h2>开始一个新的桌面任务</h2><p>描述目标，Ariadne 会先给出计划，并在需要系统权限时明确请求确认。</p></div>;
+function routingSelectionValue(strategy: ChatRoutingStrategy): string {
+  return `${AUTO_ROUTING_PREFIX}${strategy}`;
 }
 
-interface ConversationNodeContentProps {
-  node: ConversationNode;
-  onCopy(text: string): Promise<void>;
-  onRewriteSubmit(text: string): void;
+function parseRoutingSelectionValue(value: string): ChatRoutingStrategy | null {
+  if (!value.startsWith(AUTO_ROUTING_PREFIX)) return null;
+  const strategy = value.slice(AUTO_ROUTING_PREFIX.length);
+  return routingOptions.some((option) => option.value === strategy)
+    ? strategy as ChatRoutingStrategy
+    : null;
 }
 
-function ConversationNodeContent({ node, onCopy, onRewriteSubmit }: ConversationNodeContentProps): React.JSX.Element {
-  switch (node.kind) {
-    case 'user':
-      return <UserConversationMessage node={node} onCopy={onCopy} onRewriteSubmit={onRewriteSubmit} />;
-    case 'assistant':
-      return <AssistantConversationMessage node={node} onCopy={onCopy} />;
-    case 'streaming':
-      return <div className="assistant-message"><span className="message-avatar"><Bot size={15} /></span><div><p>正在整理模块契约和 IPC 校验规则<span className="streaming-dots"><i /><i /><i /></span></p></div></div>;
-    case 'proposal':
-      return <AgentExecutionCard status="waiting" title="执行提案" summary="架构契约 → 桌面壳 → UI 验证" details="1. 定义跨进程 DTO\n2. 实现 Dockview 模块注册\n3. 构建并启动 Electron" />;
-    case 'permission': return <PermissionRequestCard />;
-    case 'execution':
-      return <div className="execution-stack"><AgentExecutionCard status="success" title="已读取项目配置" duration="1.8s" summary="确认 Electron + Vite 构建入口" details="package.json\napp/package.json\napp/electron.vite.config.ts" /><AgentExecutionCard status="running" title="正在分析模块目录" summary="检查模块依赖方向与布局契约" details="Scanning app/src/renderer/src/modules ..." /><AgentExecutionCard status="warning" title="等待批准执行 PowerShell" summary="将运行类型检查和生产构建" details="npm run typecheck && npm run build" /></div>;
-    case 'tool':
-      return <AgentExecutionCard status="success" title="工具执行完成" duration="4.2s" summary="类型检查、测试和生产构建均通过" details="7 tests passed\nMain / Preload / Renderer compiled\nout/ generated" />;
-    case 'error':
-      return <AgentExecutionCard status="failed" title="命令执行失败" duration="0.2s" summary="PowerShell 执行策略阻止了 npm.ps1" details="PSSecurityException: running scripts is disabled\n建议改用 npm.cmd" />;
-    case 'cancelled':
-      return <div className="notice-row notice-row--muted"><X size={15} /><div><strong>任务已取消</strong><p>没有继续执行剩余工具调用。</p></div></div>;
-    case 'complete':
-      return <div className="completion-summary"><span><Check size={17} /></span><div><strong>任务完成</strong><p>桌面壳、模块运行时、布局持久化和安全边界均已验证。</p></div></div>;
-    case 'offline':
-      return <div className="notice-row notice-row--warning"><TriangleAlert size={16} /><div><strong>Runtime 尚未接入</strong><p>当前仍可浏览本地 Mock 会话和调整工作区布局。</p></div></div>;
-  }
+function defaultInference(model: ModelSummary): ModelInferenceOptions {
+  const reasoning = model.inference?.reasoning;
+  if (!reasoning) return {};
+  return {
+    reasoningMode: reasoning.defaultMode,
+    ...(reasoning.defaultEffort ? { reasoningEffort: reasoning.defaultEffort } : {})
+  };
 }
 
-interface MessageCopyButtonProps {
-  text: string;
-  subject: '回答' | '消息';
-  onCopy(text: string): Promise<void>;
+function inferenceSupported(model: ModelSummary, inference: ModelInferenceOptions): boolean {
+  const reasoning = model.inference?.reasoning;
+  if (!reasoning) return !inference.reasoningMode && !inference.reasoningEffort;
+  return Boolean(inference.reasoningMode && reasoning.modes.includes(inference.reasoningMode))
+    && (!inference.reasoningEffort || reasoning.efforts.includes(inference.reasoningEffort));
 }
 
-function MessageCopyButton({ text, subject, onCopy }: MessageCopyButtonProps): React.JSX.Element {
+function reasoningModeLabel(value: 'off' | 'on' | 'auto' | 'pro'): string {
+  return { off: '推理关闭', on: '推理开启', auto: '推理自动', pro: '推理 Pro' }[value];
+}
+
+function reasoningEffortLabel(value: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'): string {
+  return { none: '无', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' }[value];
+}
+
+function EmptyConversation({ hasModel }: { hasModel: boolean }): React.JSX.Element {
+  return <div className="empty-conversation"><span><Sparkles size={21} /></span><h2>{hasModel ? '开始新会话' : '先配置可用模型'}</h2><p>{hasModel
+    ? '描述你的目标，AI 会直接开始处理；只有实际工具权限不足时，Ariadne 才会向你确认具体操作。'
+    : '打开设置，填写 OpenAI、DeepSeek、Kimi 或 Anthropic API Key，也可以添加本地模型目录。'}</p></div>;
+}
+
+function toConversationNode(message: RuntimeMessage): ConversationNode {
+  const content = message.content || (message.status === 'streaming' ? '正在思考…' : '');
+  const kind = message.role === 'user'
+    ? 'user'
+    : message.status === 'streaming'
+      ? 'streaming'
+      : message.status === 'interrupted' || message.status === 'failed'
+        ? 'error'
+        : 'assistant';
+  return {
+    id: message.messageId,
+    kind,
+    sender: message.role === 'user' ? '你' : 'Ariadne',
+    time: new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    summary: content.slice(0, 160),
+    content,
+    status: message.status,
+    ...(message.deliveryState ? { deliveryState: message.deliveryState } : {}),
+    ...(message.error ? { error: message.error } : {})
+  };
+}
+
+function ConversationMessage({ node, onCopy }: { node: ConversationNode; onCopy(text: string): Promise<void> }): React.JSX.Element {
+  const text = node.content ?? node.summary;
+  const isUser = node.kind === 'user';
+  return <div className={isUser ? 'user-message-block' : 'assistant-message-block'}>
+    <div className={isUser ? 'user-message' : 'assistant-message'}>
+      {isUser ? <p className="message-content">{text}</p> : <MarkdownMessage markdown={text} />}
+    </div>
+    {!isUser && (node.status === 'interrupted' || node.status === 'failed') && (
+      <div className="message-status-notice" role="status">
+        <ShieldAlert size={14} />
+        <span>{node.error?.message ?? (node.status === 'failed'
+          ? '回复生成失败，请重新发送。'
+          : '回复生成中断，已保留成功接收的内容。')}</span>
+      </div>
+    )}
+    <div className={`message-action-row message-action-row--${isUser ? 'user' : 'assistant'}`}>
+      <time>{node.deliveryState === 'pending'
+        ? '发送中…'
+        : node.deliveryState === 'failed'
+          ? '发送失败'
+          : node.time}</time>
+      <MessageCopyButton text={text} subject={isUser ? '消息' : '回答'} onCopy={onCopy} />
+    </div>
+  </div>;
+}
+
+function MessageCopyButton({ text, subject, onCopy }: { text: string; subject: string; onCopy(text: string): Promise<void> }): React.JSX.Element {
   const [copied, setCopied] = useState(false);
   const copyResetTimerRef = useRef<number | null>(null);
-
   useEffect(() => () => {
     if (copyResetTimerRef.current !== null) window.clearTimeout(copyResetTimerRef.current);
   }, []);
-
-  const copyMessage = async (): Promise<void> => {
-    try {
-      await onCopy(text);
+  return <button type="button" aria-label={copied ? `已复制${subject}` : `复制${subject}`} onClick={(event) => {
+    event.stopPropagation();
+    void onCopy(text).then(() => {
       setCopied(true);
       if (copyResetTimerRef.current !== null) window.clearTimeout(copyResetTimerRef.current);
-      copyResetTimerRef.current = window.setTimeout(() => setCopied(false), 1600);
-    } catch (error: unknown) {
-      console.error(`Unable to copy ${subject}`, error);
-      setCopied(false);
-    }
-  };
-
-  return (
-    <button
-      type="button"
-      aria-label={copied ? `${subject}已复制` : `复制${subject}`}
-      onClick={(event) => {
-        event.stopPropagation();
-        void copyMessage();
-      }}
-    >
-      {copied ? <Check size={14} /> : <Copy size={14} />}
-    </button>
-  );
-}
-
-interface AssistantConversationMessageProps {
-  node: ConversationNode;
-  onCopy(text: string): Promise<void>;
-}
-
-function AssistantConversationMessage({ node, onCopy }: AssistantConversationMessageProps): React.JSX.Element {
-  const text = node.content ?? node.summary;
-  const paragraphs = text.split(/\n{2,}/);
-
-  return (
-    <div className="assistant-message-block">
-      <div className="assistant-message">
-        <span className="message-avatar"><Bot size={15} /></span>
-        <div>{paragraphs.map((paragraph, index) => <p key={`${node.id}-${index}`}>{paragraph}</p>)}</div>
-      </div>
-      <div className="message-action-row message-action-row--assistant" aria-label="回答操作">
-        <time>{node.time}</time>
-        <MessageCopyButton text={text} subject="回答" onCopy={onCopy} />
-      </div>
-    </div>
-  );
-}
-
-interface UserConversationMessageProps {
-  node: ConversationNode;
-  onCopy(text: string): Promise<void>;
-  onRewriteSubmit(text: string): void;
-}
-
-function UserConversationMessage({ node, onCopy, onRewriteSubmit }: UserConversationMessageProps): React.JSX.Element {
-  const text = node.content ?? node.summary;
-  const [editing, setEditing] = useState(false);
-  const [editDraft, setEditDraft] = useState(text);
-
-  const beginRewrite = (): void => {
-    setEditDraft(text);
-    setEditing(true);
-  };
-
-  const cancelRewrite = (): void => {
-    setEditDraft(text);
-    setEditing(false);
-  };
-
-  const submitRewrite = (): void => {
-    const normalized = editDraft.trim();
-    if (!normalized) return;
-    onRewriteSubmit(normalized);
-    setEditing(false);
-  };
-
-  if (editing) {
-    return (
-      <div className="user-message-edit-row">
-        <div className="user-message-editor">
-          <textarea
-            autoFocus
-            aria-label="改写消息"
-            value={editDraft}
-            onChange={(event) => setEditDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') cancelRewrite();
-              if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) submitRewrite();
-            }}
-          />
-          <div className="rewrite-action-row">
-            <button type="button" className="rewrite-cancel-button" onClick={cancelRewrite}>取消</button>
-            <button type="button" className="rewrite-send-button" disabled={!editDraft.trim()} onClick={submitRewrite}>发送</button>
-          </div>
-        </div>
-        <span className="message-avatar"><User size={14} /></span>
-      </div>
-    );
-  }
-
-  return (
-    <div className="user-message-block">
-      <div className="user-message"><span className="message-avatar"><User size={14} /></span><p>{text}</p></div>
-      <div className="message-action-row message-action-row--user" aria-label="消息操作">
-        <time>{node.time}</time>
-        <MessageCopyButton text={text} subject="消息" onCopy={onCopy} />
-        <button type="button" aria-label="改写消息" onClick={beginRewrite}><Pencil size={14} /></button>
-      </div>
-    </div>
-  );
+      copyResetTimerRef.current = window.setTimeout(() => setCopied(false), 1_600);
+    }).catch(() => setCopied(false));
+  }}>{copied ? <Check size={14} /> : <Copy size={14} />}</button>;
 }

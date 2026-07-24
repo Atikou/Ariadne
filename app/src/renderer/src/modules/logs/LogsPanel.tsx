@@ -1,6 +1,20 @@
 import { AlertTriangle, CheckCircle2, Info } from 'lucide-react';
+import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
+import { traceMessageForDisplay } from '@shared/log-entry-presentation';
 
-export function LogsPanel({ moduleId }: FeaturePanelProps): React.JSX.Element {
-  return <section className="logs-panel" aria-labelledby={`${moduleId}-title`}><div className="log-row"><span>16:32:19.471</span><Info size={13} /><code>renderer</code><p>Dockview layout restored</p></div><div className="log-row"><span>16:32:19.473</span><CheckCircle2 size={13} /><code>modules</code><p>10 built-in modules registered</p></div><div className="log-row is-warning"><span>16:32:20.104</span><AlertTriangle size={13} /><code>system</code><p>Game activity detector unavailable in phase one</p></div></section>;
+export function LogsPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
+  const runtime = useRuntimeSnapshot(services.runtime);
+  return <section className="logs-panel" aria-labelledby={`${moduleId}-title`}>
+    {runtime.trace.slice(-200).reverse().map((entry) => {
+      const message = traceMessageForDisplay(entry);
+      return <div className={`log-row${entry.level === 'error' ? ' is-error' : entry.level === 'warning' ? ' is-warning' : ''}`} key={entry.traceId}>
+        <span>{new Date(entry.occurredAt).toLocaleTimeString()}</span>
+        {entry.level === 'error' || entry.level === 'warning' ? <AlertTriangle size={13} /> : entry.level === 'info' ? <Info size={13} /> : <CheckCircle2 size={13} />}
+        <code title={entry.category}>{entry.category}</code>
+        {message && <p title={message}>{message}</p>}
+      </div>;
+    })}
+    {runtime.trace.length === 0 && <div className="log-row"><span>—</span><Info size={13} /><code>Runtime</code><p>暂无追踪记录。</p></div>}
+  </section>;
 }

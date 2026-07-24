@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
+import type { DragEvent as ReactDragEvent } from 'react';
 import {
   DockviewReact,
   themeAbyss,
@@ -9,10 +10,13 @@ import {
   type SerializedDockview
 } from 'dockview-react';
 import type { JsonObject } from '@shared/contract';
+import { DOCKVIEW_POPOUT_PATH } from '@shared/windowing';
 import type { FeatureModuleDefinition, ModuleServices, ModuleId } from '@renderer/core/modules/module-contract';
 import type { ModuleRegistry } from '@renderer/core/modules/module-registry';
 import { MODULE_IDS } from '@renderer/core/modules/module-ids';
 import { ModuleTab } from './ModuleTab';
+import { isScreenPointOutsideWindow, type ScreenPoint } from './module-popout-policy';
+import { applyThemeToWindow, type EffectiveTheme } from './theme-sync';
 
 const ariadneDockviewTheme: DockviewTheme = {
   ...themeAbyss,
@@ -24,7 +28,7 @@ const ariadneDockviewTheme: DockviewTheme = {
 
 const EDGE_POSITIONS = ['top', 'right', 'bottom', 'left'] as const;
 const LAYOUT_REVISION_KEY = '__ariadneLayoutRevision';
-const LAYOUT_REVISION = 2;
+const LAYOUT_REVISION = 3;
 
 export type SaveStatus = 'loading' | 'saved' | 'saving' | 'error';
 
@@ -34,6 +38,7 @@ interface WorkspaceProps {
   onApiReady(api: DockviewApi): void;
   onOpenModulesChanged(ids: ReadonlySet<string>): void;
   onSaveStatusChanged(status: SaveStatus): void;
+  effectiveTheme: EffectiveTheme;
 }
 
 export function Workspace({
@@ -41,12 +46,23 @@ export function Workspace({
   services,
   onApiReady,
   onOpenModulesChanged,
-  onSaveStatusChanged
+  onSaveStatusChanged,
+  effectiveTheme
 }: WorkspaceProps): React.JSX.Element {
   const components = useMemo(() => registry.createDockviewComponents(services), [registry, services]);
   const saveTimer = useRef<number | null>(null);
   const restoring = useRef(true);
   const subscriptions = useRef<Array<{ dispose(): void }>>([]);
+  const apiRef = useRef<DockviewApi | null>(null);
+  const dragPoint = useRef<ScreenPoint | null>(null);
+  const effectiveThemeRef = useRef(effectiveTheme);
+  effectiveThemeRef.current = effectiveTheme;
+
+  useEffect(() => {
+    const api = apiRef.current;
+    if (!api) return;
+    for (const popout of api.getPopouts()) applyThemeToWindow(popout.window, effectiveTheme);
+  }, [effectiveTheme]);
 
   useEffect(() => () => {
     for (const subscription of subscriptions.current) subscription.dispose();
@@ -75,11 +91,13 @@ export function Workspace({
 
   const onReady = useCallback((event: DockviewReadyEvent): void => {
     const { api } = event;
+    apiRef.current = api;
 
     subscriptions.current.push(
       api.onDidAddPanel(() => syncOpenModules(api)),
       api.onDidRemovePanel(() => syncOpenModules(api)),
-      api.onDidLayoutChange(() => saveLayout(api))
+      api.onDidLayoutChange(() => saveLayout(api)),
+      api.onDidAddPopoutGroup((popout) => applyThemeToWindow(popout.window, effectiveThemeRef.current))
     );
 
     void restoreLayout(api, registry)
@@ -96,16 +114,59 @@ export function Workspace({
       });
   }, [onApiReady, onSaveStatusChanged, registry, saveLayout, syncOpenModules]);
 
+  const rememberDragPosition = (event: ReactDragEvent<HTMLDivElement>): void => {
+    if (event.screenX !== 0 || event.screenY !== 0) {
+      dragPoint.current = { x: event.screenX, y: event.screenY };
+    }
+  };
+
+  const popoutWhenDroppedOutside = (event: ReactDragEvent<HTMLDivElement>): void => {
+    const moduleId = getDraggedModuleId(event.target);
+    const point = event.screenX !== 0 || event.screenY !== 0
+      ? { x: event.screenX, y: event.screenY }
+      : dragPoint.current;
+    dragPoint.current = null;
+    if (!moduleId || !point) return;
+    const outside = isScreenPointOutsideWindow(point, {
+      left: window.screenX,
+      top: window.screenY,
+      width: window.outerWidth,
+      height: window.outerHeight
+    });
+    if (!outside) return;
+
+    window.setTimeout(() => {
+      const api = apiRef.current;
+      const panel = api?.getPanel(moduleId);
+      if (!api || !panel || panel.api.location.type === 'popout') return;
+      void api.addPopoutGroup(panel).catch((error: unknown) => {
+        console.error('Unable to open module in a separate window', error);
+      });
+    }, 0);
+  };
+
   return (
-    <DockviewReact
-      className="ariadne-dockview"
-      theme={ariadneDockviewTheme}
-      components={components}
-      tabComponents={{ moduleTab: ModuleTab }}
-      onReady={onReady}
-      disableFloatingGroups={false}
-    />
+    <div
+      className="ariadne-dockview-host"
+      onDrag={rememberDragPosition}
+      onDragEnd={popoutWhenDroppedOutside}
+    >
+      <DockviewReact
+        className="ariadne-dockview"
+        theme={ariadneDockviewTheme}
+        components={components}
+        tabComponents={{ moduleTab: ModuleTab }}
+        onReady={onReady}
+        disableFloatingGroups={false}
+        popoutUrl={DOCKVIEW_POPOUT_PATH}
+      />
+    </div>
   );
+}
+
+function getDraggedModuleId(target: EventTarget): string | null {
+  if (!(target instanceof Element)) return null;
+  return target.closest('.dv-tab')?.querySelector<HTMLElement>('.module-tab')?.dataset.moduleId ?? null;
 }
 
 export function openModule(api: DockviewApi, registry: ModuleRegistry, id: ModuleId): void {
@@ -141,6 +202,7 @@ async function restoreLayout(api: DockviewApi, registry: ModuleRegistry): Promis
   }
   api.clear();
   api.fromJSON(layout);
+  applyModuleConstraints(api, registry);
 }
 
 function addDefaultLayout(api: DockviewApi, registry: ModuleRegistry): void {
@@ -180,11 +242,20 @@ function addModulePanel(api: DockviewApi, definition: FeatureModuleDefinition): 
     tabComponent: 'moduleTab',
     params: { moduleId: definition.id, icon: definition.icon },
     renderer: 'always',
+    minimumWidth: definition.layoutConstraints.minimumWidth,
     ...(defaultPlacement.initialWidth ? { initialWidth: defaultPlacement.initialWidth } : {}),
     ...(defaultPlacement.initialHeight ? { initialHeight: defaultPlacement.initialHeight } : {}),
     ...(position ? { position } : {})
   };
   api.addPanel(options);
+}
+
+function applyModuleConstraints(api: DockviewApi, registry: ModuleRegistry): void {
+  for (const definition of registry.list()) {
+    api.getPanel(definition.id)?.api.setConstraints({
+      minimumWidth: definition.layoutConstraints.minimumWidth
+    });
+  }
 }
 
 function toJsonObject(value: SerializedDockview): JsonObject {

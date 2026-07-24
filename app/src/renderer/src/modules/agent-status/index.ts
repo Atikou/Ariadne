@@ -10,5 +10,6 @@ export const agentStatusModule: FeatureModuleDefinition = {
   component: AgentStatusPanel,
   defaultOpen: true,
   defaultPlacement: { direction: 'right', referenceModuleId: MODULE_IDS.chat, initialWidth: 320 },
+  layoutConstraints: { minimumWidth: 240 },
   requiredCapabilities: []
 };

@@ -10,14 +10,15 @@ function createNodes(count: number): Array<{ id: string }> {
 }
 
 describe('conversation overview ruler', () => {
-  it('provides enough non-blank mock history to exercise ruler overflow', async () => {
-    const mockSource = await readFile(
-      join(process.cwd(), 'src', 'renderer', 'src', 'modules', 'chat', 'mock-chat-data.ts'),
+  it('feeds the ruler from persisted Runtime messages instead of mock history', async () => {
+    const chatSource = await readFile(
+      join(process.cwd(), 'src', 'renderer', 'src', 'modules', 'chat', 'ChatPanel.tsx'),
       'utf8'
     );
 
-    expect(mockSource).toContain('const overflowHistory: ConversationNode[] = Array.from({ length: 24 }');
-    expect(mockSource).toContain("case 'blank': return [];");
+    expect(chatSource).toContain('runtime.messages.map(toConversationNode)');
+    expect(chatSource).toContain('<ConversationOverviewRuler nodes={nodes}');
+    expect(chatSource).not.toMatch(/mock/i);
   });
 
   it('renders exactly one ordered tick for every conversation without aggregation', () => {

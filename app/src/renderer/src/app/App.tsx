@@ -1,23 +1,20 @@
 import { useEffect, useMemo, useState } from 'react';
-import { FlaskConical, RotateCcw, Search, Waypoints } from 'lucide-react';
+import { RotateCcw, Search, Waypoints } from 'lucide-react';
 import type { DockviewApi } from 'dockview-react';
 import type { ThemePreference } from '@shared/contract';
 import { builtinModuleRegistry } from '@renderer/core/modules/builtin-modules';
 import { createModuleServices } from '@renderer/core/services/module-services';
 import type { ModuleId } from '@renderer/core/modules/module-contract';
-import { MOCK_SCENARIOS, MOCK_SCENARIO_LABELS, useMockScenario, type MockScenario } from '@renderer/core/mock/mock-scenario';
+import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
+import { formatRuntimeAvailability } from '@renderer/core/runtime/runtime-labels';
 import { ConfirmDialog } from '@renderer/shared/ui/ActionDialog';
-import { SelectMenu, type SelectMenuOption } from '@renderer/shared/ui/SelectMenu';
 import { ActivityBar } from './ActivityBar';
+import { ApprovalCenter } from './ApprovalCenter';
 import { CommandPalette } from './CommandPalette';
 import { GlobalStatusBar } from './GlobalStatusBar';
 import { ModuleMenu } from './ModuleMenu';
+import { applyThemeToDocument, resolveEffectiveTheme, type EffectiveTheme } from './theme-sync';
 import { openModule, resetWorkspace, Workspace, type SaveStatus } from './Workspace';
-
-const mockScenarioOptions: readonly SelectMenuOption<MockScenario>[] = MOCK_SCENARIOS.map((value) => ({
-  value,
-  label: MOCK_SCENARIO_LABELS[value]
-}));
 
 export function App(): React.JSX.Element {
   const services = useMemo(() => createModuleServices(window.ariadne), []);
@@ -26,18 +23,33 @@ export function App(): React.JSX.Element {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('loading');
   const [commandOpen, setCommandOpen] = useState(false);
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
-  const scenario = useMockScenario(services.mock);
+  const [effectiveTheme, setEffectiveTheme] = useState<EffectiveTheme>(() => (
+    window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  ));
+  const runtime = useRuntimeSnapshot(services.runtime);
+
+  useEffect(() => {
+    void services.runtime.initialize();
+    return () => services.runtime.dispose();
+  }, [services]);
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     let preference: ThemePreference = 'system';
     const applyTheme = (): void => {
-      const effective = preference === 'system' ? (media.matches ? 'dark' : 'light') : preference;
-      document.documentElement.dataset.theme = effective;
-      document.documentElement.style.colorScheme = effective;
-      void window.ariadne.window.setTitleBarTheme(effective);
+      const effective = resolveEffectiveTheme(preference, media.matches);
+      applyThemeToDocument(document, effective);
+      setEffectiveTheme(effective);
+      void window.ariadne.window.setTitleBarTheme(effective).catch((error: unknown) => {
+        console.error('Title bar theme could not be synchronized.', error);
+      });
     };
-    void services.preferences.load().then((saved) => { preference = saved.theme; applyTheme(); });
+    applyTheme();
+    void services.preferences.load()
+      .then((saved) => { preference = saved.theme; applyTheme(); })
+      .catch((error: unknown) => {
+        console.error('Desktop preferences could not be loaded.', error);
+      });
     const unsubscribe = services.events.subscribe('preferences:changed', (saved) => { preference = saved.theme; applyTheme(); });
     media.addEventListener('change', applyTheme);
     return () => { unsubscribe(); media.removeEventListener('change', applyTheme); };
@@ -76,14 +88,9 @@ export function App(): React.JSX.Element {
           <Search size={14} /><span>搜索或输入命令</span><kbd>Ctrl K</kbd>
         </button>
         <div className="titlebar-actions">
-          <SelectMenu
-            className="mock-scenario-menu"
-            ariaLabel="切换 Mock 状态"
-            leadingIcon={<FlaskConical size={14} />}
-            value={scenario}
-            options={mockScenarioOptions}
-            onChange={(value) => services.mock.setScenario(value)}
-          />
+          <span className={`runtime-title-status runtime-title-status--${runtime.status.availability}`}>
+            Runtime {formatRuntimeAvailability(runtime.status.availability)}
+          </span>
           <ModuleMenu
             modules={builtinModuleRegistry.list()}
             openModuleIds={openModuleIds}
@@ -103,10 +110,12 @@ export function App(): React.JSX.Element {
             onApiReady={setDockviewApi}
             onOpenModulesChanged={setOpenModuleIds}
             onSaveStatusChanged={setSaveStatus}
+            effectiveTheme={effectiveTheme}
           />
         </div>
       </div>
       <GlobalStatusBar services={services} saveStatus={saveStatus} />
+      <ApprovalCenter services={services} />
       <CommandPalette
         open={commandOpen}
         registry={builtinModuleRegistry}

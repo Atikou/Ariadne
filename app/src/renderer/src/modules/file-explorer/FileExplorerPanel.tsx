@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, File, FileCode2, FileJson2, Folder, FolderOpen, RefreshCw } from 'lucide-react';
 import type { WorkspaceEntry } from '@shared/contract';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
@@ -10,24 +10,55 @@ interface TreeNode extends WorkspaceEntry {
 }
 
 export function FileExplorerPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
+  const [workspaceId, setWorkspaceId] = useState<string | null>(
+    () => services.conversationNavigation.getSelectedWorkspaceId()
+  );
   const [rootLabel, setRootLabel] = useState('Workspace');
   const [nodes, setNodes] = useState<TreeNode[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const workspaceIdRef = useRef(workspaceId);
+  const treeRevisionRef = useRef(0);
+  workspaceIdRef.current = workspaceId;
 
-  const loadRoot = async (): Promise<void> => {
+  const loadRoot = useCallback(async (): Promise<void> => {
+    if (!workspaceId) return;
+    const requestedWorkspaceId = workspaceId;
+    const revision = ++treeRevisionRef.current;
     try {
-      const listing = await services.workspace.listDirectory({ relativePath: '' });
+      const listing = await services.workspace.listDirectory({
+        workspaceId: requestedWorkspaceId,
+        relativePath: ''
+      });
+      if (workspaceIdRef.current !== requestedWorkspaceId || treeRevisionRef.current !== revision) return;
       setRootLabel(listing.rootLabel);
       setNodes(listing.entries);
       setError(null);
     } catch (cause) {
+      if (workspaceIdRef.current !== requestedWorkspaceId || treeRevisionRef.current !== revision) return;
       setError(cause instanceof Error ? cause.message : '无法读取工作区');
     }
-  };
+  }, [services, workspaceId]);
 
-  useEffect(() => { void loadRoot(); }, [services]);
+  useEffect(() => {
+    const unsubscribe = services.conversationNavigation.onSelectedWorkspaceChanged(setWorkspaceId);
+    void services.conversationNavigation.listWorkspaces().catch((cause: unknown) => {
+      setError(cause instanceof Error ? cause.message : '无法读取工作区目录');
+    });
+    return unsubscribe;
+  }, [services]);
+
+  useEffect(() => {
+    setRootLabel('Workspace');
+    setNodes([]);
+    setError(null);
+    if (workspaceId) void loadRoot();
+    return () => { treeRevisionRef.current += 1; };
+  }, [loadRoot]);
 
   const toggle = async (path: string): Promise<void> => {
+    if (!workspaceId) return;
+    const requestedWorkspaceId = workspaceId;
+    const revision = treeRevisionRef.current;
     const target = findNode(nodes, path);
     if (!target || target.type !== 'directory') return;
     if (target.children) {
@@ -36,10 +67,15 @@ export function FileExplorerPanel({ moduleId, services }: FeaturePanelProps): Re
     }
     setNodes(updateNode(nodes, path, (node) => ({ ...node, loading: true, expanded: true })));
     try {
-      const listing = await services.workspace.listDirectory({ relativePath: path });
+      const listing = await services.workspace.listDirectory({
+        workspaceId: requestedWorkspaceId,
+        relativePath: path
+      });
+      if (workspaceIdRef.current !== requestedWorkspaceId || treeRevisionRef.current !== revision) return;
       setNodes((current) => updateNode(current, path, (node) => ({ ...node, loading: false, expanded: true, children: listing.entries })));
       setError(null);
     } catch (cause) {
+      if (workspaceIdRef.current !== requestedWorkspaceId || treeRevisionRef.current !== revision) return;
       setNodes((current) => updateNode(current, path, (node) => ({ ...node, loading: false, expanded: false })));
       setError(cause instanceof Error ? cause.message : '无法读取目录');
     }
@@ -47,7 +83,7 @@ export function FileExplorerPanel({ moduleId, services }: FeaturePanelProps): Re
 
   return (
     <section className="simple-module-panel file-explorer" aria-labelledby={`${moduleId}-title`}>
-      <header className="module-content-header"><div><span>WORKSPACE</span><h1 id={`${moduleId}-title`}>{rootLabel}</h1></div><button type="button" className="bare-icon-button" title="刷新" onClick={() => void loadRoot()}><RefreshCw size={14} /></button></header>
+      <header className="module-content-header"><div><span>WORKSPACE</span><h1 id={`${moduleId}-title`}>{rootLabel}</h1></div><button type="button" className="bare-icon-button" title="刷新" disabled={!workspaceId} onClick={() => void loadRoot()}><RefreshCw size={14} /></button></header>
       {error && <p className="is-danger">{error}</p>}
       <div className="file-tree">{nodes.map((node) => <TreeEntry key={node.relativePath} node={node} depth={0} onToggle={toggle} />)}</div>
     </section>

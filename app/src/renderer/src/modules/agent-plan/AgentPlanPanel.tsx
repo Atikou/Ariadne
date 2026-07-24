@@ -1,6 +1,20 @@
-import { Check, Circle, LoaderCircle } from 'lucide-react';
+import { Check, Circle, RotateCw } from 'lucide-react';
+import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
 
-export function AgentPlanPanel({ moduleId }: FeaturePanelProps): React.JSX.Element {
-  return <section className="simple-module-panel" aria-labelledby={`${moduleId}-title`}><header className="module-content-header"><div><span>EXECUTION PLAN</span><h1 id={`${moduleId}-title`}>执行计划</h1></div></header><div className="plan-list"><article className="is-complete"><Check size={15} /><div><strong>架构与安全边界</strong><p>Main、Preload、Renderer 契约已经固定。</p></div></article><article className="is-running"><LoaderCircle className="is-spinning" size={15} /><div><strong>模块化工作区</strong><p>实现 Chat、会话和 Agent 状态模块。</p></div></article><article><Circle size={15} /><div><strong>交互与视觉验证</strong><p>检查主题、响应式布局和最终截图。</p></div></article></div></section>;
+export function AgentPlanPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
+  const runtime = useRuntimeSnapshot(services.runtime);
+  const retryableRunIds = new Set(runtime.runs
+    .filter((run) => run.status === 'waiting_plan_handoff')
+    .map((run) => run.runId));
+  return <section className="simple-module-panel" aria-labelledby={`${moduleId}-title`}>
+    <header className="module-content-header"><div><span>执行计划</span><h1 id={`${moduleId}-title`}>计划确认</h1></div></header>
+    {runtime.planHandoffs.map((handoff) => <article key={handoff.handoffId} className="plan-handoff-card">
+      <h2>{handoff.title}</h2><p>{handoff.summary}</p>
+      <div className="plan-list">{handoff.steps.map((step) => <article key={step.stepId}><Circle size={15} /><div><strong>{step.title}</strong>{step.detail && <p>{step.detail}</p>}</div></article>)}</div>
+      {handoff.status === 'pending' && <div className="rewrite-action-row"><button type="button" className="rewrite-cancel-button" onClick={() => void services.runtime.respondToPlan(handoff.handoffId, 'reject')}>拒绝</button><button type="button" className="rewrite-send-button" onClick={() => void services.runtime.respondToPlan(handoff.handoffId, 'approve')}><Check size={13} /> 批准计划</button></div>}
+      {handoff.status === 'approved' && retryableRunIds.has(handoff.runId) && <div className="rewrite-action-row"><button type="button" className="rewrite-send-button" onClick={() => void services.runtime.resumePlan(handoff.handoffId)}><RotateCw size={13} /> 重新继续</button></div>}
+    </article>)}
+    {runtime.planHandoffs.length === 0 && <p className="module-empty-state">暂无需要确认的计划。</p>}
+  </section>;
 }

@@ -8,7 +8,7 @@ interface ActivityBarProps {
 }
 
 const actions = [
-  { label: '会话', icon: MessageSquare, ids: [MODULE_IDS.chat, MODULE_IDS.conversations] },
+  { label: '对话', icon: MessageSquare, ids: [MODULE_IDS.chat] },
   { label: 'Agent', icon: Bot, ids: [MODULE_IDS.agentStatus, MODULE_IDS.agentPlan] },
   { label: '文件', icon: FileCode2, ids: [MODULE_IDS.files] },
   { label: '工具输出', icon: Wrench, ids: [MODULE_IDS.toolOutput] },

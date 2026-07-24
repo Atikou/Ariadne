@@ -10,5 +10,6 @@ export const agentPlanModule: FeatureModuleDefinition = {
   component: AgentPlanPanel,
   defaultOpen: true,
   defaultPlacement: { direction: 'within', referenceModuleId: MODULE_IDS.agentStatus },
+  layoutConstraints: { minimumWidth: 240 },
   requiredCapabilities: []
 };

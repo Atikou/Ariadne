@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { createRulerEntries, resolveRulerCurrentId } from '@shared/ruler-model';
 import { getNearestScrollDelta } from '@shared/scroll-geometry';
-import type { ConversationNode, ConversationNodeKind } from './mock-chat-data';
+import type { ConversationNode, ConversationNodeKind } from './conversation-node';
 
 interface ConversationOverviewRulerProps {
   nodes: readonly ConversationNode[];
@@ -18,7 +18,7 @@ interface HoveredNode {
 const PREVIEW_HALF_HEIGHT = 52;
 
 const kindLabels: Record<ConversationNodeKind, string> = {
-  assistant: 'Agent 回复',
+  assistant: 'Agent 回答',
   cancelled: '任务取消',
   complete: '任务完成',
   error: '执行错误',
