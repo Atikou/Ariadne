@@ -46,12 +46,34 @@ export interface SandboxProcessHandle {
   cancel(): void;
 }
 
+export interface SandboxProcessLease extends SandboxProcessHandle {
+  writeStdin(chunk: string | Buffer): Promise<void>;
+  endStdin(): Promise<void>;
+}
+
 export interface ProcessSandbox {
   readonly mode: SandboxMode;
   startShell(input: SandboxShellRequest, observer?: SandboxProcessObserver): SandboxProcessHandle;
   startFile(input: SandboxFileRequest, observer?: SandboxProcessObserver): SandboxProcessHandle;
   runShell(input: SandboxShellRequest): Promise<SandboxExecutionResult>;
   runFile(input: SandboxFileRequest): Promise<SandboxExecutionResult>;
+}
+
+export interface InteractiveProcessSandbox extends ProcessSandbox {
+  openFileLease(
+    input: SandboxFileRequest,
+    observer?: SandboxProcessObserver,
+  ): SandboxProcessLease;
+}
+
+export function requireInteractiveProcessSandbox(
+  processSandbox: ProcessSandbox | undefined,
+): InteractiveProcessSandbox {
+  const candidate = processSandbox as Partial<InteractiveProcessSandbox> | undefined;
+  if (candidate && typeof candidate.openFileLease === "function") {
+    return candidate as InteractiveProcessSandbox;
+  }
+  throw new Error("interactive_sandbox_unavailable");
 }
 
 export function requireProcessSandbox(

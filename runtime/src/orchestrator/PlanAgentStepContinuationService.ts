@@ -9,7 +9,7 @@ import type { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { TraceLogger } from "../trace/TraceLogger.js";
 import type { PlanAgentTaskWorkflow } from "./PlanAgentTaskWorkflow.js";
 import type { PlanExecutionFinalizer } from "./PlanExecutionFinalizer.js";
-import type { RunStore } from "./RunStore.js";
+import type { RunAggregateRepository } from "../run/RunAggregateRepository.js";
 import type { RunTerminalEvent } from "./RunTerminalEventBus.js";
 import type { TaskService } from "./TaskService.js";
 
@@ -22,7 +22,7 @@ export interface PlanAgentStepContinuationServiceDeps {
   bindings: PlanAgentStepBindingStore;
   taskService: Pick<TaskService, "persistPlan" | "applyStateTransition">;
   tasks: TaskStore;
-  runs: RunStore;
+  runs: RunAggregateRepository;
   trace?: TraceLogger;
 }
 
@@ -59,7 +59,11 @@ export class PlanAgentStepContinuationService {
 
         this.deps.planService.markRunning(claimed.planId, claimed.planVersion);
         this.deps.planService.resumePlanRun(claimed.planRunId);
-        this.deps.runs.update(parentRun.id, { status: "running", error: null });
+        this.deps.runs.execute({
+          type: "run.start",
+          runId: parentRun.id,
+          expectedAggregateVersion: parentRun.aggregateVersion,
+        });
         this.deps.taskService.applyStateTransition(task.id, parentRun.sessionId, {
           status: "in_progress",
           summary: `子 Agent ${childRun.id} 已终止，继续父计划`,
@@ -75,7 +79,7 @@ export class PlanAgentStepContinuationService {
           source: event.source,
         });
 
-        const childOutcome = readChildOutcome(childRun.status, childRun.resultJson, childRun.error);
+        const childOutcome = readChildOutcome(childRun.status, childRun.result, childRun.error);
         step.error = childOutcome.error;
         step.result = childOutcome.output;
         step.status = childOutcome.status;
@@ -139,9 +143,14 @@ export class PlanAgentStepContinuationService {
       } catch (error) {
         const parent = this.deps.runs.get(claimed.parentRunId);
         if (parent?.status === "running") {
-          this.deps.runs.update(parent.id, {
-            status: "blocked",
-            error: `父计划续接失败：${String(error)}`,
+          this.deps.runs.execute({
+            type: "run.block",
+            runId: parent.id,
+            expectedAggregateVersion: parent.aggregateVersion,
+            reason: {
+              code: "child_continuation_failed",
+              message: `Parent plan continuation failed: ${String(error)}`,
+            },
           });
           this.deps.taskService.applyStateTransition(claimed.parentTaskId, parent.sessionId, {
             status: "blocked",
@@ -213,7 +222,7 @@ function isTerminalStatus(value: string): value is RunTerminalEvent["status"] {
 
 function readChildOutcome(
   runStatus: RunTerminalEvent["status"],
-  resultJson: string | undefined,
+  result: unknown,
   runError: string | undefined,
 ): {
   status: Extract<Plan["steps"][number]["status"], "completed" | "failed" | "cancelled">;
@@ -226,25 +235,22 @@ function readChildOutcome(
   if (runStatus === "failed") {
     return { status: "failed", error: runError ?? "子 Agent 执行失败" };
   }
-  try {
-    const parsed = JSON.parse(resultJson ?? "{}") as {
-      answer?: unknown;
-      executionMeta?: { stopReason?: unknown; completionStatus?: unknown };
-    };
-    if (
-      parsed.executionMeta?.stopReason !== "completed"
-      || parsed.executionMeta?.completionStatus !== "completed_success"
-    ) {
-      return {
-        status: "failed",
-        error: "子 Agent 已终止，但未通过计划步骤完成合同",
-      };
-    }
+  const parsed = result as {
+    answer?: unknown;
+    executionMeta?: { stopReason?: unknown; completionStatus?: unknown };
+  } | undefined;
+  if (
+    !parsed
+    || parsed.executionMeta?.stopReason !== "completed"
+    || parsed.executionMeta?.completionStatus !== "completed_success"
+  ) {
     return {
-      status: "completed",
-      output: typeof parsed.answer === "string" ? parsed.answer : "子 Agent 已完成",
+      status: "failed",
+      error: "The child Agent ended without satisfying the plan-step completion contract.",
     };
-  } catch {
-    return { status: "failed", error: "子 Agent 结果不是有效 JSON" };
   }
+  return {
+    status: "completed",
+    output: typeof parsed.answer === "string" ? parsed.answer : "Child Agent completed.",
+  };
 }

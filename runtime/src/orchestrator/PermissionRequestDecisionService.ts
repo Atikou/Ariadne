@@ -20,7 +20,7 @@ import {
   type PermissionRequestRespondInput,
   type ScopedApprovedPermissions,
 } from "../policy/permissionRequestTypes.js";
-import type { RunStore } from "./RunStore.js";
+import type { RunAggregateRepository } from "../run/RunAggregateRepository.js";
 
 export interface PermissionRequestDecisionResult {
   permissionRequest: PermissionRequestPayload;
@@ -42,14 +42,14 @@ export class PermissionRequestDecisionService {
     private readonly requests: PermissionRequestStore,
     private readonly sessionGrants: SessionPermissionGrants,
     private readonly workspaceGrants: WorkspaceGrantStore,
-    private readonly runs: RunStore,
+    private readonly runs: RunAggregateRepository,
     private readonly pausedRuns: PausedRunStore,
   ) {
     const mismatchedStores = [
       ["PermissionRequestStore", requests.usesConnection(db)],
       ["SessionPermissionGrants", sessionGrants.usesConnection(db)],
       ["WorkspaceGrantStore", workspaceGrants.usesConnection(db)],
-      ["RunStore", runs.usesConnection(db)],
+      ["RunAggregateRepository", runs.usesConnection(db)],
       ["PausedRunStore", pausedRuns.usesConnection(db)],
     ].filter(([, matches]) => !matches).map(([name]) => name);
     if (mismatchedStores.length > 0) {
@@ -115,15 +115,13 @@ export class PermissionRequestDecisionService {
         }
       }
 
-      if (run) {
-        const runStatus = input.decision === "deny"
-          ? "cancelled" as const
-          : "waiting_confirmation" as const;
-        if (!this.runs.update(run.id, { status: runStatus })) {
-          throw new PermissionRequestDecisionConsistencyError(
-            `权限申请 ${responded.id} 无法更新关联 Run`,
-          );
-        }
+      if (run && input.decision === "deny") {
+        this.runs.execute({
+          type: "run.cancel",
+          runId: run.id,
+          expectedAggregateVersion: run.aggregateVersion,
+          reason: `Permission request ${responded.id} was denied.`,
+        });
       }
       if (input.decision === "deny") this.pausedRuns.delete(responded.runId);
 

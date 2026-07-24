@@ -5,10 +5,12 @@
 export function withTimeout(
   timeoutMs: number,
   external?: AbortSignal,
-): { signal: AbortSignal; cancel: () => void } {
+): { signal: AbortSignal; cancel: () => void; didTimeout: () => boolean } {
   const controller = new AbortController();
+  let timedOut = false;
 
   const timer = setTimeout(() => {
+    timedOut = true;
     controller.abort(new Error(`操作超时（${timeoutMs}ms）`));
   }, timeoutMs);
 
@@ -27,7 +29,7 @@ export function withTimeout(
     external?.removeEventListener("abort", onExternalAbort);
   };
 
-  return { signal: controller.signal, cancel };
+  return { signal: controller.signal, cancel, didTimeout: () => timedOut };
 }
 
 /** 安全解析 JSON；失败时原样返回字符串。 */

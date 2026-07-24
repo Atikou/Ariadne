@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import {
   applySqliteMigrations,
+  assertDatabaseVersionSupported,
   getSchemaInfo,
   hashRowId,
   type SchemaInfo,
@@ -34,6 +35,7 @@ export class DatabaseManager {
     this.dbPath = path.join(agentData, "memory.db");
     this.filesDir = path.join(agentData, "files");
     this.db = new DatabaseSync(this.dbPath);
+    assertDatabaseVersionSupported(this.db, MEMORY_DB_SCHEMA_VERSION);
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec("PRAGMA foreign_keys = ON;");
     const { version } = applySqliteMigrations(this.db, MEMORY_DB_MIGRATIONS);

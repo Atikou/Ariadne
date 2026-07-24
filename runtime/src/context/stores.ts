@@ -2,11 +2,15 @@ import { randomUUID } from "node:crypto";
 
 import type { DatabaseManager } from "./DatabaseManager.js";
 import { estimateTokens } from "./DatabaseManager.js";
+import { ContextStructuredSummarySchema } from "./ContextContracts.js";
 export { MessageStore } from "./MessageStore.js";
 export { SessionStore } from "./SessionStore.js";
 import type {
   MemoryRecord,
+  MemoryLifecycleState,
+  MemoryProvenance,
   MemoryScope,
+  MemorySensitivity,
   MemoryType,
   ProjectRecord,
   StructuredSummary,
@@ -22,11 +26,9 @@ function nowIso(): string {
 }
 
 function parseSummary(content: string): StructuredSummary {
-  try {
-    return JSON.parse(content) as StructuredSummary;
-  } catch {
-    return { current_goal: content };
-  }
+  const parsed = ContextStructuredSummarySchema.safeParse(JSON.parse(content) as unknown);
+  if (!parsed.success) throw new Error("summary_schema_invalid");
+  return parsed.data;
 }
 
 export class SummaryStore {
@@ -40,6 +42,8 @@ export class SummaryStore {
     startMessageId?: string;
     endMessageId?: string;
     tokenCount?: number;
+    generationState: "model" | "derived" | "degraded";
+    degradedReason?: string;
   }): SummaryRecord {
     const id = randomUUID();
     const ts = nowIso();
@@ -48,8 +52,10 @@ export class SummaryStore {
     this.db.connection
       .prepare(
         `INSERT INTO conversation_summaries
-         (id, session_id, project_id, summary_type, content, structured_json, start_message_id, end_message_id, token_count, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, session_id, project_id, summary_type, content, structured_json,
+          start_message_id, end_message_id, token_count, schema_version,
+          generation_state, degraded_reason, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -61,6 +67,8 @@ export class SummaryStore {
         input.startMessageId ?? null,
         input.endMessageId ?? null,
         tokens,
+        input.generationState,
+        input.degradedReason ?? null,
         ts,
         ts,
       );
@@ -76,6 +84,9 @@ export class SummaryStore {
       startMessageId: input.startMessageId,
       endMessageId: input.endMessageId,
       tokenCount: tokens,
+      schemaVersion: 1,
+      generationState: input.generationState,
+      degradedReason: input.degradedReason,
       createdAt: ts,
       updatedAt: ts,
     };
@@ -125,25 +136,34 @@ export class MemoryStore {
     summary?: string;
     importance?: number;
     confidence?: number;
-    source?: string;
-    sourceId?: string;
+    lifecycleState: "candidate" | "active";
+    provenance: MemoryProvenance;
+    sensitivity?: MemorySensitivity;
+    retentionUntil?: string;
   }): MemoryRecord {
+    if (input.sensitivity === "secret") {
+      throw new Error("secret_memory_persistence_denied");
+    }
     const ts = nowIso();
     const existing = this.findExisting(input);
-    if (existing) {
+    if (existing && existing.value === input.value) {
+      const lifecycleState =
+        existing.lifecycleState === "active" ? "active" : input.lifecycleState;
       this.db.connection
         .prepare(
           `UPDATE memories
-           SET value=?, summary=?, importance=?, confidence=?, source=?, source_id=?, is_active=1, updated_at=?
+           SET summary=?, importance=?, confidence=?, lifecycle_state=?,
+               provenance_json=?, sensitivity=?, retention_until=?, updated_at=?
            WHERE id=?`,
         )
         .run(
-          input.value,
           input.summary ?? null,
           input.importance ?? existing.importance,
           input.confidence ?? existing.confidence,
-          input.source ?? existing.source ?? null,
-          input.sourceId ?? existing.sourceId ?? null,
+          lifecycleState,
+          JSON.stringify(input.provenance),
+          input.sensitivity ?? existing.sensitivity,
+          input.retentionUntil ?? existing.retentionUntil ?? null,
           ts,
           existing.id,
         );
@@ -152,12 +172,18 @@ export class MemoryStore {
       return this.get(existing.id)!;
     }
 
+    if (existing) {
+      this.transition(existing.id, "superseded");
+    }
+
     const id = randomUUID();
     this.db.connection
       .prepare(
         `INSERT INTO memories
-         (id, scope, scope_id, memory_type, key, value, summary, importance, confidence, source, source_id, is_active, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+         (id, scope, scope_id, memory_type, key, value, summary, importance,
+          confidence, lifecycle_state, provenance_json, sensitivity,
+          retention_until, supersedes_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -169,8 +195,11 @@ export class MemoryStore {
         input.summary ?? null,
         input.importance ?? 0.5,
         input.confidence ?? 1,
-        input.source ?? null,
-        input.sourceId ?? null,
+        input.lifecycleState,
+        JSON.stringify(input.provenance),
+        input.sensitivity ?? "workspace",
+        input.retentionUntil ?? null,
+        existing?.id ?? null,
         ts,
         ts,
       );
@@ -190,16 +219,18 @@ export class MemoryStore {
     const rows = scopeId
       ? (this.db.connection
           .prepare(
-            `SELECT * FROM memories WHERE scope=? AND scope_id=? AND is_active=1
-             ORDER BY importance DESC, updated_at DESC LIMIT ?`,
+             `SELECT * FROM memories WHERE scope=? AND scope_id=? AND lifecycle_state='active'
+                AND (retention_until IS NULL OR retention_until > ?)
+              ORDER BY importance DESC, updated_at DESC LIMIT ?`,
           )
-          .all(scope, scopeId, limit) as Record<string, unknown>[])
+          .all(scope, scopeId, nowIso(), limit) as Record<string, unknown>[])
       : (this.db.connection
           .prepare(
-            `SELECT * FROM memories WHERE scope=? AND is_active=1
-             ORDER BY importance DESC, updated_at DESC LIMIT ?`,
+             `SELECT * FROM memories WHERE scope=? AND lifecycle_state='active'
+                AND (retention_until IS NULL OR retention_until > ?)
+              ORDER BY importance DESC, updated_at DESC LIMIT ?`,
           )
-          .all(scope, limit) as Record<string, unknown>[]);
+          .all(scope, nowIso(), limit) as Record<string, unknown>[]);
     return dedupeMemories(rows.map(mapMemory));
   }
 
@@ -212,16 +243,18 @@ export class MemoryStore {
     const rows = scopeId
       ? (this.db.connection
           .prepare(
-            `SELECT * FROM memories WHERE scope=? AND scope_id=? AND memory_type=? AND is_active=1
-             ORDER BY importance DESC, updated_at DESC LIMIT ?`,
+             `SELECT * FROM memories WHERE scope=? AND scope_id=? AND memory_type=? AND lifecycle_state='active'
+                AND (retention_until IS NULL OR retention_until > ?)
+              ORDER BY importance DESC, updated_at DESC LIMIT ?`,
           )
-          .all(scope, scopeId, memoryType, limit) as Record<string, unknown>[])
+          .all(scope, scopeId, memoryType, nowIso(), limit) as Record<string, unknown>[])
       : (this.db.connection
           .prepare(
-            `SELECT * FROM memories WHERE scope=? AND memory_type=? AND is_active=1
-             ORDER BY importance DESC, updated_at DESC LIMIT ?`,
+             `SELECT * FROM memories WHERE scope=? AND memory_type=? AND lifecycle_state='active'
+                AND (retention_until IS NULL OR retention_until > ?)
+              ORDER BY importance DESC, updated_at DESC LIMIT ?`,
           )
-          .all(scope, memoryType, limit) as Record<string, unknown>[]);
+          .all(scope, memoryType, nowIso(), limit) as Record<string, unknown>[]);
     return dedupeMemories(rows.map(mapMemory));
   }
 
@@ -229,19 +262,136 @@ export class MemoryStore {
     const safe = `%${query.replace(/[%_]/g, "")}%`;
     const rows = this.db.connection
       .prepare(
-        `SELECT * FROM memories WHERE is_active=1
+        `SELECT * FROM memories WHERE lifecycle_state='active'
+         AND (retention_until IS NULL OR retention_until > ?)
          AND (value LIKE ? OR COALESCE(summary, '') LIKE ? OR COALESCE(key, '') LIKE ?)
          ORDER BY importance DESC, updated_at DESC LIMIT ?`,
       )
-      .all(safe, safe, safe, limit) as Record<string, unknown>[];
+      .all(nowIso(), safe, safe, safe, limit) as Record<string, unknown>[];
     return dedupeMemories(rows.map(mapMemory));
   }
 
-  deactivate(id: string): void {
-    this.db.connection
-      .prepare(`UPDATE memories SET is_active=0, updated_at=? WHERE id=?`)
-      .run(nowIso(), id);
-    this.db.deleteFts("memories_fts", id);
+  transition(id: string, next: MemoryLifecycleState): MemoryRecord {
+    const current = this.get(id);
+    if (!current) throw new Error("memory_not_found");
+    if (!allowedMemoryTransitions[current.lifecycleState].includes(next)) {
+      throw new Error(`memory_transition_invalid:${current.lifecycleState}:${next}`);
+    }
+    this.db.connection.prepare(
+      `UPDATE memories SET lifecycle_state=?, updated_at=? WHERE id=?`,
+    ).run(next, nowIso(), id);
+    if (next !== "active") this.db.deleteFts("memories_fts", id);
+    else this.db.upsertFts(
+      "memories_fts",
+      id,
+      [current.value, current.summary ?? "", current.key ?? ""].join(" "),
+    );
+    return this.get(id)!;
+  }
+
+  list(filter: {
+    scope?: MemoryScope;
+    scopeId?: string;
+    lifecycleState?: MemoryLifecycleState;
+    limit?: number;
+  } = {}): MemoryRecord[] {
+    const clauses: string[] = [];
+    const values: Array<string | number> = [];
+    if (filter.scope) {
+      clauses.push("scope=?");
+      values.push(filter.scope);
+    }
+    if (filter.scopeId) {
+      clauses.push("scope_id=?");
+      values.push(filter.scopeId);
+    }
+    if (filter.lifecycleState) {
+      clauses.push("lifecycle_state=?");
+      values.push(filter.lifecycleState);
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    values.push(filter.limit ?? 200);
+    const rows = this.db.connection
+      .prepare(`SELECT * FROM memories ${where} ORDER BY updated_at DESC LIMIT ?`)
+      .all(...values) as Record<string, unknown>[];
+    return rows.map(mapMemory);
+  }
+
+  replace(
+    id: string,
+    patch: {
+      value?: string;
+      summary?: string | null;
+      importance?: number;
+      confidence?: number;
+      sensitivity?: MemorySensitivity;
+      retentionUntil?: string | null;
+    },
+  ): MemoryRecord {
+    const current = this.get(id);
+    if (!current) throw new Error("memory_not_found");
+    const sensitivity = patch.sensitivity ?? current.sensitivity;
+    if (sensitivity === "secret") throw new Error("secret_memory_persistence_denied");
+    const nextId = randomUUID();
+    const ts = nowIso();
+    const value = patch.value ?? current.value;
+    const summary = patch.summary === undefined ? current.summary : patch.summary ?? undefined;
+    const retentionUntil = patch.retentionUntil === undefined
+      ? current.retentionUntil
+      : patch.retentionUntil ?? undefined;
+
+    this.db.connection.exec("BEGIN IMMEDIATE");
+    try {
+      if (current.lifecycleState === "candidate" || current.lifecycleState === "active") {
+        this.db.connection.prepare(
+          `UPDATE memories SET lifecycle_state='superseded', updated_at=? WHERE id=?`,
+        ).run(ts, current.id);
+        this.db.deleteFts("memories_fts", current.id);
+      }
+      this.db.connection.prepare(
+        `INSERT INTO memories
+         (id, scope, scope_id, memory_type, key, value, summary, importance,
+          confidence, lifecycle_state, provenance_json, sensitivity,
+          retention_until, supersedes_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        nextId,
+        current.scope,
+        current.scopeId ?? null,
+        current.memoryType,
+        current.key ?? null,
+        value,
+        summary ?? null,
+        patch.importance ?? current.importance,
+        patch.confidence ?? current.confidence,
+        JSON.stringify({
+          origin: "user",
+          sourceId: current.id,
+          evidence: "user_edit",
+        } satisfies MemoryProvenance),
+        sensitivity,
+        retentionUntil ?? null,
+        current.id,
+        ts,
+        ts,
+      );
+      this.db.upsertFts(
+        "memories_fts",
+        nextId,
+        [value, summary ?? "", current.key ?? ""].join(" "),
+      );
+      this.db.connection.exec("COMMIT");
+    } catch (error) {
+      this.db.connection.exec("ROLLBACK");
+      throw error;
+    }
+    return this.get(nextId)!;
+  }
+
+  delete(id: string): boolean {
+    const result = this.db.connection.prepare(`DELETE FROM memories WHERE id=?`).run(id);
+    if (Number(result.changes) > 0) this.db.deleteFts("memories_fts", id);
+    return Number(result.changes) > 0;
   }
 
   touchUsed(id: string): void {
@@ -265,7 +415,7 @@ export class MemoryStore {
           .prepare(
             `SELECT * FROM memories
              WHERE scope=? AND COALESCE(scope_id, '')=COALESCE(?, '') AND memory_type=?
-               AND key=? AND is_active=1
+                AND key=? AND lifecycle_state IN ('active', 'candidate')
              ORDER BY updated_at DESC LIMIT 1`,
           )
           .get(input.scope, scopeId, input.memoryType, trimmedKey) as
@@ -275,7 +425,7 @@ export class MemoryStore {
           .prepare(
             `SELECT * FROM memories
              WHERE scope=? AND COALESCE(scope_id, '')=COALESCE(?, '') AND memory_type=?
-               AND key IS NULL AND value=? AND is_active=1
+                AND key IS NULL AND value=? AND lifecycle_state IN ('active', 'candidate')
              ORDER BY updated_at DESC LIMIT 1`,
           )
           .get(input.scope, scopeId, input.memoryType, input.value) as
@@ -315,12 +465,16 @@ function mapSummary(row: Record<string, unknown>): SummaryRecord {
     startMessageId: row.start_message_id ? String(row.start_message_id) : undefined,
     endMessageId: row.end_message_id ? String(row.end_message_id) : undefined,
     tokenCount: Number(row.token_count ?? 0),
+    schemaVersion: 1,
+    generationState: String(row.generation_state) as SummaryRecord["generationState"],
+    degradedReason: row.degraded_reason ? String(row.degraded_reason) : undefined,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
 }
 
 function mapMemory(row: Record<string, unknown>): MemoryRecord {
+  const provenance = JSON.parse(String(row.provenance_json)) as MemoryProvenance;
   return {
     id: String(row.id),
     scope: String(row.scope) as MemoryScope,
@@ -331,16 +485,24 @@ function mapMemory(row: Record<string, unknown>): MemoryRecord {
     summary: row.summary ? String(row.summary) : undefined,
     importance: Number(row.importance ?? 0.5),
     confidence: Number(row.confidence ?? 1),
-    source: row.source ? String(row.source) : undefined,
-    sourceId: row.source_id ? String(row.source_id) : undefined,
-    isActive: Number(row.is_active) === 1,
+    lifecycleState: String(row.lifecycle_state) as MemoryLifecycleState,
+    provenance,
+    sensitivity: String(row.sensitivity) as MemorySensitivity,
+    retentionUntil: row.retention_until ? String(row.retention_until) : undefined,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
     lastUsedAt: row.last_used_at ? String(row.last_used_at) : undefined,
-    expiresAt: row.expires_at ? String(row.expires_at) : undefined,
     supersedesId: row.supersedes_id ? String(row.supersedes_id) : undefined,
   };
 }
+
+const allowedMemoryTransitions: Record<MemoryLifecycleState, MemoryLifecycleState[]> = {
+  candidate: ["active", "rejected", "expired"],
+  active: ["rejected", "superseded", "expired"],
+  rejected: [],
+  superseded: [],
+  expired: [],
+};
 
 export class ProjectStore {
   constructor(private readonly db: DatabaseManager) {}

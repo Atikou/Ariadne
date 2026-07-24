@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import type { TraceLogger } from "../trace/TraceLogger.js";
 import { ToolRegistry } from "./ToolRegistry.js";
-import type { Tool, ToolContext, ToolPermission } from "./types.js";
+import type { ToolContext, ToolContract, ToolPermission } from "./types.js";
 
 export interface MockToolCall<TInput = unknown> {
   input: TInput;
@@ -26,15 +26,15 @@ export interface MockToolOptions<TInputSchema extends z.ZodTypeAny = z.ZodTypeAn
   name: string;
   description?: string;
   inputSchema?: TInputSchema;
+  outputSchema?: z.ZodTypeAny;
   permission?: ToolPermission;
-  hasSideEffect?: boolean;
   timeoutMs?: number;
   output?: TOutput | MockToolOutputFactory<z.infer<TInputSchema>, TOutput>;
   failWith?: string | Error | MockToolFailureFactory<z.infer<TInputSchema>>;
 }
 
 export interface MockTool<TInputSchema extends z.ZodTypeAny = z.ZodTypeAny, TOutput = unknown>
-  extends Tool<TInputSchema, TOutput> {
+  extends ToolContract<TInputSchema, TOutput> {
   calls: MockToolCall<z.infer<TInputSchema>>[];
   reset(): void;
 }
@@ -52,11 +52,21 @@ export function createMockTool<TInputSchema extends z.ZodTypeAny = z.ZodTypeAny,
 
   const tool: MockTool<TInputSchema, TOutput> = {
     name: options.name,
+    version: "1.0.0",
     description: options.description ?? `Mock tool: ${options.name}`,
     inputSchema,
-    permission: options.permission ?? "read",
-    hasSideEffect: options.hasSideEffect ?? false,
-    timeoutMs: options.timeoutMs,
+    outputSchema: options.outputSchema ?? z.unknown(),
+    permissions: [options.permission ?? "read"],
+    resourceScopes: ["workspace"],
+    effects: options.permission === "read" || options.permission == null ? ["workspace_read"] : ["unknown"],
+    risk: options.permission === "read" || options.permission == null ? "low" : "high",
+    parallelism: options.permission === "read" || options.permission == null ? "parallel_safe" : "serial",
+    idempotency: options.permission === "read" || options.permission == null ? "idempotent" : "non_idempotent",
+    dataSensitivity: "workspace",
+    egress: ["model"],
+    timeoutMs: options.timeoutMs ?? 30_000,
+    supportsResume: options.permission === "read" || options.permission == null,
+    providerId: "mock",
     calls,
     reset() {
       calls.length = 0;
@@ -89,7 +99,7 @@ export function createMockTool<TInputSchema extends z.ZodTypeAny = z.ZodTypeAny,
 }
 
 export function createMockRegistry(
-  tools: readonly Tool[] = [],
+  tools: readonly ToolContract[] = [],
   options: CreateMockRegistryOptions = {},
 ): ToolRegistry {
   const registry = new ToolRegistry(options.trace);

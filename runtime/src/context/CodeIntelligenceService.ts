@@ -8,20 +8,30 @@ import {
   type ExportRecord,
   type ImportRecord,
 } from "./importExportParser.js";
-import type { ProjectSymbolRecord } from "./projectIndexTypes.js";
+import type {
+  ProjectReferenceRecord,
+  ProjectSymbolRecord,
+} from "./projectIndexTypes.js";
+import { TreeSitterWasmIntelligenceProvider } from "./TreeSitterWasmIntelligenceProvider.js";
 
 export interface CodeAnalysis {
   providerId: string;
   symbols: ProjectSymbolRecord[];
   imports: ImportRecord[];
   exports: ExportRecord[];
+  references: ProjectReferenceRecord[];
   parseDiagnostics: string[];
 }
 
 export interface CodeIntelligenceProvider {
   readonly id: string;
   supports(filePath: string): boolean;
-  analyze(filePath: string, content: string): CodeAnalysis;
+  analyze(
+    filePath: string,
+    content: string,
+    context?: { workspaceRoot?: string },
+  ): Promise<CodeAnalysis>;
+  dispose?(): Promise<void>;
 }
 
 const TS_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
@@ -30,14 +40,25 @@ const TS_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
 export class CodeIntelligenceService {
   constructor(
     private readonly providers: readonly CodeIntelligenceProvider[] = [
-      new TypeScriptAstIntelligenceProvider(),
+      new TreeSitterWasmIntelligenceProvider(),
       new TextFallbackIntelligenceProvider(),
     ],
   ) {}
 
-  analyzeContent(filePath: string, content: string): CodeAnalysis {
-    const provider = this.providers.find((candidate) => candidate.supports(filePath));
-    return (provider ?? new TextFallbackIntelligenceProvider()).analyze(filePath, content);
+  async analyzeContent(
+    filePath: string,
+    content: string,
+    context?: { workspaceRoot?: string },
+  ): Promise<CodeAnalysis> {
+    const providers = this.providers.filter((candidate) => candidate.supports(filePath));
+    for (const provider of providers) {
+      try {
+        return await provider.analyze(filePath, content, context);
+      } catch {
+        // A failed configured LSP provider falls through to deterministic WASM.
+      }
+    }
+    return new TextFallbackIntelligenceProvider().analyze(filePath, content);
   }
 
   async analyzeFile(workspaceRoot: string, relativePath: string): Promise<CodeAnalysis> {
@@ -45,13 +66,21 @@ export class CodeIntelligenceService {
     try {
       const buffer = await fs.readFile(absolute);
       if (buffer.includes(0)) return emptyAnalysis("binary");
-      return this.analyzeContent(relativePath, buffer.toString("utf8").slice(0, 240_000));
+      return await this.analyzeContent(
+        relativePath,
+        buffer.toString("utf8").slice(0, 240_000),
+        { workspaceRoot },
+      );
     } catch (error) {
       return {
         ...emptyAnalysis("unreadable"),
         parseDiagnostics: [String(error)],
       };
     }
+  }
+
+  async dispose(): Promise<void> {
+    await Promise.all(this.providers.map((provider) => provider.dispose?.()));
   }
 }
 
@@ -62,7 +91,7 @@ export class TypeScriptAstIntelligenceProvider implements CodeIntelligenceProvid
     return TS_EXTENSIONS.has(path.extname(filePath).toLowerCase());
   }
 
-  analyze(filePath: string, content: string): CodeAnalysis {
+  async analyze(filePath: string, content: string): Promise<CodeAnalysis> {
     const source = ts.createSourceFile(
       filePath,
       content,
@@ -154,6 +183,7 @@ export class TypeScriptAstIntelligenceProvider implements CodeIntelligenceProvid
       symbols: dedupe(symbols, (item) => `${item.symbol}:${item.line}:${item.kind}`),
       imports: dedupe(imports, (item) => `${item.importSpec}:${item.line}:${item.kind}`),
       exports: dedupe(exports, (item) => `${item.exportName}:${item.line}:${item.kind}`),
+      references: extractTypeScriptReferences(source, filePath),
       parseDiagnostics: (source as ts.SourceFile & { parseDiagnostics: readonly ts.Diagnostic[] }).parseDiagnostics.map((diagnostic) =>
         ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
       ),
@@ -166,12 +196,13 @@ export class TextFallbackIntelligenceProvider implements CodeIntelligenceProvide
   supports(): boolean {
     return true;
   }
-  analyze(filePath: string, content: string): CodeAnalysis {
+  async analyze(filePath: string, content: string): Promise<CodeAnalysis> {
     return {
       providerId: this.id,
       symbols: extractFallbackSymbols(filePath, content),
       imports: extractImportsFromContent(filePath, content),
       exports: extractExportsFromContent(filePath, content),
+      references: [],
       parseDiagnostics: [],
     };
   }
@@ -208,7 +239,39 @@ function extractFallbackSymbols(filePath: string, content: string): ProjectSymbo
 }
 
 function emptyAnalysis(providerId: string): CodeAnalysis {
-  return { providerId, symbols: [], imports: [], exports: [], parseDiagnostics: [] };
+  return {
+    providerId,
+    symbols: [],
+    imports: [],
+    exports: [],
+    references: [],
+    parseDiagnostics: [],
+  };
+}
+
+function extractTypeScriptReferences(
+  source: ts.SourceFile,
+  filePath: string,
+): ProjectReferenceRecord[] {
+  const references: ProjectReferenceRecord[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && !isDeclarationName(node)) {
+      references.push({
+        filePath,
+        symbol: node.text,
+        kind: "identifier",
+        line: lineOf(source, node),
+      });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return dedupe(references, (item) => `${item.symbol}:${item.line}`).slice(0, 1_000);
+}
+
+function isDeclarationName(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  return "name" in parent && (parent as { name?: ts.Node }).name === node;
 }
 
 function dedupe<T>(items: T[], key: (item: T) => string): T[] {

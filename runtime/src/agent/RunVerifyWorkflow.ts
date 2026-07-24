@@ -72,7 +72,7 @@ export class RunVerifyWorkflow {
         timeoutMs: 120_000,
         maxOutputBytes: 40_000,
       },
-      permission: tool?.permission,
+      permission: tool?.permissions[0],
       thought: `run/verify workflow: execute safe command "${command}" and collect output.`,
       ok: false,
     };

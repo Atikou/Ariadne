@@ -9,7 +9,7 @@ import {
   parseHostToRuntimeMessage,
   parseRuntimeToHostMessage
 } from '@ariadne/protocol/host';
-import type { RuntimeEvent } from '@ariadne/protocol/public';
+import type { RuntimeEventEnvelope } from '@ariadne/protocol/public';
 
 import type { AppContext } from '../app/createAppContext.js';
 import { COMPANION_DB_SCHEMA_VERSION } from '../companion/companionDbMigrations.js';
@@ -18,6 +18,7 @@ import { TOOLS_DB_SCHEMA_VERSION } from '../storage/toolsDbMigrations.js';
 import { RuntimeFacade, RuntimeFacadeError } from '../application/RuntimeFacade.js';
 import { createRuntimeContext } from '../application/createRuntimeContext.js';
 import { toPublicError } from '../util/publicError.js';
+import { IpcHostCapabilityBroker } from '../host/HostCapabilityBroker.js';
 
 export const ARIADNE_RUNTIME_VERSION = '0.1.0';
 const BOOTSTRAP_TIMEOUT_MS = 15_000;
@@ -27,8 +28,8 @@ export class NodeIpcRuntimeHost {
   private app?: AppContext;
   private facade?: RuntimeFacade;
   private bootstrap?: RuntimeBootstrap;
-  private sequence = 0;
   private shuttingDown = false;
+  private hostCapabilities?: IpcHostCapabilityBroker;
   private readonly inFlight = new Map<string, Promise<void>>();
   private bootstrapTimer?: NodeJS.Timeout;
 
@@ -75,6 +76,10 @@ export class NodeIpcRuntimeHost {
       this.acceptRequest(message);
       return;
     }
+    if (message.type === 'capability_response') {
+      this.hostCapabilities?.accept(message);
+      return;
+    }
     void this.shutdown(message);
   };
 
@@ -84,8 +89,12 @@ export class NodeIpcRuntimeHost {
     let phase = 'bootstrap';
     try {
       this.bootstrap = bootstrap;
+      this.hostCapabilities = new IpcHostCapabilityBroker(
+        bootstrap.runtimeInstanceId,
+        (message) => this.send(message)
+      );
       phase = 'context';
-      this.app = createRuntimeContext(bootstrap);
+      this.app = createRuntimeContext(bootstrap, this.hostCapabilities);
       phase = 'facade';
       this.facade = new RuntimeFacade(
         this.app,
@@ -101,7 +110,7 @@ export class NodeIpcRuntimeHost {
         }
       );
       phase = 'start';
-      this.app.start();
+      await this.app.start();
       await this.facade.start();
       phase = 'ready';
       this.send({
@@ -191,15 +200,13 @@ export class NodeIpcRuntimeHost {
     });
   }
 
-  private emitEvent(event: RuntimeEvent): void {
+  private emitEvent(event: RuntimeEventEnvelope): void {
     if (!this.bootstrap || this.shuttingDown) return;
-    this.sequence += 1;
     this.send({
       protocol: ARIADNE_RUNTIME_PROTOCOL,
       protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
       runtimeInstanceId: this.bootstrap.runtimeInstanceId,
       type: 'event',
-      sequence: this.sequence,
       event
     });
   }
@@ -207,6 +214,7 @@ export class NodeIpcRuntimeHost {
   private async shutdown(message: RuntimeShutdown): Promise<void> {
     if (this.shuttingDown || !this.bootstrap) return;
     this.shuttingDown = true;
+    this.hostCapabilities?.close();
     const deadline = Date.now() + message.deadlineMs;
     try {
       await this.facade?.stop();
@@ -239,6 +247,7 @@ export class NodeIpcRuntimeHost {
   private async shutdownAfterParentLoss(): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
+    this.hostCapabilities?.close();
     try {
       await this.facade?.stop();
       await this.app?.prepareShutdown();
@@ -257,6 +266,7 @@ export class NodeIpcRuntimeHost {
       return;
     }
     this.shuttingDown = true;
+    this.hostCapabilities?.close();
     if (this.app) {
       try {
         await this.facade?.stop();

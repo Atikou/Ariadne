@@ -8,6 +8,7 @@ import type { LoopChatFn, LoopChatResponse } from "../model-router/agent-chat-ty
 import type { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { TraceLogger } from "../trace/TraceLogger.js";
 import type { ProcessSandbox } from "../sandbox/ProcessSandbox.js";
+import type { RunAggregateRepository } from "../run/RunAggregateRepository.js";
 import { parseAction, type ToolAction } from "./AgentActionParser.js";
 import { buildAgentSystemPrompt } from "./AgentSystemPromptBuilder.js";
 import { buildWorkflowCapabilityHint } from "./AgentWorkflowCapabilityHint.js";
@@ -127,6 +128,7 @@ export interface AgentLoopOptions {
   chat: LoopChatFn;
   registry: ToolRegistry;
   workspaceRoot: string;
+  resolveInstructions?: (workspaceRoot: string) => string;
   /** Per-run process broker; child agents inject a narrowed write-scope broker. */
   processSandbox?: ProcessSandbox;
   /** 当前应用上下文不可拆分的任务/意图/策略实例链。 */
@@ -178,6 +180,7 @@ export interface AgentLoopOptions {
   requestId?: string;
   /** 预算耗尽时持久化续跑状态。 */
   runStateStore?: RunStateStore;
+  runRepository?: RunAggregateRepository;
   /** 项目索引：写入 RunState.location 的 index 统计。 */
   projectIndex?: ProjectIndex;
   /** 从 RunStateStore 恢复的续跑上下文。 */
@@ -324,6 +327,7 @@ export class AgentLoop {
       projectId: options.projectId,
       taskId: options.taskId,
       requestId: options.requestId,
+      runRepository: options.runRepository,
       onStep: options.onStep,
     });
   }
@@ -405,8 +409,18 @@ export class AgentLoop {
   private buildReactLoopContext(session: {
     pausedRun?: PausedRunSnapshot;
   }): AgentReactLoopContext {
+    const allowedToolNames = this.options.registry
+      .list()
+      .filter(
+        (tool) =>
+          this.allowed.includes(tool.permissions[0]) &&
+          this.toolExecution.isToolExposed(tool.name),
+      )
+      .map((tool) => tool.name);
     return {
       chat: this.options.chat,
+      registry: this.options.registry,
+      allowedToolNames,
       signal: this.options.signal,
       sensitive: this.options.sensitive,
       taskType: this.options.taskType,
@@ -440,6 +454,7 @@ export class AgentLoop {
       }),
       executeToolStep: (input) => this.executeToolStep(input),
       continueAfterToolStep: (input) => this.toolExecution.continueAfterToolStep(input),
+      continueAfterToolBatch: (inputs) => this.toolExecution.continueAfterToolBatch(inputs),
       buildPartialAnswer: (steps, budgetExhausted, goal) =>
         this.buildPartialAnswer(steps, budgetExhausted, goal),
       finishRun: (input) => this.finishRun(input),
@@ -733,6 +748,7 @@ export class AgentLoop {
         reconciledWorkflowType: this.toolState.reconciledWorkflowType,
         reconciledIntent: this.toolState.reconciledIntent,
       }),
+      additionalInstructions: this.options.resolveInstructions?.(this.options.workspaceRoot),
       extra,
     });
   }

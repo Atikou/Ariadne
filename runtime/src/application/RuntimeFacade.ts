@@ -1,8 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import type {
   ModelSummary,
   ModelInferenceOptions,
   RuntimeCommand,
   RuntimeEvent,
+  RuntimeEventEnvelope,
   RuntimeResult,
   RuntimeStatus
 } from '@ariadne/protocol/public';
@@ -16,13 +18,16 @@ import type { ModelClientConfig, ModelInferenceProfile } from '../config/types.j
 import type { ApiResult } from '../core/apiResult.js';
 import { PermissionRequestDecisionService } from '../orchestrator/PermissionRequestDecisionService.js';
 import { PlanHandoffDecisionService } from '../orchestrator/PlanHandoffDecisionService.js';
+import { TaskCheckpointService } from '../orchestrator/TaskCheckpointService.js';
 import type { PermissionRequestPayload } from '../policy/permissionRequestTypes.js';
 import { scanTraceEvents } from '../trace/traceQuery.js';
 import { toPublicError } from '../util/publicError.js';
 import { ConversationWorkspaceRegistry } from './ConversationWorkspaceRegistry.js';
-import { RuntimeEventBridge } from './RuntimeEventBridge.js';
+import { DomainEventJournal } from '../events/DomainEventJournal.js';
+import { RuntimeEventDispatcher } from '../events/RuntimeEventDispatcher.js';
 import {
   projectAgentProposal,
+  projectMemory,
   projectMessage,
   projectPermissionRequest,
   projectPlanHandoff,
@@ -31,7 +36,8 @@ import {
   projectTraceEvent
 } from './publicProjection.js';
 
-export type RuntimeEventSink = (event: RuntimeEvent) => void;
+export type RuntimeEventSink = (event: RuntimeEventEnvelope) => void;
+type RawRuntimeEventSink = (event: RuntimeEvent) => void;
 
 export interface RuntimeFacadeOptions {
   conversationWorkspaceStateFile?: string;
@@ -58,7 +64,8 @@ export class RuntimeFacadeError extends Error {
 
 export class RuntimeFacade {
   private readonly streamProjector: CompanionStreamProjector;
-  private readonly eventBridge: RuntimeEventBridge;
+  private readonly eventJournal: DomainEventJournal;
+  private readonly eventDispatcher: RuntimeEventDispatcher;
   private readonly workspaceAccess: ReadonlyMap<string, 'read' | 'write'>;
   private readonly workspaceLabels: ReadonlyMap<string, string>;
   private readonly conversationWorkspaces: ConversationWorkspaceRegistry;
@@ -66,10 +73,12 @@ export class RuntimeFacade {
   private readonly allowedPermissions: ReadonlySet<'read' | 'write' | 'shell' | 'network' | 'dangerous'>;
   private readonly companionStartTimeoutMs: number;
   private readonly activeResumes = new Set<string>();
+  private readonly taskCheckpoints: TaskCheckpointService;
+  private removeTraceListener?: () => void;
 
   constructor(
     private readonly app: AppContext,
-    private readonly emit: RuntimeEventSink,
+    emit: RuntimeEventSink,
     private readonly runtimeVersion: string,
     options: RuntimeFacadeOptions = {}
   ) {
@@ -83,11 +92,8 @@ export class RuntimeFacade {
       workspace.workspaceId,
       workspace.label?.trim() || workspace.workspaceId
     ]));
-    this.eventBridge = new RuntimeEventBridge(
-      app,
-      emit,
-      (request) => this.projectPermission(request)
-    );
+    this.eventJournal = new DomainEventJournal(app.contextManager.db);
+    this.eventDispatcher = new RuntimeEventDispatcher(this.eventJournal, emit);
     this.conversationWorkspaces = new ConversationWorkspaceRegistry(
       options.conversationWorkspaceStateFile,
       this.workspaceAccess.keys(),
@@ -96,25 +102,61 @@ export class RuntimeFacade {
     this.proposalApproval = options.proposalApproval ?? 'manual';
     this.allowedPermissions = new Set(options.allowedPermissions ?? ['read', 'write', 'shell', 'network', 'dangerous']);
     this.companionStartTimeoutMs = options.companionStartTimeoutMs ?? 15_000;
+    this.taskCheckpoints = new TaskCheckpointService(app.registry, app.workspaceRoot);
     this.streamProjector = new CompanionStreamProjector(
-      emit,
+      (event) => this.emit(event),
       (proposal) => this.handleAgentProposal(proposal)
     );
   }
 
-  start(): Promise<void> {
-    return this.eventBridge.start();
+  async start(): Promise<void> {
+    this.eventDispatcher.start();
+    this.removeTraceListener = this.app.trace.subscribe((event) => {
+      this.emit({
+        kind: 'trace.appended',
+        entry: projectTraceEvent(event, event.eventId)
+      });
+    });
+    this.emit({ kind: 'runtime.status.changed', status: this.status() });
+    await this.eventDispatcher.flush();
   }
 
   async stop(): Promise<void> {
+    this.removeTraceListener?.();
+    this.removeTraceListener = undefined;
     this.streamProjector.stop();
-    await this.eventBridge.stop();
+    await this.eventDispatcher.stop();
+  }
+
+  private emit(event: RuntimeEvent): void {
+    const metadata = eventMetadata(event);
+    if (metadata.aggregateType === 'run' && event.kind === 'run.changed' && event.run.origin === 'agent') {
+      void this.eventDispatcher.flush();
+      return;
+    }
+    this.eventJournal.append({
+      aggregateType: metadata.aggregateType === 'run' ? 'companion' : metadata.aggregateType,
+      aggregateId: metadata.aggregateId,
+      correlationId: metadata.correlationId,
+      event
+    });
+    void this.eventDispatcher.flush();
   }
 
   async handle(command: RuntimeCommand): Promise<RuntimeResult> {
     switch (command.kind) {
       case 'runtime.status.get':
         return { kind: 'runtime.status', status: this.status() };
+      case 'runtime.snapshot.get':
+        return { kind: 'runtime.snapshot', snapshot: this.snapshot() };
+      case 'events.replay': {
+        const events = this.eventDispatcher.replay(command.afterCursor, command.limit);
+        return {
+          kind: 'events.replay',
+          events,
+          nextCursor: events.at(-1)?.cursor ?? command.afterCursor
+        };
+      }
       case 'models.list':
         return { kind: 'models.catalog', models: this.models() };
       case 'models.check':
@@ -127,6 +169,8 @@ export class RuntimeFacade {
             projectSession(session, this.conversationWorkspaces.workspaceFor(session.id)))
         };
       case 'companion.sessions.create': {
+        const hookEventId = `session-create:${randomUUID()}`;
+        await this.dispatchSessionPre(hookEventId, 'create');
         const workspaceId = this.resolveWorkspaceId(command.workspaceId);
         const created = this.app.companionService.createSession(
           command.title ? { title: command.title } : undefined
@@ -145,13 +189,17 @@ export class RuntimeFacade {
           }
           throw error;
         }
+        await this.dispatchSessionPost(hookEventId, 'create', created.session.id);
         return { kind: 'companion.session', session: projectSession(created.session, workspaceId) };
       }
       case 'companion.sessions.rename': {
+        const hookEventId = `session-rename:${command.sessionId}:${randomUUID()}`;
+        await this.dispatchSessionPre(hookEventId, 'rename', command.sessionId);
         const updated = this.app.companionService.updateSession(command.sessionId, {
           title: command.title
         });
         if (!updated) throw new RuntimeFacadeError('session_not_found', '会话不存在');
+        await this.dispatchSessionPost(hookEventId, 'rename', command.sessionId);
         return {
           kind: 'companion.session',
           session: projectSession(
@@ -161,6 +209,8 @@ export class RuntimeFacade {
         };
       }
       case 'companion.sessions.delete': {
+        const hookEventId = `session-delete:${command.sessionId}:${randomUUID()}`;
+        await this.dispatchSessionPre(hookEventId, 'delete', command.sessionId);
         const deleted = await this.app.unifiedAssistantHandoffService.deleteCompanionSession({
           sessionId: command.sessionId
         });
@@ -175,6 +225,7 @@ export class RuntimeFacade {
             errorCode: cleanupError.code
           });
         }
+        await this.dispatchSessionPost(hookEventId, 'delete', command.sessionId);
         return { kind: 'acknowledged' };
       }
       case 'companion.messages.list': {
@@ -297,6 +348,50 @@ export class RuntimeFacade {
         if (run) this.emit({ kind: 'run.changed', run: projectRun(run) });
         return { kind: 'acknowledged' };
       }
+      case 'runs.recover': {
+        const run = this.app.runs.get(command.runId);
+        if (!run) throw new RuntimeFacadeError('run_not_found', 'Run does not exist.');
+        if (run.aggregateVersion !== command.expectedAggregateVersion) {
+          throw new RuntimeFacadeError(
+            'run_version_conflict',
+            `Run version is ${run.aggregateVersion}; expected ${command.expectedAggregateVersion}.`,
+            true
+          );
+        }
+        if (run.status !== 'recovery_required') {
+          throw new RuntimeFacadeError('run_not_recoverable', 'Run is not waiting for recovery.');
+        }
+        if (command.decision === 'cancel') {
+          this.app.runs.execute({
+            type: 'run.cancel',
+            runId: run.id,
+            expectedAggregateVersion: run.aggregateVersion,
+            reason: 'User cancelled recovery.'
+          });
+        } else if (command.decision === 'mark_failed') {
+          this.app.runs.execute({
+            type: 'run.fail',
+            runId: run.id,
+            expectedAggregateVersion: run.aggregateVersion,
+            error: 'User confirmed that the interrupted effect cannot be recovered.'
+          });
+        } else {
+          const result = await this.app.orchestrator.resumeAgent(
+            { runId: run.id },
+            this.makeChatForRun(run.id)
+          );
+          if (result.status < 200 || result.status >= 300) {
+            const body = recordValue(result.body);
+            throw new RuntimeFacadeError(
+              'run_recovery_failed',
+              typeof body.error === 'string' ? body.error : 'Run recovery failed.',
+              true
+            );
+          }
+        }
+        await this.eventDispatcher.flush();
+        return { kind: 'run', run: projectRun(this.app.runs.get(run.id) ?? run) };
+      }
       case 'permissions.list':
         return {
           kind: 'permissions',
@@ -315,6 +410,111 @@ export class RuntimeFacade {
         return this.respondPlanHandoff(command);
       case 'planHandoffs.resume':
         return this.retryPlanHandoff(command.handoffId);
+      case 'resources.list':
+        return {
+          kind: 'resources',
+          resources: this.app.resources.list({
+            ownerType: command.ownerType,
+            ownerId: command.ownerId,
+            limit: command.limit
+          })
+        };
+      case 'resources.get': {
+        const resource = this.app.resources.get(command.resourceId);
+        if (!resource) throw new RuntimeFacadeError('resource_not_found', 'Resource does not exist.');
+        return { kind: 'resource', resource };
+      }
+      case 'resources.update': {
+        const resource = this.app.resources.update(command.resourceId, {
+          ...(command.name !== undefined ? { name: command.name } : {}),
+          ...(command.lifecycle !== undefined ? { lifecycle: command.lifecycle } : {}),
+          ...(command.sensitivity !== undefined ? { sensitivity: command.sensitivity } : {}),
+          ...(command.provenanceSummary !== undefined
+            ? { provenanceSummary: command.provenanceSummary }
+            : {}),
+          ...(command.expiresAt !== undefined ? { expiresAt: command.expiresAt } : {})
+        });
+        if (!resource) throw new RuntimeFacadeError('resource_not_found', 'Resource does not exist.');
+        return { kind: 'resource', resource };
+      }
+      case 'resources.delete': {
+        const deleted = await this.app.resources.delete(command.resourceId);
+        if (!deleted) throw new RuntimeFacadeError('resource_not_found', 'Resource does not exist.');
+        return { kind: 'acknowledged' };
+      }
+      case 'memories.list':
+        return {
+          kind: 'memories',
+          memories: this.app.contextManager.memoryManager.list({
+            scope: command.scope,
+            scopeId: command.scopeId,
+            lifecycleState: command.lifecycleState,
+            limit: command.limit
+          }).map(projectMemory)
+        };
+      case 'memories.get': {
+        const memory = this.app.contextManager.memoryManager.get(command.memoryId);
+        if (!memory) throw new RuntimeFacadeError('memory_not_found', 'Memory does not exist.');
+        return { kind: 'memory', memory: projectMemory(memory) };
+      }
+      case 'memories.update': {
+        const memory = this.app.contextManager.memoryManager.update(command.memoryId, {
+          ...(command.value !== undefined ? { value: command.value } : {}),
+          ...(command.summary !== undefined ? { summary: command.summary } : {}),
+          ...(command.importance !== undefined ? { importance: command.importance } : {}),
+          ...(command.confidence !== undefined ? { confidence: command.confidence } : {}),
+          ...(command.lifecycleState !== undefined
+            ? { lifecycleState: command.lifecycleState }
+            : {}),
+          ...(command.sensitivity !== undefined ? { sensitivity: command.sensitivity } : {}),
+          ...(command.retentionUntil !== undefined
+            ? { retentionUntil: command.retentionUntil }
+            : {})
+        });
+        return { kind: 'memory', memory: projectMemory(memory) };
+      }
+      case 'memories.delete': {
+        const deleted = this.app.contextManager.memoryManager.delete(command.memoryId);
+        if (!deleted) throw new RuntimeFacadeError('memory_not_found', 'Memory does not exist.');
+        return { kind: 'acknowledged' };
+      }
+      case 'taskCheckpoints.list': {
+        this.requireRun(command.runId);
+        return {
+          kind: 'taskCheckpoints',
+          checkpoints: await this.taskCheckpoints.list(command.runId)
+        };
+      }
+      case 'taskCheckpoints.get':
+      case 'taskCheckpoints.compare': {
+        this.requireRun(command.runId);
+        const checkpoint = await this.taskCheckpoints.get(command.runId, command.checkpointId);
+        if (!checkpoint) {
+          throw new RuntimeFacadeError('task_checkpoint_not_found', 'Task checkpoint does not exist.');
+        }
+        return { kind: 'taskCheckpoint', checkpoint };
+      }
+      case 'taskCheckpoints.restore': {
+        const run = this.requireRun(command.runId);
+        try {
+          const restored = await this.taskCheckpoints.restore({
+            runId: command.runId,
+            checkpointId: command.checkpointId,
+            sessionId: run.sessionId,
+            taskId: run.taskId
+          });
+          return { kind: 'taskCheckpointRestore', ...restored };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'task_checkpoint_restore_failed';
+          if (message.startsWith('task_checkpoint_restore_conflict:')) {
+            throw new RuntimeFacadeError('task_checkpoint_restore_conflict', message);
+          }
+          if (message === 'task_checkpoint_not_found') {
+            throw new RuntimeFacadeError('task_checkpoint_not_found', 'Task checkpoint does not exist.');
+          }
+          throw error;
+        }
+      }
       case 'trace.list': {
         const events = await scanTraceEvents(this.app.paths.traceFile, {
           limit: command.limit,
@@ -333,12 +533,56 @@ export class RuntimeFacade {
     }
   }
 
+  private async dispatchSessionPre(
+    eventId: string,
+    operation: 'create' | 'rename' | 'delete',
+    sessionId?: string
+  ): Promise<void> {
+    const result = await this.app.hooks.dispatch({
+      event: 'session.pre',
+      eventId,
+      payload: { operation, sessionId },
+      authority: { permissions: ['write'], timeoutMs: 30_000 }
+    });
+    if (!result.allowed || !result.authority.permissions.includes('write')) {
+      throw new RuntimeFacadeError(
+        'hook_rejected',
+        result.reason ?? `Session ${operation} was rejected by policy.`
+      );
+    }
+  }
+
+  private async dispatchSessionPost(
+    eventId: string,
+    operation: 'create' | 'rename' | 'delete',
+    sessionId: string
+  ): Promise<void> {
+    const result = await this.app.hooks.dispatch({
+      event: 'session.post',
+      eventId,
+      payload: { operation, sessionId },
+      authority: { permissions: [], timeoutMs: 5_000 }
+    });
+    if (!result.allowed) {
+      throw new RuntimeFacadeError(
+        'hook_post_rejected',
+        result.reason ?? `Session ${operation} post hook rejected.`
+      );
+    }
+  }
+
+  private requireRun(runId: string) {
+    const run = this.app.runs.get(runId);
+    if (!run) throw new RuntimeFacadeError('run_not_found', 'Run does not exist.');
+    return run;
+  }
+
   status(): RuntimeStatus {
     const workspaceWriteEnabled = [...this.workspaceAccess.values()].every((access) => access === 'write');
     return {
       availability: 'ready',
       runtimeVersion: this.runtimeVersion,
-      protocolVersion: '1.0',
+      protocolVersion: '2.0',
       capabilities: [
         'companion.chat',
         'companion.sessions',
@@ -354,10 +598,36 @@ export class RuntimeFacade {
         ...(workspaceWriteEnabled ? ['workspace.write' as const] : []),
         'trace.read',
         'background.tasks',
-        'scheduler'
+        'scheduler',
+        'resources',
+        'memory.manage',
+        ...(this.app.registry.listProviders().some((provider) => provider.id === 'browser-main')
+          ? ['browser.web' as const]
+          : [])
       ],
       observedAt: new Date().toISOString()
     };
+  }
+
+  private snapshot() {
+    const connection = this.app.contextManager.db.connection;
+    const ownsTransaction = !connection.isTransaction;
+    if (ownsTransaction) connection.exec('BEGIN');
+    try {
+      const snapshot = {
+        revision: this.eventJournal.currentCursor(),
+        capturedAt: new Date().toISOString(),
+        runs: this.app.runs.list({ limit: 200 }).map(projectRun),
+        permissions: this.listVisiblePermissionRequests().map((request) => this.projectPermission(request)),
+        planHandoffs: this.listVisiblePlanHandoffs().map(projectPlanHandoff),
+        proposals: this.app.agentHandoffCoordinator.listPending().map(projectAgentProposal)
+      };
+      if (ownsTransaction) connection.exec('COMMIT');
+      return snapshot;
+    } catch (error) {
+      if (ownsTransaction && connection.isTransaction) connection.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   private models(): ModelSummary[] {
@@ -400,6 +670,7 @@ export class RuntimeFacade {
       supportsAgent: !agentResolution.error,
       supportsVision: config.routerProfile?.supportsVision === true
         || config.routerProfile?.capabilities?.image === true,
+      ...(config.kind === 'api' ? { providerQualification: config.qualification } : {}),
       ...(config.inference ? { inference: config.inference } : {}),
       ...(availability?.reason ? { detail: availability.reason.slice(0, 1_024) } : {})
     };
@@ -545,7 +816,7 @@ export class RuntimeFacade {
     }
     const run = this.app.runs.get(decision.permissionRequest.runId);
     if (run) this.emit({ kind: 'run.changed', run: projectRun(run) });
-    await this.eventBridge.flush();
+    await this.eventDispatcher.flush();
     return { kind: 'permission', request: projected };
   }
 
@@ -571,7 +842,7 @@ export class RuntimeFacade {
     }
     const run = this.app.runs.get(decision.runId);
     if (run) this.emit({ kind: 'run.changed', run: projectRun(run) });
-    await this.eventBridge.flush();
+    await this.eventDispatcher.flush();
     return { kind: 'planHandoff', handoff: projected };
   }
 
@@ -583,7 +854,7 @@ export class RuntimeFacade {
       const run = this.app.runs.get(response.proposal.runId);
       if (run) this.emit({ kind: 'run.changed', run: projectRun(run) });
     }
-    await this.eventBridge.flush();
+    await this.eventDispatcher.flush();
   }
 
   private handleAgentProposal(proposal: SourceAgentProposal): boolean {
@@ -638,10 +909,18 @@ export class RuntimeFacade {
     });
   }
 
+  private makeChatForRun(runId: string) {
+    const proposal = this.app.agentHandoffCoordinator.getByRunId(runId);
+    return this.app.makeChatFn(proposal?.modelBinding?.clientName);
+  }
+
   private async resumeAfterPermission(runId: string, permissionRequestId: string): Promise<void> {
     let result: ApiResult;
     try {
-      result = await this.app.orchestrator.resumeAfterPermission({ runId, permissionRequestId }, this.app.makeChatFn());
+      result = await this.app.orchestrator.resumeAfterPermission(
+        { runId, permissionRequestId },
+        this.makeChatForRun(runId)
+      );
     } catch (error) {
       result = failedApiResult(runId, error, 'Agent 权限恢复失败', true);
     }
@@ -652,7 +931,10 @@ export class RuntimeFacade {
   private async resumeAfterPlanHandoff(runId: string, planHandoffId: string): Promise<void> {
     let result: ApiResult;
     try {
-      result = await this.app.orchestrator.resumeAfterPlanHandoff({ runId, planHandoffId }, this.app.makeChatFn());
+      result = await this.app.orchestrator.resumeAfterPlanHandoff(
+        { runId, planHandoffId },
+        this.makeChatForRun(runId)
+      );
     } catch (error) {
       result = failedApiResult(runId, error, 'Agent 计划恢复失败', true);
     }
@@ -676,8 +958,7 @@ export class RuntimeFacade {
   private async publishRecordedExecution(runId: string, result: ApiResult): Promise<void> {
     const body = recordValue(result.body);
     this.emitCompanionPresentation(body.companionPresentation);
-    await this.eventBridge.flush();
-    await this.eventBridge.emitProposalForRun(runId);
+    await this.eventDispatcher.flush();
     const run = this.app.runs.get(runId);
     if (run) this.emit({ kind: 'run.changed', run: projectRun(run) });
   }
@@ -877,16 +1158,68 @@ function resolveInferenceOptions(
   };
 }
 
+function eventMetadata(event: RuntimeEvent): {
+  aggregateType: 'runtime' | 'run' | 'companion' | 'permission' | 'plan_handoff' | 'proposal' | 'trace';
+  aggregateId: string;
+  correlationId?: string;
+} {
+  switch (event.kind) {
+    case 'runtime.status.changed':
+      return { aggregateType: 'runtime', aggregateId: 'runtime' };
+    case 'companion.token.delta':
+      return { aggregateType: 'companion', aggregateId: event.messageId, correlationId: event.runId };
+    case 'companion.message.changed':
+      return {
+        aggregateType: 'companion',
+        aggregateId: event.message.messageId,
+        correlationId: event.message.sessionId
+      };
+    case 'agent.proposal.changed':
+      return {
+        aggregateType: 'proposal',
+        aggregateId: event.proposal.proposalId,
+        correlationId: event.proposal.sessionId
+      };
+    case 'run.changed':
+      return { aggregateType: 'run', aggregateId: event.run.runId, correlationId: event.run.sessionId };
+    case 'run.activity':
+      return {
+        aggregateType: 'trace',
+        aggregateId: event.activity.activityId,
+        correlationId: event.activity.runId
+      };
+    case 'permission.changed':
+      return {
+        aggregateType: 'permission',
+        aggregateId: event.request.requestId,
+        correlationId: event.request.runId
+      };
+    case 'planHandoff.changed':
+      return {
+        aggregateType: 'plan_handoff',
+        aggregateId: event.handoff.handoffId,
+        correlationId: event.handoff.runId
+      };
+    case 'trace.appended':
+      return {
+        aggregateType: 'trace',
+        aggregateId: event.entry.traceId,
+        correlationId: event.entry.runId
+      };
+  }
+}
+
 class CompanionStreamProjector {
   private readonly streams = new Map<string, {
     sessionId: string;
     message: ReturnType<typeof projectMessage>;
+    aggregateVersion: number;
     bufferedText: string;
     timer?: NodeJS.Timeout;
   }>();
 
   constructor(
-    private readonly emit: RuntimeEventSink,
+    private readonly emit: RawRuntimeEventSink,
     private readonly onAgentProposal?: (proposal: SourceAgentProposal) => boolean
   ) {}
 
@@ -904,6 +1237,7 @@ class CompanionStreamProjector {
         this.streams.set(event.runId, {
           sessionId: event.session.id,
           message: projectMessage(event.assistantMessage),
+          aggregateVersion: 1,
           bufferedText: ''
         });
         this.emit({ kind: 'companion.message.changed', message: projectMessage(event.userMessage) });
@@ -917,6 +1251,9 @@ class CompanionStreamProjector {
             title: event.userMessage.content.slice(0, 512),
             status: 'running',
             userFacingLabel: '正在回复',
+            aggregateVersion: 1,
+            checkpointStage: 'running',
+            recoveryStatus: 'none',
             startedAt: event.userMessage.createdAt
           }
         });
@@ -943,6 +1280,9 @@ class CompanionStreamProjector {
       case 'done':
         this.flush(event.runId);
         if (event.result.persistence === 'stored') {
+          const stream = this.streams.get(event.runId);
+          const aggregateVersion = (stream?.aggregateVersion ?? 1) + 1;
+          if (stream) stream.aggregateVersion = aggregateVersion;
           this.emit({
             kind: 'companion.message.changed',
             message: projectMessage(event.result.assistantMessage)
@@ -956,6 +1296,9 @@ class CompanionStreamProjector {
               title: event.result.userMessage.content.slice(0, 512),
               status: 'completed',
               userFacingLabel: '回复完成',
+              aggregateVersion,
+              checkpointStage: 'completed',
+              recoveryStatus: 'none',
               startedAt: event.result.userMessage.createdAt,
               completedAt: event.result.assistantMessage.updatedAt
             }
@@ -1038,6 +1381,7 @@ class CompanionStreamProjector {
   private finishRun(runId: string, status: 'failed' | 'cancelled', label: string): void {
     const stream = this.streams.get(runId);
     if (!stream) return;
+    stream.aggregateVersion += 1;
     this.emit({
       kind: 'run.changed',
       run: {
@@ -1047,6 +1391,9 @@ class CompanionStreamProjector {
         title: stream.message.content.slice(0, 512) || 'Companion 对话',
         status,
         userFacingLabel: label,
+        aggregateVersion: stream.aggregateVersion,
+        checkpointStage: status,
+        recoveryStatus: 'none',
         completedAt: new Date().toISOString()
       }
     });
@@ -1065,8 +1412,8 @@ function companionStreamErrorPresentation(
   switch (event.code) {
     case 'COMPANION_TURN_PROTOCOL_ERROR':
       return {
-        message: 'Agent 提案格式无效，授权请求没有创建成功。请重新发送或重试。',
-        retryable: true
+        message: 'Agent 提案未通过协议或业务校验，授权请求没有创建。详细阶段和字段路径已写入日志。',
+        retryable: event.retryable
       };
     case 'COMPANION_EMPTY_RESPONSE':
       return {
@@ -1074,7 +1421,7 @@ function companionStreamErrorPresentation(
         retryable: true
       };
     default:
-      return { message: event.message, retryable: false };
+      return { message: event.message, retryable: event.retryable };
   }
 }
 

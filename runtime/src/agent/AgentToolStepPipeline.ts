@@ -66,7 +66,7 @@ export async function executeAgentToolStepPipeline(
   const entryWorkflowRoute = effectiveWorkflowRoute(ctx.getWorkflowContext());
   const escalationResult = applyCapabilityEscalationBeforeTool({
     action: input.action,
-    toolPermission: tool?.permission,
+    toolPermission: tool?.permissions[0],
     workflowRoute: entryWorkflowRoute,
     iteration: input.iteration,
     messages: input.messages,

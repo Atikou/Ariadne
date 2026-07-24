@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import {
   applySqliteMigrations,
+  assertDatabaseVersionSupported,
   getSchemaInfo,
   type SchemaInfo,
 } from "../../storage/sqliteMigration.js";
@@ -65,6 +66,7 @@ export class ToolStorage {
     mkdirSync(this.backupsRoot, { recursive: true });
 
     this.db = new DatabaseSync(this.dbPath);
+    assertDatabaseVersionSupported(this.db, TOOLS_DB_SCHEMA_VERSION);
     this.db.exec("PRAGMA journal_mode = WAL;");
     const { version } = applySqliteMigrations(this.db, TOOLS_DB_MIGRATIONS);
     this.schemaVersion = version;
@@ -191,6 +193,33 @@ export class ToolStorage {
       }
     }
     return ids;
+  }
+
+  /** All user-visible task checkpoints, including reversible restore operations. */
+  listFileChangesForRequest(requestId: string): FileChangeRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT output_json FROM tool_logs
+         WHERE request_id = ? AND ok = 1
+           AND tool_name IN ('write_file', 'apply_patch', 'rollback_change')
+         ORDER BY started_at ASC`,
+      )
+      .all(requestId) as Array<{ output_json: string }>;
+    const records: FileChangeRecord[] = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      try {
+        const output = JSON.parse(row.output_json) as { changeId?: string };
+        if (!output.changeId || seen.has(output.changeId)) continue;
+        const record = this.getFileChange(output.changeId);
+        if (!record) continue;
+        seen.add(record.id);
+        records.push(record);
+      } catch {
+        // A malformed historical tool log is not an authoritative checkpoint.
+      }
+    }
+    return records;
   }
 
   getFileChange(changeId: string): FileChangeRecord | null {

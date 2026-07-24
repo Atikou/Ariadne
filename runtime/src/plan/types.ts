@@ -101,7 +101,7 @@ export const InternalPlanStepSchema = z.object({
   description: z.string().optional(),
   objective: z.string().optional(),
   toolName: z.string().optional(),
-  args: z.record(z.unknown()).optional(),
+  args: z.record(z.string(), z.unknown()).optional(),
   dependsOn: z.array(z.string()).default([]),
   riskLevel: RiskLevelSchema,
   expectedOutput: z.string().optional(),

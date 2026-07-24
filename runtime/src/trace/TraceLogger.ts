@@ -22,8 +22,14 @@ import {
   type TracePathLayout,
 } from "./tracePaths.js";
 
+export type TraceLevel = "debug" | "info" | "warning" | "error";
+
 export interface TraceEvent {
   type: string;
+  level?: TraceLevel;
+  category?: string;
+  message?: string;
+  metadata?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -38,8 +44,9 @@ export interface PreparedTraceEvent {
 export function prepareTraceEvent(event: TraceEvent, redact = true): PreparedTraceEvent {
   const eventId = randomUUID();
   const time = new Date().toISOString();
-  const payload = (redact ? redactValue(event) : event) as TraceEvent;
-  const line = `${JSON.stringify({ time, eventId, ...payload })}\n`;
+  const normalized = normalizeTraceEvent(event);
+  const payload = (redact ? redactValue(normalized) : normalized) as TraceEvent;
+  const line = `${JSON.stringify({ ...payload, time, eventId })}\n`;
   return {
     eventId,
     time,
@@ -47,6 +54,56 @@ export function prepareTraceEvent(event: TraceEvent, redact = true): PreparedTra
     line,
     lineBytes: Buffer.byteLength(line, "utf-8"),
   };
+}
+
+export function normalizeTraceEvent(event: TraceEvent): TraceEvent {
+  const type = event.type.trim() || "unknown";
+  const category = typeof event.category === "string" && event.category.trim()
+    ? event.category.trim().slice(0, 128)
+    : type.slice(0, 128);
+  const level = isTraceLevel(event.level)
+    ? event.level
+    : inferTraceLevel(type, event.status);
+  const message = firstTraceMessage(event);
+  return {
+    ...event,
+    type,
+    level,
+    category,
+    ...(message ? { message: message.slice(0, 16_384) } : {}),
+  };
+}
+
+function isTraceLevel(value: unknown): value is TraceLevel {
+  return value === "debug"
+    || value === "info"
+    || value === "warning"
+    || value === "error";
+}
+
+function inferTraceLevel(type: string, status: unknown): TraceLevel {
+  const normalized = type.toLowerCase();
+  if (
+    normalized.includes("error")
+    || normalized.includes("failed")
+    || status === "failed"
+  ) return "error";
+  if (
+    normalized.includes("warn")
+    || normalized.includes("retry")
+    || normalized.includes("degraded")
+    || normalized.includes("unavailable")
+  ) return "warning";
+  return "info";
+}
+
+function firstTraceMessage(event: TraceEvent): string | undefined {
+  for (const key of ["message", "summary", "error", "reason"] as const) {
+    const value = event[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (value instanceof Error && value.message.trim()) return value.message.trim();
+  }
+  return undefined;
 }
 
 export interface TraceRotationPolicy {
@@ -73,6 +130,13 @@ export interface TraceWriteHealth {
   lastErrorCode?: string;
 }
 
+export type PersistedTraceEvent = TraceEvent & {
+  eventId: string;
+  time: string;
+};
+
+export type TraceEventListener = (event: PersistedTraceEvent) => void;
+
 /**
  * 追加式 JSONL 事件日志。支持单文件（兼容）与 active + segments 分段写入。
  */
@@ -95,6 +159,7 @@ export class TraceLogger {
   private lastFailureAt?: string;
   private lastErrorCode?: string;
   private readonly onWriteError?: (error: unknown) => void;
+  private readonly listeners = new Set<TraceEventListener>();
 
   constructor(traceFileOrDir: string, options: TraceLoggerOptions = {}) {
     this.redact = options.redact !== false;
@@ -146,6 +211,12 @@ export class TraceLogger {
     };
   }
 
+  subscribe(listener: TraceEventListener): () => void {
+    if (this.closed) return () => {};
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
   write(event: TraceEvent): void {
     if (this.closed) return;
     try {
@@ -166,18 +237,39 @@ export class TraceLogger {
     }
     this.bytesWritten += prepared.lineBytes;
 
+    let indexError: unknown;
     if (this.index && this.layout) {
       const e = prepared.payload as Record<string, unknown>;
-      this.index.insert({
-        eventId: prepared.eventId,
-        ts: Date.parse(prepared.time),
-        runId: typeof e.runId === "string" ? e.runId : undefined,
-        sessionId: typeof e.sessionId === "string" ? e.sessionId : undefined,
-        eventType: String(e.type ?? "unknown"),
-        status: typeof e.status === "string" ? e.status : undefined,
-        segmentPath: this.activeRel,
-        redacted: this.redact,
-      });
+      try {
+        this.index.insert({
+          eventId: prepared.eventId,
+          ts: Date.parse(prepared.time),
+          runId: typeof e.runId === "string" ? e.runId : undefined,
+          sessionId: typeof e.sessionId === "string" ? e.sessionId : undefined,
+          eventType: String(e.type ?? "unknown"),
+          status: typeof e.status === "string" ? e.status : undefined,
+          segmentPath: this.activeRel,
+          redacted: this.redact,
+        });
+      } catch (error) {
+        indexError = error;
+      }
+    }
+    this.publish({
+      ...prepared.payload,
+      eventId: prepared.eventId,
+      time: prepared.time,
+    });
+    if (indexError) throw indexError;
+  }
+
+  private publish(event: PersistedTraceEvent): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(event);
+      } catch {
+        // A UI/event-stream observer must not affect durable Trace writes.
+      }
     }
   }
 
@@ -263,6 +355,7 @@ export class TraceLogger {
   close(): Promise<void> {
     if (this.closed) return Promise.resolve();
     this.closed = true;
+    this.listeners.clear();
 
     if (this.layout && this.bytesWritten > 0) {
       this.performRotation();

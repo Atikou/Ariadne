@@ -2,6 +2,7 @@ import type {
   AgentProposal,
   PermissionRequest,
   PlanHandoff,
+  MemoryRecord as PublicMemoryRecord,
   RunActivity,
   RunSummary,
   TraceEntry
@@ -12,10 +13,11 @@ import type {
   CompanionMessage,
   CompanionSession
 } from '../companion/CompanionSessionContracts.js';
-import type { RunRecord } from '../core/runTypes.js';
+import type { RunAggregate } from '../run/RunAggregateRepository.js';
 import type { PermissionRequestPayload } from '../policy/permissionRequestTypes.js';
 import type { PlanHandoffPayload } from '../policy/planHandoffTypes.js';
 import type { TraceEvent } from '../trace/TraceLogger.js';
+import type { MemoryRecord } from '../context/types.js';
 import { toPublicError } from '../util/publicError.js';
 
 export function projectSession(session: CompanionSession, workspaceId: string) {
@@ -27,6 +29,35 @@ export function projectSession(session: CompanionSession, workspaceId: string) {
     createdAt: session.createdAt,
     updatedAt: session.updatedAt
   } as const;
+}
+
+export function projectMemory(memory: MemoryRecord): PublicMemoryRecord {
+  if (memory.sensitivity === 'secret') {
+    throw new Error('secret_memory_public_projection_denied');
+  }
+  return {
+    memoryId: memory.id,
+    scope: memory.scope,
+    ...(memory.scopeId ? { scopeId: memory.scopeId } : {}),
+    memoryType: memory.memoryType,
+    ...(memory.key ? { key: memory.key } : {}),
+    value: memory.value,
+    ...(memory.summary ? { summary: memory.summary } : {}),
+    importance: memory.importance,
+    confidence: memory.confidence,
+    lifecycleState: memory.lifecycleState,
+    provenance: {
+      origin: memory.provenance.origin,
+      ...(memory.provenance.sourceId ? { sourceId: memory.provenance.sourceId } : {}),
+      ...(memory.provenance.evidence ? { evidence: memory.provenance.evidence } : {})
+    },
+    sensitivity: memory.sensitivity,
+    ...(memory.retentionUntil ? { retentionUntil: memory.retentionUntil } : {}),
+    createdAt: memory.createdAt,
+    updatedAt: memory.updatedAt,
+    ...(memory.lastUsedAt ? { lastUsedAt: memory.lastUsedAt } : {}),
+    ...(memory.supersedesId ? { supersedesId: memory.supersedesId } : {})
+  };
 }
 
 export function projectMessage(message: CompanionMessage) {
@@ -78,7 +109,7 @@ function projectCompanionMessageError(
 function companionMessageErrorText(code: string): string {
   switch (code) {
     case 'COMPANION_TURN_PROTOCOL_ERROR':
-      return 'Agent 提案格式无效，授权请求没有创建成功。请重新发送或重试。';
+      return 'Agent 提案未通过协议或业务校验，授权请求没有创建。详细阶段和字段路径已写入日志。';
     case 'COMPANION_EMPTY_RESPONSE':
       return '模型只返回了内部推理，没有生成最终回复。Ariadne 已尝试续写但仍未得到内容，请重试。';
     case 'service_restarted':
@@ -107,7 +138,7 @@ export function projectAgentProposal(proposal: SourceAgentProposal): AgentPropos
   };
 }
 
-export function projectRun(run: RunRecord): RunSummary {
+export function projectRun(run: RunAggregate): RunSummary {
   return {
     runId: run.id,
     ...(run.sessionId ? { sessionId: run.sessionId } : {}),
@@ -115,6 +146,9 @@ export function projectRun(run: RunRecord): RunSummary {
     title: (run.goal?.trim() || `${run.kind} run`).slice(0, 512),
     status: publicRunStatus(run.status),
     userFacingLabel: runLabel(run.status),
+    aggregateVersion: run.aggregateVersion,
+    checkpointStage: run.checkpointStage,
+    recoveryStatus: run.recoveryStatus,
     ...(run.error ? { detail: toPublicError(run.error).message } : {}),
     startedAt: run.createdAt,
     ...(isTerminalRunStatus(run.status) ? { completedAt: run.updatedAt } : {})
@@ -176,21 +210,25 @@ export function projectPlanHandoff(handoff: PlanHandoffPayload): PlanHandoff {
 export function projectTraceEvent(event: TraceEvent, fallbackId: string): TraceEntry {
   const record = event as Record<string, unknown>;
   const type = String(record.type ?? 'unknown').slice(0, 128);
+  const category = stringValue(record.category)?.slice(0, 128) ?? type;
   const message = firstPublicText(record, ['message', 'summary', 'error', 'reason']) ?? '';
+  const metadata = publicTraceMetadata(record.metadata);
   const time = typeof record.time === 'string' && Number.isFinite(Date.parse(record.time))
     ? record.time
     : new Date().toISOString();
   return {
     traceId: typeof record.eventId === 'string' && record.eventId ? record.eventId : fallbackId,
     ...(typeof record.runId === 'string' && record.runId ? { runId: record.runId } : {}),
-    level: type.includes('error') || record.status === 'failed'
-      ? 'error'
-      : type.includes('warn')
-        ? 'warning'
-        : 'info',
-    category: type,
+    level: publicTraceLevel(record.level)
+      ?? (type.includes('error') || type.includes('failed') || record.status === 'failed'
+        ? 'error'
+        : type.includes('warn') || type.includes('retry')
+          ? 'warning'
+          : 'info'),
+    category,
     message: message.slice(0, 16_384),
-    occurredAt: time
+    occurredAt: time,
+    ...(metadata ? { metadata } : {})
   };
 }
 
@@ -263,7 +301,7 @@ export function projectRunActivity(event: TraceEvent): RunActivity | null {
   return null;
 }
 
-function publicRunStatus(status: RunRecord['status']): RunSummary['status'] {
+function publicRunStatus(status: RunAggregate['status']): RunSummary['status'] {
   switch (status) {
     case 'pending': return 'queued';
     case 'running': return 'running';
@@ -273,11 +311,12 @@ function publicRunStatus(status: RunRecord['status']): RunSummary['status'] {
     case 'completed': return 'completed';
     case 'failed': return 'failed';
     case 'cancelled': return 'cancelled';
-    case 'paused': return 'interrupted';
+    case 'paused':
+    case 'recovery_required': return 'interrupted';
   }
 }
 
-function runLabel(status: RunRecord['status']): string {
+function runLabel(status: RunAggregate['status']): string {
   switch (status) {
     case 'pending': return '等待执行';
     case 'running': return '正在执行';
@@ -288,10 +327,11 @@ function runLabel(status: RunRecord['status']): string {
     case 'failed': return '执行失败';
     case 'cancelled': return '已取消';
     case 'paused': return '执行已中断';
+    case 'recovery_required': return '需要恢复决策';
   }
 }
 
-function isTerminalRunStatus(status: RunRecord['status']): boolean {
+function isTerminalRunStatus(status: RunAggregate['status']): boolean {
   return status === 'completed' || status === 'failed' || status === 'cancelled';
 }
 
@@ -336,4 +376,32 @@ function eventTime(record: Record<string, unknown>): string {
     if (value && Number.isFinite(Date.parse(value))) return value;
   }
   return new Date().toISOString();
+}
+
+function publicTraceLevel(value: unknown): TraceEntry['level'] | undefined {
+  return value === 'debug'
+    || value === 'info'
+    || value === 'warning'
+    || value === 'error'
+    ? value
+    : undefined;
+}
+
+function publicTraceMetadata(value: unknown): TraceEntry['metadata'] | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  try {
+    const serialized = JSON.stringify(value);
+    if (!serialized || serialized === '{}') return undefined;
+    if (serialized.length > 32_768) {
+      return {
+        truncated: true,
+        preview: serialized.slice(0, 32_000)
+      };
+    }
+    return JSON.parse(serialized) as TraceEntry['metadata'];
+  } catch {
+    return {
+      serializationError: true
+    };
+  }
 }

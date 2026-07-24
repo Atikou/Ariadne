@@ -1,5 +1,11 @@
 import type { MemoryStore } from "./stores.js";
-import type { MemoryCandidate, MemoryRecord, MemoryScope, MemoryType } from "./types.js";
+import type {
+  MemoryCandidate,
+  MemoryLifecycleState,
+  MemoryRecord,
+  MemoryScope,
+  MemoryType,
+} from "./types.js";
 
 export interface MemoryFilter {
   scope?: MemoryScope;
@@ -13,7 +19,7 @@ export interface MemoryFilter {
 export class MemoryManager {
   constructor(private readonly memories: MemoryStore) {}
 
-  upsert(candidate: MemoryCandidate): MemoryRecord {
+  upsert(candidate: MemoryCandidate, lifecycleState: "candidate" | "active"): MemoryRecord {
     return this.memories.upsert({
       scope: candidate.scope,
       scopeId: candidate.scopeId,
@@ -23,13 +29,63 @@ export class MemoryManager {
       summary: candidate.summary,
       importance: candidate.importance,
       confidence: candidate.confidence,
-      source: candidate.source,
-      sourceId: candidate.sourceId,
+      lifecycleState,
+      provenance: candidate.provenance,
+      sensitivity: candidate.sensitivity,
+      retentionUntil: candidate.retentionUntil,
     });
   }
 
-  deactivate(memoryId: string, _reason: string): void {
-    this.memories.deactivate(memoryId);
+  transition(memoryId: string, next: MemoryLifecycleState): MemoryRecord {
+    return this.memories.transition(memoryId, next);
+  }
+
+  delete(memoryId: string): boolean {
+    return this.memories.delete(memoryId);
+  }
+
+  get(memoryId: string): MemoryRecord | null {
+    return this.memories.get(memoryId);
+  }
+
+  list(filter: {
+    scope?: MemoryScope;
+    scopeId?: string;
+    lifecycleState?: MemoryLifecycleState;
+    limit?: number;
+  } = {}): MemoryRecord[] {
+    return this.memories.list(filter);
+  }
+
+  update(
+    memoryId: string,
+    patch: {
+      value?: string;
+      summary?: string | null;
+      importance?: number;
+      confidence?: number;
+      lifecycleState?: Exclude<MemoryLifecycleState, "superseded">;
+      sensitivity?: MemoryRecord["sensitivity"];
+      retentionUntil?: string | null;
+    },
+  ): MemoryRecord {
+    const contentChanged = patch.value !== undefined
+      || patch.summary !== undefined
+      || patch.importance !== undefined
+      || patch.confidence !== undefined
+      || patch.sensitivity !== undefined
+      || patch.retentionUntil !== undefined;
+    if (contentChanged && patch.lifecycleState && patch.lifecycleState !== "active") {
+      throw new Error("memory_content_update_requires_active_lifecycle");
+    }
+    let memory = contentChanged
+      ? this.memories.replace(memoryId, patch)
+      : this.memories.get(memoryId);
+    if (!memory) throw new Error("memory_not_found");
+    if (patch.lifecycleState && patch.lifecycleState !== memory.lifecycleState) {
+      memory = this.memories.transition(memory.id, patch.lifecycleState);
+    }
+    return memory;
   }
 
   getActiveMemories(filter: MemoryFilter = {}): MemoryRecord[] {

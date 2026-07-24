@@ -2,6 +2,8 @@ import type { DatabaseSync } from "node:sqlite";
 
 import type { SqliteMigration } from "../storage/sqliteMigration.js";
 
+export const TRACE_INDEX_SCHEMA_VERSION = 1;
+
 export const TRACE_INDEX_MIGRATIONS: readonly SqliteMigration[] = [
   {
     version: 1,

@@ -1,6 +1,6 @@
 import type { Planner } from "../agent/Planner.js";
 import type { ApiResult } from "../core/apiResult.js";
-import type { RunStore } from "../orchestrator/RunStore.js";
+import type { RunAggregateRepository } from "../run/RunAggregateRepository.js";
 import type { TraceLogger } from "../trace/TraceLogger.js";
 import { toPublicError } from "../util/publicError.js";
 import {
@@ -16,7 +16,7 @@ import { PlanValidationError } from "./types.js";
 export interface PlanDraftApiServiceDeps {
   planner: Planner;
   planService: PlanService;
-  runs: RunStore;
+  runs: RunAggregateRepository;
   trace?: TraceLogger;
 }
 
@@ -30,14 +30,15 @@ export class PlanDraftApiService {
       return { status: 400, body: PlanDraftInvalidResultSchema.parse(reportRequest) };
     }
 
-    const run = this.deps.runs.create({
+    const createdRun = this.deps.runs.execute({
+      type: "run.create",
       kind: "plan",
-      status: "running",
       goal: input.goal,
-      correlation: { runId: "" },
     });
-    this.deps.runs.update(run.id, {
-      correlationJson: JSON.stringify({ runId: run.id }),
+    const run = this.deps.runs.execute({
+      type: "run.start",
+      runId: createdRun.id,
+      expectedAggregateVersion: createdRun.aggregateVersion,
     });
 
     try {
@@ -50,9 +51,11 @@ export class PlanDraftApiService {
         requestId: run.id,
         planner: planner ?? this.deps.planner,
       });
-      this.deps.runs.update(run.id, {
-        status: "completed",
-        resultJson: JSON.stringify({ planId: draft.planId, version: draft.version }),
+      this.deps.runs.execute({
+        type: "run.complete",
+        runId: run.id,
+        expectedAggregateVersion: run.aggregateVersion,
+        result: { planId: draft.planId, version: draft.version },
       });
       this.deps.trace?.write({ type: "run_end", runId: run.id, kind: "plan", status: "completed" });
       return {
@@ -74,7 +77,15 @@ export class PlanDraftApiService {
       };
     } catch (error) {
       const publicError = toPublicError(error, "生成计划失败");
-      this.deps.runs.update(run.id, { status: "failed", error: publicError.message });
+      const current = this.deps.runs.get(run.id);
+      if (current && current.status === "running") {
+        this.deps.runs.execute({
+          type: "run.fail",
+          runId: current.id,
+          expectedAggregateVersion: current.aggregateVersion,
+          error: publicError.message,
+        });
+      }
       this.deps.trace?.write({ type: "run_end", runId: run.id, kind: "plan", status: "failed" });
       if (error instanceof PlanValidationError) {
         return {

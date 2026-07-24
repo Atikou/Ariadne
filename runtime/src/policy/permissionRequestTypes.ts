@@ -115,7 +115,7 @@ export const PermissionRequestCreateInputSchema = z
     blockedTool: z
       .object({
         name: nonEmptyString,
-        input: z.record(z.unknown()).optional(),
+        input: z.record(z.string(), z.unknown()).optional(),
       })
       .strict()
       .optional(),
@@ -143,7 +143,7 @@ const permissionRequestPayloadObjectSchema = z
     blockedTool: z
       .object({
         name: nonEmptyString,
-        input: z.record(z.unknown()).optional(),
+        input: z.record(z.string(), z.unknown()).optional(),
       })
       .strict()
       .optional(),

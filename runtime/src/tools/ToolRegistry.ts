@@ -1,12 +1,12 @@
 import { performance } from "node:perf_hooks";
 import crypto from "node:crypto";
+import { z } from "zod";
 
 import type { TraceLogger } from "../trace/TraceLogger.js";
 import { extractNetworkTarget } from "../policy/NetworkPolicy.js";
 import { assessPermissionDeniedRisk, assessToolRisk } from "../policy/ToolRiskAssessment.js";
 import { redactPreview, redactString, redactValue } from "../util/redact.js";
-import type { ToolPermission } from "../core/permissions.js";
-import { CONFIRMATION_REQUIRED } from "../core/permissions.js";
+import { CONFIRMATION_REQUIRED, TOOL_PERMISSION_VALUES, type ToolPermission } from "../core/permissions.js";
 import type { ToolStorage } from "./storage/ToolStorage.js";
 import { sanitizeWorkspacePathsInError } from "./pathSafe.js";
 import {
@@ -14,8 +14,23 @@ import {
   resolveToolOutcome,
   type ToolOutcome,
 } from "./toolOutcome.js";
-import type { Tool, ToolContext, ToolErrorCategory, ToolErrorCode, ToolRunResult, ToolSpec } from "./types.js";
+import {
+  TOOL_DATA_SENSITIVITY_VALUES,
+  TOOL_EFFECT_VALUES,
+  TOOL_EGRESS_VALUES,
+  TOOL_IDEMPOTENCY_VALUES,
+  TOOL_PARALLELISM_VALUES,
+  TOOL_RESOURCE_SCOPE_VALUES,
+  TOOL_RISK_VALUES,
+  type ToolContext,
+  type ToolContract,
+  type ToolContractSpec,
+  type ToolErrorCategory,
+  type ToolErrorCode,
+  type ToolRunResult,
+} from "./types.js";
 import type { ToolProvider } from "./ToolProvider.js";
+import type { HookManager } from "../hooks/HookManager.js";
 
 export interface RegistryRunContext extends ToolContext {
   /** 本次允许的权限集；提供时，工具权限不在其中则拒绝。 */
@@ -27,18 +42,19 @@ export interface RegistryRunContext extends ToolContext {
  * `run` 返回归一化结果（不抛异常），便于服务端与执行器统一分支处理。
  */
 export class ToolRegistry {
-  private readonly tools = new Map<string, Tool>();
+  private readonly tools = new Map<string, ToolContract>();
   private readonly toolProviders = new Map<string, string>();
   private readonly providers = new Map<string, ToolProvider>();
   private defaultContext: Partial<ToolContext> = {};
+  private hooks?: HookManager;
 
   constructor(
     private readonly trace?: TraceLogger,
     private readonly storage?: ToolStorage,
   ) {}
 
-  register(tool: Tool): this {
-    return this.registerTool(tool, "direct");
+  register(tool: ToolContract): this {
+    return this.registerTool(tool, tool.providerId);
   }
 
   registerProvider(provider: ToolProvider): this {
@@ -54,6 +70,37 @@ export class ToolRegistry {
     }
     this.providers.set(id, provider);
     for (const tool of tools) this.registerTool(tool, id);
+    return this;
+  }
+
+  replaceProvider(provider: ToolProvider): this {
+    const id = provider.id.trim();
+    if (!id) throw new Error("ToolProvider.id 不能为空");
+    const tools = [...provider.listTools()];
+    const names = new Set<string>();
+    for (const tool of tools) {
+      if (names.has(tool.name)) throw new Error(`ToolProvider ${id} 内工具名重复：${tool.name}`);
+      const currentProvider = this.toolProviders.get(tool.name);
+      if (currentProvider !== undefined && currentProvider !== id) {
+        throw new Error(`工具重复注册：${tool.name}`);
+      }
+      validateToolContract(tool);
+      if (tool.providerId !== id) throw new Error(`tool_contract_invalid:providerId:${id}`);
+      names.add(tool.name);
+    }
+
+    const previous = this.providers.get(id);
+    for (const [toolName, providerId] of this.toolProviders) {
+      if (providerId !== id) continue;
+      this.tools.delete(toolName);
+      this.toolProviders.delete(toolName);
+    }
+    this.providers.set(id, provider);
+    for (const tool of tools) {
+      this.tools.set(tool.name, tool);
+      this.toolProviders.set(tool.name, id);
+    }
+    previous?.dispose?.();
     return this;
   }
 
@@ -79,7 +126,11 @@ export class ToolRegistry {
     }));
   }
 
-  private registerTool(tool: Tool, providerId: string): this {
+  private registerTool(tool: ToolContract, providerId: string): this {
+    validateToolContract(tool);
+    if (tool.providerId !== providerId) {
+      throw new Error(`tool_contract_invalid:providerId:${providerId}`);
+    }
     if (this.tools.has(tool.name)) {
       throw new Error(`工具重复注册：${tool.name}`);
     }
@@ -88,7 +139,7 @@ export class ToolRegistry {
     return this;
   }
 
-  get(name: string): Tool | undefined {
+  get(name: string): ToolContract | undefined {
     return this.tools.get(name);
   }
 
@@ -101,27 +152,42 @@ export class ToolRegistry {
     return this;
   }
 
-  list(): ToolSpec[] {
+  list(): ToolContractSpec[] {
     return [...this.tools.values()].map((t) => ({
       name: t.name,
+      version: t.version,
       description: t.description,
-      permission: t.permission,
-      possiblePermissions: t.possiblePermissions,
-      hasSideEffect: t.hasSideEffect,
-      inputFields: describeSchemaFields(t),
-      providerId: this.toolProviders.get(t.name),
+      permissions: [t.permissions[0], ...t.permissions.slice(1)],
+      resourceScopes: [...t.resourceScopes],
+      effects: [...t.effects],
+      risk: t.risk,
+      parallelism: t.parallelism,
+      idempotency: t.idempotency,
+      dataSensitivity: t.dataSensitivity,
+      egress: [...t.egress],
+      timeoutMs: t.timeoutMs,
+      supportsResume: t.supportsResume,
+      providerId: t.providerId,
+      inputJsonSchema: z.toJSONSchema(t.inputSchema) as Record<string, unknown>,
+      outputJsonSchema: z.toJSONSchema(t.outputSchema) as Record<string, unknown>,
     }));
+  }
+
+  setHookManager(hooks: HookManager): this {
+    this.hooks = hooks;
+    return this;
   }
 
   resolveRequiredPermissions(name: string, input: unknown): ToolPermission[] {
     const tool = this.tools.get(name);
     if (!tool) return [];
-    if (!tool.resolvePermissions) return [tool.permission];
+    const basePermission = tool.permissions[0];
+    if (!tool.resolvePermissions) return [basePermission];
     try {
       const resolved = tool.resolvePermissions(input as never);
-      return [...new Set(resolved.length > 0 ? resolved : [tool.permission])];
+      return [...new Set(resolved.length > 0 ? resolved : [basePermission])];
     } catch {
-      return [tool.permission];
+      return [basePermission];
     }
   }
 
@@ -167,9 +233,43 @@ export class ToolRegistry {
     }
 
     const requiredPermissions = this.resolveRequiredPermissions(name, parsed.data);
-    const effectivePermission = mostPrivilegedPermission(requiredPermissions) ?? tool.permission;
-    const missingPermission = ctx.allowedPermissions
-      ? requiredPermissions.find((permission) => !ctx.allowedPermissions!.includes(permission))
+    const effectivePermission = mostPrivilegedPermission(requiredPermissions) ?? tool.permissions[0];
+    const hookAuthority = this.hooks
+      ? await this.hooks.dispatch({
+          event: "tool.pre",
+          eventId: toolCallId,
+          payload: { tool: name, input: parsed.data },
+          authority: {
+            permissions: [...(ctx.allowedPermissions ?? requiredPermissions)],
+            timeoutMs: tool.timeoutMs,
+          },
+        })
+      : {
+          allowed: true,
+          authority: {
+            permissions: [...(ctx.allowedPermissions ?? requiredPermissions)],
+            timeoutMs: tool.timeoutMs,
+          },
+          deliveryIds: [],
+        };
+    if (!hookAuthority.allowed) {
+      const result = registryExecutionError({
+        tool: name,
+        durationMs: elapsed(),
+        toolCallId,
+        code: "permission_denied",
+        category: "permission_error",
+        kind: "permission_denied",
+        message: hookAuthority.reason ?? "hook_rejected",
+        requiresUserAction: true,
+        recoverable: true,
+      });
+      this.logStorage(name, parsed.data, result, startedAt, ctx);
+      return result;
+    }
+    const missingPermission = ctx.allowedPermissions || this.hooks
+      ? requiredPermissions.find((permission) =>
+          !hookAuthority.authority.permissions.includes(permission))
       : undefined;
     if (missingPermission) {
       const risk = assessPermissionDeniedRisk(missingPermission, `当前不允许的权限：${missingPermission}`, {
@@ -263,9 +363,69 @@ export class ToolRegistry {
     });
 
     try {
-      const output = await this.withTimeout(tool, () => tool.execute(parsed.data, execCtx), abortController);
+      const output = await this.withTimeout(
+        tool,
+        () => tool.execute(parsed.data, execCtx),
+        abortController,
+        hookAuthority.authority.timeoutMs,
+      );
       const durationMs = elapsed();
-      const outcome = resolveToolOutcome(name, output);
+      const parsedOutput = tool.outputSchema.safeParse(output);
+      if (!parsedOutput.success) {
+        const result = registryExecutionError({
+          tool: name,
+          durationMs,
+          toolCallId,
+          code: "invalid_output",
+          category: "unknown_error",
+          kind: "invalid_output",
+          message: parsedOutput.error.issues
+            .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+            .join("; "),
+          executed: true,
+        });
+        this.trace?.write({
+          type: "tool_audit",
+          tool: name,
+          status: "execution_error",
+          outcomeClass: "execution_error",
+          outcomeKind: "invalid_output",
+          code: "invalid_output",
+          category: "unknown_error",
+          error: redactPreview(result.message, 300),
+          toolCallId,
+          runId: ctx.requestId,
+          sessionId: ctx.sessionId,
+          taskId: ctx.taskId,
+          workspaceAccess: ctx.workspaceAccess,
+        });
+        this.logStorage(name, parsed.data, result, startedAt, ctx);
+        return result;
+      }
+      const validatedOutput = parsedOutput.data;
+      const postHook = this.hooks
+        ? await this.hooks.dispatch({
+            event: "tool.post",
+            eventId: `${toolCallId}:post`,
+            payload: { tool: name, output: validatedOutput },
+            authority: hookAuthority.authority,
+          })
+        : undefined;
+      if (postHook && !postHook.allowed) {
+        const result = registryExecutionError({
+          tool: name,
+          durationMs,
+          toolCallId,
+          code: "permission_denied",
+          category: "permission_error",
+          kind: "permission_denied",
+          message: postHook.reason ?? "post_hook_rejected",
+          executed: true,
+        });
+        this.logStorage(name, parsed.data, result, startedAt, ctx);
+        return result;
+      }
+      const outcome = resolveToolOutcome(name, validatedOutput);
       const auditStatus =
         outcome.class === "observation_success"
           ? "ok"
@@ -279,7 +439,7 @@ export class ToolRegistry {
         outcomeClass: outcome.class,
         outcomeKind: outcome.kind,
         durationMs,
-        outputPreview: redactPreview(output, 600),
+        outputPreview: redactPreview(validatedOutput, 600),
         toolCallId,
         runId: ctx.requestId,
         sessionId: ctx.sessionId,
@@ -292,7 +452,7 @@ export class ToolRegistry {
         toolCallId,
         executed: true,
         outcome,
-        output,
+        output: validatedOutput,
       });
       this.logStorage(name, parsed.data, result, startedAt, ctx);
       return result;
@@ -395,11 +555,12 @@ export class ToolRegistry {
   }
 
   private async withTimeout<T>(
-    tool: Tool,
+    tool: ToolContract,
     fn: () => Promise<T>,
     controller: AbortController,
+    timeoutMs = tool.timeoutMs,
   ): Promise<T> {
-    if (!tool.timeoutMs) return fn();
+    if (!timeoutMs) return fn();
     const signal = controller.signal;
     let timer: NodeJS.Timeout | undefined;
     try {
@@ -410,7 +571,7 @@ export class ToolRegistry {
             // 先以超时 settle race（保证错误分类为 timeout），再 abort 通知工具停止后续工作。
             reject(new Error("__tool_timeout__"));
             controller.abort();
-          }, tool.timeoutMs);
+          }, timeoutMs);
           if (signal.aborted) {
             reject(new Error("aborted"));
             return;
@@ -470,10 +631,47 @@ export function classifyToolError(code: ToolErrorCode, error: string): ToolError
   return "unknown_error";
 }
 
-function describeSchemaFields(tool: Tool): string[] | undefined {
-  const shape = (tool.inputSchema as { shape?: Record<string, unknown> }).shape;
-  if (!shape) return undefined;
-  return Object.keys(shape);
+function validateToolContract(tool: ToolContract): void {
+  const invalid = (field: string): never => {
+    throw new Error(`tool_contract_invalid:${field}`);
+  };
+  if (!tool || typeof tool !== "object") invalid("contract");
+  if (!/^[a-z][a-z0-9_]*$/.test(tool.name ?? "")) invalid("name");
+  if (!tool.version?.trim()) invalid("version");
+  if (!tool.description?.trim()) invalid("description");
+  if (typeof tool.inputSchema?.safeParse !== "function") invalid("inputSchema");
+  if (typeof tool.outputSchema?.safeParse !== "function") invalid("outputSchema");
+  validateDeclaredValues(tool.permissions, TOOL_PERMISSION_VALUES, "permissions");
+  validateDeclaredValues(tool.resourceScopes, TOOL_RESOURCE_SCOPE_VALUES, "resourceScopes");
+  validateDeclaredValues(tool.effects, TOOL_EFFECT_VALUES, "effects");
+  if (!TOOL_RISK_VALUES.includes(tool.risk)) invalid("risk");
+  if (!TOOL_PARALLELISM_VALUES.includes(tool.parallelism)) invalid("parallelism");
+  if (!TOOL_IDEMPOTENCY_VALUES.includes(tool.idempotency)) invalid("idempotency");
+  if (!TOOL_DATA_SENSITIVITY_VALUES.includes(tool.dataSensitivity)) invalid("dataSensitivity");
+  validateDeclaredValues(tool.egress, TOOL_EGRESS_VALUES, "egress");
+  if (!Number.isInteger(tool.timeoutMs) || tool.timeoutMs <= 0) invalid("timeoutMs");
+  if (typeof tool.supportsResume !== "boolean") invalid("supportsResume");
+  if (!tool.providerId?.trim()) invalid("providerId");
+  if (typeof tool.execute !== "function") invalid("execute");
+  if (
+    tool.parallelism === "parallel_safe" &&
+    tool.effects.some((effect) => effect !== "none" && effect !== "workspace_read")
+  ) {
+    invalid("parallelism_effects");
+  }
+}
+
+function validateDeclaredValues<T extends string>(
+  actual: readonly T[] | undefined,
+  allowed: readonly T[],
+  field: string,
+): void {
+  if (!Array.isArray(actual) || actual.length === 0) {
+    throw new Error(`tool_contract_invalid:${field}`);
+  }
+  if (new Set(actual).size !== actual.length || actual.some((value) => !allowed.includes(value))) {
+    throw new Error(`tool_contract_invalid:${field}`);
+  }
 }
 
 function registryFromOutcome(input: {

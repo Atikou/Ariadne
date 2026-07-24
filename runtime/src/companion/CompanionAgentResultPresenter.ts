@@ -5,6 +5,7 @@ import {
 } from "../assistant/AgentHandoffContracts.js";
 import type { ChatRequest, ModelResponse } from "../model/types.js";
 import type { RouteOptions } from "../model/routeOptions.js";
+import type { TraceLogger } from "../trace/TraceLogger.js";
 import { toPublicError } from "../util/publicError.js";
 import {
   CompanionAgentResultPresentedSchema,
@@ -26,6 +27,7 @@ export interface CompanionAgentResultPresenterDeps {
   storageManager: CompanionStorageManager;
   knowledge: CompanionKnowledgeService;
   directChat: (request: ChatRequest, opts?: RouteOptions) => Promise<ModelResponse>;
+  trace?: TraceLogger;
 }
 
 export interface CompanionAgentResultPresentationInput {
@@ -121,7 +123,12 @@ export class CompanionAgentResultPresenter {
           temperature: 0.5,
           maxTokens: MAX_AGENT_RESULT_TOKENS,
         },
-        { taskType: "simple" },
+        {
+          taskType: "simple",
+          ...(proposal.modelBinding
+            ? { forceClient: proposal.modelBinding.clientName }
+            : {}),
+        },
       );
       const turn = parseCompanionModelTurn(modelResponse.content, {
         protocolEnabled: true,
@@ -141,7 +148,26 @@ export class CompanionAgentResultPresenter {
       if (!safety.content.trim()) throw new Error("companion_agent_result_empty_response");
     } catch (error) {
       source = "fallback";
-      fallbackCode = toPublicError(error, "主助手结果整理失败").code;
+      const publicError = toPublicError(error, "主助手结果整理失败");
+      fallbackCode = publicError.code;
+      this.deps.trace?.write({
+        type: "companion.agent_result.presentation.warning",
+        level: "warning",
+        category: "companion.agent_result.presentation",
+        message: publicError.message,
+        runId: proposal.runId,
+        sessionId: proposal.companionSessionId,
+        metadata: {
+          lifecycleStage: "agent_result_presentation",
+          proposalId: proposal.id,
+          errorCode: publicError.code,
+          retryable: false,
+          modelSelectionMode: proposal.modelBinding?.selectionMode ?? "automatic",
+          requestedClientName: proposal.modelBinding?.clientName ?? null,
+          requestedModelName: proposal.modelBinding?.modelName ?? null,
+          protocolVersion: proposal.modelBinding?.protocolVersion ?? null,
+        },
+      });
       safety = applyCompanionSafety({
         userText: proposal.originalRequest,
         assistantText: renderAgentResultFallback(outcome),

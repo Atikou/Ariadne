@@ -23,6 +23,19 @@ export interface AgentProposalCapabilityPolicyInput {
   draft: AgentProposalDraft;
 }
 
+export class AgentProposalPermissionValidationError extends Error {
+  readonly code = "AGENT_PROPOSAL_PERMISSION_VALIDATION_ERROR";
+  readonly retryable = false;
+
+  constructor(
+    message: string,
+    readonly fieldIssues: Array<{ path: string; code: string; message: string }>,
+  ) {
+    super(message);
+    this.name = "AgentProposalPermissionValidationError";
+  }
+}
+
 /**
  * Treats the AI-proposed capabilities as the requested ceiling and intersects
  * them only with the host/user permission ceiling. The system enforces explicit
@@ -32,11 +45,14 @@ export interface AgentProposalCapabilityPolicyInput {
 export class AgentProposalCapabilityPolicy {
   constructor(input: {
     permissionPolicy?: UserPermissionPolicy;
+    browserAvailable?: () => boolean;
   } = {}) {
     this.permissionPolicy = input.permissionPolicy;
+    this.browserAvailable = input.browserAvailable ?? (() => false);
   }
 
   private readonly permissionPolicy: UserPermissionPolicy | undefined;
+  private readonly browserAvailable: () => boolean;
 
   normalize(input: AgentProposalCapabilityPolicyInput): AgentProposalDraft {
     const requestedPermissions = capabilitiesToToolPermissions(
@@ -56,7 +72,9 @@ export class AgentProposalCapabilityPolicy {
       if (capability === "file-read") return allowedPermissions.has("read");
       if (explicitlyReadOnly) return false;
       if (capability === "file-write") return allowedPermissions.has("write");
-      if (capability === "browser") return allowedPermissions.has("network");
+      if (capability === "browser") {
+        return this.browserAvailable() && allowedPermissions.has("network");
+      }
       return allowedPermissions.has("shell");
     });
 
@@ -67,7 +85,18 @@ export class AgentProposalCapabilityPolicy {
       (capability) => capability === "file-write" || capability === "shell",
     );
 
-    return AgentProposalDraftSchema.parse({
+    if (effectiveCapabilities.length === 0) {
+      throw new AgentProposalPermissionValidationError(
+        "用户权限边界不允许提案申请的任何能力",
+        [{
+          path: "requestedCapabilities",
+          code: "permission_ceiling_empty",
+          message: "所有请求能力均被当前用户、工作区或运行时权限边界拒绝",
+        }],
+      );
+    }
+
+    const normalized = AgentProposalDraftSchema.safeParse({
       ...input.draft,
       requestedCapabilities: effectiveCapabilities,
       risk: hasSideEffects
@@ -76,6 +105,17 @@ export class AgentProposalCapabilityPolicy {
           : "write"
         : "read-only",
     });
+    if (!normalized.success) {
+      throw new AgentProposalPermissionValidationError(
+        "权限裁剪后的 Agent 提案不符合授权契约",
+        normalized.error.issues.slice(0, 12).map((issue) => ({
+          path: issue.path.map(String).join(".") || "$",
+          code: issue.code,
+          message: issue.message.slice(0, 512),
+        })),
+      );
+    }
+    return normalized.data;
   }
 }
 

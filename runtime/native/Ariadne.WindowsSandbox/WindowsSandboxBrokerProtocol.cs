@@ -191,4 +191,93 @@ internal static class WindowsSandboxBrokerClient
             throw new NativeExecutionException("setup_required", "sandbox broker connection failed", innerException: error);
         }
     }
+
+    internal static async Task RunInteractiveAsync(
+        ExecutionRequest request,
+        string stateRoot,
+        TextReader input,
+        CancellationToken cancellationToken = default)
+    {
+        var payload = WindowsSandboxBrokerProtocol.SerializeRequest(request);
+        SandboxControlPlane.RequireExecutionManifest(stateRoot);
+        using var pipe = new NamedPipeClientStream(
+            ".",
+            WindowsSandboxBrokerProtocol.PipeName(stateRoot),
+            PipeDirection.InOut,
+            PipeOptions.Asynchronous | PipeOptions.WriteThrough,
+            TokenImpersonationLevel.Impersonation);
+        using var relayCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        try
+        {
+            await pipe.ConnectAsync(
+                WindowsSandboxBrokerProtocol.ConnectTimeoutMilliseconds,
+                cancellationToken);
+            await WindowsSandboxBrokerProtocol.WriteRequestAsync(pipe, payload, cancellationToken);
+            var response = WindowsSandboxBrokerProtocol.CopyResponseAsync(
+                pipe,
+                Console.OpenStandardOutput(),
+                request.MaxOutputBytes,
+                cancellationToken);
+            var controls = RelayInteractiveInputAsync(
+                input,
+                pipe,
+                request.ExecutionId,
+                relayCancellation.Token);
+            var first = await Task.WhenAny(response, controls);
+            if (first == controls)
+            {
+                await controls;
+                await response;
+            }
+            else
+            {
+                await response;
+            }
+            relayCancellation.Cancel();
+            await IgnoreCancellationAsync(controls);
+        }
+        catch (TimeoutException error)
+        {
+            throw new NativeExecutionException("setup_required", "sandbox broker is unavailable", innerException: error);
+        }
+        catch (IOException error)
+        {
+            throw new NativeExecutionException("setup_required", "sandbox broker connection failed", innerException: error);
+        }
+        finally
+        {
+            relayCancellation.Cancel();
+        }
+    }
+
+    private static async Task RelayInteractiveInputAsync(
+        TextReader input,
+        Stream pipe,
+        string executionId,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            var line = await Program.ReadBoundedLineAsync(input, 96 * 1024, cancellationToken);
+            var frame = Program.Deserialize<InteractiveInputFrame>(line);
+            var end = ExecutionValidator.IsInteractiveEnd(frame, executionId);
+            if (!end) _ = ExecutionValidator.DecodeInteractiveInput(frame, executionId);
+            var payload = JsonSerializer.SerializeToUtf8Bytes(frame, JsonProtocol.Options);
+            await pipe.WriteAsync(payload, cancellationToken);
+            await pipe.WriteAsync("\n"u8.ToArray(), cancellationToken);
+            await pipe.FlushAsync(cancellationToken);
+            if (end) return;
+        }
+    }
+
+    private static async Task IgnoreCancellationAsync(Task task)
+    {
+        try
+        {
+            await task;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
 }

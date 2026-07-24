@@ -44,6 +44,19 @@ export type AgentProposalStatus = z.infer<typeof AgentProposalStatusSchema>;
 export const AgentGrantStatusSchema = z.enum(["active", "consumed", "revoked"]);
 export type AgentGrantStatus = z.infer<typeof AgentGrantStatusSchema>;
 
+/**
+ * Durable routing authority for a handoff created from an explicit Chat model choice.
+ * Absence means Runtime may route automatically; presence means every model turn in
+ * the handoff lifecycle must use exactly this client and must never fall back.
+ */
+export const AgentModelBindingSchema = z.object({
+  selectionMode: z.literal("manual"),
+  clientName: identifier,
+  modelName: identifier,
+  protocolVersion: z.string().trim().min(1).max(32),
+}).strict();
+export type AgentModelBinding = z.infer<typeof AgentModelBindingSchema>;
+
 const uniqueScopes = z.array(boundedText(1_024)).min(1).max(16).superRefine((items, ctx) => {
   const normalized = items.map((item) => item.toLocaleLowerCase());
   if (new Set(normalized).size !== normalized.length) {
@@ -61,6 +74,7 @@ export const AgentProposalCreateInputSchema = z.object({
   requestedScope: uniqueScopes,
   risk: AgentProposalRiskSchema,
   workspaceKey: identifier,
+  modelBinding: AgentModelBindingSchema.optional(),
 }).strict().superRefine((proposal, ctx) => {
   if (
     proposal.risk === "read-only"
@@ -123,6 +137,7 @@ export const AgentProposalSchema = z.object({
   requestedScope: uniqueScopes,
   risk: AgentProposalRiskSchema,
   workspaceKey: identifier,
+  modelBinding: AgentModelBindingSchema.optional(),
   status: AgentProposalStatusSchema,
   createdAt: timestamp,
   updatedAt: timestamp,

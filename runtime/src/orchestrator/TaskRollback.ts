@@ -63,8 +63,8 @@ export async function rollbackFileChangesForRun(opts: {
       workflowRoute: defaultWorkflowRouter.routeIntent("edit"),
     });
     if (result.ok) {
-      const paths = (result.output as { restoredFiles?: string[] }).restoredFiles ?? [];
-      restored.push(...paths);
+      const output = result.output as { restoredFiles?: string[]; deletedFiles?: string[] };
+      restored.push(...(output.restoredFiles ?? []), ...(output.deletedFiles ?? []));
     } else {
       errors.push(`${changeId}: ${result.error}`);
     }

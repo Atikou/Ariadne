@@ -6,8 +6,13 @@ export class AgentProtocolError extends Error {
 
   constructor(
     readonly model?: { clientName?: string; modelName?: string },
+    readonly category = "unrecoverable_error",
+    readonly repairAttempts = 0,
   ) {
-    super("模型返回了无效的 Agent 动作格式，运行已终止，且未执行该响应中的任何工具。");
+    super(
+      `模型连续返回无效 Agent 动作，已在 ${repairAttempts} 次无副作用修复后终止；` +
+      `错误类别：${category}。该响应中的工具未执行。`,
+    );
     this.name = "AgentProtocolError";
   }
 }

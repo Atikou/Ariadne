@@ -6,6 +6,7 @@ export interface AgentSystemPromptInput {
   isToolExposed: (toolName: string) => boolean;
   systemHint: string;
   workflowCapabilityHint?: string;
+  additionalInstructions?: string;
   extra?: string;
 }
 
@@ -15,11 +16,18 @@ export function buildAgentSystemPrompt(input: AgentSystemPromptInput): string {
     .list()
     .filter(
       (t) =>
-        input.allowedPermissions.includes(t.permission) && input.isToolExposed(t.name),
+        input.allowedPermissions.includes(t.permissions[0]) && input.isToolExposed(t.name),
     )
     .map((t) => {
-      const side = t.hasSideEffect ? " [副作用]" : "";
-      return `- ${t.name}(${t.inputFields?.join(", ") ?? ""}) [权限:${t.permission}]${side}：${t.description}`;
+      const side = t.effects.some((effect) => effect !== "none" && effect !== "workspace_read")
+        ? " [副作用]"
+        : "";
+      const properties = t.inputJsonSchema.properties;
+      const inputFields =
+        properties && typeof properties === "object" && !Array.isArray(properties)
+          ? Object.keys(properties)
+          : [];
+      return `- ${t.name}(${inputFields.join(", ")}) [权限:${t.permissions.join(",")}]${side}：${t.description}`;
     })
     .join("\n");
 
@@ -46,6 +54,7 @@ export function buildAgentSystemPrompt(input: AgentSystemPromptInput): string {
     "12. 任务需要某个已列出的工具时，直接输出 tool/tools 调用。不要回复“没有权限”“无法执行”，也不要询问用户“是否开始”“是否确认”或要求用户再发一次确认；Runtime 会在实际工具权限不足时向用户申请具体权限，并在批准后继续当前运行。只有 Runtime 明确返回用户拒绝后，才说明该操作因拒绝而未执行。",
     input.systemHint,
     input.workflowCapabilityHint ?? "",
+    input.additionalInstructions ?? "",
     input.extra ? `\n补充要求：${input.extra}` : "",
   ].join("\n");
 }

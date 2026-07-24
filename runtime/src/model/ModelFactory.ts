@@ -1,13 +1,21 @@
-import type { ApiModelClientConfig, ModelClientConfig } from "../config/types.js";
+import type {
+  ApiModelClientConfig,
+  ModelClientConfig,
+  ProviderResilienceConfig,
+} from "../config/types.js";
 import { AnthropicClient } from "./AnthropicClient.js";
 import { OpenAICompatibleClient } from "./OpenAICompatibleClient.js";
 import { EmbeddedModelClient } from "./local/EmbeddedModelClient.js";
 import type { LocalModelRuntimeManager } from "./local/LocalModelRuntimeManager.js";
 import { clientConfigToDescriptor } from "./local/types.js";
 import type { ModelClient } from "./types.js";
+import { ResilientModelClient } from "./ProviderResilience.js";
+import type { TelemetryService } from "../telemetry/TelemetryService.js";
 
 export interface ModelFactoryDependencies {
   localRuntimes?: LocalModelRuntimeManager;
+  resilience?: ProviderResilienceConfig;
+  telemetry?: TelemetryService;
 }
 
 function resolveApiKey(config: ApiModelClientConfig): string | undefined {
@@ -31,8 +39,8 @@ export function createModelClient(
   }
 
   switch (config.protocol) {
-    case "openai-compatible":
-      return new OpenAICompatibleClient({
+    case "openai-compatible": {
+      const client = new OpenAICompatibleClient({
         name: config.name,
         providerId: config.providerId,
         model: config.model,
@@ -40,9 +48,16 @@ export function createModelClient(
         baseUrl: config.baseUrl,
         apiKey: resolveApiKey(config),
         timeoutMs: config.timeoutMs,
+        contextWindowTokens: config.contextSize,
       });
-    case "anthropic-messages":
-      return new AnthropicClient({
+      return dependencies.resilience
+        ? new ResilientModelClient(client, config.providerId, dependencies.resilience, {
+            telemetry: dependencies.telemetry,
+          })
+        : client;
+    }
+    case "anthropic-messages": {
+      const client = new AnthropicClient({
         name: config.name,
         model: config.model,
         baseUrl: config.baseUrl,
@@ -50,7 +65,14 @@ export function createModelClient(
         apiVersion: config.apiVersion,
         maxTokens: config.maxTokens,
         timeoutMs: config.timeoutMs,
+        contextWindowTokens: config.contextSize,
       });
+      return dependencies.resilience
+        ? new ResilientModelClient(client, config.providerId, dependencies.resilience, {
+            telemetry: dependencies.telemetry,
+          })
+        : client;
+    }
   }
 }
 

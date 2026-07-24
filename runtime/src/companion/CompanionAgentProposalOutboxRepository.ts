@@ -13,6 +13,7 @@ import {
 } from "./CompanionAgentProposalOutboxContracts.js";
 import {
   mapCompanionMessageRow,
+  serializeCompanionMessageEnvelope,
   type CompanionMessageRow,
 } from "./CompanionMessagePersistence.js";
 import type { CompanionMessage } from "./types.js";
@@ -274,13 +275,14 @@ export class CompanionAgentProposalOutboxRepository {
     const at = nowIso();
     this.db.prepare(
       `INSERT INTO companion_messages
-        (id, session_id, role, content, status, trusted, memory_eligible,
+        (id, session_id, role, content, status, content_envelope_json, memory_eligible,
          model_name, client_name, storage_root, created_at, updated_at, metadata_json)
-       VALUES (?, ?, 'assistant', ?, 'interrupted', 1, 0, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, 'assistant', ?, 'interrupted', ?, 0, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id,
       payload.companionSessionId,
       input.content,
+      serializeCompanionMessageEnvelope("assistant", "interrupted", id),
       input.modelName ?? null,
       input.clientName ?? null,
       this.storageRoot,

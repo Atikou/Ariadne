@@ -7,6 +7,7 @@ import type {
   LocalModelRuntimeManagerOptions,
 } from "./types.js";
 import type { ChatRequest, ModelResponse } from "../types.js";
+import type { TokenCount } from "../TokenCounter.js";
 import { createModelAbortError, throwIfModelAborted } from "../modelCancellation.js";
 
 interface QueueItem<T> {
@@ -129,6 +130,18 @@ export class LocalModelRuntimeManager {
           runtimeRoot: this.options.transformersRuntimeDirectory,
           cacheRoot: this.options.runtimeCacheDirectory,
         });
+  }
+
+  async countTokens(
+    model: LocalModelDescriptor,
+    request: Pick<ChatRequest, "messages" | "tools">,
+  ): Promise<TokenCount> {
+    return this.runExclusive(async () => {
+      if (this.disposed) throw new Error("本地模型管理器已关闭");
+      const entry = await this.ensureLoaded(model);
+      this.touch(model.id, entry);
+      return entry.runtime.countTokens(model, request);
+    });
   }
 
   private runExclusive<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {

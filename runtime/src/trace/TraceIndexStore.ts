@@ -1,8 +1,16 @@
 import { mkdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
-import { applySqliteMigrations, getSchemaInfo, type SchemaInfo } from "../storage/sqliteMigration.js";
-import { TRACE_INDEX_MIGRATIONS } from "./traceIndexMigrations.js";
+import {
+  applySqliteMigrations,
+  assertDatabaseVersionSupported,
+  getSchemaInfo,
+  type SchemaInfo,
+} from "../storage/sqliteMigration.js";
+import {
+  TRACE_INDEX_MIGRATIONS,
+  TRACE_INDEX_SCHEMA_VERSION,
+} from "./traceIndexMigrations.js";
 import { ACTIVE_REL } from "./tracePaths.js";
 
 export interface TraceIndexInsert {
@@ -26,6 +34,7 @@ export class TraceIndexStore {
   constructor(private readonly indexDbPath: string) {
     mkdirSync(pathDir(indexDbPath), { recursive: true });
     this.db = new DatabaseSync(indexDbPath);
+    assertDatabaseVersionSupported(this.db, TRACE_INDEX_SCHEMA_VERSION);
     this.db.exec("PRAGMA journal_mode = WAL;");
     const { version } = applySqliteMigrations(this.db, TRACE_INDEX_MIGRATIONS);
     this.schemaVersion = version;

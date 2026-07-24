@@ -129,7 +129,7 @@ export const TraceJsonValueSchema: z.ZodType<TraceJsonValue> = z.lazy(() =>
     z.boolean(),
     z.null(),
     z.array(TraceJsonValueSchema),
-    z.record(TraceJsonValueSchema),
+    z.record(z.string(), TraceJsonValueSchema),
   ]),
 );
 
@@ -177,7 +177,7 @@ const uniqueIdentifiers = z.array(identifier).refine(
 
 export const TraceQuerySummarySchema = z
   .object({
-    types: z.record(nonNegativeInteger),
+    types: z.record(z.string(), nonNegativeInteger),
     toolCallIds: uniqueIdentifiers,
     runIds: uniqueIdentifiers,
     sessionIds: uniqueIdentifiers,
@@ -196,7 +196,7 @@ export const TraceTimelineEntrySchema = z
     title: z.string(),
     status: z.string().optional(),
     detail: z.string().optional(),
-    refs: z.record(timelineRefValue.optional()).optional(),
+    refs: z.record(z.string(), timelineRefValue.optional()).optional(),
   })
   .strict();
 

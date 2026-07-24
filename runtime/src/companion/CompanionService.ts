@@ -86,6 +86,7 @@ import type {
   CompanionChatInput,
   CompanionChatResult,
 } from "./CompanionChatContracts.js";
+import type { TraceLogger } from "../trace/TraceLogger.js";
 
 export type CompanionPostCommitFailure =
   | {
@@ -110,6 +111,8 @@ export interface CompanionServiceDeps {
     input: CompanionAgentProposalSubmission,
   ) => CompanionAgentProposalSubmissionResult | Promise<CompanionAgentProposalSubmissionResult>;
   onPostCommitFailure?: (failure: CompanionPostCommitFailure) => void;
+  browserAvailable?: () => boolean;
+  trace?: TraceLogger;
 }
 
 export type CompanionRunContext = CompanionConversationRunContext;
@@ -137,12 +140,15 @@ export class CompanionService {
       storageManager: this.storageManager,
       knowledge: this.knowledge,
       directChat: deps.directChat,
+      trace: deps.trace,
     });
     this.conversation = new CompanionConversationWorkflow({
       storageManager: this.storageManager,
       knowledge: this.knowledge,
       directChat: deps.directChat,
       agentProposalOutbox: this.agentProposalOutbox,
+      browserAvailable: deps.browserAvailable,
+      trace: deps.trace,
     });
   }
 

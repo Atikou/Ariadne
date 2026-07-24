@@ -31,7 +31,9 @@ internal static class Program
                 WriteUnsupported(command);
                 return 0;
             }
-            var input = await ReadBoundedInputAsync();
+            var input = command == "lease"
+                ? await ReadBoundedLineAsync(Console.In, MaxInputCharacters)
+                : await ReadBoundedInputAsync();
             switch (command)
             {
                 case "status":
@@ -46,13 +48,23 @@ internal static class Program
                     ExecutionValidator.Validate(request);
                     await WindowsSandboxBrokerClient.RunAsync(request, stateRoot);
                     return 0;
+                case "lease":
+                    var leaseRequest = Deserialize<ExecutionRequest>(input);
+                    executionId = leaseRequest.ExecutionId;
+                    ExecutionValidator.Validate(leaseRequest);
+                    if (!leaseRequest.Interactive)
+                    {
+                        throw new RequestException("lease command requires interactive execution");
+                    }
+                    await WindowsSandboxBrokerClient.RunInteractiveAsync(leaseRequest, stateRoot, Console.In);
+                    return 0;
                 default:
-                    throw new RequestException("command must be status, setup, or execute");
+                    throw new RequestException("command must be status, setup, execute, or lease");
             }
         }
         catch (Exception error) when (error is RequestException or JsonException)
         {
-            if (command == "execute")
+            if (command is "execute" or "lease")
             {
                 WriteProtocolError(executionId, "invalid_request", error.Message, false);
             }
@@ -64,7 +76,7 @@ internal static class Program
         }
         catch (SetupException error)
         {
-            if (command == "execute")
+            if (command is "execute" or "lease")
             {
                 WriteProtocolError(executionId, "setup_required", error.Code, false);
             }
@@ -76,7 +88,7 @@ internal static class Program
         }
         catch (NativeExecutionException error)
         {
-            if (command == "execute")
+            if (command is "execute" or "lease")
             {
                 WriteProtocolError(executionId, error.Code, error.Message, error.Retryable);
             }
@@ -89,7 +101,7 @@ internal static class Program
         catch (Exception error)
         {
             Console.Error.WriteLine(error);
-            if (command == "execute")
+            if (command is "execute" or "lease")
             {
                 WriteProtocolError(executionId, "protocol_failure", "native sandbox helper failed", false);
                 return 0;
@@ -133,9 +145,32 @@ internal static class Program
         }
     }
 
+    internal static async Task<string> ReadBoundedLineAsync(
+        TextReader reader,
+        int maxCharacters,
+        CancellationToken cancellationToken = default)
+    {
+        var content = new StringBuilder();
+        var buffer = new char[1];
+        while (true)
+        {
+            var read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken);
+            if (read == 0) throw new RequestException("request ended before newline");
+            if (buffer[0] == '\n')
+            {
+                return content.ToString().TrimEnd('\r');
+            }
+            if (content.Length >= maxCharacters)
+            {
+                throw new RequestException("request line exceeds the protocol limit");
+            }
+            content.Append(buffer[0]);
+        }
+    }
+
     private static void WriteUnsupported(string? command)
     {
-        if (command == "execute")
+        if (command is "execute" or "lease")
         {
             WriteProtocolError(null, "unsupported_platform", "Windows native sandbox requires Windows", false);
             return;

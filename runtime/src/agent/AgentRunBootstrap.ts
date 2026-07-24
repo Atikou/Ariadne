@@ -1,7 +1,7 @@
 import type { AgentNotification } from "../background/types.js";
 import type { ContextManager } from "../context/ContextManager.js";
 import type { ChatMessage } from "../model/types.js";
-import { wrapUntrustedToolOutput } from "../util/injection.js";
+import { wrapExternalToolOutput } from "../util/injection.js";
 import { renderNotifications } from "./AgentNotificationRenderer.js";
 import type { PausedRunSnapshot } from "./PausedRunStore.js";
 import type {
@@ -127,7 +127,7 @@ export async function bootstrapAgentRunSession(
     if (notes.length === 0) return;
     consumedNotifications.push(...notes);
     const rendered = renderNotifications(notes);
-    const wrapped = wrapUntrustedToolOutput("notification", rendered);
+    const wrapped = wrapExternalToolOutput("notification", rendered);
     messages.push({
       role: "system",
       content: typeof wrapped === "string" ? wrapped : JSON.stringify(wrapped),

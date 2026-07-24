@@ -1,4 +1,4 @@
-import type { AgentLoop, LoopChatFn } from "../agent/AgentLoop.js";
+import type { AgentLoop, AgentRunResult, LoopChatFn } from "../agent/AgentLoop.js";
 import type { AgentModelTurnEvent } from "../agent/AgentModelTurn.js";
 import type { AgentToolStep } from "../agent/toolStep.js";
 import type { AgentCompletionContext } from "../agent/completion/TaskCompletionContract.js";
@@ -15,13 +15,14 @@ import type { PausedRunStore } from "../agent/PausedRunStore.js";
 import type { AgentLoopFactory } from "./AgentLoopFactory.js";
 import type { AgentRunLifecycle } from "./AgentRunLifecycle.js";
 import type { AgentRunRegistry } from "./AgentRunRegistry.js";
-import type { RunStore } from "./RunStore.js";
+import type { RunAggregateRepository } from "../run/RunAggregateRepository.js";
 import type { SessionWorkspaceResolver } from "./SessionWorkspaceResolver.js";
 import type { TaskService } from "./TaskService.js";
 import {
   agentConversationRequestBodySchema,
   formatAgentRequestValidationError,
 } from "./AgentRequestSchemas.js";
+import type { HookManager } from "../hooks/HookManager.js";
 
 export interface AgentRequestCallbacks {
   onStep?: (step: AgentToolStep) => void;
@@ -62,7 +63,7 @@ export interface AgentRequestServiceDeps {
   agentRuntime: AgentRuntimeServices;
   sessionWorkspace: SessionWorkspaceResolver;
   taskService: Pick<TaskService, "resolveOrCreateTask" | "createDetachedTask">;
-  runs: RunStore;
+  runs: RunAggregateRepository;
   agentRunRegistry: AgentRunRegistry;
   agentLoopFactory: AgentLoopFactory;
   agentRunLifecycle: AgentRunLifecycle;
@@ -70,6 +71,7 @@ export interface AgentRequestServiceDeps {
   planHandoffStore?: PlanHandoffStore;
   permissionRequestStore?: PermissionRequestStore;
   pausedRunStore?: PausedRunStore;
+  hooks?: HookManager;
 }
 
 /** Owns the core Agent request preparation and one-shot execution lifecycle. */
@@ -92,15 +94,36 @@ export class AgentRequestService {
     if ("error" in prepared) return prepared.error;
     const { ctx } = prepared;
 
+    let result: AgentRunResult;
     try {
       this.deps.agentRunLifecycle.traceStart(ctx);
-      const result = await ctx.loop.run(ctx.message, ctx.system);
-      return { status: 200, body: this.deps.agentRunLifecycle.finalizeSuccess(ctx, result) };
+      result = await ctx.loop.run(ctx.message, ctx.system);
     } catch (error) {
-      return { status: 502, body: this.deps.agentRunLifecycle.finalizeFailure(ctx, error) };
-    } finally {
+      const resultBody = this.deps.agentRunLifecycle.finalizeFailure(ctx, error);
+      try {
+        await this.notifyPost(ctx.run.id);
+      } catch (hookError) {
+        this.deps.agentRunRegistry.unregister(ctx.run.id);
+        return {
+          status: 403,
+          body: { error: String(hookError), runId: ctx.run.id, taskId: ctx.task.id },
+        };
+      }
       this.deps.agentRunRegistry.unregister(ctx.run.id);
+      return { status: 502, body: resultBody };
     }
+    const resultBody = this.deps.agentRunLifecycle.finalizeSuccess(ctx, result);
+    try {
+      await this.notifyPost(ctx.run.id);
+    } catch (hookError) {
+      this.deps.agentRunRegistry.unregister(ctx.run.id);
+      return {
+        status: 403,
+        body: { error: String(hookError), runId: ctx.run.id, taskId: ctx.task.id },
+      };
+    }
+    this.deps.agentRunRegistry.unregister(ctx.run.id);
+    return { status: 200, body: resultBody };
   }
 
   async prepare(
@@ -149,17 +172,17 @@ export class AgentRequestService {
     });
     const handoffPermissionCeiling =
       execution?.permissionCeiling ?? execution?.grantedPermissions;
-    const policy = handoffPermissionCeiling
+    let policy = handoffPermissionCeiling
       ? {
           ...resolvedPolicy,
           allowedPermissions: resolvedPolicy.allowedPermissions.filter((permission) =>
             handoffPermissionCeiling.includes(permission)),
         }
       : resolvedPolicy;
-    const effectiveHandoffPermissions = handoffPermissionCeiling
+    let effectiveHandoffPermissions = handoffPermissionCeiling
       ? [...policy.allowedPermissions]
       : undefined;
-    const effectiveRunGrantedPermissions = execution?.grantedPermissions
+    let effectiveRunGrantedPermissions = execution?.grantedPermissions
       ? execution.grantedPermissions.filter((permission) =>
           policy.allowedPermissions.includes(permission))
       : undefined;
@@ -211,39 +234,72 @@ export class AgentRequestService {
     const task = execution?.taskBinding === "detached"
       ? this.deps.taskService.createDetachedTask(sessionId, message.slice(0, 500))
       : this.deps.taskService.resolveOrCreateTask(sessionId, message.slice(0, 500));
-    const run = this.deps.runs.create({
+    const createdRun = this.deps.runs.execute({
+      type: "run.create",
       kind: "agent",
-      status: "running",
       sessionId,
       taskId: task.id,
       goal: message.slice(0, 200),
       parentRunId: execution?.parentRunId,
-      correlation: {
-        runId: "",
+      causationId: execution?.authorization
+        ? `agent-proposal:${execution.authorization.proposalId}`
+        : undefined,
+    });
+    const hook = await this.deps.hooks?.dispatch({
+      event: "run.pre",
+      eventId: createdRun.id,
+      payload: {
+        runId: createdRun.id,
+        kind: "agent",
         sessionId,
         taskId: task.id,
-        ...(execution?.authorization
-          ? { requestId: `agent-proposal:${execution.authorization.proposalId}` }
-          : {}),
       },
+      authority: {
+        permissions: policy.allowedPermissions,
+        timeoutMs: policy.budget.maxRuntimeMs,
+      },
+    });
+    if (hook && !hook.allowed) {
+      this.deps.runs.execute({
+        type: "run.fail",
+        runId: createdRun.id,
+        expectedAggregateVersion: createdRun.aggregateVersion,
+        error: hook.reason ?? "run_hook_rejected",
+      });
+      await this.notifyPost(createdRun.id);
+      return {
+        error: {
+          status: 403,
+          body: {
+            error: hook.reason ?? "run_hook_rejected",
+            runId: createdRun.id,
+            taskId: task.id,
+          },
+        },
+      };
+    }
+    if (hook) {
+      policy = {
+        ...policy,
+        allowedPermissions: policy.allowedPermissions.filter((permission) =>
+          hook.authority.permissions.includes(permission)),
+        budget: {
+          ...policy.budget,
+          maxRuntimeMs: Math.min(policy.budget.maxRuntimeMs, hook.authority.timeoutMs),
+        },
+      };
+      effectiveHandoffPermissions = effectiveHandoffPermissions?.filter((permission) =>
+        hook.authority.permissions.includes(permission));
+      effectiveRunGrantedPermissions = effectiveRunGrantedPermissions?.filter((permission) =>
+        hook.authority.permissions.includes(permission));
+    }
+    const run = this.deps.runs.execute({
+      type: "run.start",
+      runId: createdRun.id,
+      expectedAggregateVersion: createdRun.aggregateVersion,
     });
     let registeredForCancel = false;
     try {
-      this.deps.runs.update(run.id, {
-        correlationJson: JSON.stringify({
-          runId: run.id,
-          sessionId,
-          taskId: task.id,
-          ...(execution?.authorization
-            ? {
-                requestId: `agent-proposal:${execution.authorization.proposalId}`,
-                agentProposalId: execution.authorization.proposalId,
-                agentGrantId: execution.authorization.grantId,
-              }
-            : {}),
-        }),
-      });
-
       let cancelSignal: AbortSignal | undefined;
       if (callbacks?.registerForCancel) {
         cancelSignal = this.deps.agentRunRegistry.register(run.id, "agent").signal;
@@ -303,6 +359,26 @@ export class AgentRequestService {
           body: this.deps.agentRunLifecycle.finalizeFailure({ sessionId, task, run }, error),
         },
       };
+    }
+  }
+
+  async notifyPost(runId: string): Promise<void> {
+    const run = this.deps.runs.get(runId);
+    if (!run) return;
+    const post = await this.deps.hooks?.dispatch({
+      event: "run.post",
+      eventId: runId,
+      payload: {
+        runId,
+        kind: run.kind,
+        status: run.status,
+        sessionId: run.sessionId,
+        taskId: run.taskId,
+      },
+      authority: { permissions: [], timeoutMs: 5_000 },
+    });
+    if (post && !post.allowed) {
+      throw new Error(post.reason ?? "run_post_hook_rejected");
     }
   }
 

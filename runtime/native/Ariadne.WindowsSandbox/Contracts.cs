@@ -32,7 +32,15 @@ internal sealed class ExecutionRequest
     public int TimeoutMs { get; init; }
     public int MaxOutputBytes { get; init; }
     public string? StdinBase64 { get; init; }
+    public bool Interactive { get; init; }
     public required ResourceLimits ResourceLimits { get; init; }
+}
+
+internal sealed class InteractiveInputFrame
+{
+    public required string Type { get; init; }
+    public required string ExecutionId { get; init; }
+    public string? DataBase64 { get; init; }
 }
 
 internal sealed class WriteScopeRequest
@@ -59,7 +67,7 @@ internal sealed class ResourceLimits
 internal sealed class StatusResponse
 {
     public required string Status { get; init; }
-    public int Version { get; init; } = 4;
+    public int Version { get; init; } = 5;
     public string? PolicyDigest { get; init; }
     public string? Reason { get; init; }
     public string? OfflineUser { get; init; }

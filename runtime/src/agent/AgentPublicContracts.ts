@@ -9,7 +9,7 @@ import { PlanHandoffPayloadSchema } from "../policy/planHandoffTypes.js";
 const identifier = z.string().trim().min(1).max(512);
 const text = z.string();
 const nonNegativeInteger = z.number().int().nonnegative();
-const jsonObject = z.record(JsonValueSchema);
+const jsonObject = z.record(z.string(), JsonValueSchema);
 
 export const AgentRunModeSchema = z.enum(["chat", "plan", "implement", "debug", "review"]);
 export const AgentIntentSchema = z.enum([
@@ -212,7 +212,7 @@ export const AgentExecutionMetaSchema = z
     previousWorkflowType: AgentWorkflowTypeSchema.optional(),
     currentWorkflowType: AgentWorkflowTypeSchema.optional(),
     continuationScore: z.number().finite().optional(),
-    continuationSignals: z.record(z.union([z.number().finite(), z.boolean()])).optional(),
+    continuationSignals: z.record(z.string(), z.union([z.number().finite(), z.boolean()])).optional(),
     needsWrite: z.boolean().optional(),
     needsShell: z.boolean().optional(),
     requiredSideEffects: z.array(z.enum(["read", "write", "shell"])),

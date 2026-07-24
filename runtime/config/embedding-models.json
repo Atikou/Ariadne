@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "models": [
+    {
+      "id": "bge-m3-q6-k",
+      "family": "BGE-M3",
+      "source": "https://huggingface.co/gpustack/bge-m3-GGUF/resolve/main/bge-m3-Q6_K.gguf",
+      "license": "MIT",
+      "sha256": "d7b2ddf8880de940dbdf484c2d1c0b2db5b68f0c342634819cdb3d32e5703c0a",
+      "dimension": 1024,
+      "weightsCommitted": false
+    }
+  ]
+}

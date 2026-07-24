@@ -6,8 +6,11 @@
  */
 
 import type { ModelInferenceOptions } from "@ariadne/protocol/public";
+import type { ContentEnvelope } from "../core/ContentEnvelope.js";
+import type { TokenCounter } from "./TokenCounter.js";
 
 export type ModelLocation = "local" | "remote";
+export type ModelToolCallCapability = "native" | "unsupported";
 
 export type ChatRole = "system" | "user" | "assistant" | "tool";
 
@@ -22,6 +25,8 @@ export interface ChatMessage {
   toolCalls?: ToolCall[];
   /** Provider 要求在后续轮次回传的私有推理上下文；不得作为公开回答展示。 */
   reasoningContent?: string;
+  /** 数据来源与外发权限；远程 Provider 前由统一 egress gate 强制执行。 */
+  contentEnvelope?: ContentEnvelope;
 }
 
 /**
@@ -64,6 +69,8 @@ export interface ModelResponse {
   /** Provider 返回的私有推理上下文，仅用于兼容后续轮次和工具调用。 */
   reasoningContent?: string;
   toolCalls: ToolCall[];
+  /** The selected client's declared structured tool-call capability. */
+  toolCallCapability?: ModelToolCallCapability;
   /** 实际响应的客户端名（用于路由追踪）。 */
   clientName: string;
   /** 实际使用的模型名。 */
@@ -84,6 +91,9 @@ export interface ModelClient {
   readonly name: string;
   readonly location: ModelLocation;
   readonly model: string;
+  readonly toolCallCapability: ModelToolCallCapability;
+  readonly tokenCounter: TokenCounter;
+  readonly contextWindowTokens?: number;
 
   /** 探测该模型当前是否可用（用于启动检查与路由降级）。 */
   isAvailable(): Promise<boolean>;

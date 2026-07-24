@@ -40,7 +40,7 @@ export const PlanStepSchema = z.object({
   /** 可选：该步骤绑定的工具名（提供时任务模式会真实执行该工具）。 */
   tool: z.string().optional(),
   /** 可选：传给绑定工具的入参。 */
-  toolInput: z.record(z.unknown()).optional(),
+  toolInput: z.record(z.string(), z.unknown()).optional(),
   status: StepStatusSchema.default("pending"),
   result: z.string().optional(),
   error: z.string().optional(),
@@ -104,7 +104,7 @@ export const RawPlanSchema = z.object({
         expectedArtifacts: z.array(z.string()).optional(),
         priority: z.number().int().optional(),
         tool: z.string().optional(),
-        toolInput: z.record(z.unknown()).optional(),
+        toolInput: z.record(z.string(), z.unknown()).optional(),
       }).strict(),
     )
     .optional(),

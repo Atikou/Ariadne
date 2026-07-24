@@ -7,6 +7,10 @@ import { PathPolicy, type ToolPathPreparation } from "../policy/PathPolicy.js";
 import type { WorkspaceGrantStore, WorkspaceScopePermission } from "../policy/WorkspaceScopeManager.js";
 import type { RegistryRunContext, ToolRegistry } from "../tools/ToolRegistry.js";
 import type { ToolRunResult } from "../tools/types.js";
+import type {
+  RunToolCheckpointCoordinator,
+  ToolCheckpointToken,
+} from "../run/RunToolCheckpointCoordinator.js";
 import type { BudgetManager } from "./BudgetManager.js";
 import type { AgentIntentType } from "./IntentTypes.js";
 import type { AgentRunMode, RunBudgetKey, UserPermissionPolicy } from "./RunPolicyTypes.js";
@@ -108,7 +112,10 @@ export class ToolExecutionGateway {
   private readonly authorizations = new WeakMap<ToolExecutionEvaluation, AuthorizedCall>();
   private readonly executionPermits = new WeakMap<ToolExecutionEvaluation, AuthorizedCall>();
 
-  constructor(private readonly registry: ToolRegistry) {}
+  constructor(
+    private readonly registry: ToolRegistry,
+    private readonly checkpoints?: RunToolCheckpointCoordinator,
+  ) {}
 
   authorize(input: ToolExecutionRunInput): ToolExecutionEvaluation {
     const preparedInput = this.prepareToolInput(input.toolName, input.input ?? {});
@@ -128,7 +135,7 @@ export class ToolExecutionGateway {
     }
 
     const requiredPermissions = this.registry.resolveRequiredPermissions(input.toolName, preparedInput);
-    const toolPermission = this.registry.resolvePrimaryPermission(input.toolName, preparedInput) ?? tool.permission;
+    const toolPermission = this.registry.resolvePrimaryPermission(input.toolName, preparedInput) ?? tool.permissions[0];
 
     const workflowBlock = requiredPermissions
       .map((permission) => assessWorkflowToolAccess({
@@ -291,7 +298,25 @@ export class ToolExecutionGateway {
       }
     }
 
-    return this.registry.run(input.toolName, preparedInput, {
+    const tool = this.registry.get(input.toolName);
+    if (!tool) return blockedToolRunResult("unknown", blockedEvaluation(
+      "execution",
+      "policy",
+      `未知工具：${input.toolName}`,
+    ));
+    let checkpoint: ToolCheckpointToken | undefined;
+    if (this.checkpoints && input.toolCallId) {
+      checkpoint = this.checkpoints.intend({
+        toolCallId: input.toolCallId,
+        toolName: tool.name,
+        toolVersion: tool.version,
+        input: preparedInput,
+        effects: tool.effects,
+        resumable: tool.supportsResume,
+      });
+      this.checkpoints.start(checkpoint);
+    }
+    const result = await this.registry.run(input.toolName, preparedInput, {
       workspaceRoot: pathAccess?.workspaceRoot ?? input.workspaceRoot,
       taskId: input.taskId,
       sessionId: input.sessionId,
@@ -302,6 +327,8 @@ export class ToolExecutionGateway {
       workspaceAccess: pathAccess?.audit as unknown as Record<string, unknown> | undefined,
       ...input.registryExtras,
     });
+    if (checkpoint) this.checkpoints?.finish(checkpoint, result);
+    return result;
   }
 
   async run(input: ToolExecutionRunInput): Promise<ToolRunResult> {

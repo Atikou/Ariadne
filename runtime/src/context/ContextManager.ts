@@ -6,10 +6,11 @@ import { compactToolOutputForModel } from "../util/toolResultLayers.js";
 
 import type { ChatMessage, ToolCall } from "../model/types.js";
 import { ContextRestorer } from "./ContextRestorer.js";
+import { ContextStructuredSummarySchema } from "./ContextContracts.js";
 import { extractFileSnippetsFromToolMessages } from "./fileSnippets.js";
 import { DatabaseManager } from "./DatabaseManager.js";
 import { EmbeddingService } from "./EmbeddingService.js";
-import { MemoryExtractor, type IMemoryExtractor } from "./MemoryExtractor.js";
+import { RuleMemoryExtractor, type IMemoryExtractor } from "./MemoryExtractor.js";
 import { MemoryManager } from "./MemoryManager.js";
 import { MemoryRetriever } from "./MemoryRetriever.js";
 import { PromptBuilder } from "./PromptBuilder.js";
@@ -18,6 +19,7 @@ import { SemanticRetriever } from "./SemanticRetriever.js";
 import { SummaryManager } from "./SummaryManager.js";
 import { SystemSectionBuilder } from "./SystemSectionBuilder.js";
 import type { MessageAppendMeta } from "./MessageStore.js";
+import { createContentEnvelope } from "./messageEnvelope.js";
 import type { MessageEnvelopeInput } from "./messageEnvelope.js";
 import {
   MemoryStore,
@@ -92,9 +94,13 @@ export class ContextManager {
     this.embeddings = options.embeddingService ?? new EmbeddingService();
     this.vectors =
       options.vectorStore ??
-      createVectorStore(options.dataDir, options.useLanceDb !== false);
+      createVectorStore(
+        options.dataDir,
+        options.useLanceDb !== false,
+        this.embeddings.dimension,
+      );
     this.memoryManager = new MemoryManager(this.memories);
-    this.memoryExtractor = options.memoryExtractor ?? new MemoryExtractor();
+    this.memoryExtractor = options.memoryExtractor ?? new RuleMemoryExtractor();
     this.sectionBuilder = new SystemSectionBuilder();
     this.promptBuilder = new PromptBuilder();
     this.summaryManager = new SummaryManager(this.messages, this.summaries, {
@@ -215,9 +221,15 @@ export class ContextManager {
     return this.saveMessage(sessionId, "user", content, undefined, {
       messageKind: "user_input",
       uiVisible: true,
-      trusted: true,
-      source: "user",
-      trustBasis: "user_authored",
+      contentEnvelope: createContentEnvelope({
+        origin: "user",
+        evidence: "user_authored",
+        verified: true,
+        instructionAuthority: "user",
+        externalContent: false,
+        egressAllowed: ["model"],
+        provenance: { runId },
+      }),
       runId,
     });
   }
@@ -231,8 +243,15 @@ export class ContextManager {
     return this.saveMessage(sessionId, "assistant", content, model, {
       messageKind: "tool_action",
       uiVisible: false,
-      trusted: false,
-      source: "model",
+      contentEnvelope: createContentEnvelope({
+        origin: "model",
+        evidence: "unverified",
+        verified: false,
+        instructionAuthority: "data",
+        externalContent: true,
+        egressAllowed: [],
+        provenance: { runId, providerId: model?.clientName },
+      }),
       runId,
     }, { toolCalls: model?.toolCalls });
   }
@@ -247,8 +266,15 @@ export class ContextManager {
     return this.saveMessage(sessionId, "assistant", content, model, {
       messageKind: "raw_model_final",
       uiVisible: false,
-      trusted: false,
-      source: "model",
+      contentEnvelope: createContentEnvelope({
+        origin: "model",
+        evidence: "unverified",
+        verified: false,
+        instructionAuthority: "data",
+        externalContent: true,
+        egressAllowed: [],
+        provenance: { runId, providerId: model?.clientName },
+      }),
       runId,
     });
   }
@@ -261,9 +287,15 @@ export class ContextManager {
     return this.saveMessage(sessionId, "assistant", answer, undefined, {
       messageKind: "final_answer",
       uiVisible: true,
-      trusted: true,
-      source: "guard",
-      trustBasis: "completion_guard",
+      contentEnvelope: createContentEnvelope({
+        origin: "guard",
+        evidence: "completion_guard",
+        verified: true,
+        instructionAuthority: "data",
+        externalContent: false,
+        egressAllowed: ["model"],
+        provenance: { runId },
+      }),
       runId,
     });
   }
@@ -277,9 +309,15 @@ export class ContextManager {
     return this.saveMessage(sessionId, "assistant", answer, model, {
       messageKind: "final_answer",
       uiVisible: true,
-      trusted: true,
-      source: "model",
-      trustBasis: "completion_guard",
+      contentEnvelope: createContentEnvelope({
+        origin: "model",
+        evidence: "completion_guard",
+        verified: true,
+        instructionAuthority: "data",
+        externalContent: true,
+        egressAllowed: ["model"],
+        provenance: { runId, providerId: model?.clientName },
+      }),
       runId,
     });
   }
@@ -293,9 +331,15 @@ export class ContextManager {
     return this.saveMessage(sessionId, "assistant", answer, model, {
       messageKind: "conversational_reply",
       uiVisible: true,
-      trusted: true,
-      source: "model",
-      trustBasis: "conversational_reply",
+      contentEnvelope: createContentEnvelope({
+        origin: "model",
+        evidence: "conversational_reply",
+        verified: true,
+        instructionAuthority: "data",
+        externalContent: true,
+        egressAllowed: ["model"],
+        provenance: { runId, providerId: model?.clientName },
+      }),
       runId,
     });
   }
@@ -309,13 +353,20 @@ export class ContextManager {
     return this.saveMessage(sessionId, "assistant", content, model);
   }
 
-  /** 运行态 system；默认不入 trusted 上下文。 */
+  /** 运行态 system；默认不进入已验证上下文。 */
   saveSystemMessage(sessionId: string, content: string, runId?: string): MessageRecord {
     return this.saveMessage(sessionId, "system", content, undefined, {
       messageKind: "workflow_event",
       uiVisible: false,
-      trusted: false,
-      source: "workflow",
+      contentEnvelope: createContentEnvelope({
+        origin: "workflow",
+        evidence: "unverified",
+        verified: false,
+        instructionAuthority: "data",
+        externalContent: false,
+        egressAllowed: [],
+        provenance: { runId },
+      }),
       runId,
     });
   }
@@ -340,9 +391,18 @@ export class ContextManager {
     return this.saveMessage(sessionId, "tool", content, undefined, {
       messageKind: "tool_result",
       uiVisible: false,
-      trusted: true,
-      source: "tool",
-      trustBasis: ledgerBacked ? "tool_ledger" : undefined,
+      contentEnvelope: createContentEnvelope({
+        origin: "tool",
+        evidence: ledgerBacked ? "tool_ledger" : "unverified",
+        verified: ledgerBacked,
+        instructionAuthority: "data",
+        externalContent: true,
+        egressAllowed: ledgerBacked ? ["model"] : [],
+        provenance: {
+          runId: runId ?? meta?.toolCallId,
+          toolCallId: meta?.toolCallId,
+        },
+      }),
       runId: runId ?? meta?.toolCallId,
       ledgerBacked,
       outcomeClass: meta?.outcomeClass,
@@ -456,7 +516,7 @@ export class ContextManager {
         compressed.content,
       );
       const fromSummary = await this.memoryExtractor.extractFromSummary(compressed);
-      this.upsertCandidates(fromSummary);
+      this.upsertCandidates(fromSummary, "candidate");
     }
 
     const recentTools = this.messages.listRecentByRole(sessionId, "tool", 8);
@@ -490,10 +550,13 @@ export class ContextManager {
   async extractAndUpsertMemories(sessionId: string): Promise<MemoryRecord[]> {
     const recentUsers = this.messages.listRecentByRole(sessionId, "user", 10);
     const candidates = await this.memoryExtractor.extractFromMessages(recentUsers);
-    return this.upsertCandidates(candidates);
+    return this.upsertCandidates(candidates, "active");
   }
 
-  private upsertCandidates(candidates: MemoryCandidate[]): MemoryRecord[] {
+  private upsertCandidates(
+    candidates: MemoryCandidate[],
+    lifecycleState: "candidate" | "active",
+  ): MemoryRecord[] {
     return candidates.map((c) =>
       this.upsertMemory({
         scope: c.scope,
@@ -503,6 +566,11 @@ export class ContextManager {
         value: c.value,
         summary: c.summary,
         importance: c.importance,
+        confidence: c.confidence,
+        provenance: c.provenance,
+        sensitivity: c.sensitivity,
+        retentionUntil: c.retentionUntil,
+        lifecycleState,
       }),
     );
   }
@@ -515,9 +583,20 @@ export class ContextManager {
     value: string;
     summary?: string;
     importance?: number;
+    confidence?: number;
+    provenance?: MemoryCandidate["provenance"];
+    sensitivity?: MemoryCandidate["sensitivity"];
+    retentionUntil?: string;
+    lifecycleState?: "candidate" | "active";
   }): MemoryRecord {
-    const record = this.memoryManager.upsert(input);
-    void this.retriever
+    const record = this.memoryManager.upsert({
+      ...input,
+      provenance: input.provenance ?? {
+        origin: "user",
+        evidence: "explicit_user_memory_update",
+      },
+    }, input.lifecycleState ?? "active");
+    if (record.lifecycleState === "active") void this.retriever
       .indexMemory(
         record.id,
         record.value,
@@ -541,10 +620,29 @@ export class ContextManager {
 
   deactivateMemory(memoryId: string, reason: string): boolean {
     const existing = this.memories.get(memoryId);
-    if (!existing?.isActive) return false;
-    this.memoryManager.deactivate(memoryId, reason);
+    if (existing?.lifecycleState !== "active") return false;
+    this.memoryManager.transition(memoryId, reason === "expired" ? "expired" : "rejected");
     void this.vectors.deleteBySource(memoryId).catch(() => undefined);
     return true;
+  }
+
+  confirmMemory(memoryId: string): MemoryRecord {
+    const memory = this.memoryManager.transition(memoryId, "active");
+    void this.retriever.indexMemory(
+      memory.id,
+      memory.value,
+      memory.scope,
+      memory.scopeId,
+      memory.summary,
+      memory.memoryType,
+    );
+    return memory;
+  }
+
+  deleteMemory(memoryId: string): boolean {
+    const deleted = this.memoryManager.delete(memoryId);
+    if (deleted) void this.vectors.deleteBySource(memoryId);
+    return deleted;
   }
 
   listMemories(scope?: MemoryScope, scopeId?: string): MemoryRecord[] {
@@ -618,11 +716,25 @@ export function createLlmSummarize(
       const start = raw.indexOf("{");
       const end = raw.lastIndexOf("}");
       if (start >= 0 && end > start) {
-        return JSON.parse(raw.slice(start, end + 1)) as StructuredSummary;
+        const parsed = ContextStructuredSummarySchema.safeParse(
+          JSON.parse(raw.slice(start, end + 1)) as unknown,
+        );
+        if (parsed.success) {
+          return {
+            schemaVersion: 1,
+            content: parsed.data,
+            generationState: "model",
+          };
+        }
       }
     } catch {
       // fallback
     }
-    return { current_goal: raw.slice(0, 300) };
+    return {
+      schemaVersion: 1,
+      content: { current_goal: messages.find((message) => message.role === "user")?.content.slice(0, 300) },
+      generationState: "degraded",
+      degradedReason: "model_summary_schema_invalid",
+    };
   };
 }

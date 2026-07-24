@@ -13,6 +13,7 @@ import {
   type RuntimeToHostMessage
 } from '@ariadne/protocol/host';
 import type { RuntimeCommand } from '@ariadne/protocol/public';
+import { createDefaultRuntimePolicySnapshot } from '@ariadne/protocol/settings';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -41,7 +42,7 @@ describe('portless Runtime process', () => {
     expect(ready.type).toBe('ready');
     if (ready.type !== 'ready') throw new Error('unreachable');
     expect(ready.capabilities).toContain('companion.chat');
-    expect(ready.storageSchemas).toMatchObject({ memory: 33, companion: 7, tools: 2 });
+    expect(ready.storageSchemas).toMatchObject({ memory: 41, companion: 8, tools: 2 });
 
     child.send(request(bootstrap, 'status-1', { kind: 'runtime.status.get' }));
     const status = await inbox.nextResponse('status-1');
@@ -138,6 +139,7 @@ function createBootstrap(): RuntimeBootstrap {
     installRoot: packageRoot,
     dataRoot,
     modelRoots: [],
+    runtimePolicy: createDefaultRuntimePolicySnapshot(),
     profile: 'local-only',
     workspaces: [
       {

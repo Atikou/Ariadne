@@ -2,23 +2,70 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { RuntimeEvent } from '@ariadne/protocol/public';
+import type { RuntimeEventEnvelope } from '@ariadne/protocol/public';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { RuntimeFacade } from '../src/application/RuntimeFacade.js';
 import type { AppContext } from '../src/app/createAppContext.js';
+import { createCompanionMessageEnvelope } from '../src/companion/CompanionMessagePersistence.js';
+import { DatabaseManager } from '../src/context/DatabaseManager.js';
+import { TraceLogger } from '../src/trace/TraceLogger.js';
 
 const temporaryRoots: string[] = [];
+const databases: DatabaseManager[] = [];
 
 afterEach(() => {
+  for (const database of databases.splice(0)) database.close();
   for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 describe('RuntimeFacade Agent lifecycle', () => {
+  it('publishes newly written Trace entries to the Runtime event stream', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-facade-live-trace-'));
+    temporaryRoots.push(root);
+    const events: RuntimeEventEnvelope[] = [];
+    const trace = new TraceLogger(path.join(root, 'trace.jsonl'));
+    const app = fakeApp(root, () => sourceProposal('pending'), () => Promise.reject(new Error('unused')));
+    Object.assign(app, { trace });
+    const facade = new RuntimeFacade(app, (event) => events.push(event), 'test');
+
+    try {
+      await facade.start();
+      trace.write({
+        type: 'companion.proposal.protocol.error',
+        level: 'error',
+        category: 'companion.proposal.protocol',
+        message: 'Agent 提案校验失败',
+        metadata: { lifecycleStage: 'schema_validation', fieldPaths: ['risk'] }
+      });
+
+      await waitFor(() => events.some((event) =>
+        event.event.kind === 'trace.appended'
+        && event.event.entry.category === 'companion.proposal.protocol'));
+      expect(events).toContainEqual(expect.objectContaining({
+        event: {
+          kind: 'trace.appended',
+          entry: expect.objectContaining({
+            level: 'error',
+            category: 'companion.proposal.protocol',
+            message: 'Agent 提案校验失败',
+            metadata: expect.objectContaining({
+              lifecycleStage: 'schema_validation',
+              fieldPaths: ['risk']
+            })
+          })
+        }
+      }));
+    } finally {
+      await facade.stop();
+      await trace.close();
+    }
+  });
+
   it('acknowledges approval before Agent execution finishes and later emits the Companion result', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-facade-lifecycle-'));
     temporaryRoots.push(root);
-    const events: RuntimeEvent[] = [];
+    const events: RuntimeEventEnvelope[] = [];
     let proposal = sourceProposal('pending');
     let resolveResponse!: (value: Record<string, unknown>) => void;
     const response = new Promise<Record<string, unknown>>((resolve) => { resolveResponse = resolve; });
@@ -50,8 +97,8 @@ describe('RuntimeFacade Agent lifecycle', () => {
       proposal,
       companionPresentation: presentedCompanionResult()
     });
-    await waitFor(() => events.some((event) => event.kind === 'companion.message.changed'));
-    expect(events).toEqual(expect.arrayContaining([
+    await waitFor(() => events.some((event) => event.event.kind === 'companion.message.changed'));
+    expect(events.map((event) => event.event)).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: 'companion.message.changed',
         message: expect.objectContaining({ content: 'Agent 已完成检查。', sessionId: 'session-1' })
@@ -89,7 +136,7 @@ describe('RuntimeFacade Agent lifecycle', () => {
   it('publishes automatic approval as executing without exposing a clickable pending proposal', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-facade-auto-approval-'));
     temporaryRoots.push(root);
-    const events: RuntimeEvent[] = [];
+    const events: RuntimeEventEnvelope[] = [];
     let proposal = {
       ...sourceProposal('pending'),
       requestedCapabilities: ['file-read', 'file-write', 'browser', 'shell']
@@ -115,7 +162,7 @@ describe('RuntimeFacade Agent lifecycle', () => {
       allowedCapabilities: ['file-read', 'browser'],
       workspaceKey: 'primary'
     });
-    expect(events.filter((event) => event.kind === 'agent.proposal.changed')).toEqual([
+    expect(events.filter((event) => event.event.kind === 'agent.proposal.changed').map((event) => event.event)).toEqual([
       expect.objectContaining({
         kind: 'agent.proposal.changed',
         proposal: expect.objectContaining({ status: 'executing' })
@@ -124,9 +171,20 @@ describe('RuntimeFacade Agent lifecycle', () => {
 
     proposal = sourceProposal('completed');
     resolveResponse({ proposal, companionPresentation: presentedCompanionResult() });
-    await waitFor(() => events.some((event) => (
-      event.kind === 'agent.proposal.changed' && event.proposal.status === 'completed'
-    )));
+    await vi.waitFor(async () => {
+      const replay = await facade.handle({ kind: 'events.replay', afterCursor: 0, limit: 100 });
+      expect(replay).toMatchObject({
+        kind: 'events.replay',
+        events: expect.arrayContaining([
+          expect.objectContaining({
+            event: expect.objectContaining({
+              kind: 'agent.proposal.changed',
+              proposal: expect.objectContaining({ status: 'completed' })
+            })
+          })
+        ])
+      });
+    });
   });
 
   it('applies a dynamic read-only ceiling without weakening the configured workspace boundary', async () => {
@@ -177,7 +235,7 @@ describe('RuntimeFacade Agent lifecycle', () => {
         listPending: () => []
       },
       runs: { get: () => ({ id: 'run-1', sessionId: 'agent-session-1', status: 'waiting_confirmation' }) },
-      contextManager: { getSession: () => ({ workspaceKey: 'primary' }) }
+      contextManager: { ...app.contextManager, getSession: () => ({ workspaceKey: 'primary' }) }
     });
     const facade = new RuntimeFacade(app, () => {}, 'test', {
       workspaces: [{ workspaceId: 'primary', access: 'read' }]
@@ -215,7 +273,7 @@ describe('RuntimeFacade Agent lifecycle', () => {
         listPending: () => []
       },
       runs: { get: () => ({ id: 'run-1', sessionId: 'missing-session', status: 'waiting_confirmation' }) },
-      contextManager: { getSession: () => undefined }
+      contextManager: { ...app.contextManager, getSession: () => undefined }
     });
     const facade = new RuntimeFacade(app, () => {}, 'test', {
       workspaces: [{ workspaceId: 'primary', access: 'write' }]
@@ -354,6 +412,7 @@ describe('RuntimeFacade Agent lifecycle', () => {
     ];
     const resumePermission = vi.fn(() => new Promise(() => {}));
     const resumePlanHandoff = vi.fn(() => new Promise(() => {}));
+    const makeChatFn = vi.fn(() => vi.fn());
     const app = fakeApp(root, () => sourceProposal('pending'), () => Promise.reject(new Error('unused')));
     Object.assign(app, {
       runs: {
@@ -367,7 +426,17 @@ describe('RuntimeFacade Agent lifecycle', () => {
         resumeAfterPermission: resumePermission,
         resumeAfterPlanHandoff: resumePlanHandoff
       },
-      makeChatFn: () => vi.fn()
+      agentHandoffCoordinator: {
+        getByRunId: () => ({
+          modelBinding: {
+            selectionMode: 'manual',
+            clientName: 'cloud-deepseek',
+            modelName: 'deepseek-v4-flash',
+            protocolVersion: 'ariadne.agent-proposal.v1'
+          }
+        })
+      },
+      makeChatFn
     });
     const facade = new RuntimeFacade(app, () => {}, 'test');
 
@@ -388,6 +457,9 @@ describe('RuntimeFacade Agent lifecycle', () => {
       { runId: handoff.runId, planHandoffId: handoff.id },
       expect.any(Function)
     );
+    expect(makeChatFn).toHaveBeenCalledTimes(2);
+    expect(makeChatFn).toHaveBeenNthCalledWith(1, 'cloud-deepseek');
+    expect(makeChatFn).toHaveBeenNthCalledWith(2, 'cloud-deepseek');
   });
 
   it('keeps host-level resume exceptions retryable instead of settling the proposal as failed', async () => {
@@ -759,6 +831,8 @@ function fakeApp(
   getProposal: () => Record<string, unknown>,
   respond: (input?: Record<string, unknown>) => Promise<Record<string, unknown>>
 ): AppContext {
+  const database = new DatabaseManager(root);
+  databases.push(database);
   return {
     defaultWorkspaceKey: 'primary',
     paths: { traceFile: path.join(root, 'trace.jsonl') },
@@ -766,12 +840,28 @@ function fakeApp(
     permissionRequestStore: { listPending: () => [] },
     planHandoffStore: { listPending: () => [] },
     agentHandoffCoordinator: {
-      get: (id: string) => id === 'proposal-1' ? getProposal() : null
+      get: (id: string) => id === 'proposal-1' ? getProposal() : null,
+      getByRunId: () => null
     },
     unifiedAssistantHandoffService: {
       respond: (_proposalId: string, input: Record<string, unknown>) => respond(input)
     },
-    runs: { get: () => null }
+    contextManager: {
+      db: database,
+      getSession: () => ({ workspaceKey: 'primary' }),
+      memoryManager: {}
+    },
+    runs: { get: () => null },
+    registry: { listProviders: () => [] },
+    hooks: {
+      dispatch: async (input: {
+        authority: { permissions: Array<'read' | 'write' | 'shell' | 'network' | 'dangerous'>; timeoutMs: number };
+      }) => ({
+        allowed: true,
+        authority: input.authority,
+        deliveryIds: []
+      })
+    }
   } as unknown as AppContext;
 }
 
@@ -814,7 +904,7 @@ function presentedCompanionResult(): Record<string, unknown> {
       role: 'assistant',
       content: 'Agent 已完成检查。',
       status: 'completed',
-      trusted: true,
+      contentEnvelope: createCompanionMessageEnvelope('assistant', 'completed', 'message-1'),
       memoryEligible: true,
       storageRoot: 'storage-root',
       createdAt: now,

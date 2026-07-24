@@ -53,10 +53,16 @@ export function resolveAgentRunOutcome(stopReason: AgentStopReason): AgentRunOut
         timelineOutcome: "cancelled",
         releaseTaskFromSession: false,
       };
+    case "budget_exhausted":
+      return {
+        taskStatus: "blocked",
+        runStatus: "paused",
+        timelineOutcome: "waiting",
+        releaseTaskFromSession: false,
+      };
     case "completed_partial":
     case "recovery_partial":
     case "misleading_completion":
-    case "budget_exhausted":
     case "historical_reference":
       return {
         taskStatus: "failed",

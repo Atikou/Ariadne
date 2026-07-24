@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { ContentEnvelopeSchema } from "../context/ContextContracts.js";
 import { CompanionVectorStatusSchema } from "./CompanionVectorContracts.js";
 
 export const CompanionSessionSchema = z.object({
@@ -107,14 +108,14 @@ export const CompanionMessageSchema = z.object({
   role: CompanionMessageRoleSchema,
   content: z.string(),
   status: CompanionMessageStatusSchema,
-  trusted: z.boolean(),
+  contentEnvelope: ContentEnvelopeSchema,
   memoryEligible: z.boolean(),
   modelName: z.string().optional(),
   clientName: z.string().optional(),
   storageRoot: z.string().min(1),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 }).strict();
 export type CompanionMessage = z.infer<typeof CompanionMessageSchema>;
 

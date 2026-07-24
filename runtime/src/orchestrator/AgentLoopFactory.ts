@@ -8,6 +8,7 @@ export interface AgentLoopFactoryDeps {
   agentRuntime: NonNullable<AgentLoopOptions["agentRuntime"]>;
   contextManager: NonNullable<AgentLoopOptions["contextManager"]>;
   runStateStore: NonNullable<AgentLoopOptions["runStateStore"]>;
+  runRepository: NonNullable<AgentLoopOptions["runRepository"]>;
   projectIndex?: AgentLoopOptions["projectIndex"];
   notificationQueue: NonNullable<AgentLoopOptions["notificationQueue"]>;
   trace?: AgentLoopOptions["trace"];
@@ -21,6 +22,7 @@ export interface AgentLoopFactoryDeps {
   pausedRunStore?: AgentLoopOptions["pausedRunStore"];
   shellPolicy?: AgentLoopOptions["shellPolicy"];
   networkPolicy?: AgentLoopOptions["networkPolicy"];
+  resolveInstructions?: AgentLoopOptions["resolveInstructions"];
 }
 
 export interface AgentLoopCreationRequest {
@@ -84,6 +86,7 @@ export function buildAgentLoopOptions(
     taskId: request.taskId,
     requestId: request.runId,
     runStateStore: deps.runStateStore,
+    runRepository: deps.runRepository,
     projectIndex: deps.projectIndex,
     resumeState: request.resumeState,
     permissionRequestStore: deps.permissionRequestStore,
@@ -100,6 +103,7 @@ export function buildAgentLoopOptions(
     maxSubAgentDispatchDepth: deps.maxSubAgentDispatchDepth ?? 1,
     shellPolicy: deps.shellPolicy,
     networkPolicy: deps.networkPolicy,
+    resolveInstructions: deps.resolveInstructions,
     signal: request.signal,
     timeline: request.timeline,
     onStep: request.onStep,

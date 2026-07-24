@@ -1,5 +1,6 @@
 import type { FileSnippetItem } from "./fileSnippets.js";
-import { isUntrustedCompletionMemoryText, scrubStructuredSummaryContent } from "./contextTrust.js";
+import { createContentEnvelope } from "./messageEnvelope.js";
+import { isUnverifiedCompletionMemoryText, scrubStructuredSummaryContent } from "./contextTrust.js";
 import {
   inferMemoryTags,
   inferPlanStepTags,
@@ -67,6 +68,7 @@ export class SystemSectionBuilder {
           sourceType: "memory" as const,
           sourceId: `correction-${i}`,
           text,
+          contentEnvelope: guardInstructionEnvelope(`correction-${i}`),
           tags: ["context_correction", "guard_notice"],
         })),
       });
@@ -92,7 +94,12 @@ export class SystemSectionBuilder {
         priority: 85,
         items: [
           tagSectionItem(
-            { sourceType: "task", sourceId: input.activeTask.id, text: taskText },
+            {
+              sourceType: "task",
+              sourceId: input.activeTask.id,
+              text: taskText,
+              contentEnvelope: dataEnvelope("workflow", input.activeTask.id, false),
+            },
             "task_state",
             inferTaskTags(input.activeTask.status),
           ),
@@ -107,6 +114,7 @@ export class SystemSectionBuilder {
             sourceType: "task" as const,
             sourceId: step.stepId,
             text: formatPlanStepLine(step),
+            contentEnvelope: dataEnvelope("workflow", step.stepId, false),
           },
           "current_plan",
           inferPlanStepTags(step.status),
@@ -150,6 +158,7 @@ export class SystemSectionBuilder {
               sourceId: r.memory.id,
               text: r.memory.summary ?? r.memory.value,
               score: r.score,
+              contentEnvelope: dataEnvelope("workflow", r.memory.id, false),
             },
             "relevant_memories",
             inferMemoryTags(r.memory),
@@ -174,6 +183,7 @@ export class SystemSectionBuilder {
             sourceId: h.item.sourceId,
             text: h.item.summary ?? (h.item.content ?? "").slice(0, 300),
             score: h.score,
+            contentEnvelope: dataEnvelope("workflow", h.item.sourceId, true),
           },
           "semantic_results",
           h.item.tags,
@@ -200,6 +210,7 @@ export class SystemSectionBuilder {
             {
               sourceType: "file" as const,
               sourceId: s.messageId,
+              contentEnvelope: dataEnvelope("workspace", s.messageId, true),
               text: `${s.path}（${s.tool}）\n${s.preview}`,
             },
             "file_snippets",
@@ -220,6 +231,7 @@ export class SystemSectionBuilder {
             {
               sourceType: "tool" as const,
               sourceId: `recent-tool-${i}`,
+              contentEnvelope: dataEnvelope("tool", `recent-tool-${i}`, true),
               text,
             },
             "recent_tool_results",
@@ -236,6 +248,7 @@ export class SystemSectionBuilder {
       items: [
         {
           sourceType: "tool",
+          contentEnvelope: systemInstructionEnvelope(),
           text: "优先依据上述摘要与记忆回答；不确定时说明依据不足，勿编造未出现的偏好或项目事实。",
         },
       ],
@@ -251,6 +264,7 @@ function memoryItem(m: MemoryRecord): SystemSectionItem {
     sourceId: m.id,
     text: m.summary ?? m.value,
     score: m.importance,
+    contentEnvelope: dataEnvelope("workflow", m.id, false),
     tags: inferMemoryTags(m),
   };
 }
@@ -265,6 +279,7 @@ function buildSummaryItems(
     items.push({
       sourceType: "summary",
       sourceId: sessionSummary.id,
+      contentEnvelope: dataEnvelope("workflow", sessionSummary.id, false),
       text: formatStructuredSummary(scrubbed),
       tags: inferSummaryTags(sessionSummary.summaryType, scrubbed),
     });
@@ -275,6 +290,7 @@ function buildSummaryItems(
     items.push({
       sourceType: "summary",
       sourceId: chunk.id,
+      contentEnvelope: dataEnvelope("workflow", chunk.id, false),
       text: formatStructuredSummary(scrubbed),
       tags: inferSummaryTags(chunk.summaryType, scrubbed),
     });
@@ -291,20 +307,65 @@ function buildProjectItems(
     const parts = [project.name];
     if (project.description) parts.push(project.description);
     if (project.rootPath) parts.push(`根路径：${project.rootPath}`);
-    items.push({ sourceType: "project", sourceId: project.id, text: parts.join("；") });
+    items.push({
+      sourceType: "project",
+      sourceId: project.id,
+      text: parts.join("；"),
+      contentEnvelope: dataEnvelope("workspace", project.id, true),
+    });
   }
   for (const m of memories) {
     const text = m.summary ?? m.value;
-    if (isUntrustedCompletionMemoryText(text)) continue;
+    if (isUnverifiedCompletionMemoryText(text)) continue;
     items.push({
       sourceType: "memory",
       sourceId: m.id,
+      contentEnvelope: dataEnvelope("workflow", m.id, false),
       text: m.summary ?? m.value,
       score: m.importance,
       tags: inferMemoryTags(m),
     });
   }
   return dedupeItems(items, "memory");
+}
+
+function dataEnvelope(
+  origin: "workflow" | "workspace" | "tool",
+  sourceId: string | undefined,
+  externalContent: boolean,
+) {
+  return createContentEnvelope({
+    origin,
+    evidence: origin === "tool" ? "tool_ledger" : "unverified",
+    verified: origin === "tool",
+    instructionAuthority: "data",
+    externalContent,
+    egressAllowed: ["model"],
+    provenance: { sourceId },
+  });
+}
+
+function guardInstructionEnvelope(sourceId: string) {
+  return createContentEnvelope({
+    origin: "guard",
+    evidence: "host_policy",
+    verified: true,
+    instructionAuthority: "system",
+    externalContent: false,
+    egressAllowed: ["model"],
+    provenance: { sourceId },
+  });
+}
+
+function systemInstructionEnvelope() {
+  return createContentEnvelope({
+    origin: "system",
+    evidence: "host_policy",
+    verified: true,
+    instructionAuthority: "system",
+    externalContent: false,
+    egressAllowed: ["model"],
+  });
 }
 
 function formatStructuredSummary(s: SummaryRecord["content"]): string {

@@ -1,4 +1,4 @@
-import type { Tool } from "./types.js";
+import type { ToolContract } from "./types.js";
 
 /**
  * 可信进程内工具扩展边界。Provider 只负责声明工具；执行仍统一经过
@@ -6,17 +6,17 @@ import type { Tool } from "./types.js";
  */
 export interface ToolProvider {
   readonly id: string;
-  listTools(): readonly Tool[];
+  listTools(): readonly ToolContract[];
   dispose?(): void;
 }
 
 export class StaticToolProvider implements ToolProvider {
   constructor(
     readonly id: string,
-    private readonly tools: readonly Tool[],
+    private readonly tools: readonly ToolContract[],
   ) {}
 
-  listTools(): readonly Tool[] {
+  listTools(): readonly ToolContract[] {
     return this.tools;
   }
 }

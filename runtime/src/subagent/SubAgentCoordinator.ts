@@ -23,7 +23,12 @@ export class SubAgentCoordinator {
     this.runner = new SubAgentRunner(deps);
   }
 
-  runDelegated(task: DelegatedTask, opts: Omit<import("./types.js").DelegatedTaskRunOptions, "task">) {
+  async runDelegated(
+    taskInput: DelegatedTask,
+    opts: Omit<import("./types.js").DelegatedTaskRunOptions, "task">,
+  ) {
+    const task = normalizeDelegatedTask(taskInput);
+    const eventId = task.id ?? randomUUID();
     const route = executionRouter.route({
       goal: task.goal,
       contextSnippet: task.input,
@@ -31,11 +36,65 @@ export class SubAgentCoordinator {
       needsWrite: task.toolPolicy?.writeAllowed,
       needsShell: task.toolPolicy?.shellAllowed,
     });
-    return this.runner.runDelegated({
-      task,
+    const grantedPermissions = intersectBatchPermissionsWithToolPolicy(
+      task.toolPolicy!,
+      opts.grantedPermissions ?? this.deps.projectAllowedPermissions ?? ["read"],
+    ) ?? [];
+    const requestedTimeoutMs = resolveSubagentTimeoutMs(
+      opts.timeoutMs ?? task.limits?.maxRuntimeMs,
+      this.deps.defaultTimeoutMs,
+    );
+    const pre = await this.deps.hooks?.dispatch({
+      event: "subagent.pre",
+      eventId,
+      payload: {
+        taskId: eventId,
+        parentTaskId: opts.parentTaskId,
+        writeAllowed: task.toolPolicy?.writeAllowed === true,
+        shellAllowed: task.toolPolicy?.shellAllowed === true,
+      },
+      authority: { permissions: grantedPermissions, timeoutMs: requestedTimeoutMs },
+    });
+    if (pre && !pre.allowed) {
+      return {
+        id: eventId,
+        taskId: eventId,
+        goal: task.goal,
+        parentTaskId: opts.parentTaskId,
+        status: "failed" as const,
+        answer: "",
+        steps: [],
+        iterations: 0,
+        durationMs: 0,
+        grantedPermissions: pre.authority.permissions,
+        error: pre.reason ?? "subagent_hook_rejected",
+      };
+    }
+    const result = await this.runner.runDelegated({
+      task: { ...task, id: eventId },
       ...opts,
+      grantedPermissions: pre?.authority.permissions ?? grantedPermissions,
+      timeoutMs: pre?.authority.timeoutMs ?? requestedTimeoutMs,
       executionRoute: route.mode === "delegate" ? route : opts.executionRoute,
     });
+    const post = await this.deps.hooks?.dispatch({
+      event: "subagent.post",
+      eventId,
+      payload: {
+        taskId: eventId,
+        parentTaskId: opts.parentTaskId,
+        status: result.status,
+      },
+      authority: { permissions: result.grantedPermissions, timeoutMs: 5_000 },
+    });
+    if (post && !post.allowed) {
+      return {
+        ...result,
+        status: "failed" as const,
+        error: post.reason ?? "subagent_post_hook_rejected",
+      };
+    }
+    return result;
   }
 
   async runBatch(options: SubAgentBatchOptions): Promise<SubAgentBatchResult> {
@@ -61,8 +120,7 @@ export class SubAgentCoordinator {
       ? undefined
       : options.maxCostUsd / costSliceCount;
     const settled = await mapWithConcurrencyLimit(entries, concurrency, (entry) =>
-      this.runner.runDelegated({
-          task: entry.task,
+      this.runDelegated(entry.task, {
           workspaceRoot: options.workspaceRoot,
           parentTaskId,
           grantedPermissions: intersectBatchPermissionsWithToolPolicy(
@@ -74,7 +132,6 @@ export class SubAgentCoordinator {
           parentIntent: options.parentIntent,
           parentWorkflowType: options.parentWorkflowType,
           dispatchDepth: options.dispatchDepth,
-          executionRoute: entry.route,
           signal: options.signal,
           maxCostUsd: costSliceUsd,
         }),

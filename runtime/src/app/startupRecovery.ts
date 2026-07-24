@@ -1,6 +1,7 @@
-import type { NotificationQueue } from "../background/NotificationQueue.js";
 import type { PausedRunStore } from "../agent/PausedRunStore.js";
-import type { RunStore } from "../orchestrator/RunStore.js";
+import type { NotificationQueue } from "../background/NotificationQueue.js";
+import type { PlanHandoffStore } from "../policy/PlanHandoffStore.js";
+import type { RunAggregateRepository } from "../run/RunAggregateRepository.js";
 import type { SubAgentWorkspaceRecoverySummary } from "../subagent/SubAgentWorkspaceLease.js";
 import type { TraceLogger } from "../trace/TraceLogger.js";
 
@@ -14,47 +15,82 @@ export interface StartupRecoverySummary {
   recoveredAt: string;
 }
 
-/** 启动时恢复控制面状态：暂停授权的 Run 继续等待，其余悬挂 running Run 标记失败。 */
+/**
+ * Marks interrupted work for explicit recovery. Startup never guesses that an
+ * in-flight effect completed or silently replays it.
+ */
 export function recoverOnStartup(deps: {
-  runs: RunStore;
+  runs: RunAggregateRepository;
   notificationQueue: NotificationQueue;
   trace?: TraceLogger;
   pausedRunStore?: PausedRunStore;
-  planHandoffStore?: import("../policy/PlanHandoffStore.js").PlanHandoffStore;
+  planHandoffStore?: PlanHandoffStore;
   subAgentWorkspaceRecovery?: SubAgentWorkspaceRecoverySummary;
 }): StartupRecoverySummary {
   const interrupted = deps.runs.list({ status: "running", limit: 500 });
-  let failedInterruptedRuns = 0;
-  let preservedPausedRuns = 0;
+  let decisionRequiredRuns = 0;
+  let recoverablePausedRuns = 0;
 
   for (const run of interrupted) {
     const paused = deps.pausedRunStore?.get(run.id);
-    if (paused) {
-      const pendingHandoff = deps.planHandoffStore?.getPendingByRunId(run.id);
-      const recoveredStatus = pendingHandoff ? "waiting_plan_handoff" : "waiting_confirmation";
-      deps.runs.update(run.id, { status: recoveredStatus });
-      preservedPausedRuns += 1;
+    const pendingHandoff = deps.planHandoffStore?.getPendingByRunId(run.id);
+    const ledger = deps.runs
+      .listToolLedger(run.id)
+      .filter((entry) => entry.status === "intended" || entry.status === "started");
+    const resumability = new Map(
+      run.state.inFlightEffects.map((effect) => [effect.idempotencyKey, effect.resumable]),
+    );
+    const uncertainSideEffects = ledger.filter(
+      (entry) => entry.status === "started" && resumability.get(entry.idempotencyKey) !== true,
+    );
+    const recoverable = uncertainSideEffects.length === 0;
+
+    deps.runs.execute({
+      type: "run.require_recovery",
+      runId: run.id,
+      expectedAggregateVersion: run.aggregateVersion,
+      recoverable,
+      reason: recoverable
+        ? {
+            code: pendingHandoff
+              ? "plan_handoff_interrupted"
+              : paused
+                ? "paused_run_interrupted"
+                : ledger.some((entry) => entry.status === "started")
+                  ? "resumable_tool_interrupted"
+                  : "safe_checkpoint_interrupted",
+            message:
+              "The process stopped at a recoverable checkpoint. Resume through the recovery command.",
+          }
+        : {
+            code: "uncertain_side_effect",
+            message:
+              "A non-resumable tool started before the process stopped. User disposition is required.",
+            details: {
+              idempotencyKeys: uncertainSideEffects.map((entry) => entry.idempotencyKey),
+              tools: [...new Set(uncertainSideEffects.map((entry) => entry.toolName))],
+            },
+          },
+    });
+
+    if (recoverable) {
+      recoverablePausedRuns += 1;
       deps.trace?.write({
         type: "startup_recovery_run",
         runId: run.id,
         kind: run.kind,
         previousStatus: "running",
-        recoveredStatus,
+        recoveredStatus: "recovery_required",
       });
       continue;
     }
-
-    deps.runs.update(run.id, {
-      status: "failed",
-      error: "进程重启导致运行中断（startupRecovery）",
-    });
-    failedInterruptedRuns += 1;
+    decisionRequiredRuns += 1;
     deps.trace?.write({
       type: "startup_recovery_run",
       runId: run.id,
       kind: run.kind,
       previousStatus: "running",
-      recoveredStatus: "failed",
+      recoveredStatus: "recovery_required",
     });
   }
 
@@ -64,13 +100,18 @@ export function recoverOnStartup(deps: {
     preservedActiveScopes: 0,
     quarantinedEntries: 0,
   };
-  if (failedInterruptedRuns > 0 || preservedPausedRuns > 0 || pendingNotifications > 0 ||
-      scopeRecovery.recoveredScopes > 0 || scopeRecovery.preservedActiveScopes > 0 ||
-      scopeRecovery.quarantinedEntries > 0) {
+  if (
+    decisionRequiredRuns > 0 ||
+    recoverablePausedRuns > 0 ||
+    pendingNotifications > 0 ||
+    scopeRecovery.recoveredScopes > 0 ||
+    scopeRecovery.preservedActiveScopes > 0 ||
+    scopeRecovery.quarantinedEntries > 0
+  ) {
     deps.trace?.write({
       type: "startup_recovery_summary",
-      interruptedRuns: failedInterruptedRuns,
-      preservedPausedRuns,
+      interruptedRuns: decisionRequiredRuns,
+      preservedPausedRuns: recoverablePausedRuns,
       recoveredSubAgentScopes: scopeRecovery.recoveredScopes,
       preservedActiveSubAgentScopes: scopeRecovery.preservedActiveScopes,
       quarantinedSubAgentScopeEntries: scopeRecovery.quarantinedEntries,
@@ -79,8 +120,8 @@ export function recoverOnStartup(deps: {
   }
 
   return {
-    interruptedRuns: failedInterruptedRuns,
-    preservedPausedRuns,
+    interruptedRuns: decisionRequiredRuns,
+    preservedPausedRuns: recoverablePausedRuns,
     recoveredSubAgentScopes: scopeRecovery.recoveredScopes,
     preservedActiveSubAgentScopes: scopeRecovery.preservedActiveScopes,
     quarantinedSubAgentScopeEntries: scopeRecovery.quarantinedEntries,

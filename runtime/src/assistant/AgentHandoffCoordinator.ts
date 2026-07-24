@@ -4,7 +4,10 @@ import type { ContextManager } from "../context/ContextManager.js";
 import type { WorkspaceCatalog } from "../config/workspaceCatalog.js";
 import type { TraceEvent, TraceLogger } from "../trace/TraceLogger.js";
 import type { AgentProposalDraft } from "./AgentProposalDraftContracts.js";
-import type { AgentProposalCapabilityPolicy } from "./AgentProposalCapabilityPolicy.js";
+import {
+  AgentProposalPermissionValidationError,
+  type AgentProposalCapabilityPolicy,
+} from "./AgentProposalCapabilityPolicy.js";
 import { toPublicError } from "../util/publicError.js";
 import {
   AgentProposalRespondInputSchema,
@@ -12,6 +15,7 @@ import {
   ExplicitAgentProposalRequestSchema,
   type AgentCapability,
   type AgentExecutionOutcome,
+  type AgentModelBinding,
   type AgentProposal,
   type AgentProposalCreateInput,
   type AgentProposalListFilter,
@@ -35,6 +39,7 @@ export interface AgentHandoffExecutorInput {
   agentSessionId: string;
   workspaceKey: string;
   grantedPermissions: ToolPermission[];
+  modelBinding?: AgentModelBinding;
 }
 
 export interface AgentHandoffCoordinatorDeps {
@@ -72,6 +77,10 @@ export class AgentHandoffCoordinator {
       requestedCapabilities: proposal.requestedCapabilities,
       risk: proposal.risk,
       workspaceKey: proposal.workspaceKey,
+      modelSelectionMode: proposal.modelBinding?.selectionMode ?? "automatic",
+      requestedClientName: proposal.modelBinding?.clientName,
+      requestedModelName: proposal.modelBinding?.modelName,
+      protocolVersion: proposal.modelBinding?.protocolVersion,
     });
     return proposal;
   }
@@ -83,14 +92,72 @@ export class AgentHandoffCoordinator {
     originalRequest: string;
     workspaceKey?: string;
     draft: AgentProposalDraft;
+    source?: {
+      protocolVersion: string;
+      transport: "tool_call" | "text_envelope";
+      selectionMode?: "automatic" | "manual";
+      requestedClientName?: string;
+      clientName: string;
+      modelName: string;
+      responseHash: string;
+    };
   }): AgentProposal {
     const workspace = this.requireWorkspace(
       input.workspaceKey ?? this.deps.workspaceCatalog.defaultKey,
     );
-    const draft = this.deps.proposalCapabilityPolicy.normalize({
-      originalRequest: input.originalRequest,
-      draft: input.draft,
-    });
+    let draft: AgentProposalDraft;
+    try {
+      draft = this.deps.proposalCapabilityPolicy.normalize({
+        originalRequest: input.originalRequest,
+        draft: input.draft,
+      });
+    } catch (error) {
+      const publicError = toPublicError(error, "Agent 提案权限校验失败");
+      this.writeTrace({
+        type: "assistant_agent_proposal_permission_error",
+        level: "error",
+        category: "companion.proposal.permission",
+        message: publicError.message,
+        companionSessionId: input.companionSessionId,
+        metadata: {
+          lifecycleStage: "permission_validation",
+          errorCode: publicError.code,
+          retryable: false,
+          fieldPaths: error instanceof AgentProposalPermissionValidationError
+            ? error.fieldIssues.map((issue) => issue.path)
+            : [],
+          fieldIssues: error instanceof AgentProposalPermissionValidationError
+            ? error.fieldIssues
+            : [],
+          ...(input.source ?? {}),
+        },
+      });
+      throw error;
+    }
+    let modelBinding: AgentModelBinding | undefined;
+    try {
+      modelBinding = modelBindingFromCompanionSource(input.source);
+    } catch (error) {
+      const publicError = toPublicError(error, "Agent 模型绑定校验失败");
+      this.writeTrace({
+        type: "assistant_agent_model_binding_error",
+        level: "error",
+        category: "assistant.agent.routing",
+        message: publicError.message,
+        companionSessionId: input.companionSessionId,
+        metadata: {
+          lifecycleStage: "model_binding_validation",
+          errorCode: publicError.code,
+          retryable: false,
+          requestedClientName: input.source?.requestedClientName ?? null,
+          resolvedClientName: input.source?.clientName ?? null,
+          modelName: input.source?.modelName ?? null,
+          protocolVersion: input.source?.protocolVersion ?? null,
+          responseHash: input.source?.responseHash ?? null,
+        },
+      });
+      throw error;
+    }
     return this.submitProposal({
       sourceTurnId: input.sourceTurnId,
       companionSessionId: input.companionSessionId,
@@ -101,6 +168,7 @@ export class AgentHandoffCoordinator {
       requestedScope: [workspace.resolvedRoot],
       risk: draft.risk,
       workspaceKey: workspace.id,
+      ...(modelBinding ? { modelBinding } : {}),
     }, { companionStorageRoot: input.companionStorageRoot });
   }
 
@@ -122,6 +190,10 @@ export class AgentHandoffCoordinator {
 
   get(id: string): AgentProposal | null {
     return this.deps.state.get(id);
+  }
+
+  getByRunId(runId: string): AgentProposal | null {
+    return this.deps.state.getByRunId(runId);
   }
 
   getCompanionStorageRoot(proposalId: string): string | undefined {
@@ -296,6 +368,10 @@ export class AgentHandoffCoordinator {
       workspaceKey: workspace.id,
       authorizationMode,
       sessionReadGrantId: sessionReadGrant?.id,
+      modelSelectionMode: proposal.modelBinding?.selectionMode ?? "automatic",
+      requestedClientName: proposal.modelBinding?.clientName,
+      requestedModelName: proposal.modelBinding?.modelName,
+      protocolVersion: proposal.modelBinding?.protocolVersion,
     });
 
     let apiResult: ApiResult;
@@ -308,6 +384,7 @@ export class AgentHandoffCoordinator {
         agentSessionId,
         workspaceKey: workspace.id,
         grantedPermissions: started.grant.allowedPermissions,
+        ...(proposal.modelBinding ? { modelBinding: proposal.modelBinding } : {}),
       });
     } catch (error) {
       const publicError = toPublicError(error, "Agent 启动失败");
@@ -389,6 +466,31 @@ function isSessionReadOnlyProposal(proposal: AgentProposal): boolean {
   return proposal.risk === "read-only"
     && proposal.requestedCapabilities.length === 1
     && proposal.requestedCapabilities[0] === "file-read";
+}
+
+function modelBindingFromCompanionSource(source: {
+  protocolVersion: string;
+  selectionMode?: "automatic" | "manual";
+  requestedClientName?: string;
+  clientName: string;
+  modelName: string;
+} | undefined): AgentModelBinding | undefined {
+  if (!source || source.selectionMode !== "manual") return undefined;
+  const requestedClientName = source.requestedClientName?.trim();
+  if (!requestedClientName) {
+    throw new AgentHandoffValidationError("手动模型选择缺少可执行的客户端绑定");
+  }
+  if (requestedClientName !== source.clientName) {
+    throw new AgentHandoffConflictError(
+      `手动选择的模型客户端 ${requestedClientName} 与实际响应客户端 ${source.clientName} 不一致`,
+    );
+  }
+  return {
+    selectionMode: "manual",
+    clientName: requestedClientName,
+    modelName: source.modelName,
+    protocolVersion: source.protocolVersion,
+  };
 }
 
 function sameStringSet(left: readonly string[], right: readonly string[]): boolean {

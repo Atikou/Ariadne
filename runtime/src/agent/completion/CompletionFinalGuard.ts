@@ -27,7 +27,7 @@ export interface CompletionGuardResult {
   visibleAnswer?: string;
   /** 是否允许作为 AI 主回答展示。 */
   trustedVisible: boolean;
-  /** 是否允许进入 ContextRestorer / trusted memory。 */
+  /** 是否允许进入 ContextRestorer / 已验证记忆。 */
   trustedForMemory: boolean;
   /** 仅 role=system 回灌模型（当前 run 继续时）。 */
   systemFeedback?: string;
@@ -142,7 +142,7 @@ export function buildGuardSystemFeedback(input: {
 
 /**
  * 副作用任务 final 真实性校验。
- * 接受时 trusted final 来自模型；拒绝时 guardedAnswer 为 UI/历史可信回答。
+ * 接受时最终回答来自通过完成守卫的模型结果；拒绝时 guardedAnswer 为 UI/历史可验证回答。
  */
 export function evaluateCompletionGuard(input: {
   goal: string;
@@ -298,7 +298,7 @@ export function evaluateCompletionGuard(input: {
       : "模型声称本轮任务已完成，但 Tool Ledger 无对应成功副作用";
   }
 
-  // 结构化声明为 partial/blocked：如实收尾，但仍不能进入 trusted memory。
+  // 结构化声明为 partial/blocked：如实收尾，但仍不能进入已验证记忆。
   if ((input.completionClaim ?? "completed") !== "completed") {
     if (status === "awaiting_permission") {
       const guardedAnswer = buildGuardedFinalAnswer({

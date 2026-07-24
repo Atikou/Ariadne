@@ -13,10 +13,11 @@ const accountName = nonEmptyString
   .max(20)
   .regex(/^[A-Za-z0-9_-]+$/, "沙箱账户名只能包含字母、数字、下划线和连字符");
 const sha256Hex = z.string().regex(/^[0-9a-f]{64}$/u);
-export const WINDOWS_SANDBOX_PROTOCOL_VERSION = 4 as const;
+export const WINDOWS_SANDBOX_PROTOCOL_VERSION = 5 as const;
 export const WINDOWS_SANDBOX_BROKER_PROTOCOL_VERSION = 1 as const;
 export const WINDOWS_SANDBOX_BROKER_MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 export const SANDBOX_MAX_STDIN_BYTES = 1024 * 1024;
+export const SANDBOX_MAX_INTERACTIVE_STDIN_CHUNK_BYTES = 64 * 1024;
 export const SANDBOX_MAX_STDIN_BASE64_CHARACTERS =
   4 * Math.ceil(SANDBOX_MAX_STDIN_BYTES / 3);
 
@@ -105,7 +106,7 @@ export const SandboxExecutionRequestSchema = z
     mode: SandboxModeSchema,
     networkMode: SandboxNetworkModeSchema,
     environment: z
-      .record(z.string().max(32_768))
+      .record(z.string(), z.string().max(32_768))
       .superRefine((environment, ctx) => {
         if (Object.keys(environment).length > 256) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, message: "环境变量不得超过 256 项" });
@@ -130,6 +131,7 @@ export const SandboxExecutionRequestSchema = z
     timeoutMs: z.number().int().positive().max(24 * 60 * 60 * 1_000),
     maxOutputBytes: z.number().int().positive().max(64 * 1024 * 1024),
     stdinBase64: sandboxStdinBase64.optional(),
+    interactive: z.boolean().default(false),
     resourceLimits: SandboxResourceLimitsSchema,
   })
   .strict()
@@ -149,6 +151,13 @@ export const SandboxExecutionRequestSchema = z
         code: z.ZodIssueCode.custom,
         path: ["writeScope"],
         message: "writeScope 仅适用于 workspace-write",
+      });
+    }
+    if (request.interactive && request.stdinBase64 !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["stdinBase64"],
+        message: "interactive execution receives stdin only through authenticated frames",
       });
     }
     if (request.invocation.kind === "file" &&
@@ -171,6 +180,33 @@ export const SandboxExecutionRequestSchema = z
     }
   });
 export type SandboxExecutionRequest = z.infer<typeof SandboxExecutionRequestSchema>;
+
+const interactiveStdinBase64 = z.string().superRefine((value, context) => {
+  if (value.length > 4 * Math.ceil(SANDBOX_MAX_INTERACTIVE_STDIN_CHUNK_BYTES / 3)) {
+    context.addIssue({ code: "custom", message: "interactive stdin chunk exceeds 64 KiB" });
+    return;
+  }
+  const decoded = Buffer.from(value, "base64");
+  if (
+    decoded.byteLength > SANDBOX_MAX_INTERACTIVE_STDIN_CHUNK_BYTES
+    || decoded.toString("base64") !== value
+  ) {
+    context.addIssue({ code: "custom", message: "interactive stdin must be canonical Base64" });
+  }
+});
+
+export const SandboxInteractiveInputFrameSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("stdin"),
+    executionId: nonEmptyString.max(512),
+    dataBase64: interactiveStdinBase64,
+  }).strict(),
+  z.object({
+    type: z.literal("stdin_end"),
+    executionId: nonEmptyString.max(512),
+  }).strict(),
+]);
+export type SandboxInteractiveInputFrame = z.infer<typeof SandboxInteractiveInputFrameSchema>;
 
 export const SandboxIsolationSchema = z
   .object({

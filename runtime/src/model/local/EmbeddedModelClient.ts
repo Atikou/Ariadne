@@ -1,11 +1,15 @@
-import type { ChatRequest, ModelClient, ModelResponse } from "../types.js";
+import type { ChatRequest, ModelClient, ModelResponse, ModelToolSpec } from "../types.js";
+import type { TokenCounter } from "../TokenCounter.js";
 import type { LocalModelDescriptor } from "./types.js";
 import { LocalModelRuntimeManager } from "./LocalModelRuntimeManager.js";
 
 export class EmbeddedModelClient implements ModelClient {
   readonly location = "local" as const;
+  readonly toolCallCapability = "unsupported" as const;
   readonly name: string;
   readonly model: string;
+  readonly tokenCounter: TokenCounter;
+  readonly contextWindowTokens: number | undefined;
 
   constructor(
     readonly descriptor: LocalModelDescriptor,
@@ -13,6 +17,25 @@ export class EmbeddedModelClient implements ModelClient {
   ) {
     this.name = descriptor.id;
     this.model = descriptor.displayName;
+    this.contextWindowTokens = descriptor.contextSize;
+    this.tokenCounter = {
+      profile: `${descriptor.runtime}:${descriptor.id}`,
+      exact: true,
+      countText: async (text) => this.runtimes.countTokens(this.descriptor, {
+        messages: [{ role: "user", content: text }],
+      }),
+      countMessages: async (messages) => this.runtimes.countTokens(this.descriptor, {
+        messages: [...messages],
+      }),
+      countTools: async (tools: readonly ModelToolSpec[]) => this.runtimes.countTokens(
+        this.descriptor,
+        { messages: [], tools: [...tools] },
+      ),
+      countRequest: async (request) => this.runtimes.countTokens(this.descriptor, {
+        messages: [...request.messages],
+        tools: request.tools ? [...request.tools] : undefined,
+      }),
+    };
   }
 
   async isAvailable(): Promise<boolean> {

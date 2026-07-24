@@ -13,7 +13,8 @@ internal static class NativeExecutionSupervisor
         ExecutionAuthorization authorization,
         WindowsChildPipe stdoutPipe,
         WindowsChildPipe stderrPipe,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Stream? interactiveInput = null)
     {
         var executable = RequireExecutable();
         var commandLine = BuildCommandLine(executable, authorization);
@@ -43,6 +44,8 @@ internal static class NativeExecutionSupervisor
         leaseStore.RecoverAndRegister(token, lease);
         try
         {
+            using var interactiveCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            Task interactiveRelay = Task.CompletedTask;
             WindowsProcessHandles? runner = null;
             try
             {
@@ -63,37 +66,66 @@ internal static class NativeExecutionSupervisor
                 stderrPipe.CloseChildEnd();
             }
 
-            using (runner)
+            try
             {
-                await WriteRequestAsync(inputStream, request);
-                var watchdog = checked(request.TimeoutMs + 30_000);
-                var wait = Task.Run(() => runner.Wait(watchdog));
-                var cancelled = Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-                if (await Task.WhenAny(wait, cancelled) == cancelled)
+                using (runner)
                 {
-                    supervisorJob.Terminate(SupervisorFailureExitCode);
-                    _ = await wait;
-                    throw new NativeExecutionException("cancelled", "sandbox broker execution was cancelled");
-                }
-                if (!await wait)
-                {
-                    supervisorJob.Terminate(SupervisorFailureExitCode);
-                    if (!runner.Wait(10_000))
+                    await WriteRequestAsync(inputStream, request);
+                    if (request.Interactive)
+                    {
+                        interactiveRelay = RelayInteractiveInputAsync(
+                            interactiveInput ?? throw new NativeExecutionException(
+                                "protocol_failure",
+                                "interactive broker input is unavailable"),
+                            inputStream,
+                            interactiveCancellation.Token);
+                    }
+                    var watchdog = checked(request.TimeoutMs + 30_000);
+                    var wait = Task.Run(() => runner.Wait(watchdog));
+                    var cancelled = Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    var lifecycle = request.Interactive
+                        ? await Task.WhenAny(wait, cancelled, interactiveRelay)
+                        : await Task.WhenAny(wait, cancelled);
+                    if (lifecycle == interactiveRelay)
+                    {
+                        supervisorJob.Terminate(SupervisorFailureExitCode);
+                        _ = await wait;
+                        await IgnoreInteractiveRelayAsync(interactiveRelay);
+                        throw new NativeExecutionException(
+                            "cancelled",
+                            "interactive sandbox client disconnected");
+                    }
+                    if (lifecycle == cancelled)
+                    {
+                        supervisorJob.Terminate(SupervisorFailureExitCode);
+                        _ = await wait;
+                        throw new NativeExecutionException("cancelled", "sandbox broker execution was cancelled");
+                    }
+                    if (!await wait)
+                    {
+                        supervisorJob.Terminate(SupervisorFailureExitCode);
+                        if (!runner.Wait(10_000))
+                        {
+                            throw new NativeExecutionException(
+                                "protocol_failure",
+                                "restricted runner did not terminate after its supervisor Job was stopped");
+                        }
+                        throw new NativeExecutionException(
+                            "protocol_failure",
+                            "restricted runner exceeded its lifecycle watchdog");
+                    }
+                    if (runner.ExitCode() != 0)
                     {
                         throw new NativeExecutionException(
                             "protocol_failure",
-                            "restricted runner did not terminate after its supervisor Job was stopped");
+                            "restricted runner exited without a valid terminal protocol event");
                     }
-                    throw new NativeExecutionException(
-                        "protocol_failure",
-                        "restricted runner exceeded its lifecycle watchdog");
                 }
-                if (runner.ExitCode() != 0)
-                {
-                    throw new NativeExecutionException(
-                        "protocol_failure",
-                        "restricted runner exited without a valid terminal protocol event");
-                }
+            }
+            finally
+            {
+                interactiveCancellation.Cancel();
+                await IgnoreInteractiveRelayAsync(interactiveRelay);
             }
         }
         finally
@@ -151,6 +183,38 @@ internal static class NativeExecutionSupervisor
         catch (IOException)
         {
             // The runner reports its own startup failure through the inherited protocol output.
+        }
+    }
+
+    private static async Task RelayInteractiveInputAsync(
+        Stream source,
+        Stream destination,
+        CancellationToken cancellationToken)
+    {
+        var buffer = new byte[16 * 1024];
+        while (true)
+        {
+            var read = await source.ReadAsync(buffer, cancellationToken);
+            if (read == 0)
+            {
+                throw new NativeExecutionException(
+                    "cancelled",
+                    "interactive sandbox client disconnected");
+            }
+            await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            await destination.FlushAsync(cancellationToken);
+        }
+    }
+
+    private static async Task IgnoreInteractiveRelayAsync(Task task)
+    {
+        try
+        {
+            await task;
+        }
+        catch (Exception error) when (
+            error is OperationCanceledException or ObjectDisposedException or IOException or NativeExecutionException)
+        {
         }
     }
 

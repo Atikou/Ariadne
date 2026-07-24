@@ -504,7 +504,11 @@ function errorReason(error: unknown): string {
   return message.replace(/\s+/g, " ").slice(0, 240);
 }
 
-export function createVectorStore(dataDir: string, useLance = true): VectorStore {
+export function createVectorStore(
+  dataDir: string,
+  useLance = true,
+  vectorDimension = EMBEDDING_DIMENSION,
+): VectorStore {
   if (!useLance) return new InMemoryVectorStore();
-  return new LanceDbVectorStore(path.join(dataDir, "agent_data", "lancedb"), EMBEDDING_DIMENSION);
+  return new LanceDbVectorStore(path.join(dataDir, "agent_data", "lancedb"), vectorDimension);
 }

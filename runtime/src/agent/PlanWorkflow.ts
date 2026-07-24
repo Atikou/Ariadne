@@ -187,7 +187,7 @@ export class PlanWorkflow {
       iteration: 0,
       tool: toolName,
       input,
-      permission: tool?.permission,
+      permission: tool?.permissions[0],
       thought,
       ok: false,
     };

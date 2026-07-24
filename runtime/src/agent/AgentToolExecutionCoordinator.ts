@@ -57,6 +57,8 @@ import type { AgentTimelineService } from "./timeline/AgentTimelineService.js";
 import type { AgentToolStep } from "./toolStep.js";
 import { isEffectiveWriteStep } from "./toolStepOutcome.js";
 import { DISPATCH_SUBAGENT_TOOL_NAME } from "../tools/subagentTool.js";
+import type { RunAggregateRepository } from "../run/RunAggregateRepository.js";
+import { RunToolCheckpointCoordinator } from "../run/RunToolCheckpointCoordinator.js";
 
 export interface AgentToolExecutionCoordinatorOptions {
   registry: ToolRegistry;
@@ -95,6 +97,7 @@ export interface AgentToolExecutionCoordinatorOptions {
   projectId?: string;
   taskId?: string;
   requestId?: string;
+  runRepository?: RunAggregateRepository;
   onStep?: (step: AgentToolStep) => void;
 }
 
@@ -136,7 +139,12 @@ export class AgentToolExecutionCoordinator {
   private readonly toolGateway: ToolExecutionGateway;
 
   constructor(private readonly options: AgentToolExecutionCoordinatorOptions) {
-    this.toolGateway = new ToolExecutionGateway(options.registry);
+    this.toolGateway = new ToolExecutionGateway(
+      options.registry,
+      options.runRepository && options.runId
+        ? new RunToolCheckpointCoordinator(options.runRepository, options.runId)
+        : undefined,
+    );
   }
 
   makeToolCallId(iteration: number, tool: string): string {
@@ -182,9 +190,30 @@ export class AgentToolExecutionCoordinator {
   async continueAfterToolStep(
     input: AgentToolContinuationInput,
   ): Promise<AgentToolContinuationResult> {
+    this.recordCompletedToolStep(input);
+    return await this.continueRecordedToolStep(input);
+  }
+
+  async continueAfterToolBatch(
+    inputs: readonly AgentToolContinuationInput[],
+  ): Promise<AgentToolContinuationResult> {
+    for (const input of inputs) this.recordCompletedToolStep(input);
+    for (const input of inputs) {
+      const result = await this.continueRecordedToolStep(input);
+      if (result.kind !== "continue") return result;
+    }
+    return { kind: "continue" };
+  }
+
+  private recordCompletedToolStep(input: AgentToolContinuationInput): void {
     input.steps.push(input.step);
     this.options.onStep?.(input.step);
+    this.recordToolStepMessages(input);
+  }
 
+  private async continueRecordedToolStep(
+    input: AgentToolContinuationInput,
+  ): Promise<AgentToolContinuationResult> {
     if (
       input.allowPermissionRepause
       && input.action
@@ -208,7 +237,6 @@ export class AgentToolExecutionCoordinator {
       };
     }
 
-    this.recordToolStepMessages(input);
     if (!input.step.blocked) {
       const invalidated = cacheInvalidationPath(input.step);
       if (invalidated) this.options.state.toolResultCache.invalidatePath(invalidated);
@@ -303,7 +331,7 @@ export class AgentToolExecutionCoordinator {
       action,
       iteration,
       toolCallId,
-      toolPermission: tool?.permission,
+      toolPermission: tool?.permissions[0],
       pathAccess,
       intent: this.options.state.getEffectiveIntent(this.options.policy),
       permissionPolicy: this.options.policy.permissionPolicy,
@@ -520,7 +548,7 @@ export class AgentToolExecutionCoordinator {
     );
     const reconciliation = applyCapabilityEscalationBeforeTool({
       action,
-      toolPermission: tool?.permission,
+      toolPermission: tool?.permissions[0],
       workflowRoute: entryWorkflowRoute,
       iteration,
       capabilityEscalations: this.options.state.capabilityEscalations,

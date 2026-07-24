@@ -2,7 +2,7 @@ import type { ToolOutcome, ToolOutcomeClass, ToolOutcomeKind, SuggestedToolActio
 
 import { clipModelToolJson } from "../../util/toolResultLayers.js";
 
-import { wrapUntrustedToolOutput } from "../../util/injection.js";
+import { wrapExternalToolOutput } from "../../util/injection.js";
 
 import type { AgentToolStep } from "../toolStep.js";
 
@@ -99,7 +99,7 @@ export function renderToolOutcomeMessage(step: AgentToolStep): string | undefine
 
   };
 
-  const wrapped = wrapUntrustedToolOutput(step.tool, payload);
+  const wrapped = wrapExternalToolOutput(step.tool, payload);
 
   const body = clipModelToolJson(wrapped);
 

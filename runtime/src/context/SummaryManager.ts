@@ -1,5 +1,6 @@
 import type { MessageStore, SummaryStore } from "./stores.js";
-import { isUntrustedCompletionMemoryText, scrubStructuredSummaryContent } from "./contextTrust.js";
+import { isUnverifiedCompletionMemoryText, scrubStructuredSummaryContent } from "./contextTrust.js";
+import { isVerifiedContent } from "./messageEnvelope.js";
 import type { MessageRecord, StructuredSummary, SummarizeFn, SummaryRecord } from "./types.js";
 
 export interface SummaryManagerOptions {
@@ -37,13 +38,15 @@ export class SummaryManager {
     const batch = pending.slice(0, this.batchSize);
     if (batch.length === 0) return null;
 
-    const content = await this.summarize(batch);
+    const generated = await this.summarize(batch);
     const record = this.summaries.save({
       sessionId,
       summaryType: "chunk_summary",
-      content,
+      content: generated.content,
       startMessageId: batch[0]!.id,
       endMessageId: batch[batch.length - 1]!.id,
+      generationState: generated.generationState,
+      degradedReason: generated.degradedReason,
     });
     this.messages.markSummarized(
       batch.map((m) => m.id),
@@ -86,40 +89,57 @@ export class SummaryManager {
       sessionId,
       summaryType: "session_summary",
       content: merged,
+      startMessageId: chunks[0]?.startMessageId,
       endMessageId: chunks[chunks.length - 1]?.endMessageId,
+      generationState: "derived",
+      degradedReason: chunks.some((chunk) => chunk.generationState === "degraded")
+        ? "derived_from_degraded_chunk"
+        : undefined,
     });
   }
 }
 
-async function defaultSummarize(messages: MessageRecord[]): Promise<StructuredSummary> {
+async function defaultSummarize(messages: MessageRecord[]) {
   const userLines = messages.filter((m) => m.role === "user").map((m) => m.content.slice(0, 200));
   const assistantLines = messages
     .filter((m) => {
       if (m.role !== "assistant") return false;
       return (
-        m.trusted === true &&
+        m.contentEnvelope != null &&
+        isVerifiedContent(m.contentEnvelope) &&
         (m.messageKind === "final_answer" || m.messageKind === "conversational_reply")
       );
     })
     .map((m) => m.content.slice(0, 200))
-    .filter((line) => !isUntrustedCompletionMemoryText(line));
+    .filter((line) => !isUnverifiedCompletionMemoryText(line));
   const toolLines = messages
-    .filter((m) => m.role === "tool" && m.trusted === true && m.ledgerBacked === true)
+    .filter(
+      (m) =>
+        m.role === "tool" &&
+        m.contentEnvelope != null &&
+        isVerifiedContent(m.contentEnvelope) &&
+        m.ledgerBacked === true,
+    )
     .map((m) => m.content.slice(0, 160));
 
   return {
-    current_goal: userLines[0] ?? "（无明确目标）",
-    important_decisions: assistantLines.slice(0, 3),
-    user_preferences: [],
-    project_state: [],
-    open_questions: [],
-    recent_changes: userLines.slice(-3),
-    important_files: extractFiles(messages),
-    tool_results: toolLines.slice(-3),
-    errors_seen: messages
-      .filter((m) => /失败|error|错误/i.test(m.content))
-      .map((m) => m.content.slice(0, 120))
-      .slice(-3),
+    schemaVersion: 1 as const,
+    generationState: "degraded" as const,
+    degradedReason: "rule_slice_no_model_summarizer",
+    content: {
+      current_goal: userLines[0] ?? "（无明确目标）",
+      important_decisions: assistantLines.slice(0, 3),
+      user_preferences: [],
+      project_state: [],
+      open_questions: [],
+      recent_changes: userLines.slice(-3),
+      important_files: extractFiles(messages),
+      tool_results: toolLines.slice(-3),
+      errors_seen: messages
+        .filter((m) => /失败|error|错误/i.test(m.content))
+        .map((m) => m.content.slice(0, 120))
+        .slice(-3),
+    },
   };
 }
 

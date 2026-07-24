@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 
 export interface SqliteMigration {
@@ -17,6 +19,12 @@ export interface SchemaInfo {
   migrations: AppliedMigration[];
 }
 
+export interface SqliteMigrationResult {
+  version: number;
+  newlyApplied: string[];
+  backupPath?: string;
+}
+
 /** 确保 schema_migrations 审计表存在。 */
 export function ensureMigrationTable(db: DatabaseSync): void {
   db.exec(`
@@ -31,6 +39,18 @@ export function ensureMigrationTable(db: DatabaseSync): void {
 export function getUserVersion(db: DatabaseSync): number {
   const row = db.prepare("PRAGMA user_version").get() as { user_version: number };
   return row.user_version;
+}
+
+export function assertDatabaseVersionSupported(
+  db: DatabaseSync,
+  maximumSupportedVersion: number,
+): void {
+  const current = getUserVersion(db);
+  if (current > maximumSupportedVersion) {
+    throw new Error(
+      `sqlite_schema_newer_than_runtime:${current}:${maximumSupportedVersion}`,
+    );
+  }
 }
 
 export function listAppliedMigrations(db: DatabaseSync): AppliedMigration[] {
@@ -100,30 +120,47 @@ function backfillLegacyMigrations(
 export function applySqliteMigrations(
   db: DatabaseSync,
   migrations: readonly SqliteMigration[],
-): { version: number; newlyApplied: string[] } {
-  ensureMigrationTable(db);
+): SqliteMigrationResult {
   const sorted = [...migrations].sort((a, b) => a.version - b.version);
   const targetVersion = sorted[sorted.length - 1]?.version ?? 0;
-  backfillLegacyMigrations(db, sorted, targetVersion);
+  assertDatabaseVersionSupported(db, targetVersion);
+  const initialVersion = getUserVersion(db);
+  const backupPath = initialVersion < targetVersion
+    ? createPreMigrationBackup(db, initialVersion, targetVersion)
+    : undefined;
 
-  let current = getUserVersion(db);
+  let current = initialVersion;
   const newlyApplied: string[] = [];
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    ensureMigrationTable(db);
+    backfillLegacyMigrations(db, sorted, targetVersion);
+    current = getUserVersion(db);
 
-  for (const m of sorted) {
-    if (m.version <= current) continue;
-    if (m.version !== current + 1) {
-      throw new Error(
-        `SQLite 迁移版本断层：当前 ${current}，下一个是 ${m.version}（${m.name}）`,
-      );
+    for (const m of sorted) {
+      if (m.version <= current) continue;
+      if (m.version !== current + 1) {
+        throw new Error(
+          `SQLite 迁移版本断层：当前 ${current}，下一个是 ${m.version}（${m.name}）`,
+        );
+      }
+      m.up(db);
+      recordMigration(db, m.version, m.name);
+      db.exec(`PRAGMA user_version = ${m.version}`);
+      current = m.version;
+      newlyApplied.push(m.name);
     }
-    m.up(db);
-    recordMigration(db, m.version, m.name);
-    db.exec(`PRAGMA user_version = ${m.version}`);
-    current = m.version;
-    newlyApplied.push(m.name);
+    db.exec("COMMIT");
+  } catch (error) {
+    if (db.isTransaction) db.exec("ROLLBACK");
+    throw error;
   }
 
-  return { version: current, newlyApplied };
+  return {
+    version: current,
+    newlyApplied,
+    ...(backupPath ? { backupPath } : {}),
+  };
 }
 
 export function getSchemaInfo(db: DatabaseSync): SchemaInfo {
@@ -153,4 +190,41 @@ export function hashRowId(id: string): number {
     h = (h * 31 + id.charCodeAt(i)) >>> 0;
   }
   return (h % 2_000_000_000) + 1;
+}
+
+function createPreMigrationBackup(
+  db: DatabaseSync,
+  currentVersion: number,
+  targetVersion: number,
+): string | undefined {
+  if (currentVersion === 0) {
+    const userTable = db.prepare(
+      `SELECT name FROM sqlite_master
+       WHERE type='table' AND name NOT LIKE 'sqlite_%'
+       LIMIT 1`,
+    ).get();
+    if (!userTable) return undefined;
+  }
+  const database = db.prepare("PRAGMA database_list").all()
+    .find((row) => (row as { name?: string }).name === "main") as
+      | { file?: string }
+      | undefined;
+  const databasePath = database?.file;
+  if (!databasePath || databasePath === ":memory:") return undefined;
+  const backupRoot = path.join(path.dirname(databasePath), "migration-backups");
+  mkdirSync(backupRoot, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
+  const backupPath = path.join(
+    backupRoot,
+    `${path.basename(databasePath)}.v${currentVersion}-to-v${targetVersion}.${stamp}.sqlite`,
+  );
+  db.exec(`VACUUM INTO '${backupPath.replace(/'/gu, "''")}'`);
+  writeFileSync(`${backupPath}.json`, JSON.stringify({
+    source: path.basename(databasePath),
+    fromVersion: currentVersion,
+    toVersion: targetVersion,
+    createdAt: new Date().toISOString(),
+    recovery: "replace_database_while_application_stopped",
+  }, null, 2), "utf8");
+  return backupPath;
 }

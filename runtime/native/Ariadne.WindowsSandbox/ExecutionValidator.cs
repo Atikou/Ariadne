@@ -4,6 +4,7 @@ internal static class ExecutionValidator
 {
     private const int MaxEnvironmentCharacters = 256 * 1024;
     internal const int MaxStdinBytes = 1024 * 1024;
+    internal const int MaxInteractiveStdinChunkBytes = 64 * 1024;
     internal const int MaxStdinBase64Characters = 4 * ((MaxStdinBytes + 2) / 3);
 
     internal static void Validate(ExecutionRequest request)
@@ -72,7 +73,53 @@ internal static class ExecutionValidator
             throw new RequestException("environment contains an invalid entry");
         }
         ValidateInvocation(request.Invocation);
+        if (request.Interactive && request.StdinBase64 is not null)
+        {
+            throw new RequestException("interactive execution receives stdin only through authenticated frames");
+        }
         _ = DecodeStdin(request.StdinBase64);
+    }
+
+    internal static byte[] DecodeInteractiveInput(InteractiveInputFrame frame, string executionId)
+    {
+        if (!string.Equals(frame.Type, "stdin", StringComparison.Ordinal) ||
+            !string.Equals(frame.ExecutionId, executionId, StringComparison.Ordinal) ||
+            frame.DataBase64 is null)
+        {
+            throw new RequestException("interactive stdin frame is invalid");
+        }
+        byte[] decoded;
+        try
+        {
+            decoded = Convert.FromBase64String(frame.DataBase64);
+        }
+        catch (FormatException)
+        {
+            throw new RequestException("interactive stdin frame is not Base64");
+        }
+        if (decoded.Length > MaxInteractiveStdinChunkBytes ||
+            !string.Equals(Convert.ToBase64String(decoded), frame.DataBase64, StringComparison.Ordinal))
+        {
+            throw new RequestException("interactive stdin frame exceeds 64 KiB or is not canonical");
+        }
+        return decoded;
+    }
+
+    internal static bool IsInteractiveEnd(InteractiveInputFrame frame, string executionId)
+    {
+        if (!string.Equals(frame.ExecutionId, executionId, StringComparison.Ordinal))
+        {
+            throw new RequestException("interactive stdin execution id mismatch");
+        }
+        if (string.Equals(frame.Type, "stdin_end", StringComparison.Ordinal) && frame.DataBase64 is null)
+        {
+            return true;
+        }
+        if (!string.Equals(frame.Type, "stdin", StringComparison.Ordinal))
+        {
+            throw new RequestException("interactive stdin frame type is invalid");
+        }
+        return false;
     }
 
     internal static byte[] DecodeStdin(string? stdinBase64)

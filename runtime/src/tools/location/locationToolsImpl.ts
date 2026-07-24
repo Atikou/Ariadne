@@ -6,7 +6,8 @@ import type { SymbolSearchMatchMode } from "../../context/projectIndexTypes.js";
 import { ExplorationProgressTracker, type ExplorationProgressSnapshot } from "../../agent/ExplorationProgressTracker.js";
 import { DEFAULT_READ_MAX_BYTES } from "../constants.js";
 import { resolveInsideWorkspace } from "../pathSafe.js";
-import type { Tool, ToolContext } from "../types.js";
+import { WORKSPACE_READ_CONTRACT } from "../contractProfiles.js";
+import type { ToolContext, ToolContract } from "../types.js";
 import { classifyPathRisk } from "../../policy/PathRiskClassifier.js";
 import { DEFAULT_SOURCE_ROOTS, CONFIG_FILE_NAMES } from "./locationHeuristics.js";
 import { analyzeTaskQuery } from "./locationQueryAnalyzer.js";
@@ -37,7 +38,7 @@ import {
 } from "./locationInternals.js";
 import { estimateTokens, isRecord, isSearchPlanTaskType, normalizeRelPath, unique } from "./locationUtils.js";
 
-export const projectScanTool: Tool<
+export const projectScanTool: ToolContract<
   typeof projectScanInputSchema,
   {
     projectType: string;
@@ -58,10 +59,9 @@ export const projectScanTool: Tool<
     };
   }
 > = {
+  ...WORKSPACE_READ_CONTRACT,
   name: "project_scan",
   description: "轻量扫描项目结构、配置文件、源码根和重要入口，避免用低层 list_files 逐级探索。",
-  permission: "read",
-  hasSideEffect: false,
   inputSchema: projectScanInputSchema,
   async execute(input, ctx) {
     const extraIgnore = new Set(input.exclude);
@@ -119,7 +119,7 @@ export const projectScanTool: Tool<
   },
 };
 
-export const projectIndexUpdateTool: Tool<
+export const projectIndexUpdateTool: ToolContract<
   typeof projectIndexUpdateInputSchema,
   {
     projectId: string;
@@ -144,11 +144,10 @@ export const projectIndexUpdateTool: Tool<
     };
   }
 > = {
+  ...WORKSPACE_READ_CONTRACT,
   name: "project_index_update",
   description:
     "增量刷新 ProjectIndex（路径/mtime/hash、符号、import/export、LanceDB 语义向量）；适合写入文件后局部更新，无需完整 project_scan。",
-  permission: "read",
-  hasSideEffect: false,
   timeoutMs: 30_000,
   inputSchema: projectIndexUpdateInputSchema,
   async execute(input, ctx) {
@@ -191,7 +190,7 @@ export const projectIndexUpdateTool: Tool<
   },
 };
 
-export const locateRelevantFilesTool: Tool<
+export const locateRelevantFilesTool: ToolContract<
   typeof locateRelevantFilesInputSchema,
   {
     projectId: string;
@@ -223,10 +222,9 @@ export const locateRelevantFilesTool: Tool<
     };
   }
 > = {
+  ...WORKSPACE_READ_CONTRACT,
   name: "locate_relevant_files",
   description: "根据任务目标一次性生成搜索计划、合并候选并排序，返回 primaryFiles/candidateFiles。",
-  permission: "read",
-  hasSideEffect: false,
   timeoutMs: 20_000,
   inputSchema: locateRelevantFilesInputSchema,
   async execute(input, ctx) {
@@ -360,7 +358,7 @@ export const locateRelevantFilesTool: Tool<
   },
 };
 
-export const symbolSearchTool: Tool<
+export const symbolSearchTool: ToolContract<
   typeof symbolSearchInputSchema,
   {
     projectId: string;
@@ -377,11 +375,10 @@ export const symbolSearchTool: Tool<
     indexStats?: { fileCount: number; symbolCount: number };
   }
 > = {
+  ...WORKSPACE_READ_CONTRACT,
   name: "symbol_search",
   description:
     "按类名/函数名/类型名搜索符号定义位置；优先查 ProjectIndex，索引未命中时回退扫描源码。",
-  permission: "read",
-  hasSideEffect: false,
   timeoutMs: 20_000,
   inputSchema: symbolSearchInputSchema,
   async execute(input, ctx) {
@@ -456,7 +453,7 @@ export const symbolSearchTool: Tool<
   },
 };
 
-export const contextPackTool: Tool<
+export const contextPackTool: ToolContract<
   typeof contextPackInputSchema,
     {
       files: Array<{
@@ -473,10 +470,9 @@ export const contextPackTool: Tool<
       skippedSensitiveFiles: string[];
     }
   > = {
+  ...WORKSPACE_READ_CONTRACT,
   name: "context_pack",
   description: "一次性读取并摘要多个相关文件，减少连续 read_file 调用。",
-  permission: "read",
-  hasSideEffect: false,
   timeoutMs: 20_000,
   inputSchema: contextPackInputSchema,
   async execute(input, ctx) {

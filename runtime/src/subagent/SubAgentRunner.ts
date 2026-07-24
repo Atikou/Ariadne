@@ -36,6 +36,7 @@ import {
   type SubAgentWorkspaceManager,
   type SubAgentWorkspaceSession,
 } from "./SubAgentWorkspaceManager.js";
+import type { HookManager } from "../hooks/HookManager.js";
 
 export interface SubAgentRunnerDeps {
   chat: LoopChatFn;
@@ -56,6 +57,7 @@ export interface SubAgentRunnerDeps {
   maxBatchConcurrency?: number;
   workspaceManager?: SubAgentWorkspaceManager;
   defaultTimeoutMs?: number;
+  hooks?: HookManager;
 }
 
 export class SubAgentRunner {

@@ -9,6 +9,7 @@ import {
   ARIADNE_RUNTIME_PROTOCOL_VERSION,
   type RuntimeBootstrap
 } from '@ariadne/protocol/host';
+import { createDefaultRuntimePolicySnapshot } from '@ariadne/protocol/settings';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createRuntimeContext } from '../src/application/createRuntimeContext.js';
@@ -93,6 +94,7 @@ function bootstrap(
     installRoot: packageRoot,
     dataRoot,
     modelRoots: [],
+    runtimePolicy: createDefaultRuntimePolicySnapshot(),
     profile: 'default',
     workspaces: [{ workspaceId: 'primary', label: 'Workspace', rootPath: workspaceRoot, access }],
     production: false

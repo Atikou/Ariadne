@@ -41,8 +41,16 @@ describe("AgentRequestService permission boundary", () => {
         }),
       },
       runs: {
-        create: () => ({ id: "run-1" }),
-        update: () => undefined,
+        execute: (command: { type: string }) =>
+          command.type === "run.create"
+            ? { id: "run-1", aggregateVersion: 1 }
+            : { id: "run-1", aggregateVersion: 2 },
+        get: () => ({
+          id: "run-1",
+          kind: "agent",
+          status: "completed",
+          aggregateVersion: 3,
+        }),
       },
       agentRunRegistry: {
         register: () => new AbortController(),

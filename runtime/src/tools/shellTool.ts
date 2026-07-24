@@ -8,7 +8,8 @@ import { resolveInsideWorkspace } from "./pathSafe.js";
 import { classifyShellCommand } from "../policy/ShellPolicy.js";
 import type { SandboxIsolation } from "../sandbox/SandboxContracts.js";
 import { requireProcessSandbox } from "../sandbox/ProcessSandbox.js";
-import type { Tool } from "./types.js";
+import { PROCESS_CONTRACT } from "./contractProfiles.js";
+import type { ToolContract } from "./types.js";
 
 /** 拒绝通过 cd 或绝对路径逃出工作区的简单命令形态。 */
 export function assertShellCommandStaysInWorkspace(command: string): void {
@@ -28,7 +29,7 @@ function clipOutput(text: string, maxBytes: number): { text: string; truncated: 
 }
 
 /** shell_run：在工作区内执行 Shell 命令（超时/输出限制/风险拦截）。 */
-export const shellRunTool: Tool<
+export const shellRunTool: ToolContract<
   z.ZodObject<{
     command: z.ZodString;
     cwd: z.ZodOptional<z.ZodString>;
@@ -49,15 +50,13 @@ export const shellRunTool: Tool<
     isolation: SandboxIsolation;
   }
 > = {
+  ...PROCESS_CONTRACT,
   name: "shell_run",
   description: "在工作区内执行 Shell 命令；高风险命令拒绝，输出与超时受限。",
-  permission: "shell",
-  possiblePermissions: ["shell", "network"],
   resolvePermissions: (input) =>
     (input as { networkAccess?: boolean }).networkAccess
       ? ["shell", "network"]
       : ["shell"],
-  hasSideEffect: true,
   timeoutMs: DEFAULT_SHELL_TIMEOUT_MS + 5_000,
   inputSchema: z.object({
     command: z.string().min(1),

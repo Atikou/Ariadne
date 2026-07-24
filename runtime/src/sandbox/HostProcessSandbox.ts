@@ -3,21 +3,23 @@ import { randomUUID } from "node:crypto";
 import process from "node:process";
 
 import {
+  SANDBOX_MAX_INTERACTIVE_STDIN_CHUNK_BYTES,
   SandboxExecutionResultSchema,
   type SandboxExecutionResult,
   type SandboxIsolation,
 } from "./SandboxContracts.js";
 import type {
-  ProcessSandbox,
+  InteractiveProcessSandbox,
   SandboxFileRequest,
   SandboxProcessHandle,
+  SandboxProcessLease,
   SandboxProcessObserver,
   SandboxShellRequest,
 } from "./ProcessSandbox.js";
 import { filterSandboxEnvironment } from "./SandboxEnvironment.js";
 
 /** Explicit current-user backend for danger-full-access and test injection only. */
-export class HostProcessSandbox implements ProcessSandbox {
+export class HostProcessSandbox implements InteractiveProcessSandbox {
   readonly mode = "danger-full-access" as const;
 
   startShell(input: SandboxShellRequest, observer?: SandboxProcessObserver): SandboxProcessHandle {
@@ -31,6 +33,11 @@ export class HostProcessSandbox implements ProcessSandbox {
     return this.start({ ...input, args: input.args ?? [] }, observer);
   }
 
+  openFileLease(input: SandboxFileRequest, observer?: SandboxProcessObserver): SandboxProcessLease {
+    assertDangerFullAccess(input.mode);
+    return this.start({ ...input, args: input.args ?? [] }, observer, true);
+  }
+
   runShell(input: SandboxShellRequest): Promise<SandboxExecutionResult> {
     return this.startShell(input).completion;
   }
@@ -42,10 +49,12 @@ export class HostProcessSandbox implements ProcessSandbox {
   private start(
     input: SandboxFileRequest & { args: string[]; shell?: string | boolean },
     observer?: SandboxProcessObserver,
-  ): SandboxProcessHandle {
+    interactive = false,
+  ): SandboxProcessLease {
     const executionId = randomUUID();
     let child: ChildProcess | undefined;
     let cancelRequested = false;
+    let stdinEnded = false;
     const completion = new Promise<SandboxExecutionResult>((resolve) => {
       let settled = false;
       let timedOut = false;
@@ -104,7 +113,7 @@ export class HostProcessSandbox implements ProcessSandbox {
           windowsHide: true,
           detached: process.platform !== "win32",
           shell: input.shell ?? false,
-          stdio: [input.stdin == null ? "ignore" : "pipe", "pipe", "pipe"],
+          stdio: [interactive || input.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         });
       } catch (error) {
         spawnFailed = true;
@@ -124,7 +133,7 @@ export class HostProcessSandbox implements ProcessSandbox {
       child.once("close", (code) => {
         finish(code ?? undefined, cancelRequested ? "cancelled" : undefined);
       });
-      if (input.stdin != null) child.stdin?.end(input.stdin);
+      if (!interactive && input.stdin != null) child.stdin?.end(input.stdin);
 
       if (input.signal?.aborted) abort();
       else input.signal?.addEventListener("abort", abort, { once: true });
@@ -137,8 +146,34 @@ export class HostProcessSandbox implements ProcessSandbox {
         cancelRequested = true;
         terminateProcessTree(child);
       },
+      async writeStdin(chunk) {
+        if (!interactive) throw new Error("sandbox_process_not_interactive");
+        if (stdinEnded) throw new Error("sandbox_interactive_stdin_ended");
+        const bytes = Buffer.from(chunk);
+        if (bytes.byteLength > SANDBOX_MAX_INTERACTIVE_STDIN_CHUNK_BYTES) {
+          throw new Error("sandbox_interactive_stdin_chunk_exceeds_64_kib");
+        }
+        await writeChildInput(child, bytes);
+      },
+      async endStdin() {
+        if (!interactive || stdinEnded) return;
+        stdinEnded = true;
+        child?.stdin?.end();
+      },
     };
   }
+}
+
+async function writeChildInput(child: ChildProcess | undefined, bytes: Buffer): Promise<void> {
+  if (!child?.stdin || child.stdin.destroyed || !child.stdin.writable) {
+    throw new Error("sandbox_interactive_stdin_unavailable");
+  }
+  await new Promise<void>((resolve, reject) => {
+    child.stdin!.write(bytes, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
 }
 
 function assertDangerFullAccess(mode: SandboxShellRequest["mode"]): void {

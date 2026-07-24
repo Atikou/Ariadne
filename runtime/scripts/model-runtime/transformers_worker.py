@@ -109,6 +109,17 @@ def render_prompt(messages: list[dict[str, Any]]) -> str:
     return "\n".join(f"{item['role']}: {item['content']}" for item in normalized) + "\nassistant:"
 
 
+def count_tokens(payload: dict[str, Any]) -> dict[str, Any]:
+    if _tokenizer is None or _model_id is None:
+        raise RuntimeError("Transformers 模型尚未加载")
+    prompt = render_prompt(list(payload.get("messages") or []))
+    tools = list(payload.get("tools") or [])
+    if tools:
+        prompt += "\ntools:" + json.dumps(tools, ensure_ascii=False, sort_keys=True)
+    tokens = len(_tokenizer(prompt, add_special_tokens=True)["input_ids"])
+    return {"tokens": tokens, "tokenizer": f"transformers:{_model_id}"}
+
+
 def generate(request_id: str, payload: dict[str, Any], cancelled: threading.Event) -> None:
     if _model is None or _tokenizer is None:
         raise RuntimeError("Transformers 模型尚未加载")
@@ -207,6 +218,8 @@ def handle(message: dict[str, Any]) -> bool:
         emit({"id": request_id, "type": "result", "result": {"loadedModelId": _model_id}})
     elif command == "generate":
         start_generate(request_id, payload)
+    elif command == "count_tokens":
+        emit({"id": request_id, "type": "result", "result": count_tokens(payload)})
     elif command == "cancel":
         cancellation = _active.get(request_id)
         if cancellation is None:

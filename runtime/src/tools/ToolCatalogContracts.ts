@@ -1,39 +1,41 @@
 import { z } from "zod";
 
-import { TOOL_PERMISSION_VALUES, type ToolPermission } from "../core/permissions.js";
-import type { ToolSpec } from "./types.js";
+import { TOOL_PERMISSION_VALUES } from "../core/permissions.js";
+import {
+  TOOL_DATA_SENSITIVITY_VALUES,
+  TOOL_EFFECT_VALUES,
+  TOOL_EGRESS_VALUES,
+  TOOL_IDEMPOTENCY_VALUES,
+  TOOL_PARALLELISM_VALUES,
+  TOOL_RESOURCE_SCOPE_VALUES,
+  TOOL_RISK_VALUES,
+  type ToolContractSpec,
+} from "./types.js";
 
 const toolName = z.string().min(1).max(128).regex(/^[a-z][a-z0-9_]*$/);
 const toolDescription = z.string().trim().min(1).max(4_096);
-const inputField = z.string().min(1).max(128).regex(/^[A-Za-z][A-Za-z0-9_]*$/);
+const jsonSchema = z.record(z.string(), z.unknown());
 
 export const ToolCatalogPermissionSchema = z.enum(TOOL_PERMISSION_VALUES);
 
 export const PublicToolCatalogEntrySchema = z.object({
   name: toolName,
+  version: z.string().trim().min(1).max(64),
   description: toolDescription,
-  permission: ToolCatalogPermissionSchema,
-  possiblePermissions: z.array(ToolCatalogPermissionSchema).min(1).max(TOOL_PERMISSION_VALUES.length),
-  hasSideEffect: z.boolean(),
-  inputFields: z.array(inputField).max(64),
-}).strict().superRefine((entry, ctx) => {
-  if (new Set(entry.possiblePermissions).size !== entry.possiblePermissions.length) {
-    ctx.addIssue({ code: "custom", path: ["possiblePermissions"], message: "工具权限不得重复" });
-  }
-  if (!entry.possiblePermissions.includes(entry.permission)) {
-    ctx.addIssue({ code: "custom", path: ["possiblePermissions"], message: "工具权限范围必须包含主权限" });
-  }
-  if (new Set(entry.inputFields).size !== entry.inputFields.length) {
-    ctx.addIssue({ code: "custom", path: ["inputFields"], message: "工具输入字段不得重复" });
-  }
-  if (
-    !entry.hasSideEffect &&
-    entry.possiblePermissions.some((permission) =>
-      permission === "write" || permission === "shell" || permission === "dangerous")
-  ) {
-    ctx.addIssue({ code: "custom", path: ["hasSideEffect"], message: "高副作用权限必须显式标记副作用" });
-  }
-});
+  permissions: z.array(ToolCatalogPermissionSchema).min(1).max(TOOL_PERMISSION_VALUES.length),
+  resourceScopes: z.array(z.enum(TOOL_RESOURCE_SCOPE_VALUES)).min(1),
+  effects: z.array(z.enum(TOOL_EFFECT_VALUES)).min(1),
+  risk: z.enum(TOOL_RISK_VALUES),
+  parallelism: z.enum(TOOL_PARALLELISM_VALUES),
+  idempotency: z.enum(TOOL_IDEMPOTENCY_VALUES),
+  dataSensitivity: z.enum(TOOL_DATA_SENSITIVITY_VALUES),
+  egress: z.array(z.enum(TOOL_EGRESS_VALUES)).min(1),
+  timeoutMs: z.number().int().positive(),
+  supportsResume: z.boolean(),
+  providerId: z.string().trim().min(1).max(128),
+  inputJsonSchema: jsonSchema,
+  outputJsonSchema: jsonSchema,
+}).strict();
 
 export const PublicToolCatalogResultSchema = z.object({
   tools: z.array(PublicToolCatalogEntrySchema).max(128),
@@ -61,20 +63,18 @@ export const ToolCatalogReadErrorResultSchema = z.object({
   code: z.literal("TOOL_CATALOG_READ_FAILED"),
 }).strict();
 
-const permissionOrder = new Map<ToolPermission, number>(
-  TOOL_PERMISSION_VALUES.map((permission, index) => [permission, index]),
-);
-
-export function buildPublicToolCatalog(tools: readonly ToolSpec[]) {
-  const entries = tools.map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-    permission: tool.permission,
-    possiblePermissions: [...new Set([tool.permission, ...(tool.possiblePermissions ?? [])])]
-      .sort((left, right) => permissionOrder.get(left)! - permissionOrder.get(right)!),
-    hasSideEffect: tool.hasSideEffect,
-    inputFields: [...(tool.inputFields ?? [])],
-  })).sort((left, right) => compareToolNames(left.name, right.name));
+export function buildPublicToolCatalog(tools: readonly ToolContractSpec[]) {
+  const entries = tools
+    .map((tool) => ({
+      ...tool,
+      permissions: [...tool.permissions],
+      resourceScopes: [...tool.resourceScopes],
+      effects: [...tool.effects],
+      egress: [...tool.egress],
+      inputJsonSchema: { ...tool.inputJsonSchema },
+      outputJsonSchema: { ...tool.outputJsonSchema },
+    }))
+    .sort((left, right) => compareToolNames(left.name, right.name));
 
   return PublicToolCatalogResultSchema.parse({ tools: entries, count: entries.length });
 }

@@ -3,7 +3,8 @@ import type { SandboxExecutionResult } from "../sandbox/SandboxContracts.js";
 import type { ProcessSandbox, SandboxProcessHandle } from "../sandbox/ProcessSandbox.js";
 import { resolveInsideWorkspace } from "../tools/pathSafe.js";
 import { assertShellCommandStaysInWorkspace } from "../tools/shellTool.js";
-import type { Tool } from "../tools/types.js";
+import { PROCESS_CONTRACT } from "../tools/contractProfiles.js";
+import type { ToolContract } from "../tools/types.js";
 import { assertBackgroundCommandAllowed, type ShellPolicy } from "../policy/ShellPolicy.js";
 import type { TraceLogger } from "../trace/TraceLogger.js";
 import type { NotificationQueue } from "./NotificationQueue.js";
@@ -33,7 +34,10 @@ const MAX_OUTPUT_BYTES = 512 * 1024;
 
 /** 在后台启动长时间命令，记录输出，完成后写入通知队列。 */
 export class BackgroundTaskManager {
-  readonly startTool: Tool;
+  readonly startTool: ToolContract<
+    typeof BackgroundStartInitialRequestSchema,
+    BackgroundTaskRecord
+  >;
   private readonly tasks = new Map<string, BackgroundTaskRecord>();
   private readonly processes = new Map<string, SandboxProcessHandle>();
   private readonly cancelling = new Set<string>();
@@ -50,16 +54,15 @@ export class BackgroundTaskManager {
     private readonly shellPolicy?: ShellPolicy,
   ) {
     this.startTool = {
+      ...PROCESS_CONTRACT,
       name: "background_shell_start",
       description: "经授权后在指定工作区启动后台 Shell 任务，并持续记录输出与结束状态。",
-      permission: "shell",
-      possiblePermissions: ["shell", "network"],
       resolvePermissions: (input) =>
         (input as { networkAccess?: boolean }).networkAccess
           ? ["shell", "network"]
           : ["shell"],
-      hasSideEffect: true,
       inputSchema: BackgroundStartInitialRequestSchema,
+      outputSchema: BackgroundTaskRecordSchema,
       execute: async (input, context) =>
         this.startProcess(input.command, {
           cwd: input.cwd,

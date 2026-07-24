@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import path from "node:path";
+
 import { redactString } from "../util/redact.js";
 
 export type EmbeddingCapability = "semantic" | "lexical_approximation" | "test_mock";
@@ -20,6 +24,12 @@ export interface EmbeddingProvider {
   status(): EmbeddingProviderStatus;
   embedText(text: string): Promise<number[]>;
   embedBatch(texts: string[]): Promise<number[][]>;
+}
+
+interface GgufEmbeddingRuntime {
+  readonly dimension: number;
+  embed(text: string): Promise<number[]>;
+  dispose(): Promise<void>;
 }
 
 /** Shared index dimension. Remote v3 embedding requests explicitly ask for this dimension. */
@@ -170,6 +180,112 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
   }
 }
 
+export class LocalGgufEmbeddingProvider implements EmbeddingProvider {
+  readonly name: string;
+  readonly dimension: number;
+  readonly capability = "semantic" as const;
+  readonly remote = false;
+  private runtimePromise?: Promise<GgufEmbeddingRuntime>;
+  private failureReason?: string;
+
+  constructor(private readonly opts: {
+    modelId: string;
+    modelPath: string;
+    sha256: string;
+    dimension: number;
+    gpuLayers?: "auto" | number;
+    runtimeFactory?: () => Promise<GgufEmbeddingRuntime>;
+  }) {
+    if (!path.isAbsolute(opts.modelPath)) throw new Error("embedding_model_path_must_be_absolute");
+    if (!/^[a-f0-9]{64}$/u.test(opts.sha256)) throw new Error("embedding_model_sha256_invalid");
+    this.name = `local_gguf:${opts.modelId}`;
+    this.dimension = opts.dimension;
+  }
+
+  status(): EmbeddingProviderStatus {
+    return {
+      provider: this.name,
+      capability: this.capability,
+      dimension: this.dimension,
+      remote: false,
+      degraded: Boolean(this.failureReason),
+      ...(this.failureReason ? { reason: this.failureReason } : {}),
+    };
+  }
+
+  async embedText(text: string): Promise<number[]> {
+    const runtime = await this.runtime();
+    const vector = await runtime.embed(text);
+    if (!isValidVector(vector, this.dimension)) {
+      throw new Error(
+        `embedding_dimension_contract_violation:expected=${this.dimension}:actual=${vector.length}`,
+      );
+    }
+    return normalize(vector);
+  }
+
+  async embedBatch(texts: string[]): Promise<number[][]> {
+    const results: number[][] = [];
+    for (const text of texts) results.push(await this.embedText(text));
+    return results;
+  }
+
+  async dispose(): Promise<void> {
+    const runtime = await this.runtimePromise?.catch(() => undefined);
+    await runtime?.dispose();
+    this.runtimePromise = undefined;
+  }
+
+  private runtime(): Promise<GgufEmbeddingRuntime> {
+    this.runtimePromise ??= this.loadRuntime().catch((error) => {
+      this.failureReason = publicEmbeddingError(error);
+      this.runtimePromise = undefined;
+      throw error;
+    });
+    return this.runtimePromise;
+  }
+
+  private async loadRuntime(): Promise<GgufEmbeddingRuntime> {
+    const actualHash = await sha256File(this.opts.modelPath);
+    if (actualHash !== this.opts.sha256) {
+      throw new Error("embedding_model_integrity_mismatch");
+    }
+    if (this.opts.runtimeFactory) return this.opts.runtimeFactory();
+    const { getLlama } = await import("node-llama-cpp");
+    const llama = await getLlama({
+      build: "never",
+      skipDownload: true,
+      progressLogs: false,
+    });
+    const model = await llama.loadModel({
+      modelPath: this.opts.modelPath,
+      gpuLayers: this.opts.gpuLayers ?? "auto",
+      useMmap: "auto",
+    });
+    const context = await model.createEmbeddingContext();
+    if (model.embeddingVectorSize !== this.dimension) {
+      await context.dispose();
+      await model.dispose();
+      await llama.dispose();
+      throw new Error(
+        `embedding_model_dimension_mismatch:expected=${this.dimension}:actual=${model.embeddingVectorSize}`,
+      );
+    }
+    return {
+      dimension: model.embeddingVectorSize,
+      async embed(text) {
+        const embedding = await context.getEmbeddingFor(text);
+        return [...embedding.vector];
+      },
+      async dispose() {
+        await context.dispose();
+        await model.dispose();
+        await llama.dispose();
+      },
+    };
+  }
+}
+
 export class EmbeddingService {
   constructor(private readonly provider: EmbeddingProvider = new LocalLexicalEmbeddingProvider()) {}
 
@@ -192,6 +308,17 @@ export class EmbeddingService {
   embedBatch(texts: string[]): Promise<number[][]> {
     return this.provider.embedBatch(texts);
   }
+}
+
+async function sha256File(filePath: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk as Buffer);
+  return hash.digest("hex");
+}
+
+function publicEmbeddingError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/[A-Za-z]:\\[^\s]+/gu, "<path>").slice(0, 160);
 }
 
 function lexicalVector(input: string, dimension: number): number[] {

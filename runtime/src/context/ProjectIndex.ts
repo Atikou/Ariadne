@@ -11,22 +11,30 @@ import {
 } from "./CodeIntelligenceService.js";
 import type {
   GraphNeighborRecord,
-  ProjectExportRecord,
+  ProjectDiagnosticRecord,
   ProjectFileRecord,
-  ProjectImportRecord,
   ProjectIndexStats,
   ProjectIndexSyncResult,
+  ProjectReferenceRecord,
   ProjectSymbolRecord,
+  RepoMapNode,
   SymbolSearchQueryInput,
 } from "./projectIndexTypes.js";
 
-const CODE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
+const CODE_EXTENSIONS = new Set([
+  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+  ".json", ".md", ".py", ".cs",
+]);
 
 export class ProjectIndex {
   constructor(
     private readonly db: DatabaseManager,
     private readonly codeIntelligence: CodeIntelligenceService = defaultCodeIntelligenceService,
   ) {}
+
+  dispose(): Promise<void> {
+    return this.codeIntelligence.dispose();
+  }
 
   getStats(projectId: string, workspaceRoot: string): ProjectIndexStats {
     const normalizedRoot = normalizeRoot(workspaceRoot);
@@ -231,6 +239,84 @@ export class ProjectIndex {
     return out;
   }
 
+  getRelevantRepoMap(
+    projectId: string,
+    workspaceRoot: string,
+    query: string,
+    options?: { limit?: number; maxDepth?: number },
+  ): RepoMapNode[] {
+    const normalizedRoot = normalizeRoot(workspaceRoot);
+    const limit = Math.max(1, Math.min(options?.limit ?? 12, 50));
+    const tokens = tokenizeQuery(query).slice(0, 12);
+    const scores = new Map<string, { score: number; reasons: Set<string> }>();
+    const add = (filePath: string, score: number, reason: string): void => {
+      const current = scores.get(filePath) ?? { score: 0, reasons: new Set<string>() };
+      current.score += score;
+      current.reasons.add(reason);
+      scores.set(filePath, current);
+    };
+
+    for (const token of tokens) {
+      const like = `%${token.toLowerCase()}%`;
+      const fileRows = this.db.connection.prepare(
+        `SELECT path
+         FROM project_files
+         WHERE project_id=? AND workspace_root=?
+           AND (lower(path) LIKE ? OR lower(file_name) LIKE ? OR lower(COALESCE(summary, '')) LIKE ?)
+         ORDER BY path LIMIT ?`,
+      ).all(projectId, normalizedRoot, like, like, like, limit * 4) as Array<{ path: string }>;
+      for (const row of fileRows) add(row.path, 6, `file:${token}`);
+
+      const symbolRows = this.db.connection.prepare(
+        `SELECT DISTINCT file_path
+         FROM project_symbols
+         WHERE project_id=? AND workspace_root=? AND lower(symbol) LIKE ?
+         ORDER BY file_path LIMIT ?`,
+      ).all(projectId, normalizedRoot, like, limit * 4) as Array<{ file_path: string }>;
+      for (const row of symbolRows) add(row.file_path, 10, `symbol:${token}`);
+
+      const referenceRows = this.db.connection.prepare(
+        `SELECT DISTINCT file_path
+         FROM project_references
+         WHERE project_id=? AND workspace_root=? AND lower(symbol) LIKE ?
+         ORDER BY file_path LIMIT ?`,
+      ).all(projectId, normalizedRoot, like, limit * 4) as Array<{ file_path: string }>;
+      for (const row of referenceRows) add(row.file_path, 4, `reference:${token}`);
+    }
+
+    if (scores.size === 0) {
+      const recent = this.db.connection.prepare(
+        `SELECT path
+         FROM project_files
+         WHERE project_id=? AND workspace_root=?
+         ORDER BY indexed_at DESC, path
+         LIMIT ?`,
+      ).all(projectId, normalizedRoot, Math.min(limit, 4)) as Array<{ path: string }>;
+      for (const row of recent) add(row.path, 1, "recent");
+    }
+
+    const rankedSeeds = [...scores.entries()]
+      .sort(([pathA, a], [pathB, b]) => b.score - a.score || pathA.localeCompare(pathB))
+      .slice(0, Math.max(1, Math.ceil(limit / 2)))
+      .map(([filePath]) => filePath);
+    for (const neighbor of this.expandGraphNeighbors(
+      projectId,
+      normalizedRoot,
+      rankedSeeds,
+      { maxDepth: options?.maxDepth ?? 1, limit },
+    )) {
+      add(neighbor.path, Math.max(1, 3 - neighbor.depth), `${neighbor.relation}:${neighbor.depth}`);
+    }
+
+    return [...scores.entries()]
+      .sort(([pathA, a], [pathB, b]) => b.score - a.score || pathA.localeCompare(pathB))
+      .slice(0, limit)
+      .map(([filePath, rank]) =>
+        this.buildRepoMapNode(projectId, normalizedRoot, filePath, rank.score, [...rank.reasons]),
+      )
+      .filter((node): node is RepoMapNode => node !== undefined);
+  }
+
   async syncFiles(input: {
     projectId: string;
     workspaceRoot: string;
@@ -287,6 +373,12 @@ export class ProjectIndex {
     const deleteExports = this.db.connection.prepare(
       `DELETE FROM project_exports WHERE project_id=? AND workspace_root=? AND file_path=?`,
     );
+    const deleteReferences = this.db.connection.prepare(
+      `DELETE FROM project_references WHERE project_id=? AND workspace_root=? AND file_path=?`,
+    );
+    const deleteDiagnostics = this.db.connection.prepare(
+      `DELETE FROM project_diagnostics WHERE project_id=? AND workspace_root=? AND file_path=?`,
+    );
     const insertSymbol = this.db.connection.prepare(
       `INSERT INTO project_symbols
        (project_id, workspace_root, file_path, symbol, kind, line, indexed_at)
@@ -310,6 +402,20 @@ export class ProjectIndex {
          line=excluded.line,
          indexed_at=excluded.indexed_at`,
     );
+    const insertReference = this.db.connection.prepare(
+      `INSERT INTO project_references
+       (project_id, workspace_root, file_path, symbol, kind, line, indexed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(project_id, workspace_root, file_path, symbol, kind, line) DO UPDATE SET
+         indexed_at=excluded.indexed_at`,
+    );
+    const insertDiagnostic = this.db.connection.prepare(
+      `INSERT INTO project_diagnostics
+       (project_id, workspace_root, file_path, message, line, indexed_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(project_id, workspace_root, file_path, message, line) DO UPDATE SET
+         indexed_at=excluded.indexed_at`,
+    );
 
     let upserted = 0;
     let skipped = 0;
@@ -317,6 +423,8 @@ export class ProjectIndex {
     let dependenciesUpdated = 0;
     let exportsUpdated = 0;
     let semanticIndexed = 0;
+    let referencesUpdated = 0;
+    let diagnosticsUpdated = 0;
 
     for (const file of input.files) {
       const priorHash = existingHashes.get(file.path);
@@ -327,76 +435,85 @@ export class ProjectIndex {
         continue;
       }
 
-      upsertFile.run(
-        input.projectId,
-        normalizedRoot,
-        file.path,
-        file.fileName,
-        file.extension,
-        file.sizeBytes,
-        file.modifiedAt,
-        file.mtimeMs,
-        file.contentHash,
-        file.language,
-        JSON.stringify(file.tags),
-        input.summaries?.get(file.path) ?? file.summary ?? null,
-        indexedAt,
+      const shouldAnalyze = CODE_EXTENSIONS.has(file.extension) && (extractSymbols || extractDependencies);
+      const analysis = shouldAnalyze
+        ? await this.codeIntelligence.analyzeFile(normalizedRoot, file.path)
+        : undefined;
+      const symbols = extractSymbols ? analysis?.symbols ?? [] : [];
+      const imports = extractDependencies
+        ? attachResolvedImportPaths(analysis?.imports ?? [], knownFiles)
+        : [];
+      const exports = extractDependencies ? analysis?.exports ?? [] : [];
+      const references: ProjectReferenceRecord[] = analysis?.references ?? [];
+      const diagnostics = (analysis?.parseDiagnostics ?? []).map(
+        (message) => parseDiagnostic(file.path, message),
       );
-      upserted += 1;
 
-      let symbols: ProjectSymbolRecord[] = [];
-      if (extractSymbols && CODE_EXTENSIONS.has(file.extension)) {
-        symbols = await extractSymbolsForFile(normalizedRoot, file.path, this.codeIntelligence);
-        deleteSymbols.run(input.projectId, normalizedRoot, file.path);
-        for (const symbol of symbols) {
-          insertSymbol.run(
-            input.projectId,
-            normalizedRoot,
-            file.path,
-            symbol.symbol,
-            symbol.kind,
-            symbol.line,
-            indexedAt,
-          );
-        }
-        symbolsUpdated += symbols.length;
-      }
-
-      if (extractDependencies && CODE_EXTENSIONS.has(file.extension)) {
-        const metadata = await extractDependencyMetadata(
+      this.db.connection.exec("BEGIN IMMEDIATE");
+      try {
+        upsertFile.run(
+          input.projectId,
           normalizedRoot,
           file.path,
-          knownFiles,
-          this.codeIntelligence,
+          file.fileName,
+          file.extension,
+          file.sizeBytes,
+          file.modifiedAt,
+          file.mtimeMs,
+          file.contentHash,
+          file.language,
+          JSON.stringify(file.tags),
+          input.summaries?.get(file.path) ?? file.summary ?? null,
+          indexedAt,
         );
+        deleteSymbols.run(input.projectId, normalizedRoot, file.path);
         deleteImports.run(input.projectId, normalizedRoot, file.path);
         deleteExports.run(input.projectId, normalizedRoot, file.path);
-        for (const edge of metadata.imports) {
+        deleteReferences.run(input.projectId, normalizedRoot, file.path);
+        deleteDiagnostics.run(input.projectId, normalizedRoot, file.path);
+
+        for (const symbol of symbols) {
+          insertSymbol.run(
+            input.projectId, normalizedRoot, file.path,
+            symbol.symbol, symbol.kind, symbol.line, indexedAt,
+          );
+        }
+        for (const edge of imports) {
           insertImport.run(
-            input.projectId,
-            normalizedRoot,
-            edge.fromPath,
-            edge.importSpec,
-            edge.resolvedPath ?? null,
-            edge.kind,
-            edge.line,
-            indexedAt,
+            input.projectId, normalizedRoot, edge.fromPath, edge.importSpec,
+            edge.resolvedPath ?? null, edge.kind, edge.line, indexedAt,
           );
-          dependenciesUpdated += 1;
         }
-        for (const edge of metadata.exports) {
+        for (const edge of exports) {
           insertExport.run(
-            input.projectId,
-            normalizedRoot,
-            edge.filePath,
-            edge.exportName,
-            edge.kind,
-            edge.line,
-            indexedAt,
+            input.projectId, normalizedRoot, edge.filePath,
+            edge.exportName, edge.kind, edge.line, indexedAt,
           );
-          exportsUpdated += 1;
         }
+        for (const reference of references) {
+          insertReference.run(
+            input.projectId, normalizedRoot, file.path,
+            reference.symbol, reference.kind, reference.line, indexedAt,
+          );
+        }
+        for (const diagnostic of diagnostics) {
+          insertDiagnostic.run(
+            input.projectId, normalizedRoot, file.path,
+            diagnostic.message, diagnostic.line ?? 0, indexedAt,
+          );
+        }
+        this.db.connection.exec("COMMIT");
+      } catch (error) {
+        this.db.connection.exec("ROLLBACK");
+        throw error;
       }
+
+      upserted += 1;
+      symbolsUpdated += symbols.length;
+      dependenciesUpdated += imports.length;
+      exportsUpdated += exports.length;
+      referencesUpdated += references.length;
+      diagnosticsUpdated += diagnostics.length;
 
       if (input.semanticIndexer) {
         try {
@@ -425,6 +542,8 @@ export class ProjectIndex {
         deleteSymbols.run(input.projectId, normalizedRoot, row.path);
         deleteImports.run(input.projectId, normalizedRoot, row.path);
         deleteExports.run(input.projectId, normalizedRoot, row.path);
+        deleteReferences.run(input.projectId, normalizedRoot, row.path);
+        deleteDiagnostics.run(input.projectId, normalizedRoot, row.path);
         if (input.semanticIndexer) {
           try {
             await input.semanticIndexer.removeFile(input.projectId, normalizedRoot, row.path);
@@ -436,7 +555,53 @@ export class ProjectIndex {
       }
     }
 
-    return { upserted, removed, symbolsUpdated, skipped, dependenciesUpdated, exportsUpdated, semanticIndexed };
+    return {
+      upserted,
+      removed,
+      symbolsUpdated,
+      skipped,
+      dependenciesUpdated,
+      exportsUpdated,
+      semanticIndexed,
+      referencesUpdated,
+      diagnosticsUpdated,
+    };
+  }
+
+  private buildRepoMapNode(
+    projectId: string,
+    workspaceRoot: string,
+    filePath: string,
+    score: number,
+    reasons: string[],
+  ): RepoMapNode | undefined {
+    const file = this.db.connection.prepare(
+      `SELECT content_hash FROM project_files
+       WHERE project_id=? AND workspace_root=? AND path=?`,
+    ).get(projectId, workspaceRoot, filePath) as { content_hash: string } | undefined;
+    if (!file) return undefined;
+
+    const symbols = this.db.connection.prepare(
+      `SELECT symbol FROM project_symbols
+       WHERE project_id=? AND workspace_root=? AND file_path=?
+       ORDER BY line, symbol LIMIT 50`,
+    ).all(projectId, workspaceRoot, filePath) as Array<{ symbol: string }>;
+    const diagnostics = this.db.connection.prepare(
+      `SELECT message, line FROM project_diagnostics
+       WHERE project_id=? AND workspace_root=? AND file_path=?
+       ORDER BY line, message LIMIT 20`,
+    ).all(projectId, workspaceRoot, filePath) as Array<{ message: string; line: number }>;
+
+    return {
+      path: filePath,
+      score,
+      reasons: reasons.sort(),
+      symbols: symbols.map((row) => row.symbol),
+      imports: this.getDependencies(projectId, workspaceRoot, filePath),
+      importedBy: this.getDependents(projectId, workspaceRoot, filePath),
+      diagnostics: diagnostics.map((row) => row.line > 0 ? `${row.line}:${row.message}` : row.message),
+      contentHash: file.content_hash,
+    };
   }
 }
 
@@ -476,32 +641,29 @@ export async function extractSymbolsForFile(
   return (await codeIntelligence.analyzeFile(workspaceRoot, relPath)).symbols;
 }
 
-export function extractSymbolsFromContent(
+export async function extractSymbolsFromContent(
   filePath: string,
   content: string,
-): ProjectSymbolRecord[] {
-  return defaultCodeIntelligenceService.analyzeContent(filePath, content).symbols;
-}
-
-async function extractDependencyMetadata(
-  workspaceRoot: string,
-  relPath: string,
-  knownFiles: Set<string>,
-  codeIntelligence: CodeIntelligenceService = defaultCodeIntelligenceService,
-): Promise<{ imports: ProjectImportRecord[]; exports: ProjectExportRecord[] }> {
-  const analysis = await codeIntelligence.analyzeFile(workspaceRoot, relPath);
-  const imports = attachResolvedImportPaths(analysis.imports, knownFiles);
-  const exports = analysis.exports.map((item) => ({
-    filePath: item.filePath,
-    exportName: item.exportName,
-    kind: item.kind,
-    line: item.line,
-  }));
-  return { imports, exports };
+): Promise<ProjectSymbolRecord[]> {
+  return (await defaultCodeIntelligenceService.analyzeContent(filePath, content)).symbols;
 }
 
 function normalizeRoot(workspaceRoot: string): string {
   return path.resolve(workspaceRoot).replace(/\\/g, "/");
+}
+
+function tokenizeQuery(query: string): string[] {
+  return [...new Set(
+    (query.toLowerCase().match(/[\p{L}\p{N}_-]+/gu) ?? [])
+      .filter((token) => token.length > 1),
+  )];
+}
+
+function parseDiagnostic(filePath: string, diagnostic: string): ProjectDiagnosticRecord {
+  const match = diagnostic.match(/^(\d+):(.*)$/s);
+  return match
+    ? { filePath, line: Number(match[1]), message: match[2]!.trim() }
+    : { filePath, message: diagnostic };
 }
 
 function parseTags(json: string): string[] {

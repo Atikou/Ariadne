@@ -5,14 +5,19 @@ import type { RuntimeBootstrap } from '@ariadne/protocol/host';
 import { createAppContext, type AppContext } from '../app/createAppContext.js';
 import { loadConfig } from '../config/loadConfig.js';
 import {
+  ProviderQualificationSchema,
   SecurityConfigSchema,
   type ApiModelClientConfig,
   type AppConfig,
   type ModelClientConfig
 } from '../config/types.js';
 import type { ToolPermission } from '../core/permissions.js';
+import type { HostCapabilityBroker } from '../host/HostCapabilityBroker.js';
 
-export function createRuntimeContext(bootstrap: RuntimeBootstrap): AppContext {
+export function createRuntimeContext(
+  bootstrap: RuntimeBootstrap,
+  hostCapabilities?: HostCapabilityBroker
+): AppContext {
   const projectRoot = path.resolve(bootstrap.installRoot);
   const loaded = loadConfig({
     projectRoot,
@@ -55,12 +60,18 @@ export function createRuntimeContext(bootstrap: RuntimeBootstrap): AppContext {
     models: {
       ...loaded.config.models,
       directory: bootstrap.modelRoots[0] ?? path.join(projectRoot, 'Models'),
+      embedding: structuredClone(bootstrap.runtimePolicy.embedding),
       clients
     },
     routing: {
       ...loaded.config.routing,
       ...(bootstrap.routingStrategy ? { strategy: bootstrap.routingStrategy } : {})
     },
+    mcp: structuredClone(bootstrap.runtimePolicy.mcp),
+    skills: structuredClone(bootstrap.runtimePolicy.skills),
+    hooks: structuredClone(bootstrap.runtimePolicy.hooks),
+    telemetry: structuredClone(bootstrap.runtimePolicy.telemetry),
+    providerResilience: structuredClone(bootstrap.runtimePolicy.providerResilience),
     ...(security ? { security } : {})
   };
 
@@ -72,7 +83,8 @@ export function createRuntimeContext(bootstrap: RuntimeBootstrap): AppContext {
     requireExternalAppDataRoot: true,
     requireTrustedSandboxHelper: bootstrap.production,
     modelDirectories: bootstrap.modelRoots,
-    agentHandoffPermissionPolicy: permissions.permissionPolicy
+    agentHandoffPermissionPolicy: permissions.permissionPolicy,
+    hostCapabilities
   });
 }
 
@@ -110,6 +122,7 @@ function buildApiClientConfig(
     baseUrl: provider.baseUrl,
     apiKeyEnv: provider.credentialEnvironmentVariable,
     model: provider.model,
-    inference: provider.inference
+    inference: provider.inference,
+    qualification: template?.qualification ?? ProviderQualificationSchema.parse({})
   };
 }

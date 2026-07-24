@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { DatabaseManager } from "./DatabaseManager.js";
-import { filterTrustedMemories, isUntrustedCompletionMemoryText } from "./contextTrust.js";
+import { filterVerifiedMemories, isUnverifiedCompletionMemoryText } from "./contextTrust.js";
 import { inferMemoryTags, inferSummaryTags, matchesTagFilter } from "./contextTags.js";
 import type { EmbeddingService } from "./EmbeddingService.js";
 import type { MemoryManager } from "./MemoryManager.js";
@@ -94,7 +94,7 @@ export class MemoryRetriever {
           if (!matchesTagFilter(item.tags, input.tags)) continue;
           if (item.itemType !== "memory") continue;
           const memory = this.memories.get(item.sourceId);
-          if (!memory?.isActive) continue;
+          if (memory?.lifecycleState !== "active") continue;
           add(memory, 0.85, "semantic");
         }
       } catch {
@@ -109,7 +109,7 @@ export class MemoryRetriever {
       }
     }
 
-    const results = filterTrustedMemories([...merged.values()])
+    const results = filterVerifiedMemories([...merged.values()])
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
 
@@ -215,11 +215,11 @@ function inferMemoryTrust(memory: MemoryRecord): {
   trustLevel: MemoryTrustLevel;
   sourceKind: string;
 } {
-  if (memory.source === "tool_ledger") {
+  if (memory.provenance.origin === "tool_ledger") {
     return { trustLevel: "verified", sourceKind: "tool_ledger" };
   }
   const text = `${memory.value}\n${memory.summary ?? ""}`;
-  if (isUntrustedCompletionMemoryText(text)) {
+  if (isUnverifiedCompletionMemoryText(text)) {
     return { trustLevel: "unverified", sourceKind: memory.memoryType };
   }
   if (memory.confidence >= 0.8 && memory.importance >= 0.7) {

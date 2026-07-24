@@ -164,6 +164,7 @@ export const CompanionStreamErrorEventSchema = z.object({
   runId: streamRunId,
   code: z.string().regex(/^[A-Z][A-Z0-9_]{2,63}$/),
   message: z.string().min(1).max(500),
+  retryable: z.boolean(),
 }).strict();
 
 export const CompanionStreamEventSchema = z.union([

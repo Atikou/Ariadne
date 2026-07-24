@@ -5,6 +5,7 @@ import {
 } from "../assistant/AgentProposalCapabilityPolicy.js";
 import { AgentHandoffStateCenter } from "../assistant/AgentHandoffStateCenter.js";
 import type { WorkspaceCatalog } from "../config/workspaceCatalog.js";
+import type { LoopChatFn } from "../agent/AgentLoop.js";
 import type { UserPermissionPolicy } from "../agent/RunPolicyTypes.js";
 import type { ContextManager } from "../context/ContextManager.js";
 import type { ToolPermission } from "../core/permissions.js";
@@ -16,7 +17,9 @@ export function createAgentHandoffRuntime(input: {
   workspaceCatalog: WorkspaceCatalog;
   orchestrator: Orchestrator;
   trace: TraceLogger;
+  makeChatFn: (forceClient?: string) => LoopChatFn;
   permissionPolicy?: UserPermissionPolicy;
+  browserAvailable?: () => boolean;
 }): AgentHandoffCoordinator {
   const state = new AgentHandoffStateCenter(input.contextManager.db.connection);
   const recovery = state.recoverInterrupted();
@@ -28,6 +31,7 @@ export function createAgentHandoffRuntime(input: {
     state,
     proposalCapabilityPolicy: new AgentProposalCapabilityPolicy({
       permissionPolicy: input.permissionPolicy,
+      browserAvailable: input.browserAvailable,
     }),
     contextManager: input.contextManager,
     workspaceCatalog: input.workspaceCatalog,
@@ -64,7 +68,7 @@ export function createAgentHandoffRuntime(input: {
           grantId: request.grantId,
         },
         pauseOnPermissionRequest: true,
-      });
+      }, input.makeChatFn(request.modelBinding?.clientName));
     },
   });
 }

@@ -18,6 +18,18 @@ export interface StructuredSummary {
 }
 
 export type MemoryScope = "global" | "session" | "project" | "task";
+export type MemoryLifecycleState =
+  | "candidate"
+  | "active"
+  | "rejected"
+  | "superseded"
+  | "expired";
+export type MemorySensitivity = "public" | "workspace" | "sensitive" | "secret";
+export interface MemoryProvenance {
+  origin: "user" | "model_summary" | "tool_ledger" | "workspace" | "system";
+  sourceId?: string;
+  evidence?: string;
+}
 
 export type MemoryType =
   | "preference"
@@ -64,9 +76,7 @@ export interface MessageRecord {
   modelName?: string;
   messageKind?: import("./messageEnvelope.js").MessageKind;
   uiVisible?: boolean;
-  trusted?: boolean;
-  source?: import("./messageEnvelope.js").MessageSource;
-  trustBasis?: import("./messageEnvelope.js").MessageTrustBasis;
+  contentEnvelope?: import("./messageEnvelope.js").ContentEnvelope;
   runId?: string;
   ledgerBacked?: boolean;
   outcomeClass?: string;
@@ -88,6 +98,9 @@ export interface SummaryRecord {
   startMessageId?: string;
   endMessageId?: string;
   tokenCount: number;
+  schemaVersion: 1;
+  generationState: "model" | "derived" | "degraded";
+  degradedReason?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -102,13 +115,13 @@ export interface MemoryRecord {
   summary?: string;
   importance: number;
   confidence: number;
-  source?: string;
-  sourceId?: string;
-  isActive: boolean;
+  lifecycleState: MemoryLifecycleState;
+  provenance: MemoryProvenance;
+  sensitivity: MemorySensitivity;
+  retentionUntil?: string;
   createdAt: string;
   updatedAt: string;
   lastUsedAt?: string;
-  expiresAt?: string;
   supersedesId?: string;
 }
 
@@ -222,6 +235,7 @@ export interface SystemSectionItem {
   sourceId?: string;
   text: string;
   score?: number;
+  contentEnvelope: import("./messageEnvelope.js").ContentEnvelope;
   /** 片段标签，用于检索过滤与按标签重组上下文。 */
   tags?: string[];
 }
@@ -250,9 +264,7 @@ export interface ContextMessage {
   createdAt: string;
   messageKind?: import("./messageEnvelope.js").MessageKind;
   uiVisible?: boolean;
-  trusted?: boolean;
-  source?: import("./messageEnvelope.js").MessageSource;
-  trustBasis?: import("./messageEnvelope.js").MessageTrustBasis;
+  contentEnvelope?: import("./messageEnvelope.js").ContentEnvelope;
   runId?: string;
   toolName?: string;
   toolCallId?: string;
@@ -334,7 +346,14 @@ export interface SemanticSearchInput {
   tags?: string[];
 }
 
-export type SummarizeFn = (messages: MessageRecord[]) => Promise<StructuredSummary>;
+export interface SummaryGenerationResult {
+  schemaVersion: 1;
+  content: StructuredSummary;
+  generationState: "model" | "degraded";
+  degradedReason?: string;
+}
+
+export type SummarizeFn = (messages: MessageRecord[]) => Promise<SummaryGenerationResult>;
 
 export interface SearchHit {
   source: "fts" | "vector";
@@ -354,6 +373,7 @@ export interface MemoryCandidate {
   summary?: string;
   importance?: number;
   confidence?: number;
-  source?: string;
-  sourceId?: string;
+  provenance: MemoryProvenance;
+  sensitivity?: MemorySensitivity;
+  retentionUntil?: string;
 }

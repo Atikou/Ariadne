@@ -17,7 +17,7 @@ import type { ScopedApprovedPermissions } from "../policy/permissionRequestTypes
 import type { AgentLoopFactory } from "./AgentLoopFactory.js";
 import type { AgentRunLifecycle, ResumeWaitingStatus } from "./AgentRunLifecycle.js";
 import type { AgentRunRegistry } from "./AgentRunRegistry.js";
-import type { RunStore } from "./RunStore.js";
+import type { RunAggregateRepository } from "../run/RunAggregateRepository.js";
 import type { RunTerminalEventBus } from "./RunTerminalEventBus.js";
 import type { RunStateStore } from "./RunStateStore.js";
 import type { SessionWorkspaceResolver } from "./SessionWorkspaceResolver.js";
@@ -29,7 +29,7 @@ export interface AgentResumeServiceDeps {
   sessionWorkspace: SessionWorkspaceResolver;
   taskService: Pick<TaskService, "resolveOrCreateTask">;
   tasks: TaskStore;
-  runs: RunStore;
+  runs: RunAggregateRepository;
   runStateStore: RunStateStore;
   agentRunRegistry: AgentRunRegistry;
   agentLoopFactory: AgentLoopFactory;
@@ -105,7 +105,11 @@ export class AgentResumeService {
       : this.deps.taskService.resolveOrCreateTask(sessionId, state.goal.slice(0, 500));
     if (!task) return { status: 404, body: { error: "关联 task 不存在", taskId: state.taskId } };
 
-    this.deps.runs.update(runId, { status: "running", error: null });
+    this.deps.runs.execute({
+      type: "run.start",
+      runId,
+      expectedAggregateVersion: run.aggregateVersion,
+    });
     this.deps.tasks.update(task.id, { status: "running" });
     const ctx = { message, sessionId, task, run: { id: runId } };
     let registered = false;
@@ -293,7 +297,13 @@ export class AgentResumeService {
     let registered = false;
 
     try {
-      this.deps.runs.update(runId, { status: "running", error: null });
+      const current = this.deps.runs.get(runId);
+      if (!current) return { status: 404, body: { error: "Run not found.", runId } };
+      this.deps.runs.execute({
+        type: "run.start",
+        runId,
+        expectedAggregateVersion: current.aggregateVersion,
+      });
       this.deps.tasks.update(task.id, { status: "running" });
       const workspaceRoot = this.deps.sessionWorkspace.workspaceForSession(sessionId);
       const timeline = new AgentTimelineService({ workspaceRoot });

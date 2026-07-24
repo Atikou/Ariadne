@@ -30,7 +30,8 @@ import {
   type ToolOutcome,
 } from "./toolOutcome.js";
 import type { ToolStorage } from "./storage/ToolStorage.js";
-import type { Tool, ToolContext } from "./types.js";
+import { WORKSPACE_READ_CONTRACT, WORKSPACE_WRITE_CONTRACT } from "./contractProfiles.js";
+import type { ToolContext, ToolContract } from "./types.js";
 import { requireProcessSandbox } from "../sandbox/ProcessSandbox.js";
 
 function relPath(workspaceRoot: string, abs: string): string {
@@ -82,7 +83,7 @@ async function recordChange(
   opts: {
     changeId: string;
     beforeHash?: string;
-    afterHash: string;
+    afterHash?: string;
     backupPath?: string;
     diff: string;
   },
@@ -111,28 +112,23 @@ function normalizeReadFileEncoding(value: string): "utf8" | "base64" {
   return value as "utf8" | "base64";
 }
 
+const readFileInputSchema = z.object({
+  path: z.string().min(1),
+  encoding: z.enum(["utf8", "base64", "utf-8"]).default("utf8"),
+  startLine: z.number().int().positive().optional(),
+  endLine: z.number().int().positive().optional(),
+  maxBytes: z.number().int().positive().optional(),
+});
+
 /** read_file：读取工作区内文本文件。 */
-export const readFileTool: Tool<
-  z.ZodObject<{
-    path: z.ZodString;
-    encoding: z.ZodDefault<z.ZodEnum<["utf8", "base64", "utf-8"]>>;
-    startLine: z.ZodOptional<z.ZodNumber>;
-    endLine: z.ZodOptional<z.ZodNumber>;
-    maxBytes: z.ZodOptional<z.ZodNumber>;
-  }>,
+export const readFileTool: ToolContract<
+  typeof readFileInputSchema,
   Record<string, unknown> & { outcome: ToolOutcome }
 > = {
+  ...WORKSPACE_READ_CONTRACT,
   name: "read_file",
   description: "读取工作区内的文本文件；返回 sha256 供写入时并发校验。",
-  permission: "read",
-  hasSideEffect: false,
-  inputSchema: z.object({
-    path: z.string().min(1),
-    encoding: z.enum(["utf8", "base64", "utf-8"]).default("utf8"),
-    startLine: z.number().int().positive().optional(),
-    endLine: z.number().int().positive().optional(),
-    maxBytes: z.number().int().positive().optional(),
-  }),
+  inputSchema: readFileInputSchema,
   async execute(input, ctx) {
     const encoding = normalizeReadFileEncoding(input.encoding);
     const displayPath = input.path.replace(/\\/g, "/");
@@ -186,7 +182,7 @@ export const readFileTool: Tool<
 };
 
 /** list_files：列出目录内容（可递归、可限深）。 */
-export const listFilesTool: Tool<
+export const listFilesTool: ToolContract<
   z.ZodObject<{
     root: z.ZodDefault<z.ZodString>;
     recursive: z.ZodDefault<z.ZodBoolean>;
@@ -204,10 +200,9 @@ export const listFilesTool: Tool<
     truncated: boolean;
   }
 > = {
+  ...WORKSPACE_READ_CONTRACT,
   name: "list_files",
   description: "列出工作区目录内容；默认忽略 node_modules/.git/dist 等。",
-  permission: "read",
-  hasSideEffect: false,
   inputSchema: z.object({
     root: z.string().default("."),
     recursive: z.boolean().default(false),
@@ -280,7 +275,7 @@ export const listFilesTool: Tool<
 };
 
 /** search_text：在工作区内搜索文本。 */
-export const searchTextTool: Tool<
+export const searchTextTool: ToolContract<
   z.ZodObject<{
     query: z.ZodString;
     root: z.ZodDefault<z.ZodString>;
@@ -302,10 +297,9 @@ export const searchTextTool: Tool<
     truncated: boolean;
   }
 > = {
+  ...WORKSPACE_READ_CONTRACT,
   name: "search_text",
   description: "在工作区内搜索文本，返回路径、行号与上下文。",
-  permission: "read",
-  hasSideEffect: false,
   timeoutMs: 15_000,
   inputSchema: z.object({
     query: z.string().min(1),
@@ -395,7 +389,7 @@ export const searchTextTool: Tool<
 };
 
 /** write_file：创建或整文件覆盖（修改已有文件优先 apply_patch）。 */
-export const writeFileTool: Tool<
+export const writeFileTool: ToolContract<
   z.ZodObject<{
     path: z.ZodString;
     content: z.ZodString;
@@ -416,10 +410,9 @@ export const writeFileTool: Tool<
     isNew: boolean;
   }
 > = {
+  ...WORKSPACE_WRITE_CONTRACT,
   name: "write_file",
   description: "写入工作区文件；默认备份并返回 diff。修改已有文件建议用 apply_patch。",
-  permission: "write",
-  hasSideEffect: true,
   inputSchema: z.object({
     path: z.string().min(1),
     content: z.string(),
@@ -510,7 +503,7 @@ export const writeFileTool: Tool<
 };
 
 /** apply_patch：search/replace 唯一匹配的安全修改。 */
-export const applyPatchTool: Tool<
+export const applyPatchTool: ToolContract<
   z.ZodObject<{
     path: z.ZodString;
     search: z.ZodString;
@@ -527,10 +520,9 @@ export const applyPatchTool: Tool<
     diff: string;
   }
 > = {
+  ...WORKSPACE_WRITE_CONTRACT,
   name: "apply_patch",
   description: "对已有文件做 search/replace；search 必须唯一匹配，默认备份并返回 diff。",
-  permission: "write",
-  hasSideEffect: true,
   inputSchema: z.object({
     path: z.string().min(1),
     search: z.string().min(1),
@@ -594,28 +586,23 @@ export const applyPatchTool: Tool<
   },
 };
 
+const diffFileInputSchema = z.object({
+  path: z.string().min(1),
+  against: z.enum(["backup", "git", "content"]).default("git"),
+  changeId: z.string().optional(),
+  oldContent: z.string().optional(),
+  newContent: z.string().optional(),
+});
+
 /** diff_file：对比文件与备份/git/临时内容。 */
-export const diffFileTool: Tool<
-  z.ZodObject<{
-    path: z.ZodString;
-    against: z.ZodDefault<z.ZodEnum<["backup", "git", "content"]>>;
-    changeId: z.ZodOptional<z.ZodString>;
-    oldContent: z.ZodOptional<z.ZodString>;
-    newContent: z.ZodOptional<z.ZodString>;
-  }>,
+export const diffFileTool: ToolContract<
+  typeof diffFileInputSchema,
   { path: string; diff: string; truncated: boolean }
 > = {
+  ...WORKSPACE_READ_CONTRACT,
   name: "diff_file",
   description: "查看文件 diff：对比备份（changeId）、git 工作区或临时内容。",
-  permission: "read",
-  hasSideEffect: false,
-  inputSchema: z.object({
-    path: z.string().min(1),
-    against: z.enum(["backup", "git", "content"]).default("git"),
-    changeId: z.string().optional(),
-    oldContent: z.string().optional(),
-    newContent: z.string().optional(),
-  }),
+  inputSchema: diffFileInputSchema,
   async execute(input, ctx) {
     const full = resolveInsideWorkspace(ctx.workspaceRoot, input.path);
     let diff = "";
@@ -659,17 +646,16 @@ export const diffFileTool: Tool<
 };
 
 /** backup_file：手动备份一个或多个文件。 */
-export const backupFileTool: Tool<
+export const backupFileTool: ToolContract<
   z.ZodObject<{ paths: z.ZodArray<z.ZodString>; reason: z.ZodOptional<z.ZodString> }>,
   {
     backupId: string;
     files: Array<{ path: string; backupPath: string; sha256: string }>;
   }
 > = {
+  ...WORKSPACE_WRITE_CONTRACT,
   name: "backup_file",
   description: "手动备份工作区内一个或多个文件到 agent_data/backups/。",
-  permission: "write",
-  hasSideEffect: true,
   inputSchema: z.object({
     paths: z.array(z.string().min(1)).min(1),
     reason: z.string().optional(),
@@ -694,47 +680,86 @@ export const backupFileTool: Tool<
 };
 
 /** rollback_change：按 changeId 回滚文件修改。 */
-export const rollbackChangeTool: Tool<
+export const rollbackChangeTool: ToolContract<
   z.ZodObject<{ changeId: z.ZodString }>,
-  { changeId: string; restoredFiles: string[]; diff: string }
+  {
+    changeId: string;
+    sourceChangeId: string;
+    restoredFiles: string[];
+    deletedFiles: string[];
+    diff: string;
+  }
 > = {
+  ...WORKSPACE_WRITE_CONTRACT,
   name: "rollback_change",
   description: "根据 changeId 从备份恢复文件；恢复前会再次备份当前版本。",
-  permission: "write",
-  hasSideEffect: true,
   inputSchema: z.object({ changeId: z.string().min(1) }),
   async execute(input, ctx) {
     if (!ctx.storage) throw new Error("rollback_change 需要 ToolStorage");
     const change = ctx.storage.getFileChange(input.changeId);
-    if (!change?.backupPath) {
+    if (!change) {
       throw new Error(`未找到 changeId：${input.changeId}`);
     }
 
     const restoreRoot = change.workspaceRoot ?? ctx.workspaceRoot;
     const rollbackCtx: ToolContext = { ...ctx, workspaceRoot: restoreRoot };
     const full = resolveInsideWorkspace(restoreRoot, change.path);
-    let currentContent = "";
+    let currentContent: string | undefined;
+    let currentHash: string | undefined;
     try {
       currentContent = await fs.readFile(full, "utf-8");
-      const currentHash = hashContent(currentContent);
-      await backupOneFile(rollbackCtx, change.path, currentHash, "rollback_pre_restore");
+      currentHash = hashContent(currentContent);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
 
-    const backupContent = await ctx.storage.readBackupContent(change.backupPath);
-    await ctx.storage.restoreFromBackupPath(restoreRoot, change.path, change.backupPath);
+    if (change.afterHash === undefined) {
+      if (currentContent !== undefined) {
+        throw new Error(`restore_conflict_expected_missing:${change.path}`);
+      }
+    } else if (currentHash !== change.afterHash) {
+      throw new Error(`restore_conflict_current_hash_mismatch:${change.path}`);
+    }
 
-    const rollbackDiff = buildUnifiedDiff(currentContent, backupContent, change.path);
+    let currentBackupPath: string | undefined;
+    if (currentContent !== undefined && currentHash !== undefined) {
+      currentBackupPath = (
+        await backupOneFile(rollbackCtx, change.path, currentHash, "rollback_pre_restore")
+      ).backupPath;
+    }
+
+    let restoredContent: string | undefined;
+    if (change.beforeHash === undefined) {
+      if (currentContent !== undefined) await fs.unlink(full);
+    } else {
+      if (!change.backupPath) throw new Error(`restore_backup_missing:${change.path}`);
+      restoredContent = await ctx.storage.readBackupContent(change.backupPath);
+      if (hashContent(restoredContent) !== change.beforeHash) {
+        throw new Error(`restore_backup_hash_mismatch:${change.path}`);
+      }
+      await ctx.storage.restoreFromBackupPath(restoreRoot, change.path, change.backupPath);
+    }
+
+    const rollbackDiff = buildUnifiedDiff(
+      currentContent ?? "",
+      restoredContent ?? "",
+      change.path,
+    );
     const newChangeId = randomUUID();
     await recordChange(rollbackCtx, "rollback_change", change.path, {
       changeId: newChangeId,
-      beforeHash: currentContent ? hashContent(currentContent) : undefined,
-      afterHash: hashContent(backupContent),
-      backupPath: change.backupPath,
+      beforeHash: currentHash,
+      afterHash: restoredContent === undefined ? undefined : hashContent(restoredContent),
+      backupPath: currentBackupPath,
       diff: rollbackDiff,
     });
 
-    return { changeId: input.changeId, restoredFiles: [change.path], diff: rollbackDiff };
+    return {
+      changeId: newChangeId,
+      sourceChangeId: input.changeId,
+      restoredFiles: restoredContent === undefined ? [] : [change.path],
+      deletedFiles: restoredContent === undefined ? [change.path] : [],
+      diff: rollbackDiff,
+    };
   },
 };

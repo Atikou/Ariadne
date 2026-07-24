@@ -639,6 +639,7 @@ static ExecutionRequest Request(
     string? policyRoot = null,
     WriteScopeRequest? writeScope = null,
     string? stdinBase64 = null,
+    bool interactive = false,
     ResourceLimits? resourceLimits = null) => new()
 {
     ExecutionId = Guid.NewGuid().ToString("N"),
@@ -652,6 +653,7 @@ static ExecutionRequest Request(
     TimeoutMs = timeoutMs,
     MaxOutputBytes = maxOutputBytes,
     StdinBase64 = stdinBase64,
+    Interactive = interactive,
     ResourceLimits = resourceLimits ?? new ResourceLimits { MaxProcesses = 8 },
 };
 
@@ -1198,6 +1200,36 @@ static void VerifyExecutionInputProtocolContract()
     ExpectRequestFailure(
         Request("read-only", workspace, "echo rejected", stdinBase64: "YQ==\r\n"),
         "noncanonical_stdin_was_accepted");
+    ExecutionValidator.Validate(Request(
+        "read-only",
+        workspace,
+        "echo interactive",
+        interactive: true));
+    ExpectRequestFailure(
+        Request(
+            "read-only",
+            workspace,
+            "echo rejected",
+            stdinBase64: "YQ==",
+            interactive: true),
+        "interactive_initial_stdin_was_accepted");
+    var executionId = Guid.NewGuid().ToString("N");
+    var inputFrame = new InteractiveInputFrame
+    {
+        Type = "stdin",
+        ExecutionId = executionId,
+        DataBase64 = Convert.ToBase64String("hello"u8.ToArray()),
+    };
+    Require(
+        Encoding.UTF8.GetString(ExecutionValidator.DecodeInteractiveInput(inputFrame, executionId)) == "hello",
+        "interactive_input_frame_rejected");
+    Require(
+        ExecutionValidator.IsInteractiveEnd(new InteractiveInputFrame
+        {
+            Type = "stdin_end",
+            ExecutionId = executionId,
+        }, executionId),
+        "interactive_end_frame_rejected");
     var excessiveToolRoots = Request("read-only", workspace, "echo rejected");
     excessiveToolRoots.ToolReadRoots.AddRange(
         Enumerable.Range(0, 65).Select(index => Path.Combine(workspace, $"tool-{index}")));

@@ -261,7 +261,7 @@ export async function runAgentToolAction(
     return { step: { ...base, error: `未知工具：${action.tool}` } };
   }
 
-  const toolPermission = ctx.registry.resolvePrimaryPermission(action.tool, inputRecord) ?? tool.permission;
+  const toolPermission = ctx.registry.resolvePrimaryPermission(action.tool, inputRecord) ?? tool.permissions[0];
 
   activity.startTool({ tool: action.tool, toolInput: inputRecord, iteration, toolCallId });
   if (!ctx.isToolExposed(action.tool)) {

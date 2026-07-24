@@ -14,7 +14,24 @@ export interface RuntimeGeneratePayload {
   maxTokens?: number;
 }
 
-export type RuntimeCommand = "ping" | "load" | "generate" | "unload" | "dispose" | "cancel";
+export interface RuntimeCountTokensPayload {
+  messages: ChatMessage[];
+  tools?: Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
+}
+
+export interface RuntimeCountTokensResult {
+  tokens: number;
+  tokenizer: string;
+}
+
+export type RuntimeCommand =
+  | "ping"
+  | "load"
+  | "count_tokens"
+  | "generate"
+  | "unload"
+  | "dispose"
+  | "cancel";
 
 export interface RuntimeRequestMessage {
   id: string;

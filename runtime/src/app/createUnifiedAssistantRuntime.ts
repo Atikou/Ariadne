@@ -1,4 +1,5 @@
 import type { WorkspaceCatalog } from "../config/workspaceCatalog.js";
+import type { LoopChatFn } from "../agent/AgentLoop.js";
 import type { UserPermissionPolicy } from "../agent/RunPolicyTypes.js";
 import { CompanionService, type CompanionServiceDeps } from "../companion/CompanionService.js";
 import type { ContextManager } from "../context/ContextManager.js";
@@ -15,7 +16,9 @@ export function createUnifiedAssistantRuntime(input: {
   workspaceCatalog: WorkspaceCatalog;
   orchestrator: Orchestrator;
   trace: TraceLogger;
+  makeChatFn: (forceClient?: string) => LoopChatFn;
   permissionPolicy?: UserPermissionPolicy;
+  browserAvailable?: () => boolean;
 }) {
   const agentHandoffCoordinator = createAgentHandoffRuntime(input);
   let companionService: CompanionService | undefined;
@@ -52,6 +55,8 @@ export function createUnifiedAssistantRuntime(input: {
         ...failure,
       });
     },
+    browserAvailable: input.browserAvailable,
+    trace: input.trace,
   });
   companionService.start();
   void unifiedAssistantHandoffService.recoverInterruptedCompanionSessionDeletions()

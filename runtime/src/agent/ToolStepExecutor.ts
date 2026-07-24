@@ -62,7 +62,7 @@ export class ToolStepExecutor implements StepExecutor {
 
     const toolCallId = this.makeToolCallId(step);
     const tool = this.options.registry.get(step.tool);
-    const workflowRoute = defaultWorkflowRouteForTaskTool(tool?.permission);
+    const workflowRoute = defaultWorkflowRouteForTaskTool(tool?.permissions[0]);
 
     const result = await this.gateway.run({
       toolName: step.tool,
@@ -78,7 +78,7 @@ export class ToolStepExecutor implements StepExecutor {
       signal: ctx.signal,
       allowedPermissions: this.allowed,
       runGrantedPermissions: this.options.runGrantedPermissions,
-      intent: tool?.permission === "shell" ? "run" : tool?.permission === "write" ? "edit" : "answer",
+      intent: tool?.permissions[0] === "shell" ? "run" : tool?.permissions[0] === "write" ? "edit" : "answer",
       permissionPolicy: this.options.permissionPolicy ?? "confirmBeforeRun",
       mode: "implement",
       workflowRoute,

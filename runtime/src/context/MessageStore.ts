@@ -41,11 +41,11 @@ export class MessageStore {
       .prepare(
         `INSERT INTO messages(
            id, session_id, role, content, token_estimate,
-           client_name, model_name, message_kind, ui_visible, trusted, source, run_id,
-           trust_basis, ledger_backed, outcome_class, outcome_kind,
+           client_name, model_name, message_kind, ui_visible, run_id,
+           content_envelope_json, ledger_backed, outcome_class, outcome_kind,
            tool_name, tool_call_id, tool_calls_json, created_at
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -57,10 +57,8 @@ export class MessageStore {
         meta?.modelName ?? null,
         envelope.messageKind,
         envelope.uiVisible ? 1 : 0,
-        envelope.trusted ? 1 : 0,
-        envelope.source,
         envelope.runId ?? null,
-        envelope.trustBasis ?? null,
+        JSON.stringify(envelope.contentEnvelope),
         envelope.ledgerBacked == null ? null : envelope.ledgerBacked ? 1 : 0,
         envelope.outcomeClass ?? null,
         envelope.outcomeKind ?? null,
@@ -192,9 +190,7 @@ function toMessageRecord(input: {
     modelName: input.meta?.modelName,
     messageKind: input.envelope.messageKind,
     uiVisible: input.envelope.uiVisible,
-    trusted: input.envelope.trusted,
-    source: input.envelope.source,
-    trustBasis: input.envelope.trustBasis,
+    contentEnvelope: input.envelope.contentEnvelope,
     runId: input.envelope.runId,
     ledgerBacked: input.envelope.ledgerBacked,
     outcomeClass: input.envelope.outcomeClass,
@@ -212,9 +208,7 @@ export function enrichMessageRecord(record: MessageRecord): MessageRecord & { en
     content: record.content,
     messageKind: record.messageKind,
     uiVisible: record.uiVisible,
-    trusted: record.trusted,
-    source: record.source,
-    trustBasis: record.trustBasis,
+    contentEnvelope: record.contentEnvelope,
     runId: record.runId,
     ledgerBacked: record.ledgerBacked,
     outcomeClass: record.outcomeClass,
@@ -224,9 +218,7 @@ export function enrichMessageRecord(record: MessageRecord): MessageRecord & { en
     ...record,
     messageKind: envelope.messageKind,
     uiVisible: envelope.uiVisible,
-    trusted: envelope.trusted,
-    source: envelope.source,
-    trustBasis: envelope.trustBasis,
+    contentEnvelope: envelope.contentEnvelope,
     runId: envelope.runId,
     envelope,
   };

@@ -10,9 +10,14 @@ internal static class RestrictedRunnerEntry
         try
         {
             var identity = ParseIdentity(args);
-            request = Program.Deserialize<ExecutionRequest>(await Program.ReadBoundedInputAsync());
+            request = Program.Deserialize<ExecutionRequest>(
+                await Program.ReadBoundedLineAsync(Console.In, WindowsSandboxBrokerProtocol.MaxRequestBytes));
             ExecutionValidator.Validate(request);
-            await RestrictedCommandRunner.ExecuteAsync(request, identity, NativeProtocolWriter.Console);
+            await RestrictedCommandRunner.ExecuteAsync(
+                request,
+                identity,
+                NativeProtocolWriter.Console,
+                request.Interactive ? Console.In : null);
             return 0;
         }
         catch (Exception error) when (error is RequestException or JsonException)

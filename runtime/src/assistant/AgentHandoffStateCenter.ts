@@ -1077,6 +1077,7 @@ function sameSubmission(
     && proposal.reason === input.reason
     && proposal.risk === input.risk
     && proposal.workspaceKey === input.workspaceKey
+    && JSON.stringify(proposal.modelBinding) === JSON.stringify(input.modelBinding)
     && JSON.stringify(proposal.requestedCapabilities) === JSON.stringify(input.requestedCapabilities)
     && JSON.stringify(proposal.requestedScope) === JSON.stringify(input.requestedScope);
 }

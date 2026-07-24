@@ -17,6 +17,11 @@ import type {
   ToolCall,
 } from "./types.js";
 import type { ModelInferenceOptions } from "@ariadne/protocol/public";
+import {
+  createConservativeTokenCounter,
+  remoteTokenizerProfile,
+} from "./TokenCounter.js";
+import { ProviderRequestError, providerHttpError } from "./ProviderError.js";
 
 export interface OpenAICompatibleOptions {
   name: string;
@@ -26,6 +31,7 @@ export interface OpenAICompatibleOptions {
   baseUrl?: string;
   apiKey?: string;
   timeoutMs?: number;
+  contextWindowTokens?: number;
 }
 
 type CompatibleMessage =
@@ -69,6 +75,9 @@ export class OpenAICompatibleClient implements ModelClient {
   public readonly name: string;
   public readonly location: ModelLocation;
   public readonly model: string;
+  public readonly toolCallCapability = "native" as const;
+  public readonly tokenCounter;
+  public readonly contextWindowTokens: number | undefined;
 
   private readonly baseUrl: URL;
   private readonly providerId: string;
@@ -79,6 +88,10 @@ export class OpenAICompatibleClient implements ModelClient {
     this.name = options.name;
     this.providerId = options.providerId;
     this.model = options.model;
+    this.tokenCounter = createConservativeTokenCounter(
+      remoteTokenizerProfile(options.providerId, options.model),
+    );
+    this.contextWindowTokens = options.contextWindowTokens;
     this.location = options.location;
     this.baseUrl = normalizeBaseUrl(options.baseUrl ?? "https://api.openai.com/v1");
     this.apiKey = options.apiKey?.trim() || undefined;
@@ -99,7 +112,7 @@ export class OpenAICompatibleClient implements ModelClient {
   }
 
   async chat(request: ChatRequest): Promise<ModelResponse> {
-    const { signal, cancel } = withTimeout(this.timeoutMs, request.signal);
+    const { signal, cancel, didTimeout } = withTimeout(this.timeoutMs, request.signal);
     const startedAt = performance.now();
     const providerInference = mapProviderInference(this.providerId, this.model, request.inference);
     const temperature = shouldSendTemperature(this.providerId, request.inference)
@@ -125,6 +138,11 @@ export class OpenAICompatibleClient implements ModelClient {
       return request.onToken
         ? this.readStream(response, request.onToken, startedAt)
         : this.readJson(response, startedAt);
+    } catch (error) {
+      if (didTimeout()) {
+        throw new ProviderRequestError("timeout", `Provider request timed out after ${this.timeoutMs}ms.`);
+      }
+      throw error;
     } finally {
       cancel();
     }
@@ -389,7 +407,11 @@ async function responseError(response: Response): Promise<Error> {
   } catch {
     // 非 JSON 错误响应保留截断后的正文，便于诊断兼容服务。
   }
-  return new Error(`OpenAI-compatible Provider 请求失败（HTTP ${response.status}）${detail ? `：${detail}` : ""}`);
+  return providerHttpError(
+    response.status,
+    `OpenAI-compatible Provider 请求失败（HTTP ${response.status}）${detail ? `：${detail}` : ""}`,
+    response.headers.get("retry-after"),
+  );
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

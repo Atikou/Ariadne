@@ -44,7 +44,7 @@ export function scanPromptInjection(text: string): InjectionScanResult {
 /**
  * 对工具输出做注入标记：可疑内容包在「不可信外部数据」围栏内回灌模型。
  */
-export function wrapUntrustedToolOutput(tool: string, output: unknown): unknown {
+export function wrapExternalToolOutput(tool: string, output: unknown): unknown {
   if (!UNTRUSTED_TOOLS.has(tool)) return output;
   const json = typeof output === "string" ? output : JSON.stringify(output);
   const scan = scanPromptInjection(json);

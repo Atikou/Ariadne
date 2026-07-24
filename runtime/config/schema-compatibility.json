@@ -1,0 +1,26 @@
+{
+  "manifestVersion": 1,
+  "policy": {
+    "forwardPath": "N-1-to-N",
+    "downgradePath": "restore-versioned-backup",
+    "newerDatabaseWrite": "rejected"
+  },
+  "databases": {
+    "memory": {
+      "currentSchema": 41,
+      "minimumForwardSource": 40
+    },
+    "companion": {
+      "currentSchema": 8,
+      "minimumForwardSource": 7
+    },
+    "tools": {
+      "currentSchema": 2,
+      "minimumForwardSource": 1
+    },
+    "traceIndex": {
+      "currentSchema": 1,
+      "minimumForwardSource": 0
+    }
+  }
+}

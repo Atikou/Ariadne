@@ -1,5 +1,9 @@
+import { createHash } from "node:crypto";
+
 import type { ChatRequest, ModelResponse } from "../model/types.js";
 import type { AgentProposal } from "../assistant/AgentHandoffContracts.js";
+import type { TraceLogger } from "../trace/TraceLogger.js";
+import { redactString } from "../util/redact.js";
 import {
   createModelAbortError,
   isModelAbortError,
@@ -49,10 +53,12 @@ import type {
 import {
   COMPANION_AGENT_PROPOSAL_CLOSE,
   COMPANION_AGENT_PROPOSAL_OPEN,
+  COMPANION_AGENT_PROTOCOL_VERSION,
   CompanionEmptyResponseError,
   CompanionTurnProtocolError,
   CompanionTurnStreamDecoder,
-  parseCompanionModelTurn,
+  createCompanionAgentProposalTool,
+  parseCompanionModelResponse,
   type CompanionModelTurn,
 } from "./CompanionTurnProtocol.js";
 
@@ -62,6 +68,10 @@ const COMPANION_MAX_TOKENS = 4_096;
 const AGENT_PROPOSAL_PUBLIC_CONTENT =
   "我已开始处理；需要额外权限时，系统会向你确认具体操作。";
 
+type CompanionRepairRequest =
+  | { kind: "proposal_protocol"; error: CompanionTurnProtocolError }
+  | { kind: "empty_response" };
+
 type CompanionStorageHandle = ReturnType<CompanionStorageManager["get"]>;
 
 export interface CompanionConversationWorkflowDeps {
@@ -69,6 +79,8 @@ export interface CompanionConversationWorkflowDeps {
   knowledge: CompanionKnowledgeService;
   directChat: (request: ChatRequest, opts?: RouteOptions) => Promise<ModelResponse>;
   agentProposalOutbox?: CompanionAgentProposalOutboxDispatcher;
+  browserAvailable?: () => boolean;
+  trace?: TraceLogger;
 }
 
 export interface CompanionConversationRunContext {
@@ -84,6 +96,7 @@ interface PreparedCompanionTurn {
   userMessage?: CompanionMessage;
   assistantDraft?: CompanionMessage;
   agentProposalEnabled: boolean;
+  browserAvailable: boolean;
   request: ChatRequest;
   retrieved: Awaited<ReturnType<CompanionKnowledgeService["searchMemoryVectors"]>>;
 }
@@ -95,17 +108,27 @@ export class CompanionConversationWorkflow {
   constructor(private readonly deps: CompanionConversationWorkflowDeps) {}
 
   async chat(input: CompanionChatInput): Promise<CompanionChatResult> {
-    const turn = await this.prepareTurn(input, false);
-    const initialResponse = await this.deps.directChat(turn.request, this.routeOptions(input));
-    const resolved = await this.parseOrRepairModelTurn(turn, initialResponse);
-    const { response, modelTurn } = resolved;
-    const safety = applyCompanionSafety({
-      userText: turn.message,
-      assistantText: modelTurnContent(modelTurn),
-      outputMode: turn.outputMode,
-    });
-    const proposalDelivery = await this.deliverProposal(turn, modelTurn, safety, response);
-    return this.completeTurn(turn, response, safety, proposalDelivery);
+    const operationId = crypto.randomUUID();
+    let turn: PreparedCompanionTurn | undefined;
+    try {
+      turn = await this.prepareTurn(input, false);
+      this.logTurnInput(turn, operationId, false);
+      const initialResponse = await this.deps.directChat(turn.request, this.routeOptions(input));
+      const resolved = await this.parseOrRepairModelTurn(turn, initialResponse, undefined, operationId);
+      const { response, modelTurn } = resolved;
+      const safety = applyCompanionSafety({
+        userText: turn.message,
+        assistantText: modelTurnContent(modelTurn),
+        outputMode: turn.outputMode,
+      });
+      const proposalDelivery = await this.deliverProposal(turn, modelTurn, safety, response);
+      const result = await this.completeTurn(turn, response, safety, proposalDelivery);
+      this.logTurnCompleted(turn, operationId, modelTurn, response);
+      return result;
+    } catch (error) {
+      this.logTurnFailure(turn, operationId, error);
+      throw error;
+    }
   }
 
   async chatStream(
@@ -124,7 +147,9 @@ export class CompanionConversationWorkflow {
     let turn: PreparedCompanionTurn;
     try {
       turn = await this.prepareTurn(input, true, controller.signal);
+      this.logTurnInput(turn, runId, true);
     } catch (error) {
+      this.logTurnFailure(undefined, runId, error, input.message);
       this.activeRuns.delete(runId);
       context.signal?.removeEventListener("abort", abortFromContext);
       throw error;
@@ -189,22 +214,14 @@ export class CompanionConversationWorkflow {
         this.routeOptions(input),
       );
       throwIfModelAborted(controller.signal);
-      let response = initialResponse;
-      let modelTurn: CompanionModelTurn;
-      try {
-        modelTurn = protocol.finish(response.content);
-      } catch (error) {
-        const repairKind = modelTurnRepairKind(error, response);
-        if (!repairKind) throw error;
-        const repaired = await this.repairModelTurn(
-          turn,
-          response,
-          repairKind,
-          controller.signal,
-        );
-        response = repaired.response;
-        modelTurn = repaired.modelTurn;
-      }
+      const resolved = await this.parseOrRepairModelTurn(
+        turn,
+        initialResponse,
+        controller.signal,
+        runId,
+        () => protocol.finish(initialResponse),
+      );
+      const { response, modelTurn } = resolved;
       const safety = applyCompanionSafety({
         userText: turn.message,
         assistantText: modelTurnContent(modelTurn),
@@ -230,15 +247,31 @@ export class CompanionConversationWorkflow {
             : {}),
         });
       }
+      this.logTurnCompleted(turn, runId, modelTurn, response);
       events.send({ type: "done", runId, result });
     } catch (error) {
       if (events.hasTerminated) throw error;
       if (error instanceof CompanionAgentProposalDeliveryPendingError) {
+        this.deps.trace?.write({
+          type: "companion.proposal.delivery.warning",
+          level: "warning",
+          category: "companion.proposal.delivery",
+          message: error.message,
+          runId,
+          ...(turn.session ? { sessionId: turn.session.id } : {}),
+          metadata: {
+            lifecycleStage: "proposal_delivery",
+            errorCode: error.code,
+            retryable: true,
+            idempotencyProtected: true,
+          },
+        });
         events.send({
           type: "error",
           runId,
           code: error.code,
           message: error.message,
+          retryable: true,
         });
         return;
       }
@@ -260,9 +293,12 @@ export class CompanionConversationWorkflow {
           metadata: {
             ...(cancelled
               ? { interruptionCode: "cancelled" }
-              : {
+                : {
                   errorCode: publicError.code,
                   interruptionCode: "runtime_error",
+                  ...(error instanceof CompanionTurnProtocolError
+                    ? { protocolDiagnostic: error.diagnostic }
+                    : {}),
                 }),
             safety: partialSafety,
             interruptedRawLength: protocol.rawText.length,
@@ -293,11 +329,13 @@ export class CompanionConversationWorkflow {
           });
         }
       } else {
+        this.logTurnFailure(turn, runId, error);
         events.send({
           type: "error",
           runId,
           code: publicError.code,
           message: publicError.message,
+          retryable: errorRetryable(error),
         });
       }
     } finally {
@@ -411,6 +449,7 @@ export class CompanionConversationWorkflow {
       && outputMode === "bounded"
       && this.deps.agentProposalOutbox,
     );
+    const browserAvailable = this.deps.browserAvailable?.() === true;
     const recent = session ? storage.listMessages(session.id, 30) : [];
     const summaries = session
       ? selectPromptSummaries({
@@ -433,7 +472,11 @@ export class CompanionConversationWorkflow {
         memories: retrieved.memories,
         outputMode,
         agentProposalEnabled,
+        browserAvailable,
       }),
+      ...(agentProposalEnabled
+        ? { tools: [createCompanionAgentProposalTool(browserAvailable)] }
+        : {}),
       temperature: 0.7,
       maxTokens: COMPANION_MAX_TOKENS,
       ...(input.inference ? { inference: input.inference } : {}),
@@ -447,6 +490,7 @@ export class CompanionConversationWorkflow {
       userMessage,
       assistantDraft,
       agentProposalEnabled,
+      browserAvailable,
       request,
       retrieved,
     };
@@ -582,6 +626,10 @@ export class CompanionConversationWorkflow {
       throw new Error("companion_agent_proposal_source_turn_unavailable");
     }
     const publicContent = safety.content;
+    const requestedClientName =
+      turn.input.clientName && turn.input.clientName !== "__default__"
+        ? turn.input.clientName
+        : undefined;
     const outbox = turn.storage.enqueueAgentProposalOutbox({
       payload: {
         sourceTurnId: turn.userMessage.id,
@@ -589,6 +637,15 @@ export class CompanionConversationWorkflow {
         originalRequest: turn.message,
         workspaceKey: turn.input.workspaceKey,
         draft: { ...modelTurn.draft, reason: publicContent },
+        source: {
+          protocolVersion: COMPANION_AGENT_PROTOCOL_VERSION,
+          transport: modelTurn.transport,
+          selectionMode: requestedClientName ? "manual" : "automatic",
+          ...(requestedClientName ? { requestedClientName } : {}),
+          clientName: response.clientName,
+          modelName: response.modelName,
+          responseHash: modelResponseHash(response),
+        },
       },
       assistantMessageId: turn.assistantDraft?.id,
       content: publicContent,
@@ -619,42 +676,73 @@ export class CompanionConversationWorkflow {
     turn: PreparedCompanionTurn,
     response: ModelResponse,
     signal?: AbortSignal,
+    runId?: string,
+    initialParser?: () => CompanionModelTurn,
   ): Promise<{ response: ModelResponse; modelTurn: CompanionModelTurn }> {
     try {
+      const modelTurn = initialParser
+        ? initialParser()
+        : parseCompanionModelResponse(response, {
+            protocolEnabled: turn.outputMode === "bounded",
+            agentProposalEnabled: turn.agentProposalEnabled,
+          });
+      this.logProposalNormalization(turn, runId, response, modelTurn, "initial");
       return {
         response,
-        modelTurn: parseCompanionModelTurn(response.content, {
-          protocolEnabled: turn.outputMode === "bounded",
-          agentProposalEnabled: turn.agentProposalEnabled,
-        }),
+        modelTurn,
       };
     } catch (error) {
-      const repairKind = modelTurnRepairKind(error, response);
-      if (!repairKind) throw error;
-      return this.repairModelTurn(turn, response, repairKind, signal);
+      const idempotencyProtected = Boolean(turn.userMessage?.id);
+      const repair = modelTurnRepairRequest(error, response, idempotencyProtected);
+      if (!repair) {
+        if (error instanceof CompanionTurnProtocolError) {
+          this.logProposalProtocol(
+            turn,
+            runId,
+            response,
+            error,
+            "error",
+            "initial",
+          );
+        }
+        throw error;
+      }
+      if (repair.kind === "proposal_protocol") {
+        this.logProposalProtocol(
+          turn,
+          runId,
+          response,
+          repair.error,
+          "warning",
+          "initial",
+        );
+      }
+      return this.repairModelTurn(turn, response, repair, signal, runId);
     }
   }
 
   private async repairModelTurn(
     turn: PreparedCompanionTurn,
     previousResponse: ModelResponse,
-    repairKind: "mixed_proposal" | "empty_response",
+    repair: CompanionRepairRequest,
     signal?: AbortSignal,
+    runId?: string,
   ): Promise<{ response: ModelResponse; modelTurn: CompanionModelTurn }> {
-    const previousAssistantMessage = previousResponse.content || previousResponse.reasoningContent
+    const previousAssistantMessage = repair.kind === "empty_response"
+      && (previousResponse.content || previousResponse.reasoningContent)
       ? [{
           role: "assistant" as const,
           content: previousResponse.content,
           ...(previousResponse.reasoningContent
-            ? { reasoningContent: previousResponse.reasoningContent }
-            : {}),
+          ? { reasoningContent: previousResponse.reasoningContent }
+          : {}),
         }]
       : [];
-    const repairInstruction = repairKind === "mixed_proposal"
+    const repairInstruction = repair.kind === "proposal_protocol"
       ? [
-          "上一条响应包含 Agent 提案标记，但没有遵守提案必须是整条响应唯一内容的协议。",
-          "请重新生成本轮响应：需要现实操作时只输出一个完整严格的 Agent 提案信封；否则只输出普通自然语言。",
-          "不要解释修复过程，也不要在提案信封前后添加任何文字。",
+          `上一条 Agent 能力请求未通过协议校验：${repair.error.diagnostic.issue}。`,
+          `请重新生成本轮响应并优先调用 ${createCompanionAgentProposalTool(turn.browserAvailable).name}；工具参数必须严格符合其 JSON Schema，且不要同时输出普通文本。`,
+          `如果当前模型不支持工具调用，才输出一个完整严格的 ${COMPANION_AGENT_PROPOSAL_OPEN} JSON ${COMPANION_AGENT_PROPOSAL_CLOSE} 信封；信封前后不得添加文字。`,
         ]
       : [
           previousResponse.reasoningContent
@@ -674,13 +762,208 @@ export class CompanionConversationWorkflow {
         },
       ],
       maxTokens: COMPANION_MAX_TOKENS,
+      temperature: repair.kind === "proposal_protocol" ? 0 : turn.request.temperature,
       ...(signal ? { signal } : {}),
     }, this.routeOptions(turn.input));
-    const modelTurn = parseCompanionModelTurn(response.content, {
-      protocolEnabled: turn.outputMode === "bounded",
-      agentProposalEnabled: turn.agentProposalEnabled,
+    try {
+      const modelTurn = parseCompanionModelResponse(response, {
+        protocolEnabled: turn.outputMode === "bounded",
+        agentProposalEnabled: turn.agentProposalEnabled,
+      });
+      this.logProposalNormalization(turn, runId, response, modelTurn, "repair");
+      return { response, modelTurn };
+    } catch (error) {
+      if (error instanceof CompanionTurnProtocolError) {
+        this.logProposalProtocol(
+          turn,
+          runId,
+          response,
+          error,
+          "error",
+          "repair",
+        );
+      }
+      throw error;
+    }
+  }
+
+  private logTurnInput(
+    turn: PreparedCompanionTurn,
+    runId: string,
+    streaming: boolean,
+  ): void {
+    this.deps.trace?.write({
+      type: "companion.turn.input",
+      level: "info",
+      category: "companion.turn.input",
+      message: `收到 Companion 输入：${safeLogPreview(turn.message, 320)}`,
+      runId,
+      ...(turn.session ? { sessionId: turn.session.id } : {}),
+      metadata: {
+        streaming,
+        outputMode: turn.outputMode,
+        persistent: Boolean(turn.session),
+        inputChars: turn.message.length,
+        inputPreview: safeLogPreview(turn.message, 512),
+        agentProposalEnabled: turn.agentProposalEnabled,
+        browserAvailable: turn.browserAvailable,
+        requestedToolCount: turn.request.tools?.length ?? 0,
+        modelSelectionMode:
+          turn.input.clientName && turn.input.clientName !== "__default__"
+            ? "manual"
+            : "automatic",
+        requestedClientName:
+          turn.input.clientName && turn.input.clientName !== "__default__"
+            ? turn.input.clientName
+            : null,
+        routingStrategy: turn.input.routingStrategy ?? null,
+      },
     });
-    return { response, modelTurn };
+  }
+
+  private logTurnCompleted(
+    turn: PreparedCompanionTurn,
+    runId: string,
+    modelTurn: CompanionModelTurn,
+    response: ModelResponse,
+  ): void {
+    this.deps.trace?.write({
+      type: "companion.turn.completed",
+      level: "info",
+      category: "companion.turn.completed",
+      message: modelTurn.kind === "agent_proposal"
+        ? `Agent 授权提案已创建（${modelTurn.transport}）`
+        : "Companion 回复已完成",
+      runId,
+      ...(turn.session ? { sessionId: turn.session.id } : {}),
+      metadata: {
+        responseType: modelTurn.kind,
+        ...(modelTurn.kind === "agent_proposal"
+          ? { proposalTransport: modelTurn.transport }
+          : {}),
+        clientName: response.clientName,
+        modelName: response.modelName,
+        latencyMs: Math.max(0, Math.round(response.latencyMs)),
+        outputChars: response.content.length,
+        toolCallCount: response.toolCalls.length,
+      },
+    });
+  }
+
+  private logTurnFailure(
+    turn: PreparedCompanionTurn | undefined,
+    runId: string,
+    error: unknown,
+    fallbackInput?: string,
+  ): void {
+    const publicError = toPublicError(error, "Companion 请求失败");
+    this.deps.trace?.write({
+      type: "companion.turn.error",
+      level: "error",
+      category: "companion.turn.error",
+      message: `${publicError.code}: ${publicError.message}`,
+      runId,
+      ...(turn?.session ? { sessionId: turn.session.id } : {}),
+      metadata: {
+        errorCode: publicError.code,
+        retryable: errorRetryable(error),
+        inputChars: turn?.message.length ?? fallbackInput?.length ?? 0,
+        inputPreview: safeLogPreview(turn?.message ?? fallbackInput ?? "", 512),
+        ...(error instanceof CompanionTurnProtocolError
+          ? { protocol: error.diagnostic }
+          : {}),
+      },
+    });
+  }
+
+  private logProposalProtocol(
+    turn: PreparedCompanionTurn,
+    runId: string | undefined,
+    response: ModelResponse,
+    error: CompanionTurnProtocolError,
+    level: "warning" | "error",
+    attempt: "initial" | "repair",
+  ): void {
+    this.deps.trace?.write({
+      type: level === "error"
+        ? "companion.proposal.protocol.error"
+        : "companion.proposal.protocol.warning",
+      level,
+      category: "companion.proposal.protocol",
+      message: `${
+        level === "warning"
+          ? "Agent 提案协议校验失败，正在自动重试"
+          : attempt === "repair"
+            ? "Agent 提案自动修复后仍无效"
+            : "Agent 提案校验失败且不可自动重试"
+      }：${error.message}`,
+      ...(runId ? { runId } : {}),
+      ...(turn.session ? { sessionId: turn.session.id } : {}),
+      metadata: {
+        attempt,
+        idempotencyProtected: Boolean(turn.userMessage?.id),
+        diagnostic: error.diagnostic,
+        clientName: response.clientName,
+        modelName: response.modelName,
+        modelVersion: response.modelName,
+        protocolVersion: COMPANION_AGENT_PROTOCOL_VERSION,
+        lifecycleStage: error.diagnostic.stage,
+        fieldPaths: error.diagnostic.schemaIssues?.map((issue) => issue.path) ?? [],
+        responseHash: modelResponseHash(response),
+        responseChars: response.content.length,
+        responsePreview: safeLogPreview(response.content, 1_024),
+        toolArgumentsPreview: safeLogPreview(
+          safeJsonStringify(response.toolCalls.map((call) => ({
+            name: call.name,
+            arguments: call.arguments,
+          }))),
+          1_024,
+        ),
+        toolCallCount: response.toolCalls.length,
+        toolNames: response.toolCalls.map((call) => call.name).slice(0, 8),
+      },
+    });
+  }
+
+  private logProposalNormalization(
+    turn: PreparedCompanionTurn,
+    runId: string | undefined,
+    response: ModelResponse,
+    modelTurn: CompanionModelTurn,
+    attempt: "initial" | "repair",
+  ): void {
+    if (modelTurn.kind !== "agent_proposal" || !response.content.trim()) return;
+    this.deps.trace?.write({
+      type: "companion.proposal.protocol.normalized",
+      level: "warning",
+      category: "companion.proposal.protocol",
+      message: "原生 Agent 提案附带了普通回复文本；已丢弃文本并继续校验结构化工具参数",
+      ...(runId ? { runId } : {}),
+      ...(turn.session ? { sessionId: turn.session.id } : {}),
+      metadata: {
+        attempt,
+        normalization: "discarded_text_with_tool_call",
+        idempotencyProtected: Boolean(turn.userMessage?.id),
+        clientName: response.clientName,
+        modelName: response.modelName,
+        modelVersion: response.modelName,
+        protocolVersion: COMPANION_AGENT_PROTOCOL_VERSION,
+        lifecycleStage: "protocol_parse",
+        fieldPaths: [],
+        responseHash: modelResponseHash(response),
+        responseChars: response.content.length,
+        responsePreview: safeLogPreview(response.content, 1_024),
+        toolArgumentsPreview: safeLogPreview(
+          safeJsonStringify(response.toolCalls.map((call) => ({
+            name: call.name,
+            arguments: call.arguments,
+          }))),
+          1_024,
+        ),
+        toolCallCount: response.toolCalls.length,
+        toolNames: response.toolCalls.map((call) => call.name).slice(0, 8),
+      },
+    });
   }
 }
 
@@ -688,29 +971,62 @@ function modelTurnContent(turn: CompanionModelTurn): string {
   return turn.kind === "message" ? turn.content : AGENT_PROPOSAL_PUBLIC_CONTENT;
 }
 
-function isRepairableMixedProposal(error: unknown, content: string): boolean {
-  if (!(error instanceof CompanionTurnProtocolError)) return false;
-  const trimmed = content.trim();
-  const mentionsMarker = trimmed.includes(COMPANION_AGENT_PROPOSAL_OPEN)
-    || trimmed.includes(COMPANION_AGENT_PROPOSAL_CLOSE);
-  if (!mentionsMarker) return false;
-  return !trimmed.startsWith(COMPANION_AGENT_PROPOSAL_OPEN)
-    || !trimmed.endsWith(COMPANION_AGENT_PROPOSAL_CLOSE);
-}
-
-function modelTurnRepairKind(
+function modelTurnRepairRequest(
   error: unknown,
   response: ModelResponse,
-): "mixed_proposal" | "empty_response" | undefined {
-  if (isRepairableMixedProposal(error, response.content)) return "mixed_proposal";
+  idempotencyProtected: boolean,
+): CompanionRepairRequest | undefined {
+  if (
+    error instanceof CompanionTurnProtocolError
+    && error.retryable
+    && idempotencyProtected
+  ) {
+    return { kind: "proposal_protocol", error };
+  }
   if (
     error instanceof CompanionEmptyResponseError
+    && idempotencyProtected
     && !response.content.trim()
     && response.toolCalls.length === 0
   ) {
-    return "empty_response";
+    return { kind: "empty_response" };
   }
   return undefined;
+}
+
+function safeLogPreview(value: string, maxLength: number): string {
+  const normalized = redactString(value).replace(/\s+/gu, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function modelResponseHash(response: ModelResponse): string {
+  return createHash("sha256")
+    .update(safeJsonStringify({
+      content: response.content,
+      toolCalls: response.toolCalls.map((call) => ({
+        name: call.name,
+        arguments: call.arguments,
+      })),
+    }), "utf8")
+    .digest("hex");
+}
+
+function safeJsonStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+function errorRetryable(error: unknown): boolean {
+  return Boolean(
+    error
+    && typeof error === "object"
+    && "retryable" in error
+    && (error as { retryable?: unknown }).retryable === true,
+  );
 }
 
 function createCompanionStreamRelay(input: {

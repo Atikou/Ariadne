@@ -5,7 +5,7 @@ import { ensureEvalTables } from "../model-router/eval-set-store.js";
 import { backfillMessageEnvelopes } from "./messageEnvelopeBackfill.js";
 import { addColumnIfMissing, hashRowId, type SqliteMigration } from "../storage/sqliteMigration.js";
 
-export const MEMORY_DB_SCHEMA_VERSION = 33;
+export const MEMORY_DB_SCHEMA_VERSION = 41;
 
 function ensureFts(
   db: DatabaseSync,
@@ -896,6 +896,447 @@ export const MEMORY_DB_MIGRATIONS: readonly SqliteMigration[] = [
 
         CREATE INDEX IF NOT EXISTS idx_assistant_companion_session_deletions_created
           ON assistant_companion_session_deletions(created_at);
+      `);
+    },
+  },
+  {
+    version: 34,
+    name: "run_aggregates_checkpoints_tool_ledger_and_domain_outbox",
+    up(db) {
+      db.exec(`
+        CREATE TABLE run_aggregates (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN (
+            'pending', 'running', 'blocked', 'waiting_confirmation',
+            'waiting_plan_handoff', 'paused', 'recovery_required',
+            'completed', 'failed', 'cancelled'
+          )),
+          aggregate_version INTEGER NOT NULL CHECK(aggregate_version > 0),
+          session_id TEXT,
+          task_id TEXT,
+          parent_run_id TEXT,
+          trigger_id TEXT,
+          goal TEXT,
+          round INTEGER NOT NULL DEFAULT 0 CHECK(round >= 0),
+          checkpoint_stage TEXT NOT NULL,
+          recovery_status TEXT NOT NULL CHECK(recovery_status IN (
+            'none', 'recoverable', 'decision_required'
+          )),
+          wait_reason_json TEXT,
+          state_json TEXT NOT NULL,
+          error TEXT,
+          result_json TEXT,
+          correlation_id TEXT,
+          causation_id TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY(parent_run_id) REFERENCES run_aggregates(id)
+        );
+        CREATE INDEX idx_run_aggregates_session
+          ON run_aggregates(session_id, created_at DESC);
+        CREATE INDEX idx_run_aggregates_status
+          ON run_aggregates(status, updated_at DESC);
+
+        CREATE TABLE run_checkpoints (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          aggregate_version INTEGER NOT NULL CHECK(aggregate_version > 0),
+          stage TEXT NOT NULL,
+          snapshot_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE(run_id, aggregate_version),
+          FOREIGN KEY(run_id) REFERENCES run_aggregates(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_run_checkpoints_run
+          ON run_checkpoints(run_id, aggregate_version);
+
+        CREATE TABLE tool_ledger (
+          idempotency_key TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          tool_name TEXT NOT NULL,
+          tool_version TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN (
+            'intended', 'started', 'succeeded', 'failed',
+            'cancelled', 'recovery_required'
+          )),
+          aggregate_version INTEGER NOT NULL CHECK(aggregate_version > 0),
+          input_hash TEXT NOT NULL,
+          output_json TEXT,
+          verification_json TEXT,
+          effects_json TEXT NOT NULL,
+          started_at TEXT,
+          finished_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY(run_id) REFERENCES run_aggregates(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_tool_ledger_run
+          ON tool_ledger(run_id, aggregate_version);
+
+        CREATE TABLE domain_event_outbox (
+          cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+          event_id TEXT NOT NULL UNIQUE,
+          schema_version TEXT NOT NULL,
+          aggregate_type TEXT NOT NULL,
+          aggregate_id TEXT NOT NULL,
+          aggregate_version INTEGER NOT NULL CHECK(aggregate_version > 0),
+          correlation_id TEXT,
+          causation_id TEXT,
+          event_type TEXT NOT NULL,
+          event_json TEXT NOT NULL,
+          occurred_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_domain_event_outbox_aggregate
+          ON domain_event_outbox(aggregate_type, aggregate_id, aggregate_version);
+
+        CREATE TABLE event_consumers (
+          consumer_id TEXT PRIMARY KEY,
+          cursor INTEGER NOT NULL DEFAULT 0 CHECK(cursor >= 0),
+          updated_at TEXT NOT NULL
+        );
+
+        INSERT INTO run_aggregates (
+          id, kind, status, aggregate_version, session_id, task_id,
+          parent_run_id, trigger_id, goal, checkpoint_stage, recovery_status,
+          state_json, error, result_json, correlation_id, created_at, updated_at
+        )
+        SELECT
+          id,
+          kind,
+          CASE
+            WHEN status IN ('completed', 'failed', 'cancelled') THEN status
+            ELSE 'recovery_required'
+          END,
+          1,
+          session_id,
+          task_id,
+          parent_run_id,
+          trigger_id,
+          goal,
+          'migrated',
+          CASE
+            WHEN status IN ('completed', 'failed', 'cancelled') THEN 'none'
+            ELSE 'decision_required'
+          END,
+          json_object(
+            'round', 0,
+            'plan', NULL,
+            'childRunIds', json_array(),
+            'inFlightEffects', json_array(),
+            'verificationEvidence', json_array(),
+            'legacyStatus', status
+          ),
+          error,
+          result_json,
+          CASE
+            WHEN correlation_json IS NOT NULL AND json_valid(correlation_json)
+            THEN json_extract(correlation_json, '$.correlationId')
+            ELSE NULL
+          END,
+          created_at,
+          updated_at
+        FROM runs;
+
+        INSERT INTO run_checkpoints (
+          id, run_id, aggregate_version, stage, snapshot_json, created_at
+        )
+        SELECT
+          lower(hex(randomblob(16))),
+          id,
+          1,
+          'migrated',
+          json_object(
+            'runId', id,
+            'legacyStatus', status,
+            'migrationDisposition',
+            CASE
+              WHEN status IN ('completed', 'failed', 'cancelled')
+                THEN 'historical_projection'
+              ELSE 'recovery_required'
+            END
+          ),
+          updated_at
+        FROM runs;
+      `);
+    },
+  },
+  {
+    version: 35,
+    name: "run_aggregate_foreign_key_cutover",
+    up(db) {
+      db.exec(`
+        DROP INDEX IF EXISTS idx_run_states_status;
+        DROP INDEX IF EXISTS idx_run_states_session;
+        ALTER TABLE run_states RENAME TO run_states_legacy_v34;
+        CREATE TABLE run_states (
+          run_id TEXT PRIMARY KEY,
+          mode TEXT NOT NULL,
+          goal TEXT NOT NULL,
+          session_id TEXT,
+          task_id TEXT,
+          status TEXT NOT NULL,
+          state_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (run_id) REFERENCES run_aggregates(id) ON DELETE CASCADE
+        );
+        INSERT INTO run_states (
+          run_id, mode, goal, session_id, task_id, status, state_json, created_at, updated_at
+        )
+        SELECT
+          state.run_id, state.mode, state.goal, state.session_id, state.task_id,
+          state.status, state.state_json, state.created_at, state.updated_at
+        FROM run_states_legacy_v34 state
+        INNER JOIN run_aggregates aggregate ON aggregate.id = state.run_id;
+        DROP TABLE run_states_legacy_v34;
+        CREATE INDEX idx_run_states_status ON run_states(status, updated_at DESC);
+        CREATE INDEX idx_run_states_session ON run_states(session_id, updated_at DESC);
+
+        DROP INDEX IF EXISTS idx_plan_agent_step_bindings_parent;
+        DROP INDEX IF EXISTS idx_plan_agent_step_bindings_plan_run;
+        ALTER TABLE plan_agent_step_bindings RENAME TO plan_agent_step_bindings_legacy_v34;
+        CREATE TABLE plan_agent_step_bindings (
+          id TEXT PRIMARY KEY,
+          plan_id TEXT NOT NULL,
+          plan_version INTEGER NOT NULL,
+          plan_run_id TEXT NOT NULL,
+          parent_run_id TEXT NOT NULL,
+          parent_task_id TEXT NOT NULL,
+          step_id TEXT NOT NULL,
+          step_row_id TEXT NOT NULL,
+          child_run_id TEXT NOT NULL UNIQUE,
+          status TEXT NOT NULL CHECK(status IN (
+            'waiting_child', 'continuing', 'completed', 'failed', 'cancelled'
+          )),
+          payload_json TEXT NOT NULL,
+          error TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          finished_at TEXT,
+          FOREIGN KEY(parent_run_id) REFERENCES run_aggregates(id) ON DELETE CASCADE,
+          FOREIGN KEY(child_run_id) REFERENCES run_aggregates(id) ON DELETE CASCADE
+        );
+        INSERT INTO plan_agent_step_bindings (
+          id, plan_id, plan_version, plan_run_id, parent_run_id, parent_task_id,
+          step_id, step_row_id, child_run_id, status, payload_json, error,
+          created_at, updated_at, finished_at
+        )
+        SELECT
+          binding.id, binding.plan_id, binding.plan_version, binding.plan_run_id,
+          binding.parent_run_id, binding.parent_task_id, binding.step_id,
+          binding.step_row_id, binding.child_run_id, binding.status,
+          binding.payload_json, binding.error, binding.created_at,
+          binding.updated_at, binding.finished_at
+        FROM plan_agent_step_bindings_legacy_v34 binding
+        INNER JOIN run_aggregates parent ON parent.id = binding.parent_run_id
+        INNER JOIN run_aggregates child ON child.id = binding.child_run_id;
+        DROP TABLE plan_agent_step_bindings_legacy_v34;
+        CREATE INDEX idx_plan_agent_step_bindings_parent
+          ON plan_agent_step_bindings(parent_run_id, status, updated_at);
+        CREATE INDEX idx_plan_agent_step_bindings_plan_run
+          ON plan_agent_step_bindings(plan_run_id, status, updated_at);
+      `);
+    },
+  },
+  {
+    version: 36,
+    name: "structured_content_envelopes",
+    up(db) {
+      addColumnIfMissing(
+        db,
+        "messages",
+        "content_envelope_json",
+        "content_envelope_json TEXT",
+      );
+      db.exec(`
+        UPDATE messages
+        SET content_envelope_json = json_object(
+          'origin', CASE
+            WHEN source IN ('user', 'model', 'guard', 'tool', 'workflow', 'system') THEN source
+            WHEN role = 'user' THEN 'user'
+            WHEN role = 'tool' THEN 'tool'
+            WHEN role = 'assistant' THEN 'model'
+            ELSE 'workflow'
+          END,
+          'provenance', json_object('runId', run_id),
+          'integrityEvidence', json_object(
+            'kind', COALESCE(trust_basis, 'unverified'),
+            'verified', CASE WHEN trusted = 1 THEN json('true') ELSE json('false') END
+          ),
+          'instructionAuthority', CASE
+            WHEN role = 'user' THEN 'user'
+            WHEN source IN ('guard', 'system') THEN 'system'
+            ELSE 'data'
+          END,
+          'dataSensitivity', 'workspace',
+          'externalContent', CASE
+            WHEN source IN ('model', 'tool') THEN json('true')
+            ELSE json('false')
+          END,
+          'egressAllowed', CASE
+            WHEN role = 'user' THEN json_array('model')
+            ELSE json_array()
+          END
+        )
+        WHERE content_envelope_json IS NULL;
+      `);
+    },
+  },
+  {
+    version: 37,
+    name: "versioned_summary_generation_evidence",
+    up(db) {
+      addColumnIfMissing(
+        db,
+        "conversation_summaries",
+        "schema_version",
+        "schema_version INTEGER NOT NULL DEFAULT 1",
+      );
+      addColumnIfMissing(
+        db,
+        "conversation_summaries",
+        "generation_state",
+        "generation_state TEXT NOT NULL DEFAULT 'degraded'",
+      );
+      addColumnIfMissing(
+        db,
+        "conversation_summaries",
+        "degraded_reason",
+        "degraded_reason TEXT",
+      );
+      db.exec(`
+        UPDATE conversation_summaries
+        SET schema_version=1,
+            generation_state='degraded',
+            degraded_reason=COALESCE(degraded_reason, 'historical_summary_provenance_unknown');
+      `);
+    },
+  },
+  {
+    version: 38,
+    name: "governed_memory_lifecycle",
+    up(db) {
+      addColumnIfMissing(
+        db,
+        "memories",
+        "lifecycle_state",
+        "lifecycle_state TEXT NOT NULL DEFAULT 'candidate'",
+      );
+      addColumnIfMissing(db, "memories", "provenance_json", "provenance_json TEXT");
+      addColumnIfMissing(
+        db,
+        "memories",
+        "sensitivity",
+        "sensitivity TEXT NOT NULL DEFAULT 'workspace'",
+      );
+      addColumnIfMissing(db, "memories", "retention_until", "retention_until TEXT");
+      db.exec(`
+        UPDATE memories
+        SET lifecycle_state=CASE WHEN is_active=1 THEN 'active' ELSE 'rejected' END,
+            provenance_json=json_object(
+              'origin', CASE
+                WHEN source='tool_ledger' THEN 'tool_ledger'
+                WHEN source IN ('summary', 'llm_extractor') THEN 'model_summary'
+                WHEN source='extractor' THEN 'user'
+                ELSE 'system'
+              END,
+              'sourceId', source_id,
+              'evidence', 'historical_migration'
+            ),
+            sensitivity='workspace',
+            retention_until=expires_at
+        WHERE provenance_json IS NULL;
+      `);
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_memories_lifecycle
+          ON memories(lifecycle_state, scope, scope_id, updated_at DESC);
+      `);
+    },
+  },
+  {
+    version: 39,
+    name: "persistent_repo_map_references_and_diagnostics",
+    up(db) {
+      db.exec(`
+        CREATE TABLE project_references (
+          project_id TEXT NOT NULL,
+          workspace_root TEXT NOT NULL,
+          file_path TEXT NOT NULL,
+          symbol TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          line INTEGER NOT NULL,
+          indexed_at TEXT NOT NULL,
+          PRIMARY KEY(project_id, workspace_root, file_path, symbol, kind, line)
+        );
+        CREATE INDEX idx_project_references_symbol
+          ON project_references(project_id, workspace_root, symbol);
+        CREATE INDEX idx_project_references_file
+          ON project_references(project_id, workspace_root, file_path);
+
+        CREATE TABLE project_diagnostics (
+          project_id TEXT NOT NULL,
+          workspace_root TEXT NOT NULL,
+          file_path TEXT NOT NULL,
+          message TEXT NOT NULL,
+          line INTEGER NOT NULL DEFAULT 0,
+          indexed_at TEXT NOT NULL,
+          PRIMARY KEY(project_id, workspace_root, file_path, message, line)
+        );
+        CREATE INDEX idx_project_diagnostics_file
+          ON project_diagnostics(project_id, workspace_root, file_path);
+      `);
+    },
+  },
+  {
+    version: 40,
+    name: "durable_hook_deliveries",
+    up(db) {
+      db.exec(`
+        CREATE TABLE hook_deliveries (
+          delivery_id TEXT PRIMARY KEY,
+          hook_id TEXT NOT NULL,
+          hook_version TEXT NOT NULL,
+          event TEXT NOT NULL,
+          event_id TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('delivering', 'delivered', 'failed')),
+          result_json TEXT,
+          error TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_hook_deliveries_event
+          ON hook_deliveries(event, event_id, updated_at);
+      `);
+    },
+  },
+  {
+    version: 41,
+    name: "content_addressed_resource_registry",
+    up(db) {
+      db.exec(`
+        CREATE TABLE resources (
+          id TEXT PRIMARY KEY,
+          sha256 TEXT NOT NULL,
+          name TEXT NOT NULL,
+          media_type TEXT NOT NULL,
+          size_bytes INTEGER NOT NULL,
+          owner_type TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          lifecycle TEXT NOT NULL,
+          sensitivity TEXT NOT NULL,
+          provenance_json TEXT NOT NULL,
+          relative_path TEXT NOT NULL,
+          expires_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_resources_owner
+          ON resources(owner_type, owner_id, created_at DESC);
+        CREATE INDEX idx_resources_hash
+          ON resources(sha256);
+        CREATE INDEX idx_resources_expiry
+          ON resources(expires_at);
       `);
     },
   },

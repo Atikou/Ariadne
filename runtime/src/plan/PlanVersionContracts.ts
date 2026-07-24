@@ -10,7 +10,7 @@ const positiveIntegerText = z
 
 export const PlanPreviewQuerySchema = z
   .object({
-    version: positiveIntegerText.default("1"),
+    version: positiveIntegerText.default(1),
     format: z.enum(["markdown", "json"]).default("markdown"),
   })
   .strict();

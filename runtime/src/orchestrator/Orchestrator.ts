@@ -39,7 +39,7 @@ import type { ToolRegistry } from "../tools/ToolRegistry.js";
 
 import type { TraceLogger } from "../trace/TraceLogger.js";
 
-import { RunStore } from "./RunStore.js";
+import type { RunAggregateRepository } from "../run/RunAggregateRepository.js";
 import { RunStateStore } from "./RunStateStore.js";
 import { AgentRunRegistry } from "./AgentRunRegistry.js";
 import { AgentRunLifecycle } from "./AgentRunLifecycle.js";
@@ -65,6 +65,7 @@ import { TaskService } from "./TaskService.js";
 import type { ProjectIndex } from "../context/ProjectIndex.js";
 import type { RunState } from "./runStateTypes.js";
 import { toPublicError } from "../util/publicError.js";
+import type { HookManager } from "../hooks/HookManager.js";
 
 
 
@@ -92,7 +93,7 @@ export interface OrchestratorDeps {
 
   tasks: TaskStore;
 
-  runs: RunStore;
+  runs: RunAggregateRepository;
 
   runStateStore: RunStateStore;
 
@@ -125,6 +126,8 @@ export interface OrchestratorDeps {
   pausedRunStore?: PausedRunStore;
   shellPolicy?: import("../policy/ShellPolicy.js").ShellPolicy;
   networkPolicy?: import("../policy/NetworkPolicy.js").NetworkPolicy;
+  resolveInstructions?: (workspaceRoot: string) => string;
+  hooks?: HookManager;
 }
 
 
@@ -183,6 +186,7 @@ export class Orchestrator {
       agentRuntime: this.agentRuntime,
       contextManager: deps.contextManager,
       runStateStore: deps.runStateStore,
+      runRepository: deps.runs,
       projectIndex: deps.projectIndex,
       notificationQueue: deps.notificationQueue,
       trace: deps.trace,
@@ -196,6 +200,7 @@ export class Orchestrator {
       pausedRunStore: deps.pausedRunStore,
       shellPolicy: deps.shellPolicy,
       networkPolicy: deps.networkPolicy,
+      resolveInstructions: deps.resolveInstructions,
     });
     this.taskService = new TaskService({
       sessionWorkspace: this.sessionWorkspace,
@@ -220,6 +225,7 @@ export class Orchestrator {
       planHandoffStore: deps.planHandoffStore,
       permissionRequestStore: deps.permissionRequestStore,
       pausedRunStore: deps.pausedRunStore,
+      hooks: deps.hooks,
     });
     this.runTerminalEvents = new RunTerminalEventBus();
     const planAgentStepBindings = new PlanAgentStepBindingStore(
@@ -486,16 +492,44 @@ export class Orchestrator {
     for (const event of activityBuffer) emit({ type: "activity_event", event });
     activityBuffer.length = 0;
 
+    let result: AgentRunResult;
     try {
       this.agentRunLifecycle.traceStart(ctx);
-      const result = await ctx.loop.run(ctx.message, ctx.system);
-      emit({ type: "done", ...this.agentRunLifecycle.finalizeSuccess(ctx, result) });
+      result = await ctx.loop.run(ctx.message, ctx.system);
     } catch (error) {
       const body = this.agentRunLifecycle.finalizeFailure(ctx, error);
+      try {
+        await this.agentRequestService.notifyPost(ctx.run.id);
+      } catch (hookError) {
+        emit({
+          type: "error",
+          error: String(hookError),
+          code: "HOOK_REJECTED",
+          runId: ctx.run.id,
+          taskId: ctx.task.id,
+        });
+        this.deps.agentRunRegistry.unregister(ctx.run.id);
+        return;
+      }
       emit({
         type: "error",
         error: String((body as { error?: string }).error),
         code: String((body as { code?: string }).code ?? "INTERNAL_ERROR"),
+        runId: ctx.run.id,
+        taskId: ctx.task.id,
+      });
+      this.deps.agentRunRegistry.unregister(ctx.run.id);
+      return;
+    }
+    const finalized = this.agentRunLifecycle.finalizeSuccess(ctx, result);
+    try {
+      await this.agentRequestService.notifyPost(ctx.run.id);
+      emit({ type: "done", ...finalized });
+    } catch (hookError) {
+      emit({
+        type: "error",
+        error: String(hookError),
+        code: "HOOK_REJECTED",
         runId: ctx.run.id,
         taskId: ctx.task.id,
       });
@@ -518,11 +552,11 @@ export class Orchestrator {
 
   }): Promise<{ runId: string }> {
 
-    const run = this.deps.runs.create({
+    const createdRun = this.deps.runs.execute({
+
+      type: "run.create",
 
       kind: "scheduled",
-
-      status: "running",
 
       goal: input.goal,
 
@@ -530,24 +564,47 @@ export class Orchestrator {
 
       sessionId: input.sessionId,
 
-      correlation: this.correlationFor("", { triggerId: input.triggerId, sessionId: input.sessionId }),
-
     });
+    const hook = await this.deps.hooks?.dispatch({
+      event: "run.pre",
+      eventId: createdRun.id,
+      payload: {
+        runId: createdRun.id,
+        kind: "scheduled",
+        sessionId: input.sessionId,
+        triggerId: input.triggerId,
+      },
+      authority: {
+        permissions: this.deps.projectAllowedPermissions,
+        timeoutMs: 30 * 60_000,
+      },
+    });
+    if (hook && !hook.allowed) {
+      this.deps.runs.execute({
+        type: "run.fail",
+        runId: createdRun.id,
+        expectedAggregateVersion: createdRun.aggregateVersion,
+        error: hook.reason ?? "run_hook_rejected",
+      });
+      await this.agentRequestService.notifyPost(createdRun.id);
+      return { runId: createdRun.id };
+    }
 
-    this.deps.runs.update(run.id, {
-
-      correlationJson: JSON.stringify(
-
-        this.correlationFor(run.id, { triggerId: input.triggerId, sessionId: input.sessionId }),
-
-      ),
-
+    const run = this.deps.runs.execute({
+      type: "run.start",
+      runId: createdRun.id,
+      expectedAggregateVersion: createdRun.aggregateVersion,
     });
 
 
 
     // 无人值守运行也登记为可取消，并把 signal 注入循环，使其可被显式取消/关闭。
     const abortController = this.deps.agentRunRegistry.register(run.id, "agent");
+    const hookTimeout = setTimeout(
+      () => abortController.abort(new Error("run_hook_timeout")),
+      hook?.authority.timeoutMs ?? 30 * 60_000,
+    );
+    hookTimeout.unref?.();
 
     const loop = this.agentLoopFactory.create({
       chat: this.deps.makeChatFn(),
@@ -557,6 +614,7 @@ export class Orchestrator {
       sessionId: input.sessionId,
       projectId: this.sessionWorkspace.projectIdForSession(input.sessionId),
       signal: abortController.signal,
+      allowedPermissions: hook?.authority.permissions ?? this.deps.projectAllowedPermissions,
     });
 
 
@@ -579,17 +637,78 @@ export class Orchestrator {
 
       const outcome = resolveAgentRunOutcome(result.executionMeta.stopReason);
 
-      this.deps.runs.update(run.id, {
-
-        status: outcome.runStatus,
-
-        resultJson: JSON.stringify({
+      const current = this.deps.runs.get(run.id);
+      if (!current) throw new Error(`Run ${run.id} does not exist.`);
+      const resultPayload = {
           answer: result.answer,
           iterations: result.iterations,
           executionMeta: result.executionMeta,
-        }),
-
-      });
+      };
+      if (outcome.runStatus === "completed") {
+        this.deps.runs.execute({
+          type: "run.complete",
+          runId: current.id,
+          expectedAggregateVersion: current.aggregateVersion,
+          result: resultPayload,
+        });
+      } else if (outcome.runStatus === "cancelled") {
+        this.deps.runs.execute({
+          type: "run.cancel",
+          runId: current.id,
+          expectedAggregateVersion: current.aggregateVersion,
+          reason: result.answer,
+        });
+      } else if (outcome.runStatus === "paused") {
+        this.deps.runs.execute({
+          type: "run.pause",
+          runId: current.id,
+          expectedAggregateVersion: current.aggregateVersion,
+          reason: {
+            code: result.executionMeta.stopReason,
+            message: "The scheduled run reached its execution budget.",
+            details: resultPayload,
+          },
+        });
+      } else if (outcome.runStatus === "waiting_confirmation") {
+        this.deps.runs.execute({
+          type: "run.request_confirmation",
+          runId: current.id,
+          expectedAggregateVersion: current.aggregateVersion,
+          reason: {
+            code: "permission_required",
+            message: "The scheduled run requires an explicit permission decision.",
+            details: resultPayload,
+          },
+        });
+      } else if (outcome.runStatus === "waiting_plan_handoff") {
+        this.deps.runs.execute({
+          type: "run.request_plan_handoff",
+          runId: current.id,
+          expectedAggregateVersion: current.aggregateVersion,
+          reason: {
+            code: "plan_handoff_required",
+            message: "The scheduled run requires an explicit plan handoff decision.",
+            details: resultPayload,
+          },
+        });
+      } else if (outcome.runStatus === "blocked") {
+        this.deps.runs.execute({
+          type: "run.block",
+          runId: current.id,
+          expectedAggregateVersion: current.aggregateVersion,
+          reason: {
+            code: result.executionMeta.stopReason,
+            message: result.answer || "The scheduled run was blocked.",
+          },
+        });
+      } else {
+        this.deps.runs.execute({
+          type: "run.fail",
+          runId: current.id,
+          expectedAggregateVersion: current.aggregateVersion,
+          error: result.answer || result.executionMeta.stopReason,
+        });
+      }
 
       this.deps.trace?.write({
 
@@ -606,12 +725,22 @@ export class Orchestrator {
     } catch (error) {
       const publicError = toPublicError(error, "调度任务执行失败");
 
-      this.deps.runs.update(run.id, { status: "failed", error: publicError.message });
+      const current = this.deps.runs.get(run.id);
+      if (current && current.status === "running") {
+        this.deps.runs.execute({
+          type: "run.fail",
+          runId: current.id,
+          expectedAggregateVersion: current.aggregateVersion,
+          error: publicError.message,
+        });
+      }
 
       this.deps.trace?.write({ type: "run_end", runId: run.id, kind: "scheduled", status: "failed" });
 
     } finally {
 
+      clearTimeout(hookTimeout);
+      await this.agentRequestService.notifyPost(run.id);
       this.deps.agentRunRegistry.unregister(run.id);
 
     }
@@ -632,35 +761,16 @@ export class Orchestrator {
 
   }): { runId: string } {
 
-    const run = this.deps.runs.create({
+    const run = this.deps.runs.execute({
 
+      type: "run.create",
       kind: "scheduled",
-
-      status: "pending",
 
       goal: input.goal,
 
       triggerId: input.triggerId,
 
       sessionId: input.sessionId,
-
-      correlation: this.correlationFor("", {
-
-        triggerId: input.triggerId,
-
-        sessionId: input.sessionId,
-
-      }),
-
-    });
-
-    this.deps.runs.update(run.id, {
-
-      correlationJson: JSON.stringify(
-
-        this.correlationFor(run.id, { triggerId: input.triggerId, sessionId: input.sessionId }),
-
-      ),
 
     });
 

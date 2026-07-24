@@ -19,6 +19,7 @@ export type ToolObservationFailureKind =
 
 export type ToolExecutionErrorKind =
   | "invalid_input"
+  | "invalid_output"
   | "unknown_tool"
   | "permission_denied"
   | "timeout"

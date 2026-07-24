@@ -13,6 +13,35 @@ const originalRequest = z.string().min(1).max(32_000).refine(
   { message: "originalRequest 不能为空白" },
 );
 
+export const CompanionAgentProposalSourceSchema = z.object({
+  protocolVersion: z.string().trim().min(1).max(32),
+  transport: z.enum(["tool_call", "text_envelope"]),
+  selectionMode: z.enum(["automatic", "manual"]).optional(),
+  requestedClientName: identifier.optional(),
+  clientName: identifier,
+  modelName: identifier,
+  responseHash: z.string().regex(/^[a-f0-9]{64}$/u),
+}).strict().superRefine((source, ctx) => {
+  if (source.selectionMode === "manual" && !source.requestedClientName) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "手动模型选择必须记录 requestedClientName",
+      path: ["requestedClientName"],
+    });
+  }
+  if (
+    source.selectionMode === "manual"
+    && source.requestedClientName
+    && source.requestedClientName !== source.clientName
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "手动选择的模型客户端与实际响应客户端不一致",
+      path: ["clientName"],
+    });
+  }
+});
+
 /** Durable data needed to recreate the exact Companion-to-Agent proposal submission. */
 export const CompanionAgentProposalOutboxPayloadSchema = z.object({
   sourceTurnId: identifier,
@@ -20,6 +49,7 @@ export const CompanionAgentProposalOutboxPayloadSchema = z.object({
   originalRequest,
   workspaceKey: identifier.optional(),
   draft: AgentProposalDraftSchema,
+  source: CompanionAgentProposalSourceSchema.optional(),
 }).strict();
 export type CompanionAgentProposalOutboxPayload = z.infer<
   typeof CompanionAgentProposalOutboxPayloadSchema

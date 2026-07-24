@@ -4,7 +4,7 @@ import {
   MODE_PERMISSIONS,
   type ToolPermission,
 } from "../core/permissions.js";
-import type { Tool } from "../tools/types.js";
+import type { ToolContract } from "../tools/types.js";
 
 export {
   ALL_PERMISSIONS,
@@ -59,8 +59,8 @@ export interface EffectivePermissions {
 }
 
 /** 工具是否需用户确认。 */
-export function toolNeedsConfirmation(tool: Tool): boolean {
-  return CONFIRMATION_REQUIRED.includes(tool.permission);
+export function toolNeedsConfirmation(tool: ToolContract): boolean {
+  return tool.permissions.some((permission) => CONFIRMATION_REQUIRED.includes(permission));
 }
 
 /** 权限是否在允许集内。 */

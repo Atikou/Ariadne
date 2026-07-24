@@ -13,6 +13,11 @@ import {
 } from "../config/workspaceCatalog.js";
 import type { AppConfig, ModelClientConfig } from "../config/types.js";
 import { ContextManager } from "../context/index.js";
+import {
+  EmbeddingService,
+  LocalGgufEmbeddingProvider,
+  LocalLexicalEmbeddingProvider,
+} from "../context/EmbeddingService.js";
 import { CompanionService } from "../companion/CompanionService.js";
 import type { AgentHandoffCoordinator } from "../assistant/AgentHandoffCoordinator.js";
 import { createModelClient } from "../model/ModelFactory.js";
@@ -24,9 +29,15 @@ import type { ProcessSandbox } from "../sandbox/ProcessSandbox.js";
 import { LocalModelService } from "../model/local/LocalModelService.js";
 import { PlanApprovalManager, PlanDraftApiService, PlanService, PlanStore, PlanValidator } from "../plan/index.js";
 import { Orchestrator } from "../orchestrator/Orchestrator.js";
-import { RunStore } from "../orchestrator/RunStore.js";
+import { RunAggregateRepository } from "../run/RunAggregateRepository.js";
 import { RunStateStore } from "../orchestrator/RunStateStore.js";
 import { ProjectIndex } from "../context/ProjectIndex.js";
+import {
+  CodeIntelligenceService,
+  TextFallbackIntelligenceProvider,
+} from "../context/CodeIntelligenceService.js";
+import { LspCodeIntelligenceProvider } from "../context/LspCodeIntelligenceProvider.js";
+import { TreeSitterWasmIntelligenceProvider } from "../context/TreeSitterWasmIntelligenceProvider.js";
 import { ProjectSemanticIndexer } from "../context/ProjectSemanticIndexer.js";
 import { HistoryFileRecaller } from "../context/HistoryFileRecaller.js";
 import { Scheduler } from "../scheduler/index.js";
@@ -78,6 +89,19 @@ import { AppShutdownCoordinator } from "./AppShutdownCoordinator.js";
 import { resolveLocalModelPathLayout } from "./localModelPathLayout.js";
 import { createUnifiedAssistantRuntime } from "./createUnifiedAssistantRuntime.js";
 import type { UnifiedAssistantHandoffService } from "./UnifiedAssistantHandoffService.js";
+import { McpClientManager } from "../mcp/McpClientManager.js";
+import {
+  AgentInstructionResolver,
+  SkillRegistry,
+  WorkspaceInstructionLoader,
+  renderInstructionBlocks,
+} from "../skills/SkillRegistry.js";
+import { HookManager } from "../hooks/HookManager.js";
+import { ResourceRegistry } from "../resources/ResourceRegistry.js";
+import type { HostCapabilityBroker } from "../host/HostCapabilityBroker.js";
+import { createBrowserToolProvider } from "../tools/browserTools.js";
+import { TelemetryService } from "../telemetry/TelemetryService.js";
+import { HookedModelClient } from "../model/HookedModelClient.js";
 
 export type { AppPaths } from "./appPaths.js";
 /** 应用级依赖容器：server / CLI / 测试共用。 */
@@ -105,7 +129,7 @@ export class AppContext {
   readonly companionService: CompanionService;
   readonly agentHandoffCoordinator: AgentHandoffCoordinator;
   readonly unifiedAssistantHandoffService: UnifiedAssistantHandoffService;
-  readonly runs: RunStore;
+  readonly runs: RunAggregateRepository;
   readonly runStateStore: RunStateStore;
   readonly projectIndex: ProjectIndex;
   readonly projectSemanticIndexer: ProjectSemanticIndexer;
@@ -138,6 +162,11 @@ export class AppContext {
   readonly sessionPermissionGrants: SessionPermissionGrants;
   readonly workspaceGrantStore: WorkspaceGrantStore;
   readonly pausedRunStore: PausedRunStore;
+  readonly mcp: McpClientManager;
+  readonly resources: ResourceRegistry;
+  readonly hooks: HookManager;
+  readonly hostCapabilities?: HostCapabilityBroker;
+  readonly telemetry: TelemetryService;
   readonly runtime: AppRuntimeController;
   private readonly makeAgentChat: AppModelRoutingRuntime["makeAgentChatFn"];
   private readonly shutdownCoordinator: AppShutdownCoordinator;
@@ -166,7 +195,7 @@ export class AppContext {
     companionService: CompanionService;
     agentHandoffCoordinator: AgentHandoffCoordinator;
     unifiedAssistantHandoffService: UnifiedAssistantHandoffService;
-    runs: RunStore;
+    runs: RunAggregateRepository;
     runStateStore: RunStateStore;
     projectIndex: ProjectIndex;
     projectSemanticIndexer: ProjectSemanticIndexer;
@@ -200,6 +229,11 @@ export class AppContext {
     sessionPermissionGrants?: SessionPermissionGrants;
     workspaceGrantStore?: WorkspaceGrantStore;
     pausedRunStore?: PausedRunStore;
+    mcp: McpClientManager;
+    resources: ResourceRegistry;
+    hooks: HookManager;
+    hostCapabilities?: HostCapabilityBroker;
+    telemetry: TelemetryService;
     startupRecovery?: StartupRecoverySummary;
     runtime: AppRuntimeController;
   }) {
@@ -260,6 +294,11 @@ export class AppContext {
     this.sessionPermissionGrants = opts.sessionPermissionGrants ?? defaultSessionPermissionGrants;
     this.workspaceGrantStore = opts.workspaceGrantStore ?? new WorkspaceGrantStore();
     this.pausedRunStore = opts.pausedRunStore ?? defaultPausedRunStore;
+    this.mcp = opts.mcp;
+    this.resources = opts.resources;
+    this.hooks = opts.hooks;
+    this.hostCapabilities = opts.hostCapabilities;
+    this.telemetry = opts.telemetry;
     this.startupRecovery = opts.startupRecovery;
     this.runtime = opts.runtime;
     this.shutdownCoordinator = new AppShutdownCoordinator({
@@ -269,13 +308,34 @@ export class AppContext {
       trace: opts.trace,
       registry: opts.registry,
       companionService: opts.companionService,
+      mcp: opts.mcp,
+      projectIndex: opts.projectIndex,
       contextDb: opts.contextManager.db,
+      telemetry: opts.telemetry,
+      hooks: opts.hooks,
     });
   }
 
   /** Start process-level schedulers only when the application is actually served. */
-  start(): void {
+  async start(): Promise<void> {
     this.runtime.start();
+    await this.initializeHostCapabilities();
+    void this.mcp.start().catch((error) => {
+      this.trace.write({ type: "mcp_start_error", error: String(error) });
+    });
+  }
+
+  private async initializeHostCapabilities(): Promise<void> {
+    if (!this.hostCapabilities) return;
+    try {
+      const health = await this.hostCapabilities.request({ kind: "browser.health" }, 10_000);
+      if (health.available !== true) throw new Error("browser_health_unavailable");
+      this.registry.replaceProvider(createBrowserToolProvider());
+      this.trace.write({ type: "browser_capability_registered" });
+    } catch (error) {
+      this.registry.unregisterProvider("browser-main");
+      this.trace.write({ type: "browser_capability_unavailable", error: String(error) });
+    }
   }
 
   makeChatFn(forceClient?: string): LoopChatFn {
@@ -366,6 +426,7 @@ export interface CreateAppContextOptions {
   config?: AppConfig;
   modelDirectories?: readonly string[];
   agentHandoffPermissionPolicy?: UserPermissionPolicy;
+  hostCapabilities?: HostCapabilityBroker;
 }
 
 export function createAppContext(opts: CreateAppContextOptions = {}): AppContext {
@@ -393,6 +454,7 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     projectRoot,
     ...(opts.config ? { config: opts.config } : {}),
   });
+  const telemetry = new TelemetryService(config.telemetry, "0.1.0");
   const localModelPaths = resolveLocalModelPathLayout(
     paths,
     modelsDirectory,
@@ -419,6 +481,7 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
   const metrics = new MetricsRegistry();
   const modelAvailability = new ModelAvailabilityRegistry();
   const dynamicClientNames = new Set<string>();
+  let applyModelHooks = (client: ModelClient): ModelClient => client;
   let modelProfileStoreForRefresh: AppModelRoutingRuntime["modelProfileStore"] | undefined;
   const localModelService = new LocalModelService({
     directory: localModelPaths.primaryModelsDirectory,
@@ -435,7 +498,7 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
       for (const name of dynamicClientNames) clientMap.delete(name);
       dynamicClientNames.clear();
       for (const client of clients) {
-        clientMap.set(client.name, client);
+        clientMap.set(client.name, applyModelHooks(client));
         dynamicClientNames.add(client.name);
       }
       const validation = modelProfileStoreForRefresh?.reloadFromClients([
@@ -453,7 +516,11 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     },
   });
   for (const c of config.models.clients) {
-    clientMap.set(c.name, createModelClient(c, { localRuntimes: localModelService.runtimes }));
+    clientMap.set(c.name, createModelClient(c, {
+      localRuntimes: localModelService.runtimes,
+      resilience: config.providerResilience,
+      telemetry,
+    }));
     if (c.pricePer1kInputUsd !== undefined || c.pricePer1kOutputUsd !== undefined) {
       pricing.set(c.name, { inputPer1k: c.pricePer1kInputUsd, outputPer1k: c.pricePer1kOutputUsd });
     }
@@ -484,7 +551,7 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
   );
 
   const orchestratorHolder: { current?: Orchestrator } = {};
-  const backgroundRunStoreHolder: { current?: RunStore } = {};
+  const backgroundRunStoreHolder: { current?: RunAggregateRepository } = {};
 
   const backgroundTasks = new BackgroundTaskManager(
     workspaceRoot,
@@ -497,21 +564,32 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
       if (!runs || !record.runId) return;
       const existing = runs.get(record.runId);
       let prior: Record<string, unknown> = {};
-      try {
-        prior = existing?.resultJson ? (JSON.parse(existing.resultJson) as Record<string, unknown>) : {};
-      } catch {
-        prior = {};
+      if (!existing) return;
+      if (existing.result && typeof existing.result === "object" && !Array.isArray(existing.result)) {
+        prior = existing.result as Record<string, unknown>;
       }
-      runs.update(record.runId, {
-        status:
-          record.status === "completed"
-            ? "completed"
-            : record.status === "cancelled"
-              ? "cancelled"
-              : "failed",
-        error: record.status === "completed" ? undefined : record.error ?? `后台任务${record.status}`,
-        resultJson: JSON.stringify({ ...prior, backgroundTask: record }),
-      });
+      if (record.status === "completed") {
+        runs.execute({
+          type: "run.complete",
+          runId: existing.id,
+          expectedAggregateVersion: existing.aggregateVersion,
+          result: { ...prior, backgroundTask: record },
+        });
+      } else if (record.status === "cancelled") {
+        runs.execute({
+          type: "run.cancel",
+          runId: existing.id,
+          expectedAggregateVersion: existing.aggregateVersion,
+          reason: record.error,
+        });
+      } else {
+        runs.execute({
+          type: "run.fail",
+          runId: existing.id,
+          expectedAggregateVersion: existing.aggregateVersion,
+          error: record.error ?? `Background task ${record.status}`,
+        });
+      }
     },
     (input) => {
       const orch = orchestratorHolder.current;
@@ -544,9 +622,23 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
   });
 
   const registry = createDefaultRegistry({ trace, dataDir, shellPolicy, networkPolicy, processSandbox });
+  if (opts.hostCapabilities) registry.setDefaultContext({ hostCapabilities: opts.hostCapabilities });
   registry.register(backgroundTasks.startTool);
-  const contextManager = new ContextManager({ dataDir, useLanceDb: true });
-  const runs = new RunStore(contextManager.db);
+  const contextManager = new ContextManager({
+    dataDir,
+    useLanceDb: true,
+    embeddingService: createEmbeddingService(config, modelsDirectory),
+  });
+  const hooks = new HookManager(contextManager.db.connection);
+  hooks.registerConfigured(config.hooks);
+  applyModelHooks = (client) => new HookedModelClient(client, hooks);
+  for (const [name, client] of clientMap) {
+    clientMap.set(name, applyModelHooks(client));
+  }
+  registry.setHookManager(hooks);
+  const resources = new ResourceRegistry(contextManager.db.connection, dataDir);
+  registry.setDefaultContext({ resources });
+  const runs = new RunAggregateRepository(contextManager.db);
   backgroundRunStoreHolder.current = runs;
   const runStateStore = new RunStateStore(contextManager.db);
   const permissionRequestStore = new PermissionRequestStore(contextManager.db.connection);
@@ -554,7 +646,13 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
   const sessionPermissionGrants = new SessionPermissionGrants(contextManager.db.connection);
   const workspaceGrantStore = new WorkspaceGrantStore(contextManager.db.connection);
   const pausedRunStore = new PausedRunStore(contextManager.db.connection);
-  const projectIndex = new ProjectIndex(contextManager.db);
+  const codeIntelligence = new CodeIntelligenceService([
+    ...config.codeIntelligence.lspServers.map((server) =>
+      new LspCodeIntelligenceProvider(server)),
+    new TreeSitterWasmIntelligenceProvider(),
+    new TextFallbackIntelligenceProvider(),
+  ]);
+  const projectIndex = new ProjectIndex(contextManager.db, codeIntelligence);
   const projectSemanticIndexer = new ProjectSemanticIndexer(
     contextManager.embeddings,
     contextManager.vectors,
@@ -565,6 +663,14 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     contextManager.retriever,
   );
   registry.setDefaultContext({ projectIndex, projectSemanticIndexer, historyFileRecaller });
+  const mcp = new McpClientManager(
+    registry,
+    config.mcp.servers,
+    workspaceRoot,
+    undefined,
+    processSandbox,
+    opts.hostCapabilities,
+  );
 
   const modelRuntime = createAppModelRoutingRuntime({
     allModelConfigs,
@@ -611,6 +717,7 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     maxBatchConcurrency: maxSubAgentBatchConcurrency,
     defaultTimeoutMs: subagentDefaultTimeoutMs,
     workspaceManager: subAgentWorkspaceManager,
+    hooks,
   });
   const subAgentWorkflowStateCenter = new SubAgentWorkflowStateCenter();
   const subAgentWorkflow = new SubAgentWorkflow(subAgentCoordinator, {
@@ -648,6 +755,21 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     runs,
     trace,
   });
+  const userSkillsDirectory = config.skills.userDirectory
+    ? path.resolve(projectRoot, config.skills.userDirectory)
+    : path.join(dataDir, "skills");
+  const resolveInstructions = (activeWorkspaceRoot: string): string => {
+    const resolver = new AgentInstructionResolver(
+      new SkillRegistry({
+        builtIn: path.join(projectRoot, "skills"),
+        user: userSkillsDirectory,
+        workspace: activeWorkspaceRoot,
+      }),
+      new WorkspaceInstructionLoader(),
+      config.skills.enabled,
+    );
+    return renderInstructionBlocks(resolver.resolve(activeWorkspaceRoot));
+  };
 
   const orchestrator = new Orchestrator({
     workspaceRoot,
@@ -700,11 +822,15 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     pausedRunStore,
     shellPolicy,
     networkPolicy,
+    resolveInstructions,
+    hooks,
   });
   orchestratorHolder.current = orchestrator;
   const unifiedAssistantRuntime = createUnifiedAssistantRuntime({
     projectRoot, companionDataDir: paths.companionDataDir, directChat, contextManager,
-    workspaceCatalog, orchestrator, trace,
+    workspaceCatalog, orchestrator, trace, makeChatFn: makeAgentChatFn,
+    browserAvailable: () =>
+      registry.listProviders().some((provider) => provider.id === "browser-main"),
     ...(opts.agentHandoffPermissionPolicy
       ? { permissionPolicy: opts.agentHandoffPermissionPolicy }
       : {}),
@@ -825,6 +951,11 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     sessionPermissionGrants,
     workspaceGrantStore,
     pausedRunStore,
+    mcp,
+    resources,
+    hooks,
+    hostCapabilities: opts.hostCapabilities,
+    telemetry,
     startupRecovery,
     runtime,
   });
@@ -854,4 +985,18 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
   }
 
   return app;
+}
+
+function createEmbeddingService(config: AppConfig, modelsDirectory: string): EmbeddingService {
+  const embedding = config.models.embedding;
+  if (!embedding || embedding.provider === "lexical") {
+    return new EmbeddingService(new LocalLexicalEmbeddingProvider());
+  }
+  return new EmbeddingService(new LocalGgufEmbeddingProvider({
+    modelId: embedding.modelId!,
+    modelPath: path.resolve(modelsDirectory, embedding.modelPath!),
+    sha256: embedding.sha256!,
+    dimension: embedding.dimension!,
+    gpuLayers: embedding.gpuLayers,
+  }));
 }

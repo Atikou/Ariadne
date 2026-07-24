@@ -12,7 +12,8 @@ internal static class RestrictedCommandRunner
     internal static async Task<NativeExecutionResult> ExecuteAsync(
         ExecutionRequest request,
         RunnerIdentity expectedIdentity,
-        INativeExecutionEventSink sink)
+        INativeExecutionEventSink sink,
+        TextReader? interactiveInput = null)
     {
         using var identity = VerifyIdentity(request, expectedIdentity);
         var isolation = BuildIsolation(request);
@@ -30,7 +31,8 @@ internal static class RestrictedCommandRunner
             expectedIdentity,
             filesystemCapabilitySid,
             isolation,
-            sink);
+            sink,
+            interactiveInput);
         sink.Result(request.ExecutionId, result);
         return result;
     }
@@ -40,7 +42,8 @@ internal static class RestrictedCommandRunner
         RunnerIdentity expectedIdentity,
         SecurityIdentifier filesystemCapabilitySid,
         NativeIsolation isolation,
-        INativeExecutionEventSink sink)
+        INativeExecutionEventSink sink,
+        TextReader? interactiveInput)
     {
         using var appContainer = WindowsAppContainerProfile.CreateEphemeral(
             request.ExecutionId,
@@ -104,7 +107,16 @@ internal static class RestrictedCommandRunner
             var output = new BoundedOutput(request.MaxOutputBytes, request.ExecutionId, sink);
             var stdoutTask = output.DrainAsync(outputStream, isError: false);
             var stderrTask = output.DrainAsync(errorStream, isError: true);
-            var stdinTask = WriteInputAsync(inputStream, stdin);
+            using var stdinCancellation = new CancellationTokenSource();
+            var stdinTask = request.Interactive
+                ? RelayInteractiveInputAsync(
+                    interactiveInput ?? throw new NativeExecutionException(
+                        "protocol_failure",
+                        "interactive execution input is unavailable"),
+                    inputStream,
+                    request.ExecutionId,
+                    stdinCancellation.Token)
+                : WriteInputAsync(inputStream, stdin);
 
             var completed = await Task.Run(() => process.Wait(request.TimeoutMs));
             var timedOut = !completed;
@@ -120,7 +132,9 @@ internal static class RestrictedCommandRunner
             }
             var exitCode = process.ExitCode();
             job.Terminate(ResidualProcessExitCode);
-            await Task.WhenAll(stdoutTask, stderrTask, stdinTask);
+            stdinCancellation.Cancel();
+            await Task.WhenAll(stdoutTask, stderrTask);
+            await IgnoreInputTerminationAsync(stdinTask);
 
             return new NativeExecutionResult
             {
@@ -219,6 +233,58 @@ internal static class RestrictedCommandRunner
         catch (ObjectDisposedException)
         {
             // The command may close stdin before the asynchronous write runs.
+        }
+        finally
+        {
+            stream.Dispose();
+        }
+    }
+
+    private static async Task RelayInteractiveInputAsync(
+        TextReader reader,
+        Stream stream,
+        string executionId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (true)
+            {
+                var line = await Program.ReadBoundedLineAsync(
+                    reader,
+                    96 * 1024,
+                    cancellationToken);
+                var frame = Program.Deserialize<InteractiveInputFrame>(line);
+                if (ExecutionValidator.IsInteractiveEnd(frame, executionId))
+                {
+                    stream.Dispose();
+                    return;
+                }
+                var chunk = ExecutionValidator.DecodeInteractiveInput(frame, executionId);
+                await stream.WriteAsync(chunk, cancellationToken);
+                await stream.FlushAsync(cancellationToken);
+            }
+        }
+        catch (Exception error) when (error is IOException or ObjectDisposedException)
+        {
+            // A child process may close stdin before its process handle signals exit.
+        }
+    }
+
+    private static async Task IgnoreInputTerminationAsync(Task task)
+    {
+        try
+        {
+            await task;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (IOException)
+        {
         }
     }
 

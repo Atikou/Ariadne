@@ -4,7 +4,8 @@ import { DEFAULT_GIT_DIFF_MAX_BYTES } from "./constants.js";
 import { truncateDiff } from "./file/diff.js";
 import { resolveInsideWorkspace } from "./pathSafe.js";
 import { requireProcessSandbox } from "../sandbox/ProcessSandbox.js";
-import type { Tool } from "./types.js";
+import { GIT_READ_CONTRACT } from "./contractProfiles.js";
+import type { ToolContract } from "./types.js";
 
 function parseGitStatusShort(raw: string): Array<{ path: string; status: string }> {
   const lines = raw.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith("##"));
@@ -22,7 +23,7 @@ function parseGitBranch(raw: string): string | undefined {
 }
 
 /** git_status：查看仓库状态。 */
-export const gitStatusTool: Tool<
+export const gitStatusTool: ToolContract<
   z.ZodObject<{ cwd: z.ZodOptional<z.ZodString> }>,
   {
     branch?: string;
@@ -31,10 +32,9 @@ export const gitStatusTool: Tool<
     raw: string;
   }
 > = {
+  ...GIT_READ_CONTRACT,
   name: "git_status",
   description: "查看 git 仓库状态（git status --short --branch）。",
-  permission: "read",
-  hasSideEffect: false,
   inputSchema: z.object({ cwd: z.string().optional() }),
   async execute(input, ctx) {
     const cwd = input.cwd ? resolveInsideWorkspace(ctx.workspaceRoot, input.cwd) : ctx.workspaceRoot;
@@ -67,7 +67,7 @@ export const gitStatusTool: Tool<
 };
 
 /** git_diff：查看 git diff。 */
-export const gitDiffTool: Tool<
+export const gitDiffTool: ToolContract<
   z.ZodObject<{
     cwd: z.ZodOptional<z.ZodString>;
     path: z.ZodOptional<z.ZodString>;
@@ -76,10 +76,9 @@ export const gitDiffTool: Tool<
   }>,
   { diff: string; truncated: boolean }
 > = {
+  ...GIT_READ_CONTRACT,
   name: "git_diff",
   description: "查看 git diff；可按 path 过滤或仅看 staged。",
-  permission: "read",
-  hasSideEffect: false,
   inputSchema: z.object({
     cwd: z.string().optional(),
     path: z.string().optional(),

@@ -145,7 +145,7 @@ const LegacyPlanStepSchema = z
     expectedArtifacts: z.array(text),
     priority: z.number().int(),
     tool: text.optional(),
-    toolInput: z.record(JsonValueSchema).optional(),
+    toolInput: z.record(z.string(), JsonValueSchema).optional(),
     status: z.enum([
       "pending",
       "running",

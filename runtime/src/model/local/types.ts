@@ -4,6 +4,7 @@ import type {
   ModelRouterProfileConfig,
 } from "../../config/types.js";
 import type { ChatRequest, ModelResponse } from "../types.js";
+import type { TokenCount } from "../TokenCounter.js";
 
 export type LocalModelFormat = "gguf" | "safetensors";
 export type LocalModelCatalogStatus = "ready" | "unsupported" | "incomplete" | "invalid";
@@ -41,6 +42,7 @@ export interface LocalModelRuntime {
   readonly kind: EmbeddedModelRuntime;
   isAvailable(): Promise<boolean>;
   load(model: LocalModelDescriptor): Promise<void>;
+  countTokens(model: LocalModelDescriptor, request: Pick<ChatRequest, "messages" | "tools">): Promise<TokenCount>;
   generate(model: LocalModelDescriptor, request: ChatRequest): Promise<ModelResponse>;
   unload(modelId?: string): Promise<void>;
   dispose(): Promise<void>;

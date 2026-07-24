@@ -175,7 +175,7 @@ export const RoutingPipelineGraphSchema = z
             "fallback",
           ]),
           label: shortText,
-          meta: z.record(graphMetaValue).optional(),
+          meta: z.record(z.string(), graphMetaValue).optional(),
         })
         .strict(),
     ),
@@ -455,7 +455,7 @@ export const RoutingStatsSuggestionSchema = z
       "process_metrics",
     ]),
     message: publicText,
-    evidence: z.record(z.union([z.string(), z.number().finite(), z.boolean()])),
+    evidence: z.record(z.string(), z.union([z.string(), z.number().finite(), z.boolean()])),
   })
   .strict();
 

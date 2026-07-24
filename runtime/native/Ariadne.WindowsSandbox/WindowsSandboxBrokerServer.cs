@@ -122,7 +122,9 @@ internal sealed class WindowsSandboxBrokerServer
         using var stderr = stderrPipe.OpenParentStream(FileAccess.Read);
         var stdoutCopy = CopyRunnerOutputAsync(stdout, pipe, executionCancellation);
         var stderrDrain = DrainRunnerErrorAsync(stderr, executionCancellation.Token);
-        var disconnect = MonitorClientAsync(pipe, executionCancellation);
+        var disconnect = request.Interactive
+            ? Task.CompletedTask
+            : MonitorClientAsync(pipe, executionCancellation);
         try
         {
             await NativeExecutionSupervisor.RunBatchAsync(
@@ -130,7 +132,8 @@ internal sealed class WindowsSandboxBrokerServer
                 authorization,
                 stdoutPipe,
                 stderrPipe,
-                executionCancellation.Token);
+                executionCancellation.Token,
+                request.Interactive ? pipe : null);
             await stdoutCopy;
             await stderrDrain;
         }

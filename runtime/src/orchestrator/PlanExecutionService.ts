@@ -15,7 +15,10 @@ import type { TraceLogger } from "../trace/TraceLogger.js";
 import { toPublicError } from "../util/publicError.js";
 import type { PlanAgentTaskWorkflow } from "./PlanAgentTaskWorkflow.js";
 import type { PlanExecutionFinalizer } from "./PlanExecutionFinalizer.js";
-import type { RunStore } from "./RunStore.js";
+import type {
+  RunAggregate,
+  RunAggregateRepository,
+} from "../run/RunAggregateRepository.js";
 import type { SessionWorkspaceResolver } from "./SessionWorkspaceResolver.js";
 import type { TaskService } from "./TaskService.js";
 
@@ -42,7 +45,7 @@ export interface PlanExecutionServiceDeps {
   registry: ToolRegistry;
   projectAllowedPermissions: ToolPermission[];
   tasks: TaskStore;
-  runs: RunStore;
+  runs: RunAggregateRepository;
   trace?: TraceLogger;
 }
 
@@ -81,7 +84,7 @@ export class PlanExecutionService {
     let planRun: ReturnType<PlanService["createPlanRun"]> | undefined;
     let sessionId: string | undefined;
     let task: TaskRecord | undefined;
-    let run: ReturnType<RunStore["create"]> | undefined;
+    let run: RunAggregate | undefined;
 
     try {
       this.deps.planService.markRunning(planId, version);
@@ -92,16 +95,17 @@ export class PlanExecutionService {
       task = this.deps.taskService.resolveOrCreateTask(sessionId, planGoal);
       this.deps.taskService.persistPlan(task.id, plan);
 
-      run = this.deps.runs.create({
+      const createdRun = this.deps.runs.execute({
+        type: "run.create",
         kind: dryRun ? "task_dry_run" : "task",
-        status: "running",
         sessionId,
         taskId: task.id,
         goal: planGoal,
-        correlation: { runId: "", sessionId, taskId: task.id },
       });
-      this.deps.runs.update(run.id, {
-        correlationJson: JSON.stringify({ runId: run.id, sessionId, taskId: task.id }),
+      run = this.deps.runs.execute({
+        type: "run.start",
+        runId: createdRun.id,
+        expectedAggregateVersion: createdRun.aggregateVersion,
       });
       this.deps.trace?.write({
         type: "run_start",
@@ -231,10 +235,15 @@ export class PlanExecutionService {
       }
       if (task) this.deps.taskService.markFailed(task.id, sessionId, publicError.message);
       if (run) {
-        this.deps.runs.update(run.id, {
-          status: "failed",
-          error: publicError.message,
-        });
+        const current = this.deps.runs.get(run.id);
+        if (current && current.status === "running") {
+          this.deps.runs.execute({
+            type: "run.fail",
+            runId: current.id,
+            expectedAggregateVersion: current.aggregateVersion,
+            error: publicError.message,
+          });
+        }
         this.deps.trace?.write({ type: "run_end", runId: run.id, status: "failed" });
       }
       this.finishFailedPlan(planId, version, planRun, publicError.code);

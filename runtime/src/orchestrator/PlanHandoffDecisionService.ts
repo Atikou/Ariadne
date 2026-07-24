@@ -1,13 +1,12 @@
 import type { DatabaseSync } from "node:sqlite";
 
 import type { PausedRunStore } from "../agent/PausedRunStore.js";
-import type { RunStatus } from "../core/runTypes.js";
 import type { PlanHandoffStore } from "../policy/PlanHandoffStore.js";
 import type {
   PlanHandoffPayload,
   PlanHandoffRespondInput,
 } from "../policy/planHandoffTypes.js";
-import type { RunStore } from "./RunStore.js";
+import type { RunAggregateRepository } from "../run/RunAggregateRepository.js";
 
 export class PlanHandoffDecisionConsistencyError extends Error {
   readonly code = "PLAN_HANDOFF_STATE_INCONSISTENT";
@@ -22,7 +21,7 @@ export class PlanHandoffDecisionService {
   constructor(
     private readonly db: DatabaseSync,
     private readonly handoffs: PlanHandoffStore,
-    private readonly runs: Pick<RunStore, "get" | "update">,
+    private readonly runs: Pick<RunAggregateRepository, "get" | "execute">,
     private readonly pausedRuns: Pick<PausedRunStore, "delete">,
   ) {}
 
@@ -64,15 +63,13 @@ export class PlanHandoffDecisionService {
         );
       }
 
-      if (run) {
-        const status: RunStatus = input.decision === "reject"
-          ? "cancelled"
-          : "waiting_plan_handoff";
-        if (!this.runs.update(run.id, { status })) {
-          throw new PlanHandoffDecisionConsistencyError(
-            `计划交接 ${current.id} 无法更新关联 Run`,
-          );
-        }
+      if (run && input.decision === "reject") {
+        this.runs.execute({
+          type: "run.cancel",
+          runId: run.id,
+          expectedAggregateVersion: run.aggregateVersion,
+          reason: `Plan handoff ${current.id} was rejected.`,
+        });
       }
       if (input.decision === "reject") this.pausedRuns.delete(current.runId);
 

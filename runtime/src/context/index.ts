@@ -1,6 +1,17 @@
 export { ProjectIndex, projectFileToScanMeta, extractSymbolsFromContent } from "./ProjectIndex.js";
 export { ProjectSemanticIndexer } from "./ProjectSemanticIndexer.js";
 export { HistoryFileRecaller } from "./HistoryFileRecaller.js";
+export {
+  CodeIntelligenceService,
+  TypeScriptAstIntelligenceProvider,
+  TextFallbackIntelligenceProvider,
+} from "./CodeIntelligenceService.js";
+export {
+  LspCodeIntelligenceProvider,
+  type LspAnalysisTransport,
+  type LspServerConfiguration,
+} from "./LspCodeIntelligenceProvider.js";
+export { TreeSitterWasmIntelligenceProvider } from "./TreeSitterWasmIntelligenceProvider.js";
 export type { HistoryFileHit, HistoryFileSource } from "./HistoryFileRecaller.js";
 export { extractFilePathsFromText, isLikelyWorkspaceFile } from "./filePathExtract.js";
 export {
@@ -14,6 +25,7 @@ export { DatabaseManager, estimateTokens } from "./DatabaseManager.js";
 export {
   EmbeddingService,
   LocalLexicalEmbeddingProvider,
+  LocalGgufEmbeddingProvider,
   MockEmbeddingProvider,
   ApiEmbeddingProvider,
   EMBEDDING_DIMENSION,
@@ -23,7 +35,7 @@ export {
   buildContextCorrections,
   claimsCompletionInText,
   evaluateContextMessageTrust,
-  filterTrustedMemories,
+  filterVerifiedMemories,
   shouldIncludeInContext,
 } from "./contextTrust.js";
 export { RunFactsLookup, parseRunResultJson } from "./runFactsLookup.js";
@@ -31,7 +43,6 @@ export { backfillMessageEnvelopes } from "./messageEnvelopeBackfill.js";
 export { MemoryRetriever } from "./MemoryRetriever.js";
 export { MemoryManager } from "./MemoryManager.js";
 export {
-  MemoryExtractor,
   RuleMemoryExtractor,
   createLlmMemoryExtractor,
   type IMemoryExtractor,
@@ -40,14 +51,22 @@ export { SemanticRetriever } from "./SemanticRetriever.js";
 export { SystemSectionBuilder } from "./SystemSectionBuilder.js";
 export { PromptBuilder } from "./PromptBuilder.js";
 export {
+  createContentEnvelope,
   defaultUiVisible,
-  defaultTrusted,
   inferEnvelopeFromLegacy,
-  isContextTrustedMessage,
-  isUiChatBubble,
+  isContextVerifiedMessage,
+  isVerifiedContent,
+  isVerifiedUiChatBubble,
   resolveMessageEnvelope,
 } from "./messageEnvelope.js";
-export type { MessageEnvelope, MessageEnvelopeInput, MessageKind, MessageSource } from "./messageEnvelope.js";
+export type {
+  ContentEnvelope,
+  ContentOrigin,
+  InstructionAuthority,
+  MessageEnvelope,
+  MessageEnvelopeInput,
+  MessageKind,
+} from "./messageEnvelope.js";
 export { SummaryManager } from "./SummaryManager.js";
 export {
   SessionStore,

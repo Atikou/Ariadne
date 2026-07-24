@@ -103,6 +103,8 @@ const ModelClientConfigBaseSchema = z.object({
   name: z.string().min(1),
   model: z.string().min(1),
   timeoutMs: z.number().int().positive().optional(),
+  /** 输入上下文窗口；未声明时不伪造容量，Provider 资格矩阵应补齐。 */
+  contextSize: z.number().int().positive().optional(),
   /** 可选计价：每 1k 输入 token 的美元价格（用于成本统计）。 */
   pricePer1kInputUsd: z.number().nonnegative().optional(),
   /** 可选计价：每 1k 输出 token 的美元价格。 */
@@ -112,6 +114,29 @@ const ModelClientConfigBaseSchema = z.object({
   /** 模型级可调推理能力；Provider adapter 负责映射为实际请求参数。 */
   inference: ModelInferenceProfileSchema.optional(),
 });
+
+const UNKNOWN_PROVIDER_QUALIFICATION = {
+  nativeTools: "unknown",
+  textFallback: "unknown",
+  streaming: "unknown",
+  reasoning: "unknown",
+  cancellation: "unknown",
+  tokenizer: "unknown",
+  errorBehavior: "unknown",
+} as const;
+
+export const ProviderQualificationSchema = z.object({
+  nativeTools: z.enum(["supported", "unsupported", "unknown"]).default("unknown"),
+  textFallback: z.enum(["supported", "unsupported", "unknown"]).default("unknown"),
+  streaming: z.enum(["supported", "unsupported", "unknown"]).default("unknown"),
+  reasoning: z.enum(["supported", "unsupported", "unknown"]).default("unknown"),
+  cancellation: z.enum(["supported", "unsupported", "unknown"]).default("unknown"),
+  tokenizer: z.enum(["exact", "conservative", "unknown"]).default("unknown"),
+  errorBehavior: z.enum(["classified", "unknown"]).default("unknown"),
+  evidence: z.string().trim().min(1).max(512).optional(),
+  verifiedAt: z.string().datetime().optional(),
+}).default(UNKNOWN_PROVIDER_QUALIFICATION);
+export type ProviderQualification = z.infer<typeof ProviderQualificationSchema>;
 
 export const ApiModelClientConfigSchema = ModelClientConfigBaseSchema.extend({
   kind: z.literal("api"),
@@ -125,6 +150,7 @@ export const ApiModelClientConfigSchema = ModelClientConfigBaseSchema.extend({
   apiVersion: z.string().optional(),
   /** 仅 anthropic-messages：messages API 必填 max_tokens 的默认值。 */
   maxTokens: z.number().int().positive().optional(),
+  qualification: ProviderQualificationSchema,
 });
 
 export const EmbeddedModelClientConfigSchema = ModelClientConfigBaseSchema.extend({
@@ -133,7 +159,6 @@ export const EmbeddedModelClientConfigSchema = ModelClientConfigBaseSchema.exten
   location: z.literal("local"),
   /** GGUF 文件或 Transformers 模型目录的规范化绝对路径。 */
   modelPath: z.string().min(1),
-  contextSize: z.number().int().positive().optional(),
   gpuLayers: z.union([z.literal("auto"), z.number().int().nonnegative()]).optional(),
   device: z.enum(["auto", "cpu", "cuda", "vulkan"]).optional(),
   maxTokens: z.number().int().positive().optional(),
@@ -238,7 +263,7 @@ export const SecurityConfigSchema = z.object({
       /** 正则列表：配置后 shell_run / 后台命令必须命中任一条。 */
       allowCommands: z.array(z.string().min(1)).default([]),
     })
-    .default({}),
+    .default({ denyCommands: [], allowCommands: [] }),
   network: z
     .object({
       /** 正则列表：命中任一条时拒绝网络工具访问（对规范化 hostname 匹配）。 */
@@ -246,7 +271,7 @@ export const SecurityConfigSchema = z.object({
       /** 正则列表：配置后网络工具目标必须命中任一条；未配置则不启用 allowlist。 */
       allowDomains: z.array(z.string().min(1)).default([]),
     })
-    .default({}),
+    .default({ denyDomains: [], allowDomains: [] }),
   sandbox: SandboxConfigSchema,
   budget: z
     .object({
@@ -280,6 +305,216 @@ export const WorkspaceConfigSchema = z.object({
 });
 export type WorkspaceConfig = z.infer<typeof WorkspaceConfigSchema>;
 
+export const LspServerConfigSchema = z.object({
+  id: z.string().min(1),
+  command: z.string().min(1),
+  args: z.array(z.string()).max(64).default([]),
+  extensions: z.array(z.string().regex(/^\.[a-z0-9]+$/iu)).min(1).max(32),
+  languageIdByExtension: z.record(z.string(), z.string().min(1)),
+  environment: z.record(z.string(), z.string()).default({}),
+  timeoutMs: z.number().int().min(100).max(120_000).default(10_000),
+  initializationOptions: z.unknown().optional(),
+}).superRefine((server, context) => {
+  for (const extension of server.extensions) {
+    if (!server.languageIdByExtension[extension.toLowerCase()]) {
+      context.addIssue({
+        code: "custom",
+        path: ["languageIdByExtension", extension],
+        message: `language id is required for ${extension}`,
+      });
+    }
+  }
+});
+export type LspServerConfig = z.infer<typeof LspServerConfigSchema>;
+
+export const CodeIntelligenceConfigSchema = z.object({
+  lspServers: z.array(LspServerConfigSchema).max(16).default([]),
+}).superRefine((config, context) => {
+  const ids = new Set<string>();
+  for (const [index, server] of config.lspServers.entries()) {
+    if (ids.has(server.id)) {
+      context.addIssue({
+        code: "custom",
+        path: ["lspServers", index, "id"],
+        message: `duplicate LSP server id: ${server.id}`,
+      });
+    }
+    ids.add(server.id);
+  }
+}).default({ lspServers: [] });
+export type CodeIntelligenceConfig = z.infer<typeof CodeIntelligenceConfigSchema>;
+
+const McpServerBaseSchema = z.object({
+  id: z.string().regex(/^[a-z][a-z0-9_-]*$/u),
+  enabled: z.boolean().default(true),
+  trustAnnotations: z.boolean().default(false),
+});
+
+export const McpServerConfigSchema = z.discriminatedUnion("transport", [
+  McpServerBaseSchema.extend({
+    transport: z.literal("stdio"),
+    command: z.string().min(1),
+    args: z.array(z.string()).max(64).default([]),
+    environmentAllowlist: z.array(z.string().regex(/^[A-Z_][A-Z0-9_]*$/u)).max(64).default([]),
+    workspaceAccess: z.enum(["read", "write"]).default("read"),
+    networkAccess: z.enum(["offline", "online-approved"]).default("offline"),
+  }),
+  McpServerBaseSchema.extend({
+    transport: z.literal("streamable-http"),
+    endpoint: z.string().url().refine((value) => new URL(value).protocol === "https:", {
+      message: "remote MCP endpoint must use HTTPS",
+    }),
+    credentialRef: z.string().min(1).optional(),
+  }),
+]);
+export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
+
+export const McpConfigSchema = z.object({
+  servers: z.array(McpServerConfigSchema).max(32).default([]),
+  legacySseFallback: z.literal(false).default(false),
+}).superRefine((config, context) => {
+  const ids = new Set<string>();
+  for (const [index, server] of config.servers.entries()) {
+    if (ids.has(server.id)) {
+      context.addIssue({
+        code: "custom",
+        path: ["servers", index, "id"],
+        message: `duplicate MCP server id: ${server.id}`,
+      });
+    }
+    ids.add(server.id);
+  }
+}).default({ servers: [], legacySseFallback: false });
+export type McpConfig = z.infer<typeof McpConfigSchema>;
+
+export const SkillsConfigSchema = z.object({
+  enabled: z.array(z.string().regex(/^[a-z][a-z0-9_-]*$/u)).max(32).default([]),
+  userDirectory: z.string().min(1).optional(),
+}).default({ enabled: [] });
+export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
+
+const HookEventSchema = z.enum([
+  "session.pre",
+  "session.post",
+  "run.pre",
+  "run.post",
+  "model.pre",
+  "model.post",
+  "tool.pre",
+  "tool.post",
+  "subagent.pre",
+  "subagent.post",
+  "stop",
+]);
+
+export const HookConfigSchema = z.object({
+  definitions: z.array(z.object({
+    id: z.string().regex(/^[a-z][a-z0-9_-]*$/u),
+    version: z.string().trim().min(1).max(64),
+    events: z.array(HookEventSchema).min(1).max(11),
+    timeoutMs: z.number().int().min(1).max(60_000).default(5_000),
+    failurePolicy: z.enum(["fail-open", "fail-closed"]).default("fail-closed"),
+    decision: z.enum(["allow", "reject"]).default("allow"),
+    reason: z.string().trim().min(1).max(512).optional(),
+    constraints: z.object({
+      permissions: z.array(ToolPermissionSchema).max(5).optional(),
+      timeoutMs: z.number().int().positive().max(24 * 60 * 60_000).optional(),
+    }).optional(),
+  })).max(64).default([]),
+}).superRefine((config, context) => {
+  const ids = new Set<string>();
+  for (const [index, hook] of config.definitions.entries()) {
+    if (ids.has(hook.id)) {
+      context.addIssue({
+        code: "custom",
+        path: ["definitions", index, "id"],
+        message: `duplicate hook id: ${hook.id}`,
+      });
+    }
+    ids.add(hook.id);
+    if (new Set(hook.events).size !== hook.events.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["definitions", index, "events"],
+        message: `duplicate hook event: ${hook.id}`,
+      });
+    }
+    if (
+      hook.decision === "reject"
+      && hook.events.some((event) => !event.endsWith(".pre"))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["definitions", index, "decision"],
+        message: `reject decisions are only valid for pre hooks: ${hook.id}`,
+      });
+    }
+  }
+}).default({ definitions: [] });
+export type HookConfig = z.infer<typeof HookConfigSchema>;
+
+const DEFAULT_PROVIDER_RESILIENCE = {
+  maxAttempts: 3,
+  baseBackoffMs: 250,
+  maxBackoffMs: 8_000,
+  jitterRatio: 0.25,
+  maxConcurrency: 4,
+  requestsPerMinute: 60,
+  tokensPerMinute: 1_000_000,
+  circuitFailureThreshold: 3,
+  circuitOpenMs: 30_000,
+} as const;
+
+export const ProviderResilienceConfigSchema = z.object({
+  maxAttempts: z.number().int().min(1).max(5).default(3),
+  baseBackoffMs: z.number().int().min(10).max(60_000).default(250),
+  maxBackoffMs: z.number().int().min(10).max(120_000).default(8_000),
+  jitterRatio: z.number().min(0).max(1).default(0.25),
+  maxConcurrency: z.number().int().min(1).max(32).default(4),
+  requestsPerMinute: z.number().int().min(1).max(100_000).default(60),
+  tokensPerMinute: z.number().int().min(1).max(100_000_000).default(1_000_000),
+  circuitFailureThreshold: z.number().int().min(1).max(100).default(3),
+  circuitOpenMs: z.number().int().min(100).max(30 * 60_000).default(30_000),
+}).refine((policy) => policy.maxBackoffMs >= policy.baseBackoffMs, {
+  message: "maxBackoffMs must be greater than or equal to baseBackoffMs",
+}).default(DEFAULT_PROVIDER_RESILIENCE);
+export type ProviderResilienceConfig = z.infer<typeof ProviderResilienceConfigSchema>;
+
+const httpsEndpoint = z.string().url().refine(
+  (value) => new URL(value).protocol === "https:",
+  { message: "telemetry endpoint must use HTTPS" },
+);
+export const TelemetryConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  traceEndpoint: httpsEndpoint.optional(),
+  metricEndpoint: httpsEndpoint.optional(),
+  allowedEndpoints: z.array(httpsEndpoint).max(16).default([]),
+  sampleRatio: z.number().min(0).max(1).default(0.1),
+  exportIntervalMs: z.number().int().min(1_000).max(10 * 60_000).default(60_000),
+}).superRefine((config, context) => {
+  if (!config.enabled) return;
+  for (const field of ["traceEndpoint", "metricEndpoint"] as const) {
+    const endpoint = config[field];
+    if (!endpoint) {
+      context.addIssue({ code: "custom", path: [field], message: `${field} is required` });
+      continue;
+    }
+    if (!config.allowedEndpoints.includes(endpoint)) {
+      context.addIssue({
+        code: "custom",
+        path: [field],
+        message: `${field} must exactly match allowedEndpoints`,
+      });
+    }
+  }
+}).default({
+  enabled: false,
+  allowedEndpoints: [],
+  sampleRatio: 0.1,
+  exportIntervalMs: 60_000,
+});
+export type TelemetryConfig = z.infer<typeof TelemetryConfigSchema>;
+
 export const AppConfigSchema = z.object({
   workspaceRoot: z.string().min(1),
   /** 可选多工作区；省略时仅使用 workspaceRoot 作为唯一「default」工作区。 */
@@ -293,12 +528,33 @@ export const AppConfigSchema = z.object({
     loadPolicy: z.literal("lazy").default("lazy"),
     maxLoadedModels: z.number().int().min(1).max(4).default(1),
     idleUnloadMs: z.number().int().min(10_000).default(10 * 60_000),
+    embedding: z.object({
+      provider: z.enum(["lexical", "local-gguf"]).default("lexical"),
+      modelId: z.string().min(1).optional(),
+      modelPath: z.string().min(1).optional(),
+      sha256: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+      dimension: z.number().int().positive().optional(),
+      gpuLayers: z.union([z.literal("auto"), z.number().int().nonnegative()]).optional(),
+    }).superRefine((embedding, context) => {
+      if (embedding.provider !== "local-gguf") return;
+      for (const field of ["modelId", "modelPath", "sha256", "dimension"] as const) {
+        if (embedding[field] === undefined) {
+          context.addIssue({ code: "custom", path: [field], message: `${field} is required` });
+        }
+      }
+    }).optional(),
     clients: z.array(ModelClientConfigSchema).default([]),
   }),
   routing: z.object({
     strategy: RoutingStrategySchema,
     fallback: z.boolean(),
   }),
+  codeIntelligence: CodeIntelligenceConfigSchema,
+  mcp: McpConfigSchema,
+  skills: SkillsConfigSchema,
+  hooks: HookConfigSchema,
+  providerResilience: ProviderResilienceConfigSchema,
+  telemetry: TelemetryConfigSchema,
   scheduler: SchedulerConfigSchema.optional(),
   security: SecurityConfigSchema.optional(),
 });

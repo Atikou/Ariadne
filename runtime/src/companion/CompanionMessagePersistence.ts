@@ -1,4 +1,6 @@
 import { CompanionMessageSchema } from "./CompanionSessionContracts.js";
+import { createContentEnvelope } from "../context/messageEnvelope.js";
+import type { ContentEnvelope } from "../core/ContentEnvelope.js";
 import type {
   CompanionMessage,
   CompanionMessageRole,
@@ -11,7 +13,7 @@ export interface CompanionMessageRow {
   role: CompanionMessageRole;
   content: string;
   status: CompanionMessageStatus;
-  trusted: number;
+  content_envelope_json: string;
   memory_eligible: number;
   model_name: string | null;
   client_name: string | null;
@@ -28,7 +30,7 @@ export function mapCompanionMessageRow(row: CompanionMessageRow): CompanionMessa
     role: row.role,
     content: row.content,
     status: row.status,
-    trusted: row.trusted === 1,
+    contentEnvelope: parseContentEnvelope(row.content_envelope_json),
     memoryEligible: row.memory_eligible === 1,
     modelName: row.model_name ?? undefined,
     clientName: row.client_name ?? undefined,
@@ -37,6 +39,46 @@ export function mapCompanionMessageRow(row: CompanionMessageRow): CompanionMessa
     updatedAt: row.updated_at,
     metadata: parseJsonObject(row.metadata_json),
   });
+}
+
+export function createCompanionMessageEnvelope(
+  role: CompanionMessageRole,
+  status: CompanionMessageStatus,
+  sourceId: string,
+): ContentEnvelope {
+  if (role === "user") {
+    return createContentEnvelope({
+      origin: "user",
+      evidence: "user_authored",
+      verified: true,
+      instructionAuthority: "user",
+      externalContent: false,
+      egressAllowed: ["model"],
+      provenance: { sourceId },
+    });
+  }
+  const completedAssistant = role === "assistant" && status === "completed";
+  return createContentEnvelope({
+    origin: role === "assistant" ? "model" : "workflow",
+    evidence: completedAssistant ? "conversational_reply" : "unverified",
+    verified: completedAssistant,
+    instructionAuthority: "data",
+    externalContent: true,
+    egressAllowed: ["model"],
+    provenance: { sourceId },
+  });
+}
+
+export function serializeCompanionMessageEnvelope(
+  role: CompanionMessageRole,
+  status: CompanionMessageStatus,
+  sourceId: string,
+): string {
+  return JSON.stringify(createCompanionMessageEnvelope(role, status, sourceId));
+}
+
+function parseContentEnvelope(value: string): ContentEnvelope {
+  return CompanionMessageSchema.shape.contentEnvelope.parse(JSON.parse(value) as unknown);
 }
 
 function parseJsonObject(value: string | null): Record<string, unknown> | undefined {

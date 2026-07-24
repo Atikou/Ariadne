@@ -93,7 +93,7 @@ export type BackgroundTaskRecord = z.infer<typeof BackgroundTaskRecordSchema>;
 const suggestedToolActionSchema = z.object({
   tool: identifier,
   reason: z.string().min(1),
-  input: z.record(z.unknown()).optional(),
+  input: z.record(z.string(), z.unknown()).optional(),
 }).strict();
 
 export const BackgroundToolRunResultSchema = z.object({

@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import {
   applySqliteMigrations,
+  assertDatabaseVersionSupported,
   getSchemaInfo,
   type SchemaInfo,
 } from "../storage/sqliteMigration.js";
@@ -25,6 +26,7 @@ import {
   type CompanionAgentProposalOutboxEntry,
 } from "./CompanionAgentProposalOutboxRepository.js";
 import {
+  serializeCompanionMessageEnvelope,
   mapCompanionMessageRow,
   type CompanionMessageRow,
 } from "./CompanionMessagePersistence.js";
@@ -214,6 +216,7 @@ export class CompanionStorage {
     this.assertWritable();
     this.dbPath = path.join(storageRoot, "companion.db");
     this.db = new DatabaseSync(this.dbPath);
+    assertDatabaseVersionSupported(this.db, COMPANION_DB_SCHEMA_VERSION);
     this.agentProposalOutbox = new CompanionAgentProposalOutboxRepository(
       this.db,
       this.storageRoot,
@@ -307,7 +310,6 @@ export class CompanionStorage {
     role: CompanionMessageRole;
     content: string;
     status?: CompanionMessageStatus;
-    trusted?: boolean;
     memoryEligible?: boolean;
     modelName?: string;
     clientName?: string;
@@ -315,10 +317,11 @@ export class CompanionStorage {
   }): CompanionMessage {
     const id = input.id ?? crypto.randomUUID();
     const at = nowIso();
+    const status = input.status ?? "completed";
     this.db
       .prepare(
         `INSERT INTO companion_messages
-          (id, session_id, role, content, status, trusted, memory_eligible, model_name, client_name, storage_root, created_at, updated_at, metadata_json)
+          (id, session_id, role, content, status, content_envelope_json, memory_eligible, model_name, client_name, storage_root, created_at, updated_at, metadata_json)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
@@ -326,8 +329,8 @@ export class CompanionStorage {
         input.sessionId,
         input.role,
         input.content,
-        input.status ?? "completed",
-        input.trusted === false ? 0 : 1,
+        status,
+        serializeCompanionMessageEnvelope(input.role, status, id),
         input.memoryEligible === false ? 0 : 1,
         input.modelName ?? null,
         input.clientName ?? null,
@@ -363,7 +366,8 @@ export class CompanionStorage {
     this.db
       .prepare(
         `UPDATE companion_messages
-         SET content=?, status=?, model_name=?, client_name=?, updated_at=?, metadata_json=?
+         SET content=?, status=?, model_name=?, client_name=?, updated_at=?, metadata_json=?,
+             content_envelope_json=?
          WHERE id=?`,
       )
       .run(
@@ -373,6 +377,7 @@ export class CompanionStorage {
         patch.clientName ?? current.clientName ?? null,
         at,
         patch.metadata ? JSON.stringify(patch.metadata) : current.metadata ? JSON.stringify(current.metadata) : null,
+        serializeCompanionMessageEnvelope(current.role, patch.status ?? current.status, id),
         id,
       );
     this.touchSession(current.sessionId);
@@ -396,7 +401,8 @@ export class CompanionStorage {
     const result = this.db
       .prepare(
         `UPDATE companion_messages
-         SET content=?, status=?, model_name=?, client_name=?, updated_at=?, metadata_json=?
+         SET content=?, status=?, model_name=?, client_name=?, updated_at=?, metadata_json=?,
+             content_envelope_json=?
          WHERE id=? AND status='streaming'`,
       )
       .run(
@@ -406,6 +412,7 @@ export class CompanionStorage {
         patch.clientName ?? current.clientName ?? null,
         at,
         patch.metadata ? JSON.stringify(patch.metadata) : current.metadata ? JSON.stringify(current.metadata) : null,
+        serializeCompanionMessageEnvelope(current.role, patch.status, id),
         id,
       );
     if (Number(result.changes) !== 1) return null;
@@ -419,8 +426,9 @@ export class CompanionStorage {
       .all() as Array<{ id: string; metadata_json: string | null }>;
     if (rows.length === 0) return;
     const update = this.db.prepare(
-      `UPDATE companion_messages SET status='interrupted', updated_at=?, metadata_json=?
-       WHERE id=? AND status='streaming'`,
+       `UPDATE companion_messages SET status='interrupted', updated_at=?, metadata_json=?,
+          content_envelope_json=?
+        WHERE id=? AND status='streaming'`,
     );
     const at = nowIso();
     this.db.exec("BEGIN IMMEDIATE");
@@ -430,7 +438,7 @@ export class CompanionStorage {
           ...(parseJsonObject(row.metadata_json) ?? {}),
           interruptionCode: "service_restarted",
           recoveredAt: at,
-        }), row.id);
+        }), serializeCompanionMessageEnvelope("assistant", "interrupted", row.id), row.id);
       }
       this.db.exec("COMMIT");
     } catch (error) {

@@ -8,7 +8,8 @@ import {
 import type { DelegatedTask, SubAgentStructuredResult } from "../subagent/delegatedTask.js";
 import type { ModelSelection } from "../subagent/types.js";
 import type { ToolPermission } from "../core/permissions.js";
-import type { Tool } from "./types.js";
+import { SUBAGENT_CONTRACT } from "./contractProfiles.js";
+import type { ToolContract } from "./types.js";
 
 export const DISPATCH_SUBAGENT_TOOL_NAME = "dispatch_subagent";
 
@@ -69,15 +70,14 @@ export interface DispatchSubagentOutput {
   durationMs: number;
 }
 
-export const dispatchSubagentTool: Tool<typeof dispatchSubagentInputSchema, DispatchSubagentOutput> = {
+export const dispatchSubagentTool: ToolContract<typeof dispatchSubagentInputSchema, DispatchSubagentOutput> = {
+  ...SUBAGENT_CONTRACT,
   name: DISPATCH_SUBAGENT_TOOL_NAME,
   description:
     "将大任务拆分为子任务委派给子 Agent：子 Agent 在干净、最小上下文中自行执行，只把压缩结构化结果带回。参数 tasks: DelegatedTask[]，每项含 goal/instructions/toolPolicy/modelPolicy。⚠️ 可能有副作用：当某个子任务设置 toolPolicy.writeAllowed/shellAllowed 且 grantedPermissions 含 write/shell 时，子 Agent 会写文件或执行命令，因此本工具按「可能有副作用」对待。",
   inputSchema: dispatchSubagentInputSchema,
   // 派发动作本身是 read 级（不直接触碰文件系统），但被派发的子 Agent 可在授权下写盘/跑命令，
   // 故 hasSideEffect 取保守的 true，使工具清单/确认提示如实告知「可能有副作用」。
-  permission: "read",
-  possiblePermissions: ["read", "write", "shell"],
   resolvePermissions(rawInput) {
     const parsed = dispatchSubagentInputSchema.safeParse(rawInput);
     if (!parsed.success) return ["read"];
@@ -87,7 +87,6 @@ export const dispatchSubagentTool: Tool<typeof dispatchSubagentInputSchema, Disp
     if (input.tasks.some((task) => task.toolPolicy?.shellAllowed === true)) permissions.push("shell");
     return permissions;
   },
-  hasSideEffect: true,
   timeoutMs: 300_000,
   async execute(input, context) {
     const depth = context.subAgentDispatchDepth ?? 0;

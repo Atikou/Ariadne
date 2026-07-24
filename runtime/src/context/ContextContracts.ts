@@ -120,13 +120,36 @@ const MessageKindSchema = z.enum([
   "guard_notice",
 ]);
 
-const MessageSourceSchema = z.enum(["user", "model", "guard", "tool", "workflow", "system"]);
-const MessageTrustBasisSchema = z.enum([
-  "user_authored",
-  "conversational_reply",
-  "completion_guard",
-  "tool_ledger",
-]);
+export const ContentEnvelopeSchema = z.object({
+  origin: z.enum([
+    "user", "model", "guard", "system", "workspace", "tool",
+    "web", "command", "diff", "mcp", "subagent", "workflow",
+  ]),
+  provenance: z.object({
+    sourceId: text.optional(),
+    runId: id.optional(),
+    toolCallId: id.optional(),
+    providerId: text.optional(),
+  }).strict(),
+  integrityEvidence: z.object({
+    kind: z.enum([
+      "unverified", "user_authored", "conversational_reply",
+      "completion_guard", "tool_ledger", "host_policy",
+    ]),
+    verified: z.boolean(),
+  }).strict(),
+  instructionAuthority: z.enum([
+    "system",
+    "user",
+    "workspace_root",
+    "target_directory",
+    "skill",
+    "data",
+  ]),
+  dataSensitivity: z.enum(["public", "workspace", "sensitive", "secret"]),
+  externalContent: z.boolean(),
+  egressAllowed: z.array(z.enum(["model", "network", "telemetry", "log"])),
+}).strict();
 
 export const ContextMessageRecordSchema = z
   .object({
@@ -141,9 +164,7 @@ export const ContextMessageRecordSchema = z
     modelName: text.optional(),
     messageKind: MessageKindSchema.optional(),
     uiVisible: z.boolean().optional(),
-    trusted: z.boolean().optional(),
-    source: MessageSourceSchema.optional(),
-    trustBasis: MessageTrustBasisSchema.optional(),
+    contentEnvelope: ContentEnvelopeSchema.optional(),
     runId: id.optional(),
     ledgerBacked: z.boolean().optional(),
     outcomeClass: text.optional(),
@@ -180,6 +201,9 @@ export const ContextSummarySchema = z
     startMessageId: id.optional(),
     endMessageId: id.optional(),
     tokenCount: nonNegativeInteger,
+    schemaVersion: z.literal(1),
+    generationState: z.enum(["model", "derived", "degraded"]),
+    degradedReason: text.optional(),
     createdAt: timestamp,
     updatedAt: timestamp,
   })
@@ -196,13 +220,17 @@ export const ContextMemorySchema = z
     summary: text.optional(),
     importance: z.number().finite(),
     confidence: z.number().finite(),
-    source: text.optional(),
-    sourceId: id.optional(),
-    isActive: z.boolean(),
+    lifecycleState: z.enum(["candidate", "active", "rejected", "superseded", "expired"]),
+    provenance: z.object({
+      origin: z.enum(["user", "model_summary", "tool_ledger", "workspace", "system"]),
+      sourceId: id.optional(),
+      evidence: text.optional(),
+    }).strict(),
+    sensitivity: z.enum(["public", "workspace", "sensitive", "secret"]),
+    retentionUntil: timestamp.optional(),
     createdAt: timestamp,
     updatedAt: timestamp,
     lastUsedAt: timestamp.optional(),
-    expiresAt: timestamp.optional(),
     supersedesId: id.optional(),
   })
   .strict();
@@ -240,6 +268,7 @@ const ContextSystemSectionItemSchema = z
     sourceId: id.optional(),
     text,
     score: z.number().finite().optional(),
+    contentEnvelope: ContentEnvelopeSchema,
     tags: z.array(text).optional(),
   })
   .strict();
@@ -286,9 +315,7 @@ const ContextMessageSchema = z
     createdAt: timestamp,
     messageKind: MessageKindSchema.optional(),
     uiVisible: z.boolean().optional(),
-    trusted: z.boolean().optional(),
-    source: MessageSourceSchema.optional(),
-    trustBasis: MessageTrustBasisSchema.optional(),
+    contentEnvelope: ContentEnvelopeSchema.optional(),
     runId: id.optional(),
     toolName: text.optional(),
     toolCallId: id.optional(),
@@ -298,13 +325,13 @@ const ContextMessageSchema = z
 
 const ContextTrustReasonSchema = z.enum([
   "user_input",
-  "trusted_final",
-  "trusted_tool_result",
+  "verified_final",
+  "verified_tool_result",
   "protocol_tool_action",
   "guard_notice",
   "filtered_raw_model_final",
   "filtered_tool_action",
-  "filtered_untrusted_assistant",
+  "filtered_unverified_assistant",
   "filtered_workflow_event",
   "filtered_misleading_completion",
 ]);

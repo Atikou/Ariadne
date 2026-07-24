@@ -4,7 +4,10 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 
 import { PythonRuntimeProcess } from "./PythonRuntimeProcess.js";
-import type { RuntimeGenerateResult } from "./runtimeProtocol.js";
+import type {
+  RuntimeCountTokensResult,
+  RuntimeGenerateResult,
+} from "./runtimeProtocol.js";
 import type { LocalModelDescriptor, LocalModelRuntime } from "./types.js";
 import type { ChatRequest, ModelResponse } from "../types.js";
 
@@ -119,6 +122,24 @@ export class TransformersRuntime implements LocalModelRuntime {
       location: "local",
       latencyMs: performance.now() - start,
       usage: { inputTokens: result.inputTokens, outputTokens: result.outputTokens },
+    };
+  }
+
+  async countTokens(
+    model: LocalModelDescriptor,
+    request: Pick<ChatRequest, "messages" | "tools">,
+  ) {
+    await this.load(model);
+    const result = await this.process.call<RuntimeCountTokensResult>(
+      "count_tokens",
+      request,
+      { timeoutMs: Math.max(model.timeoutMs ?? 0, 60_000) },
+    );
+    return {
+      tokens: result.tokens,
+      exact: true,
+      method: "model_tokenizer" as const,
+      tokenizer: result.tokenizer,
     };
   }
 

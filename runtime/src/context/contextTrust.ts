@@ -1,5 +1,5 @@
-import type { MessageEnvelope, MessageKind, MessageTrustBasis } from "./messageEnvelope.js";
-import { resolveMessageEnvelope } from "./messageEnvelope.js";
+import type { ContentEnvelope, MessageEnvelope, MessageKind } from "./messageEnvelope.js";
+import { createContentEnvelope, isVerifiedContent, resolveMessageEnvelope } from "./messageEnvelope.js";
 import type { RunExecutionFacts, RunFactsLookup } from "./runFactsLookup.js";
 import { runFactsIndicateMisleadingCompletion } from "./runFactsLookup.js";
 import type { MessageRecord } from "./types.js";
@@ -7,13 +7,13 @@ import type { ToolCall } from "../model/types.js";
 
 export type ContextTrustDecisionReason =
   | "user_input"
-  | "trusted_final"
-  | "trusted_tool_result"
+  | "verified_final"
+  | "verified_tool_result"
   | "protocol_tool_action"
   | "guard_notice"
   | "filtered_raw_model_final"
   | "filtered_tool_action"
-  | "filtered_untrusted_assistant"
+  | "filtered_unverified_assistant"
   | "filtered_workflow_event"
   | "filtered_misleading_completion";
 
@@ -36,9 +36,7 @@ export interface ContextMessageLike {
   createdAt: string;
   messageKind?: MessageKind;
   uiVisible?: boolean;
-  trusted?: boolean;
-  source?: import("./messageEnvelope.js").MessageSource;
-  trustBasis?: MessageTrustBasis;
+  contentEnvelope?: ContentEnvelope;
   runId?: string;
   ledgerBacked?: boolean;
   outcomeClass?: string;
@@ -62,9 +60,7 @@ export function evaluateContextMessageTrust(
     content: message.content,
     messageKind: message.messageKind,
     uiVisible: message.uiVisible,
-    trusted: message.trusted,
-    source: message.source,
-    trustBasis: message.trustBasis,
+    contentEnvelope: message.contentEnvelope,
     runId: message.runId,
     ledgerBacked: message.ledgerBacked,
     outcomeClass: message.outcomeClass,
@@ -74,9 +70,9 @@ export function evaluateContextMessageTrust(
   if (
     message.role === "user" &&
     envelope.messageKind === "user_input" &&
-    envelope.source === "user" &&
-    envelope.trustBasis === "user_authored" &&
-    envelope.trusted
+    envelope.contentEnvelope.origin === "user" &&
+    envelope.contentEnvelope.integrityEvidence.kind === "user_authored" &&
+    isVerifiedContent(envelope.contentEnvelope)
   ) {
     return { include: true, reason: "user_input", envelope };
   }
@@ -107,14 +103,14 @@ export function evaluateContextMessageTrust(
     };
   }
 
-  if (envelope.messageKind === "guard_notice" && envelope.trusted) {
+  if (envelope.messageKind === "guard_notice" && isVerifiedContent(envelope.contentEnvelope)) {
     return { include: true, reason: "guard_notice", envelope };
   }
 
   if (envelope.messageKind === "conversational_reply") {
-    return envelope.trusted
-      ? { include: true, reason: "trusted_final", envelope }
-      : { include: false, reason: "filtered_untrusted_assistant", envelope };
+    return isVerifiedContent(envelope.contentEnvelope)
+      ? { include: true, reason: "verified_final", envelope }
+      : { include: false, reason: "filtered_unverified_assistant", envelope };
   }
 
   if (envelope.messageKind === "tool_result") {
@@ -123,7 +119,7 @@ export function evaluateContextMessageTrust(
       (message.outcomeClass === "observation_success" &&
         message.outcomeKind !== "not_found" &&
         message.outcomeKind !== "no_results");
-    const claimsCompletion = isUntrustedCompletionMemoryText(message.content);
+    const claimsCompletion = isUnverifiedCompletionMemoryText(message.content);
     if (claimsCompletion && !ledgerBacked) {
       return {
         include: false,
@@ -137,17 +133,17 @@ export function evaluateContextMessageTrust(
         ].join("\n"),
       };
     }
-    if (!envelope.trusted) {
+    if (!isVerifiedContent(envelope.contentEnvelope)) {
       return {
         include: false,
-        reason: "filtered_untrusted_assistant",
+        reason: "filtered_unverified_assistant",
         envelope,
       };
     }
     return {
       include: true,
-      reason: ledgerBacked ? "trusted_tool_result" : "trusted_tool_result",
-      envelope: { ...envelope, trusted: true },
+      reason: "verified_tool_result",
+      envelope,
     };
   }
 
@@ -160,8 +156,8 @@ export function evaluateContextMessageTrust(
   }
 
   if (envelope.messageKind === "final_answer") {
-    if (envelope.trusted) {
-      return { include: true, reason: "trusted_final", envelope };
+    if (isVerifiedContent(envelope.contentEnvelope)) {
+      return { include: true, reason: "verified_final", envelope };
     }
 
     const facts = runLookup?.get(message.runId);
@@ -179,7 +175,7 @@ export function evaluateContextMessageTrust(
     if (claimsCompletionInText(message.content) && !facts) {
       return {
         include: false,
-        reason: "filtered_untrusted_assistant",
+        reason: "filtered_unverified_assistant",
         envelope,
         needsCorrection: true,
         correctionText: buildUnverifiedLegacyCorrection(message),
@@ -189,7 +185,7 @@ export function evaluateContextMessageTrust(
     if (claimsCompletionInText(message.content)) {
       return {
         include: false,
-        reason: "filtered_untrusted_assistant",
+        reason: "filtered_unverified_assistant",
         envelope,
         needsCorrection: true,
         correctionText: facts
@@ -200,7 +196,7 @@ export function evaluateContextMessageTrust(
 
     return {
       include: false,
-      reason: "filtered_untrusted_assistant",
+      reason: "filtered_unverified_assistant",
       envelope,
     };
   }
@@ -230,7 +226,7 @@ export function claimsCompletionInText(text: string): boolean {
   return COMPLETION_CLAIM_RE.test(text);
 }
 
-export function isUntrustedCompletionMemoryText(text: string): boolean {
+export function isUnverifiedCompletionMemoryText(text: string): boolean {
   return claimsCompletionInText(text);
 }
 
@@ -242,9 +238,9 @@ export function scrubStructuredSummaryContent<T extends {
   open_questions?: string[];
   recent_changes?: string[];
 }>(content: T): T {
-  const scrubLine = (line: string) => !isUntrustedCompletionMemoryText(line);
+  const scrubLine = (line: string) => !isUnverifiedCompletionMemoryText(line);
   const goal =
-    content.current_goal && isUntrustedCompletionMemoryText(content.current_goal)
+    content.current_goal && isUnverifiedCompletionMemoryText(content.current_goal)
       ? undefined
       : content.current_goal;
   return {
@@ -281,8 +277,8 @@ function buildUnverifiedLegacyCorrection(message: ContextMessageLike): string {
   return [
     "【上下文事实纠偏 · 未验证的历史完成声明】",
     preview
-      ? `会话历史中存在未标记 trusted 的完成声明：「${preview}」。`
-      : "会话历史中存在未标记 trusted 的 assistant 完成声明。",
+      ? `会话历史中存在未验证的完成声明：「${preview}」。`
+      : "会话历史中存在未验证的 assistant 完成声明。",
     "无法关联 Run 事实或 Tool Ledger，该声明不得作为副作用已完成的依据。",
   ].join("\n");
 }
@@ -302,14 +298,14 @@ function extractAnswerPreview(content: string): string {
   return trimmed.slice(0, 120);
 }
 
-export function filterTrustedMemories<T extends { memory: { value: string; summary?: string; source?: string; memoryType: string } }>(
+export function filterVerifiedMemories<T extends { memory: { value: string; summary?: string; source?: string; memoryType: string } }>(
   items: T[],
 ): T[] {
   return items.filter((item) => {
     const m = item.memory;
     if (m.source === "tool_ledger") return true;
     const text = `${m.value}\n${m.summary ?? ""}`;
-    if (!isUntrustedCompletionMemoryText(text)) return true;
+    if (!isUnverifiedCompletionMemoryText(text)) return true;
     return false;
   });
 }
@@ -323,8 +319,13 @@ export function toContextCorrectionMessage(text: string, index: number): Context
     createdAt: ts,
     messageKind: "guard_notice",
     uiVisible: false,
-    trusted: true,
-    source: "guard",
-    trustBasis: "completion_guard",
+    contentEnvelope: createContentEnvelope({
+      origin: "guard",
+      evidence: "completion_guard",
+      verified: true,
+      instructionAuthority: "system",
+      externalContent: false,
+      egressAllowed: ["model"],
+    }),
   };
 }

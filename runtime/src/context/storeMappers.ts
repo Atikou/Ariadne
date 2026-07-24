@@ -1,6 +1,7 @@
 import type { MessageRecord, SessionRecord } from "./types.js";
-import type { MessageKind, MessageSource, MessageTrustBasis } from "./messageEnvelope.js";
+import type { MessageKind } from "./messageEnvelope.js";
 import { resolveMessageEnvelope } from "./messageEnvelope.js";
+import { ContentEnvelopeSchema } from "./ContextContracts.js";
 import type { ToolCall } from "../model/types.js";
 
 export function nowIso(): string {
@@ -30,9 +31,7 @@ export function mapMessage(row: Record<string, unknown>): MessageRecord {
     content,
     messageKind,
     uiVisible: row.ui_visible != null ? Number(row.ui_visible) === 1 : undefined,
-    trusted: row.trusted != null ? Number(row.trusted) === 1 : undefined,
-    source: row.source ? (String(row.source) as MessageSource) : undefined,
-    trustBasis: row.trust_basis ? (String(row.trust_basis) as MessageTrustBasis) : undefined,
+    contentEnvelope: parseContentEnvelope(row.content_envelope_json),
     runId: row.run_id ? String(row.run_id) : undefined,
     ledgerBacked: row.ledger_backed != null ? Number(row.ledger_backed) === 1 : undefined,
     outcomeClass: row.outcome_class ? String(row.outcome_class) : undefined,
@@ -50,9 +49,7 @@ export function mapMessage(row: Record<string, unknown>): MessageRecord {
     modelName: row.model_name ? String(row.model_name) : undefined,
     messageKind: envelope.messageKind,
     uiVisible: envelope.uiVisible,
-    trusted: envelope.trusted,
-    source: envelope.source,
-    trustBasis: envelope.trustBasis,
+    contentEnvelope: envelope.contentEnvelope,
     runId: envelope.runId,
     ledgerBacked:
       row.ledger_backed != null ? Number(row.ledger_backed) === 1 : undefined,
@@ -63,6 +60,16 @@ export function mapMessage(row: Record<string, unknown>): MessageRecord {
     toolCalls: parseToolCalls(row.tool_calls_json),
     createdAt: String(row.created_at),
   };
+}
+
+function parseContentEnvelope(value: unknown) {
+  if (typeof value !== "string" || !value) return undefined;
+  try {
+    const parsed = ContentEnvelopeSchema.safeParse(JSON.parse(value));
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseToolCalls(value: unknown): ToolCall[] | undefined {

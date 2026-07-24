@@ -14,6 +14,11 @@ import type {
   ModelToolSpec,
   ToolCall,
 } from "./types.js";
+import {
+  createConservativeTokenCounter,
+  remoteTokenizerProfile,
+} from "./TokenCounter.js";
+import { ProviderRequestError, providerHttpError } from "./ProviderError.js";
 
 export interface AnthropicOptions {
   name: string;
@@ -25,6 +30,7 @@ export interface AnthropicOptions {
   /** messages API 必填 max_tokens，未指定单次请求时的默认值。 */
   maxTokens?: number;
   timeoutMs?: number;
+  contextWindowTokens?: number;
 }
 
 interface AnthropicContentBlock {
@@ -54,6 +60,9 @@ export class AnthropicClient implements ModelClient {
   public readonly name: string;
   public readonly model: string;
   public readonly location = "remote" as const;
+  public readonly toolCallCapability = "native" as const;
+  public readonly tokenCounter;
+  public readonly contextWindowTokens: number | undefined;
 
   private readonly apiKey: string;
   private readonly baseUrl: string;
@@ -64,6 +73,10 @@ export class AnthropicClient implements ModelClient {
   constructor(options: AnthropicOptions) {
     this.name = options.name;
     this.model = options.model;
+    this.tokenCounter = createConservativeTokenCounter(
+      remoteTokenizerProfile("anthropic", options.model),
+    );
+    this.contextWindowTokens = options.contextWindowTokens;
     this.apiKey = options.apiKey ?? "";
     this.baseUrl = (options.baseUrl ?? "https://api.anthropic.com").replace(/\/$/, "");
     this.apiVersion = options.apiVersion ?? "2023-06-01";
@@ -98,7 +111,7 @@ export class AnthropicClient implements ModelClient {
   }
 
   async chat(request: ChatRequest): Promise<ModelResponse> {
-    const { signal, cancel } = withTimeout(this.timeoutMs, request.signal);
+    const { signal, cancel, didTimeout } = withTimeout(this.timeoutMs, request.signal);
     const start = performance.now();
 
     const system = request.messages
@@ -125,7 +138,11 @@ export class AnthropicClient implements ModelClient {
 
         if (!response.ok) {
           const detail = await safeReadText(response);
-          throw new Error(`Anthropic 请求失败：${response.status} ${detail}`);
+          throw providerHttpError(
+            response.status,
+            `Anthropic 请求失败：${response.status} ${detail}`,
+            response.headers.get("retry-after"),
+          );
         }
         if (!response.body) {
           throw new Error("Anthropic 流式响应无 body");
@@ -251,7 +268,11 @@ export class AnthropicClient implements ModelClient {
 
       if (!response.ok) {
         const detail = await safeReadText(response);
-        throw new Error(`Anthropic 请求失败：${response.status} ${detail}`);
+        throw providerHttpError(
+          response.status,
+          `Anthropic 请求失败：${response.status} ${detail}`,
+          response.headers.get("retry-after"),
+        );
       }
 
       const data = (await response.json()) as AnthropicMessagesResponse;
@@ -273,6 +294,11 @@ export class AnthropicClient implements ModelClient {
           outputTokens: data.usage?.output_tokens,
         },
       };
+    } catch (error) {
+      if (didTimeout()) {
+        throw new ProviderRequestError("timeout", `Provider request timed out after ${this.timeoutMs}ms.`);
+      }
+      throw error;
     } finally {
       cancel();
     }

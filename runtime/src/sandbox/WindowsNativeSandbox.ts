@@ -5,7 +5,9 @@ import path from "node:path";
 import process from "node:process";
 
 import {
+  SANDBOX_MAX_INTERACTIVE_STDIN_CHUNK_BYTES,
   SANDBOX_MAX_STDIN_BYTES,
+  SandboxInteractiveInputFrameSchema,
   SandboxExecutionRequestSchema,
   SandboxExecutionResultSchema,
   SandboxProtocolEventSchema,
@@ -41,9 +43,10 @@ import {
   type SandboxHelperTrustMode,
 } from "./SandboxHelperTrust.js";
 import type {
-  ProcessSandbox,
+  InteractiveProcessSandbox,
   SandboxFileRequest,
   SandboxProcessHandle,
+  SandboxProcessLease,
   SandboxProcessObserver,
   SandboxShellRequest,
 } from "./ProcessSandbox.js";
@@ -72,7 +75,7 @@ export interface WindowsNativeSandboxOptions {
 }
 
 /** TypeScript 控制面只负责严格协议、生命周期和审批后的身份选择；安全边界由原生 helper 执行。 */
-export class WindowsNativeSandbox implements ProcessSandbox {
+export class WindowsNativeSandbox implements InteractiveProcessSandbox {
   readonly helperPath: string;
   readonly stateRoot: string;
   readonly mode: Exclude<SandboxMode, "danger-full-access">;
@@ -127,6 +130,15 @@ export class WindowsNativeSandbox implements ProcessSandbox {
       { kind: "file", file: input.file, args: input.args ?? [] },
       input,
       observer,
+    );
+  }
+
+  openFileLease(input: SandboxFileRequest, observer?: SandboxProcessObserver): SandboxProcessLease {
+    return this.start(
+      { kind: "file", file: input.file, args: input.args ?? [] },
+      input,
+      observer,
+      true,
     );
   }
 
@@ -204,9 +216,10 @@ export class WindowsNativeSandbox implements ProcessSandbox {
     invocation: SandboxExecutionRequest["invocation"],
     input: SandboxFileRequest | SandboxShellRequest,
     observer?: SandboxProcessObserver,
-  ): SandboxProcessHandle {
+    interactive = false,
+  ): SandboxProcessLease {
     const executionId = randomUUID();
-    const request = this.buildExecutionRequest(executionId, invocation, input);
+    const request = this.buildExecutionRequest(executionId, invocation, input, interactive);
     const helperTrustFailure = this.helperTrustFailure();
     if (helperTrustFailure) {
       const result = failureResult(
@@ -218,10 +231,11 @@ export class WindowsNativeSandbox implements ProcessSandbox {
           : `windows_sandbox_helper_trust_failed:${helperTrustFailure}`,
       );
       emitSandboxExecutionAudit(this.audit, request, result);
-      return immediateResult(executionId, result);
+      return immediateLease(executionId, result);
     }
 
     let helper: ChildProcess | undefined;
+    let stdinEnded = false;
     let settled = false;
     let stdoutBuffer = "";
     let authorization: SandboxAuthorizationProof | undefined;
@@ -354,7 +368,7 @@ export class WindowsNativeSandbox implements ProcessSandbox {
     };
 
     try {
-      helper = spawn(this.helperPath, ["execute", "--state-root", this.stateRoot], {
+      helper = spawn(this.helperPath, [interactive ? "lease" : "execute", "--state-root", this.stateRoot], {
         cwd: input.cwd,
         env: windowsSandboxHelperEnvironment(),
         windowsHide: true,
@@ -363,7 +377,7 @@ export class WindowsNativeSandbox implements ProcessSandbox {
       });
     } catch (error) {
       finish(failure("helper_unavailable", String(error)));
-      return { executionId, completion, cancel };
+      return failedLease(executionId, completion, cancel);
     }
 
     helper.stdout?.on("data", (chunk: Buffer) => {
@@ -392,17 +406,44 @@ export class WindowsNativeSandbox implements ProcessSandbox {
         "Windows 沙箱 helper 未返回终态事件",
       ));
     });
-    helper.stdin?.end(`${JSON.stringify(request)}\n`);
+    if (interactive) helper.stdin?.write(`${JSON.stringify(request)}\n`);
+    else helper.stdin?.end(`${JSON.stringify(request)}\n`);
 
     if (input.signal?.aborted) cancel();
     else input.signal?.addEventListener("abort", cancel, { once: true });
-    return { executionId, completion, cancel };
+    return {
+      executionId,
+      completion,
+      cancel,
+      async writeStdin(chunk) {
+        if (!interactive) throw new Error("sandbox_process_not_interactive");
+        if (stdinEnded) throw new Error("sandbox_interactive_stdin_ended");
+        const bytes = Buffer.from(chunk);
+        if (bytes.byteLength > SANDBOX_MAX_INTERACTIVE_STDIN_CHUNK_BYTES) {
+          throw new Error("sandbox_interactive_stdin_chunk_exceeds_64_kib");
+        }
+        await writeHelperFrame(helper, SandboxInteractiveInputFrameSchema.parse({
+          type: "stdin",
+          executionId,
+          dataBase64: bytes.toString("base64"),
+        }));
+      },
+      async endStdin() {
+        if (!interactive || stdinEnded) return;
+        stdinEnded = true;
+        await writeHelperFrame(helper, SandboxInteractiveInputFrameSchema.parse({
+          type: "stdin_end",
+          executionId,
+        }));
+      },
+    };
   }
 
   private buildExecutionRequest(
     executionId: string,
     invocation: SandboxExecutionRequest["invocation"],
     input: SandboxFileRequest | SandboxShellRequest,
+    interactive = false,
   ): SandboxExecutionRequest {
     const requestedMode = input.mode ?? this.mode;
     if (requestedMode === "danger-full-access") {
@@ -438,6 +479,7 @@ export class WindowsNativeSandbox implements ProcessSandbox {
       timeoutMs: input.timeoutMs,
       maxOutputBytes: input.maxOutputBytes,
       stdinBase64: stdin?.toString("base64"),
+      interactive,
       resourceLimits: {
         ...this.resourceLimits,
         ...input.resourceLimits,
@@ -589,15 +631,50 @@ function isolationEquals(left: SandboxIsolation, right: SandboxIsolation): boole
     left.processTreeTermination === right.processTreeTermination;
 }
 
-function immediateResult(
+function immediateLease(
   executionId: string,
   result: SandboxExecutionResult,
-): SandboxProcessHandle {
+): SandboxProcessLease {
   return {
     executionId,
     completion: Promise.resolve(result),
     cancel() {},
+    async writeStdin() {
+      throw new Error("sandbox_process_unavailable");
+    },
+    async endStdin() {},
   };
+}
+
+function failedLease(
+  executionId: string,
+  completion: Promise<SandboxExecutionResult>,
+  cancel: () => void,
+): SandboxProcessLease {
+  return {
+    executionId,
+    completion,
+    cancel,
+    async writeStdin() {
+      throw new Error("sandbox_process_unavailable");
+    },
+    async endStdin() {},
+  };
+}
+
+async function writeHelperFrame(
+  helper: ChildProcess | undefined,
+  frame: unknown,
+): Promise<void> {
+  if (!helper?.stdin || helper.stdin.destroyed || !helper.stdin.writable) {
+    throw new Error("sandbox_interactive_stdin_unavailable");
+  }
+  await new Promise<void>((resolve, reject) => {
+    helper.stdin!.write(`${JSON.stringify(frame)}\n`, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
 }
 
 function mapNativeErrorCode(code: string): SandboxExecutionResult["errorCode"] {

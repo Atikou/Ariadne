@@ -100,10 +100,10 @@ function inferDefaults(client: ModelClientConfig): Omit<
   return {
     defaultLevel: level,
     enabled: true,
-    supportsStreaming: true,
-    supportsTools: !isLocal,
+    supportsStreaming: isLocal,
+    supportsTools: false,
     supportsVision: strong && client.protocol === "anthropic-messages",
-    supportsJsonMode: !isLocal,
+    supportsJsonMode: false,
     maxInputTokens: defaultMaxInputTokens(level),
     maxOutputTokens: defaultMaxOutputTokens(level),
     relativeCost: cost,
@@ -126,8 +126,14 @@ export function buildModelProfiles(clients: ModelClientConfig[]): ModelProfile[]
     const profileLevel = normalizeProfileLevel(level);
     const levelWasOverridden = rp?.defaultLevel !== undefined && rp.defaultLevel !== inferred.defaultLevel;
     const supportsVision = rp?.supportsVision ?? inferred.supportsVision;
-    const supportsTools = rp?.supportsTools ?? inferred.supportsTools;
-    const supportsJsonMode = rp?.supportsJsonMode ?? inferred.supportsJsonMode;
+    const supportsTools = rp?.supportsTools
+      ?? rp?.capabilities?.toolCalling
+      ?? (client.kind === "api"
+        && (client.qualification.nativeTools === "supported"
+          || client.qualification.textFallback === "supported"));
+    const supportsJsonMode = rp?.supportsJsonMode
+      ?? rp?.capabilities?.jsonMode
+      ?? inferred.supportsJsonMode;
     const maxInputTokens =
       rp?.maxInputTokens ??
       (levelWasOverridden ? defaultMaxInputTokens(profileLevel) : inferred.maxInputTokens);
@@ -140,7 +146,10 @@ export function buildModelProfiles(clients: ModelClientConfig[]): ModelProfile[]
       provider: client.location === "local" ? "local" : "api",
       defaultLevel: level,
       enabled: rp?.enabled ?? inferred.enabled,
-      supportsStreaming: rp?.supportsStreaming ?? inferred.supportsStreaming,
+      supportsStreaming: rp?.supportsStreaming
+        ?? (client.kind === "api"
+          ? client.qualification.streaming === "supported"
+          : inferred.supportsStreaming),
       supportsTools,
       supportsVision,
       supportsJsonMode,

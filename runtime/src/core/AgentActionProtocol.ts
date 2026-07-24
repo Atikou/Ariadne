@@ -40,7 +40,7 @@ const ToolActionSchema = z
     action: z.literal("tool"),
     id: z.string().min(1).optional(),
     tool: z.string().min(1),
-    input: z.record(z.unknown()).optional(),
+    input: z.record(z.string(), z.unknown()).optional(),
     thought: z.string().optional(),
   })
   .strict();
@@ -49,7 +49,7 @@ const ParallelToolCallSchema = z
   .object({
     id: z.string().min(1).optional(),
     tool: z.string().min(1),
-    input: z.record(z.unknown()).optional(),
+    input: z.record(z.string(), z.unknown()).optional(),
     thought: z.string().optional(),
   })
   .strict();

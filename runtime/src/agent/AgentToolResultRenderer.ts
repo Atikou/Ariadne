@@ -1,5 +1,5 @@
 import { DISPATCH_SUBAGENT_TOOL_NAME } from "../tools/subagentTool.js";
-import { wrapUntrustedToolOutput } from "../util/injection.js";
+import { wrapExternalToolOutput } from "../util/injection.js";
 import { clipModelToolJson } from "../util/toolResultLayers.js";
 import {
   renderBlockedRecoveryMessage,
@@ -38,7 +38,7 @@ export function renderAgentToolResultObservation(step: AgentToolStep, steps?: Ag
     return `工具「${step.tool}」执行失败：${step.error}。请据此调整下一步。`;
   }
   const compacted = step.resultLayers?.modelVisible ?? step.output;
-  const wrapped = wrapUntrustedToolOutput(step.tool, compacted);
+  const wrapped = wrapExternalToolOutput(step.tool, compacted);
   const body = clipModelToolJson(wrapped);
   const base = `工具「${step.tool}」执行结果（JSON）：\n${body}`;
   if (step.tool === DISPATCH_SUBAGENT_TOOL_NAME && steps) {

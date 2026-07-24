@@ -2,17 +2,22 @@ import type { AgentNotification } from "../background/types.js";
 import type { ContextManager } from "../context/ContextManager.js";
 import type { ModelTaskType } from "../model/taskType.js";
 import type { ChatMessage } from "../model/types.js";
+import type { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { AgentRoutingMeta } from "../model-router/agent-routing-summary.js";
 import type { LoopChatFn, LoopChatResponse } from "../model-router/agent-chat-types.js";
 import { assertWithinCostBudget, sumModelTurnCost } from "../util/costBudget.js";
 import { redactPreview } from "../util/redact.js";
 import {
-  parseAgentModelAction,
   sanitizeAgentAction,
   stripModelNoise,
   type FinalAction,
   type ToolAction,
 } from "./AgentActionParser.js";
+import {
+  AgentProtocolRepairBudget,
+  admitAgentModelAction,
+  buildAgentProtocolRepairMessage,
+} from "./AgentActionAdmission.js";
 import { AgentProtocolError } from "./AgentProtocolError.js";
 import type { AgentRunSession } from "./AgentRunBootstrap.js";
 import type { AgentRunFinalizeInput, AgentRunFinalizeResult } from "./AgentRunFinalizer.js";
@@ -30,6 +35,7 @@ import type {
   AgentToolContinuationInput,
   AgentToolContinuationResult,
 } from "./AgentToolExecutionCoordinator.js";
+import { DEFAULT_TOOL_CONCURRENCY, planToolExecutionBatches } from "./ToolConcurrencyPlanner.js";
 
 export type AgentToolStepExecResult =
   | { kind: "step"; step: AgentToolStep }
@@ -37,6 +43,8 @@ export type AgentToolStepExecResult =
 
 export interface AgentReactLoopContext {
   chat: LoopChatFn;
+  registry: ToolRegistry;
+  allowedToolNames: readonly string[];
   signal?: AbortSignal;
   sensitive?: boolean;
   taskType?: ModelTaskType;
@@ -109,6 +117,9 @@ export interface AgentReactLoopContext {
   continueAfterToolStep: (
     input: AgentToolContinuationInput,
   ) => Promise<AgentToolContinuationResult>;
+  continueAfterToolBatch: (
+    inputs: readonly AgentToolContinuationInput[],
+  ) => Promise<AgentToolContinuationResult>;
   buildPartialAnswer: (
     steps: AgentToolStep[],
     budgetExhausted: RunBudgetKey,
@@ -134,6 +145,16 @@ export async function runAgentReactLoop(
   const steps = session.steps;
   let modelTurns = session.modelTurns;
   const contextManager = ctx.contextManager;
+  const allowedToolNames = new Set(ctx.allowedToolNames);
+  const modelTools = ctx.registry
+    .list()
+    .filter((tool) => allowedToolNames.has(tool.name))
+    .map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.inputJsonSchema,
+    }));
+  const protocolRepairs = new AgentProtocolRepairBudget();
 
   while (modelTurns < ctx.maxModelTurns) {
     ctx.assertNotCancelled();
@@ -168,6 +189,7 @@ export async function runAgentReactLoop(
       response = await ctx.chat(
         {
           messages,
+          tools: modelTools,
           temperature: 0.2,
           onToken: ctx.onToken ? () => {
             receivedStreamToken = true;
@@ -220,10 +242,15 @@ export async function runAgentReactLoop(
       recordResponseTurn(false, String(error));
       throw error;
     }
-    const parsedAction = parseAgentModelAction(response.content, response.toolCalls);
-    if (!parsedAction) {
+    const admission = admitAgentModelAction({
+      content: response.content,
+      nativeToolCalls: response.toolCalls,
+      registry: ctx.registry,
+      allowedToolNames,
+    });
+    if (!admission.ok) {
       const tracePreview = stripModelNoise(response.content);
-      recordResponseTurn(false, "MODEL_PROTOCOL_ERROR");
+      recordResponseTurn(false, `MODEL_PROTOCOL_ERROR:${admission.category}`);
       ctx.onModelTurn?.({
         iteration,
         phase: "parse_error",
@@ -237,12 +264,23 @@ export async function runAgentReactLoop(
         action: "parse_error",
         rawPreview: tracePreview ? redactPreview(tracePreview, 300) : undefined,
       });
+      if (protocolRepairs.consume() && modelTurns < ctx.maxModelTurns) {
+        messages.push({
+          role: "system",
+          content: buildAgentProtocolRepairMessage({
+            failure: admission,
+            allowedToolNames: ctx.allowedToolNames,
+          }),
+        });
+        continue;
+      }
       throw new AgentProtocolError({
         clientName: response.clientName,
         modelName: response.modelName,
-      });
+      }, admission.category, protocolRepairs.used);
     }
-    const action = sanitizeAgentAction(parsedAction);
+    protocolRepairs.reset();
+    const action = sanitizeAgentAction(admission.action);
     const actionContent = JSON.stringify(action);
     const toolCalls = action.action === "final"
       ? []
@@ -314,18 +352,37 @@ export async function runAgentReactLoop(
       modelName: response.modelName,
       latencyMs: Math.round(response.latencyMs || Date.now() - modelStart),
     });
-    for (const toolCall of toolCalls) {
-      const { action, toolCallId } = toolCall;
-      ctx.writeAgentDecisionTrace({
-        iteration,
-        action: "tool",
-        tool: action.tool,
-        toolCallId,
-        thought: action.thought,
-        inputPreview: redactPreview(action.input ?? {}, 500),
-      });
-
-      const execResult = await ctx.executeToolStep({
+    const usage = ctx.budgetManager.buildUsage(steps, modelTurns);
+    const remainingToolCalls = Math.max(
+      1,
+      ctx.budgetManager.budget.maxToolCalls - usage.toolCalls,
+    );
+    const remainingReadCalls = ctx.budgetManager.budget.maxReadCalls > 0
+      ? Math.max(1, ctx.budgetManager.budget.maxReadCalls - usage.readCalls)
+      : DEFAULT_TOOL_CONCURRENCY;
+    const concurrency = Math.min(
+      DEFAULT_TOOL_CONCURRENCY,
+      remainingToolCalls,
+      remainingReadCalls,
+    );
+    const batches = planToolExecutionBatches(
+      toolCalls.map((call) => call.action),
+      ctx.registry,
+      concurrency,
+    );
+    for (const batch of batches) {
+      const calls = batch.map((index) => toolCalls[index]!);
+      for (const { action, toolCallId } of calls) {
+        ctx.writeAgentDecisionTrace({
+          iteration,
+          action: "tool",
+          tool: action.tool,
+          toolCallId,
+          thought: action.thought,
+          inputPreview: redactPreview(action.input ?? {}, 500),
+        });
+      }
+      const executionInputs = calls.map(({ action, toolCallId }) => ({
         action,
         iteration,
         toolCallId,
@@ -336,13 +393,16 @@ export async function runAgentReactLoop(
         system,
         modelTurns,
         consumedNotifications,
-      });
-      if (execResult.kind !== "step") {
-        return execResult.result;
-      }
-      const continuation = await ctx.continueAfterToolStep({
-        step: execResult.step,
-        action,
+      }));
+      const executionResults = calls.length > 1
+        ? await Promise.all(executionInputs.map((input) => ctx.executeToolStep(input)))
+        : [await ctx.executeToolStep(executionInputs[0]!)];
+      const terminal = executionResults.find((result) => result.kind !== "step");
+      if (terminal) return terminal.result;
+
+      const continuationInputs = executionResults.map((result, index) => ({
+        step: result.kind === "step" ? result.step : neverToolStep(),
+        action: calls[index]!.action,
         messages,
         steps,
         goal: effectiveGoal,
@@ -352,7 +412,10 @@ export async function runAgentReactLoop(
         modelTurns,
         consumedNotifications,
         injectNotifications,
-      });
+      }));
+      const continuation = calls.length > 1
+        ? await ctx.continueAfterToolBatch(continuationInputs)
+        : await ctx.continueAfterToolStep(continuationInputs[0]!);
       if (continuation.kind === "finalize") {
         return await ctx.finishRun(continuation.input);
       }
@@ -373,6 +436,10 @@ export async function runAgentReactLoop(
     sessionId,
     userMessage: effectiveGoal,
   });
+}
+
+function neverToolStep(): never {
+  throw new Error("unreachable tool execution result");
 }
 
 async function handleFinalAction(

@@ -71,9 +71,7 @@ export class ContextRestorer {
           createdAt: m.createdAt,
           messageKind: decision.envelope.messageKind,
           uiVisible: decision.envelope.uiVisible,
-          trusted: decision.envelope.trusted,
-          source: decision.envelope.source,
-          trustBasis: decision.envelope.trustBasis,
+          contentEnvelope: decision.envelope.contentEnvelope,
           runId: decision.envelope.runId ?? m.runId,
           toolName: m.toolName,
           toolCallId: m.toolCallId,
@@ -102,9 +100,7 @@ export class ContextRestorer {
         createdAt: correction.createdAt,
         messageKind: correction.messageKind,
         uiVisible: correction.uiVisible,
-        trusted: correction.trusted,
-        source: correction.source,
-        trustBasis: correction.trustBasis,
+        contentEnvelope: correction.contentEnvelope,
         runId: correction.runId,
       });
     }

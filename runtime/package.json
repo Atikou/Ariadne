@@ -18,6 +18,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "start": "node dist/entry/runtime-process.js",
+    "headless": "node dist/entry/headless.js",
     "dev": "tsx src/cli/main.ts",
     "models:check": "tsx src/cli/check-models.ts",
     "models:runtime:setup": "node scripts/setup-model-runtimes.mjs",
@@ -30,10 +31,21 @@
   "dependencies": {
     "@ariadne/protocol": "file:../packages/protocol",
     "@lancedb/lancedb": "^0.30.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.221.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.221.0",
+    "@opentelemetry/resources": "^2.10.0",
+    "@opentelemetry/sdk-metrics": "^2.10.0",
+    "@opentelemetry/sdk-trace-node": "^2.10.0",
+    "@opentelemetry/semantic-conventions": "^1.38.0",
+    "ajv": "^8.20.0",
     "chokidar": "^5.0.0",
     "croner": "^10.0.1",
     "node-llama-cpp": "^3.19.0",
-    "zod": "^3.23.8"
+    "tree-sitter-wasms": "^0.1.13",
+    "web-tree-sitter": "^0.20.8",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.7.5",

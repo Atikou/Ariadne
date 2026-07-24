@@ -123,7 +123,9 @@ export const agentHttpRequestBodySchema = z.unknown().transform((value, ctx) => 
     : agentHttpMessageRequestBodySchema;
   const parsed = schema.safeParse(value);
   if (parsed.success) return parsed.data;
-  for (const issue of parsed.error.issues) ctx.addIssue(issue);
+  for (const issue of parsed.error.issues) {
+    ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+  }
   return z.NEVER;
 });
 
@@ -168,8 +170,8 @@ export function toAgentConversationRequest(
 export function formatAgentRequestValidationError(error: z.ZodError): string {
   const first = error.issues[0];
   const issue = first?.code === "invalid_union"
-    ? first.unionErrors
-        .flatMap((branch) => branch.issues)
+    ? first.errors
+        .flat()
         .find((candidate) => candidate.path.length > 0)
     : first;
   if (!issue) return "Agent 请求参数不合法";

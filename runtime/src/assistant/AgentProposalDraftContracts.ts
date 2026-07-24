@@ -26,12 +26,18 @@ export type AgentProposalRisk = z.infer<typeof AgentProposalRiskSchema>;
  * Non-executable model output. Source identity, original text, workspace and scope
  * are deliberately absent so only the backend can bind them to a real turn.
  */
-export const AgentProposalDraftSchema = z.object({
+export const AgentProposalDraftStructuralSchema = z.object({
   reason: boundedText(2_000),
   interpretedTask: boundedText(8_000),
   requestedCapabilities: AgentCapabilityListSchema,
   risk: AgentProposalRiskSchema,
-}).strict().superRefine((proposal, ctx) => {
+}).strict();
+export type AgentProposalDraft = z.infer<typeof AgentProposalDraftStructuralSchema>;
+
+export function addAgentProposalDraftBusinessIssues(
+  proposal: AgentProposalDraft,
+  ctx: z.RefinementCtx,
+): void {
   if (
     proposal.risk === "read-only"
     && proposal.requestedCapabilities.some((capability) =>
@@ -43,5 +49,7 @@ export const AgentProposalDraftSchema = z.object({
       path: ["risk"],
     });
   }
-});
-export type AgentProposalDraft = z.infer<typeof AgentProposalDraftSchema>;
+}
+
+export const AgentProposalDraftSchema = AgentProposalDraftStructuralSchema
+  .superRefine(addAgentProposalDraftBusinessIssues);

@@ -18,6 +18,30 @@ export interface ProjectSymbolRecord {
   line: number;
 }
 
+export interface ProjectReferenceRecord {
+  filePath: string;
+  symbol: string;
+  kind: string;
+  line: number;
+}
+
+export interface ProjectDiagnosticRecord {
+  filePath: string;
+  message: string;
+  line?: number;
+}
+
+export interface RepoMapNode {
+  path: string;
+  score: number;
+  reasons: string[];
+  symbols: string[];
+  imports: string[];
+  importedBy: string[];
+  diagnostics: string[];
+  contentHash: string;
+}
+
 export type SymbolSearchMatchMode = "exact" | "prefix" | "contains";
 
 export interface SymbolSearchQueryInput {
@@ -46,6 +70,8 @@ export interface ProjectIndexSyncResult {
   dependenciesUpdated?: number;
   exportsUpdated?: number;
   semanticIndexed?: number;
+  referencesUpdated?: number;
+  diagnosticsUpdated?: number;
 }
 
 export interface ProjectImportRecord {

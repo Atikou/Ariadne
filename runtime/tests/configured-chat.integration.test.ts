@@ -9,7 +9,8 @@ import {
   ARIADNE_RUNTIME_PROTOCOL_VERSION,
   type RuntimeBootstrap
 } from '@ariadne/protocol/host';
-import type { RuntimeEvent } from '@ariadne/protocol/public';
+import type { RuntimeEventEnvelope } from '@ariadne/protocol/public';
+import { createDefaultRuntimePolicySnapshot } from '@ariadne/protocol/settings';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -60,7 +61,7 @@ describe('configured Provider Chat', () => {
     const { createRuntimeContext } = await import('../src/application/createRuntimeContext.js');
     const { RuntimeFacade } = await import('../src/application/RuntimeFacade.js');
     const app = createRuntimeContext(createBootstrap());
-    const events: RuntimeEvent[] = [];
+    const events: RuntimeEventEnvelope[] = [];
     const facade = new RuntimeFacade(app, (event) => events.push(event), '0.1.0-test');
     app.start();
 
@@ -87,9 +88,9 @@ describe('configured Provider Chat', () => {
       if (accepted.kind !== 'companion.chat.accepted') throw new Error('unexpected Chat result');
 
       await waitFor(() => events.some((event) =>
-        event.kind === 'run.changed'
-        && event.run.runId === accepted.runId
-        && event.run.status === 'completed'));
+        event.event.kind === 'run.changed'
+        && event.event.run.runId === accepted.runId
+        && event.event.run.status === 'completed'));
 
       const messages = await facade.handle({
         kind: 'companion.messages.list',
@@ -128,7 +129,7 @@ describe('configured Provider Chat', () => {
     }
   }, 30_000);
 
-  it('repairs a mixed-text Agent proposal without reinterpreting the AI capability request', async () => {
+  it('repairs a mixed-text Agent proposal and removes unavailable capabilities', async () => {
     const originalFetch = globalThis.fetch;
     const originalOpenAiKey = process.env.OPENAI_API_KEY;
     const originalEmbeddingProvider = process.env.COMPANION_EMBEDDING_PROVIDER;
@@ -159,7 +160,22 @@ describe('configured Provider Chat', () => {
             object: 'chat.completion',
             created: 0,
             model: 'ariadne-test-model',
-            choices: [{ index: 0, message: { role: 'assistant', content: envelope }, finish_reason: 'stop' }]
+            choices: [{
+              index: 0,
+              message: {
+                role: 'assistant',
+                content: null,
+                tool_calls: [{
+                  id: 'proposal-tool-call',
+                  type: 'function',
+                  function: {
+                    name: 'request_agent_capabilities',
+                    arguments: JSON.stringify(draft)
+                  }
+                }]
+              },
+              finish_reason: 'tool_calls'
+            }]
           });
         }
         return openAiStream([`我先说明一下，请确认以下提案：${envelope}`]);
@@ -170,7 +186,7 @@ describe('configured Provider Chat', () => {
     const { createRuntimeContext } = await import('../src/application/createRuntimeContext.js');
     const { RuntimeFacade } = await import('../src/application/RuntimeFacade.js');
     const app = createRuntimeContext(createBootstrap());
-    const events: RuntimeEvent[] = [];
+    const events: RuntimeEventEnvelope[] = [];
     const facade = new RuntimeFacade(app, (event) => events.push(event), '0.1.0-test');
     app.start();
 
@@ -188,29 +204,36 @@ describe('configured Provider Chat', () => {
       if (accepted.kind !== 'companion.chat.accepted') throw new Error('unexpected Chat result');
 
       await waitFor(() => events.some((event) =>
-        event.kind === 'run.changed'
-        && event.run.runId === accepted.runId
-        && ['completed', 'failed'].includes(event.run.status)));
+        event.event.kind === 'run.changed'
+        && event.event.run.runId === accepted.runId
+        && ['completed', 'failed'].includes(event.event.run.status)));
 
       expect(requestedBodies).toHaveLength(2);
       expect(requestedBodies[1]).toMatchObject({
         messages: expect.arrayContaining([
           expect.objectContaining({
             role: 'system',
-            content: expect.stringContaining('上一条响应包含 Agent 提案标记')
+            content: expect.stringContaining('上一条 Agent 能力请求未通过协议校验')
+          })
+        ]),
+        tools: expect.arrayContaining([
+          expect.objectContaining({
+            function: expect.objectContaining({
+              name: 'request_agent_capabilities'
+            })
           })
         ])
       });
-      expect(events).not.toContainEqual(expect.objectContaining({
+      expect(events.map((event) => event.event)).not.toContainEqual(expect.objectContaining({
         kind: 'run.changed',
         run: expect.objectContaining({ status: 'failed' })
       }));
-      expect(events).toContainEqual(expect.objectContaining({
+      expect(events.map((event) => event.event)).toContainEqual(expect.objectContaining({
         kind: 'agent.proposal.changed',
         proposal: expect.objectContaining({
           sessionId: accepted.sessionId,
           status: 'pending',
-          requestedCapabilities: ['file-read', 'file-write', 'browser', 'shell'],
+          requestedCapabilities: ['file-read', 'file-write', 'shell'],
           risk: 'write'
         })
       }));
@@ -253,6 +276,7 @@ function createBootstrap(): RuntimeBootstrap {
     installRoot: packageRoot,
     dataRoot,
     modelRoots: [],
+    runtimePolicy: createDefaultRuntimePolicySnapshot(),
     profile: 'default',
     workspaces: [{
       workspaceId: 'primary',

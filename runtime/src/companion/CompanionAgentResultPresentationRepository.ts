@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { AgentExecutionOutcome } from "../assistant/AgentHandoffContracts.js";
 import {
   mapCompanionMessageRow,
+  serializeCompanionMessageEnvelope,
   type CompanionMessageRow,
 } from "./CompanionMessagePersistence.js";
 import type { CompanionMessage } from "./types.js";
@@ -154,13 +155,14 @@ export class CompanionAgentResultPresentationRepository {
     const at = nowIso();
     this.db.prepare(
       `INSERT INTO companion_messages
-        (id, session_id, role, content, status, trusted, memory_eligible,
+        (id, session_id, role, content, status, content_envelope_json, memory_eligible,
          model_name, client_name, storage_root, created_at, updated_at, metadata_json)
-       VALUES (?, ?, 'assistant', ?, 'completed', 1, 1, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, 'assistant', ?, 'completed', ?, 1, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id,
       input.identity.sessionId,
       input.content,
+      serializeCompanionMessageEnvelope("assistant", "completed", id),
       input.modelName ?? null,
       input.clientName ?? null,
       this.storageRoot,

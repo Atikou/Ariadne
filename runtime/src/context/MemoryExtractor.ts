@@ -22,8 +22,7 @@ export class RuleMemoryExtractor implements IMemoryExtractor {
           summary: pref.summary,
           importance: 0.7,
           confidence: 0.6,
-          source: "extractor",
-          sourceId: m.id,
+          provenance: { origin: "user", sourceId: m.id, evidence: "explicit_user_message" },
         });
       }
     }
@@ -40,8 +39,7 @@ export class RuleMemoryExtractor implements IMemoryExtractor {
         summary: pref.slice(0, 80),
         importance: 0.75,
         confidence: 0.7,
-        source: "summary",
-        sourceId: summary.id,
+        provenance: { origin: "model_summary", sourceId: summary.id },
       });
     }
     if (summary.projectId) {
@@ -54,17 +52,13 @@ export class RuleMemoryExtractor implements IMemoryExtractor {
           summary: note.slice(0, 80),
           importance: 0.6,
           confidence: 0.65,
-          source: "summary",
-          sourceId: summary.id,
+          provenance: { origin: "model_summary", sourceId: summary.id },
         });
       }
     }
     return dedupeCandidates(out);
   }
 }
-
-/** @deprecated 使用 RuleMemoryExtractor；保留类名兼容旧引用。 */
-export class MemoryExtractor extends RuleMemoryExtractor {}
 
 /** 用 LLM 抽取长期记忆；解析失败时回退规则抽取。 */
 export function createLlmMemoryExtractor(
@@ -138,7 +132,7 @@ function parseCandidateJson(raw: string): MemoryCandidate[] {
       summary: item.summary ? String(item.summary) : undefined,
       importance: typeof item.importance === "number" ? item.importance : 0.6,
       confidence: typeof item.confidence === "number" ? item.confidence : 0.6,
-      source: "llm_extractor",
+      provenance: { origin: "model_summary", evidence: "llm_extractor" },
     });
   }
   return out;

@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { projectMessage } from "../src/application/publicProjection.js";
 import { CompanionConversationWorkflow } from "../src/companion/CompanionConversationWorkflow.js";
 import { CompanionKnowledgeService } from "../src/companion/CompanionKnowledgeService.js";
+import { createCompanionMessageEnvelope } from "../src/companion/CompanionMessagePersistence.js";
 import type { CompanionStreamEvent } from "../src/companion/CompanionStreamContracts.js";
 import { CompanionStorageManager } from "../src/companion/CompanionStorageManager.js";
 import type { ChatRequest, ModelResponse } from "../src/model/types.js";
@@ -30,7 +31,11 @@ describe("Companion empty response recovery", () => {
       role: "assistant",
       content: "",
       status: "completed",
-      trusted: true,
+      contentEnvelope: createCompanionMessageEnvelope(
+        "assistant",
+        "completed",
+        "assistant-empty",
+      ),
       memoryEligible: false,
       storageRoot: "C:\\runtime\\companion",
       createdAt: "2026-07-24T07:52:50.098Z",

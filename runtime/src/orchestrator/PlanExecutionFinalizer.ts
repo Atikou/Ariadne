@@ -9,7 +9,7 @@ import type { PlanService } from "../plan/PlanService.js";
 import type { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { TraceLogger } from "../trace/TraceLogger.js";
 import { toPublicError } from "../util/publicError.js";
-import type { RunStore } from "./RunStore.js";
+import type { RunAggregateRepository } from "../run/RunAggregateRepository.js";
 import type { SessionWorkspaceResolver } from "./SessionWorkspaceResolver.js";
 import { rollbackFileChangesForRun, type TaskRollbackResult } from "./TaskRollback.js";
 import type { TaskService } from "./TaskService.js";
@@ -26,7 +26,7 @@ export interface PlanExecutionFinalizerDeps {
   sessionWorkspace: SessionWorkspaceResolver;
   registry: ToolRegistry;
   tasks: TaskStore;
-  runs: RunStore;
+  runs: RunAggregateRepository;
   trace?: TraceLogger;
 }
 
@@ -77,11 +77,40 @@ export class PlanExecutionFinalizer {
         : {}),
     };
 
-    this.deps.runs.update(input.runId, {
-      status: terminal.runStatus,
-      error: null,
-      resultJson: JSON.stringify(resultPayload),
-    });
+    const current = this.requireRun(input.runId);
+    if (terminal.runStatus === "completed") {
+      this.deps.runs.execute({
+        type: "run.complete",
+        runId: current.id,
+        expectedAggregateVersion: current.aggregateVersion,
+        result: resultPayload,
+      });
+    } else if (terminal.runStatus === "cancelled") {
+      this.deps.runs.execute({
+        type: "run.cancel",
+        runId: current.id,
+        expectedAggregateVersion: current.aggregateVersion,
+        reason: "Plan execution was cancelled.",
+      });
+    } else if (terminal.runStatus === "blocked") {
+      this.deps.runs.execute({
+        type: "run.block",
+        runId: current.id,
+        expectedAggregateVersion: current.aggregateVersion,
+        reason: {
+          code: "plan_execution_blocked",
+          message: "Plan execution stopped before reaching a terminal result.",
+          details: resultPayload,
+        },
+      });
+    } else {
+      this.deps.runs.execute({
+        type: "run.fail",
+        runId: current.id,
+        expectedAggregateVersion: current.aggregateVersion,
+        error: "Plan execution failed.",
+      });
+    }
     this.recordOrUpdateAttempt({
       taskId: input.task.id,
       runId: input.runId,
@@ -134,10 +163,14 @@ export class PlanExecutionFinalizer {
       status: "failed",
       error: publicError.message,
     });
-    this.deps.runs.update(input.runId, {
-      status: "failed",
-      error: publicError.message,
-      resultJson: rollback ? JSON.stringify({ rollback }) : undefined,
+    const current = this.requireRun(input.runId);
+    this.deps.runs.execute({
+      type: "run.fail",
+      runId: current.id,
+      expectedAggregateVersion: current.aggregateVersion,
+      error: rollback
+        ? `${publicError.message}\nRollback: ${JSON.stringify(rollback)}`
+        : publicError.message,
     });
     this.deps.trace?.write({ type: "run_end", runId: input.runId, status: "failed" });
     this.finishFailedPlan(input.planId, input.version, input.planRunId, publicError.code);
@@ -197,25 +230,18 @@ export class PlanExecutionFinalizer {
     const uncertainty = detectTaskUncertainty(input.executedPlan);
     if (!uncertainty.uncertain) return undefined;
 
-    const planRun = this.deps.runs.create({
+    const createdPlanRun = this.deps.runs.execute({
+      type: "run.create",
       kind: "plan",
-      status: "running",
       goal: input.planGoal,
       parentRunId: input.runId,
       sessionId: input.sessionId,
       taskId: input.task.id,
-      correlation: {
-        runId: "",
-        sessionId: input.sessionId,
-        taskId: input.task.id,
-      },
     });
-    this.deps.runs.update(planRun.id, {
-      correlationJson: JSON.stringify({
-        runId: planRun.id,
-        sessionId: input.sessionId,
-        taskId: input.task.id,
-      }),
+    const planRun = this.deps.runs.execute({
+      type: "run.start",
+      runId: createdPlanRun.id,
+      expectedAggregateVersion: createdPlanRun.aggregateVersion,
     });
     this.deps.trace?.write({
       type: "task_fallback_plan_start",
@@ -233,13 +259,15 @@ export class PlanExecutionFinalizer {
         requestId: planRun.id,
         planner: input.planner ?? this.deps.planner,
       });
-      this.deps.runs.update(planRun.id, {
-        status: "completed",
-        resultJson: JSON.stringify({
+      this.deps.runs.execute({
+        type: "run.complete",
+        runId: planRun.id,
+        expectedAggregateVersion: planRun.aggregateVersion,
+        result: {
           planId: draft.planId,
           version: draft.version,
           planHash: draft.planHash,
-        }),
+        },
       });
       this.deps.trace?.write({
         type: "task_fallback_plan_end",
@@ -259,7 +287,13 @@ export class PlanExecutionFinalizer {
       };
     } catch (error) {
       const publicError = toPublicError(error, "生成降级计划失败");
-      this.deps.runs.update(planRun.id, { status: "failed", error: publicError.message });
+      const currentPlanRun = this.requireRun(planRun.id);
+      this.deps.runs.execute({
+        type: "run.fail",
+        runId: currentPlanRun.id,
+        expectedAggregateVersion: currentPlanRun.aggregateVersion,
+        error: publicError.message,
+      });
       this.deps.trace?.write({
         type: "task_fallback_plan_end",
         runId: input.runId,
@@ -294,6 +328,12 @@ export class PlanExecutionFinalizer {
       runGrantedPermissions: input.runGrantedPermissions,
       trace: this.deps.trace,
     });
+  }
+
+  private requireRun(runId: string) {
+    const run = this.deps.runs.get(runId);
+    if (!run) throw new Error(`Run ${runId} does not exist.`);
+    return run;
   }
 }
 

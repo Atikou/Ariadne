@@ -10,6 +10,8 @@ import path from "node:path";
 
 import type {
   RuntimeEventMessage,
+  RuntimeCountTokensPayload,
+  RuntimeCountTokensResult,
   RuntimeGeneratePayload,
   RuntimeGenerateResult,
   RuntimeLoadPayload,
@@ -43,6 +45,9 @@ async function handle(message: RuntimeRequestMessage): Promise<void> {
       await load(message.payload as RuntimeLoadPayload);
       send({ id: message.id, type: "result", result: { loadedModelId } });
       return;
+    case "count_tokens":
+      countTokens(message.id, message.payload as RuntimeCountTokensPayload);
+      return;
     case "generate":
       await generate(message.id, message.payload as RuntimeGeneratePayload);
       return;
@@ -58,6 +63,16 @@ async function handle(message: RuntimeRequestMessage): Promise<void> {
     default:
       throw new Error(`未知 llama.cpp worker 命令：${message.command}`);
   }
+}
+
+function countTokens(id: string, input: RuntimeCountTokensPayload): void {
+  if (!model || !loadedModelId) throw new Error("llama.cpp 模型尚未加载");
+  const toolSchema = input.tools?.length ? `\ntools:${JSON.stringify(input.tools)}` : "";
+  const result: RuntimeCountTokensResult = {
+    tokens: model.tokenize(`${renderMessages(input.messages)}${toolSchema}`).length,
+    tokenizer: `llama.cpp:${loadedModelId}`,
+  };
+  send({ id, type: "result", result });
 }
 
 async function load(input: RuntimeLoadPayload): Promise<void> {

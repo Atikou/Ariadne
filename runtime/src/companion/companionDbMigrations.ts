@@ -1,7 +1,7 @@
 import type { SqliteMigration } from "../storage/sqliteMigration.js";
 import { DEFAULT_PERSONA } from "./PersonaRuntime.js";
 
-export const COMPANION_DB_SCHEMA_VERSION = 7;
+export const COMPANION_DB_SCHEMA_VERSION = 8;
 
 export const COMPANION_DB_MIGRATIONS: readonly SqliteMigration[] = [
   {
@@ -147,112 +147,98 @@ export const COMPANION_DB_MIGRATIONS: readonly SqliteMigration[] = [
     version: 3,
     name: "single_immutable_default_persona",
     up(db) {
-      db.exec("BEGIN IMMEDIATE");
-      try {
-        const at = new Date().toISOString();
-        db.prepare(
-          `INSERT INTO companion_personas
-            (id, name, system_prompt, description, readonly, active, version, created_at, updated_at)
-           VALUES ('default', ?, ?, '内置默认人格', 1, 1, 1, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET
-             name=excluded.name,
-             system_prompt=excluded.system_prompt,
-             description=excluded.description,
-             readonly=1,
-             active=1`,
-        ).run(DEFAULT_PERSONA.name, DEFAULT_PERSONA.systemPrompt, at, at);
-        db.prepare(
-          `INSERT OR IGNORE INTO companion_persona_versions
-            (id, persona_id, version, name, system_prompt, description, created_at)
-           VALUES ('default:1', 'default', 1, ?, ?, '内置默认人格', ?)`,
-        ).run(DEFAULT_PERSONA.name, DEFAULT_PERSONA.systemPrompt, at);
+      const at = new Date().toISOString();
+      db.prepare(
+        `INSERT INTO companion_personas
+          (id, name, system_prompt, description, readonly, active, version, created_at, updated_at)
+         VALUES ('default', ?, ?, '内置默认人格', 1, 1, 1, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name=excluded.name,
+           system_prompt=excluded.system_prompt,
+           description=excluded.description,
+           readonly=1,
+           active=1`,
+      ).run(DEFAULT_PERSONA.name, DEFAULT_PERSONA.systemPrompt, at, at);
+      db.prepare(
+        `INSERT OR IGNORE INTO companion_persona_versions
+          (id, persona_id, version, name, system_prompt, description, created_at)
+         VALUES ('default:1', 'default', 1, ?, ?, '内置默认人格', ?)`,
+      ).run(DEFAULT_PERSONA.name, DEFAULT_PERSONA.systemPrompt, at);
 
-        const redundant = db
-          .prepare(
-            `SELECT id FROM companion_personas
-             WHERE id != 'default'
-               AND system_prompt = ?
-               AND lower(trim(name)) IN ('companion', 'companion 副本')`,
-          )
-          .all(DEFAULT_PERSONA.systemPrompt) as Array<{ id: string }>;
-        for (const persona of redundant) {
-          db.prepare(`UPDATE companion_sessions SET persona_id='default' WHERE persona_id=?`).run(persona.id);
-          db.prepare(`DELETE FROM companion_personas WHERE id=?`).run(persona.id);
-        }
-
-        const activePersonas = db
-          .prepare(
-            `SELECT id, name FROM companion_personas
-             WHERE active=1
-             ORDER BY readonly DESC, created_at ASC, id ASC`,
-          )
-          .all() as Array<{ id: string; name: string }>;
-        const usedNames = new Set<string>();
-        for (const persona of activePersonas) {
-          const baseName = persona.name.trim() || "自定义人格";
-          let uniqueName = baseName;
-          let suffix = 2;
-          while (usedNames.has(uniqueName.toLocaleLowerCase())) {
-            uniqueName = `${baseName} (${suffix})`;
-            suffix += 1;
-          }
-          usedNames.add(uniqueName.toLocaleLowerCase());
-          if (uniqueName !== persona.name) {
-            db.prepare(`UPDATE companion_personas SET name=? WHERE id=?`).run(uniqueName, persona.id);
-          }
-        }
-
-        db.exec(`
-          CREATE UNIQUE INDEX IF NOT EXISTS idx_companion_personas_active_name
-            ON companion_personas(lower(trim(name))) WHERE active=1;
-
-          CREATE TRIGGER IF NOT EXISTS trg_companion_default_persona_no_delete
-          BEFORE DELETE ON companion_personas
-          WHEN OLD.id='default'
-          BEGIN
-            SELECT RAISE(ABORT, 'default_persona_cannot_be_deleted');
-          END;
-
-          CREATE TRIGGER IF NOT EXISTS trg_companion_default_persona_no_update
-          BEFORE UPDATE ON companion_personas
-          WHEN OLD.id='default'
-          BEGIN
-            SELECT RAISE(ABORT, 'default_persona_is_immutable');
-          END;
-        `);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
+      const redundant = db
+        .prepare(
+          `SELECT id FROM companion_personas
+           WHERE id != 'default'
+             AND system_prompt = ?
+             AND lower(trim(name)) IN ('companion', 'companion 副本')`,
+        )
+        .all(DEFAULT_PERSONA.systemPrompt) as Array<{ id: string }>;
+      for (const persona of redundant) {
+        db.prepare(`UPDATE companion_sessions SET persona_id='default' WHERE persona_id=?`).run(persona.id);
+        db.prepare(`DELETE FROM companion_personas WHERE id=?`).run(persona.id);
       }
+
+      const activePersonas = db
+        .prepare(
+          `SELECT id, name FROM companion_personas
+           WHERE active=1
+           ORDER BY readonly DESC, created_at ASC, id ASC`,
+        )
+        .all() as Array<{ id: string; name: string }>;
+      const usedNames = new Set<string>();
+      for (const persona of activePersonas) {
+        const baseName = persona.name.trim() || "自定义人格";
+        let uniqueName = baseName;
+        let suffix = 2;
+        while (usedNames.has(uniqueName.toLocaleLowerCase())) {
+          uniqueName = `${baseName} (${suffix})`;
+          suffix += 1;
+        }
+        usedNames.add(uniqueName.toLocaleLowerCase());
+        if (uniqueName !== persona.name) {
+          db.prepare(`UPDATE companion_personas SET name=? WHERE id=?`).run(uniqueName, persona.id);
+        }
+      }
+
+      db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_companion_personas_active_name
+          ON companion_personas(lower(trim(name))) WHERE active=1;
+
+        CREATE TRIGGER IF NOT EXISTS trg_companion_default_persona_no_delete
+        BEFORE DELETE ON companion_personas
+        WHEN OLD.id='default'
+        BEGIN
+          SELECT RAISE(ABORT, 'default_persona_cannot_be_deleted');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_companion_default_persona_no_update
+        BEFORE UPDATE ON companion_personas
+        WHEN OLD.id='default'
+        BEGIN
+          SELECT RAISE(ABORT, 'default_persona_is_immutable');
+        END;
+      `);
     },
   },
   {
     version: 4,
     name: "unique_atomic_memory_candidate_confirmation",
     up(db) {
-      db.exec("BEGIN IMMEDIATE");
-      try {
-        db.exec(`
-          UPDATE companion_memories
-          SET candidate_id=NULL
-          WHERE candidate_id IS NOT NULL
-            AND rowid NOT IN (
-              SELECT MIN(rowid)
-              FROM companion_memories
-              WHERE candidate_id IS NOT NULL
-              GROUP BY candidate_id
-            );
+      db.exec(`
+        UPDATE companion_memories
+        SET candidate_id=NULL
+        WHERE candidate_id IS NOT NULL
+          AND rowid NOT IN (
+            SELECT MIN(rowid)
+            FROM companion_memories
+            WHERE candidate_id IS NOT NULL
+            GROUP BY candidate_id
+          );
 
-          CREATE UNIQUE INDEX IF NOT EXISTS idx_companion_memories_candidate_unique
-            ON companion_memories(candidate_id)
-            WHERE candidate_id IS NOT NULL;
-        `);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_companion_memories_candidate_unique
+          ON companion_memories(candidate_id)
+          WHERE candidate_id IS NOT NULL;
+      `);
     },
   },
   {
@@ -328,6 +314,41 @@ export const COMPANION_DB_MIGRATIONS: readonly SqliteMigration[] = [
 
         CREATE INDEX IF NOT EXISTS idx_companion_agent_proposal_outbox_recovery
           ON companion_agent_proposal_outbox(state, created_at);
+      `);
+    },
+  },
+  {
+    version: 8,
+    name: "structured_companion_content_envelopes",
+    up(db) {
+      db.exec(`
+        ALTER TABLE companion_messages ADD COLUMN content_envelope_json TEXT;
+
+        UPDATE companion_messages
+        SET content_envelope_json = json_object(
+          'origin', CASE
+            WHEN role = 'user' THEN 'user'
+            WHEN role = 'assistant' THEN 'model'
+            ELSE 'workflow'
+          END,
+          'provenance', json_object('sourceId', id),
+          'integrityEvidence', json_object(
+            'kind', CASE
+              WHEN role = 'user' THEN 'user_authored'
+              WHEN role = 'assistant' AND status = 'completed' THEN 'conversational_reply'
+              ELSE 'unverified'
+            END,
+            'verified', json(CASE
+              WHEN role = 'user' OR (role = 'assistant' AND status = 'completed')
+                THEN 'true'
+              ELSE 'false'
+            END)
+          ),
+          'instructionAuthority', CASE WHEN role = 'user' THEN 'user' ELSE 'data' END,
+          'dataSensitivity', 'workspace',
+          'externalContent', json(CASE WHEN role = 'user' THEN 'false' ELSE 'true' END),
+          'egressAllowed', json_array('model')
+        );
       `);
     },
   },
