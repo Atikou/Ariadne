@@ -10,6 +10,7 @@ import {
   runtimeCommandSchema
 } from '../src/index.js';
 import { modelInferenceProfileSchema, permissionRequestSchema, runSummarySchema } from '../src/public.js';
+import { createDefaultRuntimePolicySnapshot } from '../src/settings.js';
 
 const runtimeInstanceId = '744b7985-512d-49ef-bc1e-7cb87674ea3f';
 
@@ -36,6 +37,7 @@ describe('Ariadne Runtime protocol', () => {
         inference: {}
       }],
       routingStrategy: 'cloud-first',
+      runtimePolicy: createDefaultRuntimePolicySnapshot(),
       profile: 'default',
       workspaces: [
         { workspaceId: 'primary', label: 'Project', rootPath: 'E:\\Project', access: 'write' }
@@ -44,7 +46,7 @@ describe('Ariadne Runtime protocol', () => {
     });
 
     expect(bootstrap.type).toBe('bootstrap');
-    expect(JSON.stringify(bootstrap)).not.toMatch(/port|token|secret|apiKey/i);
+    expect(JSON.stringify(bootstrap)).not.toMatch(/"(?:port|token|secret|apiKey)"\s*:/i);
   });
 
   it('rejects unknown bootstrap fields and protocol versions', () => {
@@ -58,13 +60,34 @@ describe('Ariadne Runtime protocol', () => {
       installRoot: 'E:\\Runtime',
       dataRoot: 'C:\\Data',
       modelRoots: [],
+      runtimePolicy: createDefaultRuntimePolicySnapshot(),
       profile: 'default',
       workspaces: [{ workspaceId: 'primary', label: 'Project', rootPath: 'E:\\Project', access: 'read' }],
       production: false
     } as const;
 
     expect(hostToRuntimeMessageSchema.safeParse({ ...base, unexpected: true }).success).toBe(false);
-    expect(hostToRuntimeMessageSchema.safeParse({ ...base, protocolVersion: '2.0' }).success).toBe(false);
+    expect(hostToRuntimeMessageSchema.safeParse({ ...base, protocolVersion: '1.0' }).success).toBe(false);
+    const { runtimePolicy: _runtimePolicy, ...missingPolicy } = base;
+    expect(hostToRuntimeMessageSchema.safeParse(missingPolicy).success).toBe(false);
+    expect(hostToRuntimeMessageSchema.safeParse({
+      ...base,
+      runtimePolicy: {
+        ...base.runtimePolicy,
+        mcp: {
+          servers: [{
+            id: 'remote',
+            enabled: true,
+            trustAnnotations: false,
+            transport: 'streamable-http',
+            endpoint: 'https://mcp.example.test',
+            credentialRef: 'oauth:mcp-remote',
+            token: 'must-never-cross-bootstrap'
+          }],
+          legacySseFallback: false
+        }
+      }
+    }).success).toBe(false);
   });
 
   it('keeps plan decisions separate from permission decisions', () => {
@@ -96,6 +119,30 @@ describe('Ariadne Runtime protocol', () => {
       kind: 'planHandoffs.resume',
       handoffId: 'handoff-1'
     })).toBeTruthy();
+  });
+
+  it('validates governed memory commands and rejects ambiguous edited lifecycle', () => {
+    expect(runtimeCommandSchema.safeParse({
+      kind: 'memories.update',
+      memoryId: 'memory-1',
+      value: 'updated',
+      lifecycleState: 'active'
+    }).success).toBe(true);
+    expect(runtimeCommandSchema.safeParse({
+      kind: 'memories.update',
+      memoryId: 'memory-1'
+    }).success).toBe(false);
+    expect(runtimeCommandSchema.safeParse({
+      kind: 'memories.update',
+      memoryId: 'memory-1',
+      value: 'updated',
+      lifecycleState: 'rejected'
+    }).success).toBe(false);
+    expect(runtimeCommandSchema.safeParse({
+      kind: 'memories.update',
+      memoryId: 'memory-1',
+      sensitivity: 'secret'
+    }).success).toBe(false);
   });
 
   it('preserves narrowed Agent capabilities and exact permission approval scopes', () => {
@@ -135,6 +182,22 @@ describe('Ariadne Runtime protocol', () => {
 
   it('rejects unregistered arbitrary commands', () => {
     expect(runtimeCommandSchema.safeParse({ kind: 'runtime.execute', method: 'anything' }).success).toBe(false);
+  });
+
+  it('exposes opaque content-addressed Resource Registry commands without paths', () => {
+    expect(runtimeCommandSchema.parse({
+      kind: 'resources.list',
+      ownerType: 'session',
+      ownerId: 'session-1'
+    })).toMatchObject({ kind: 'resources.list', limit: 200 });
+    expect(runtimeCommandSchema.parse({
+      kind: 'resources.get',
+      resourceId: 'resource-1'
+    })).toBeTruthy();
+    expect(runtimeCommandSchema.parse({
+      kind: 'resources.delete',
+      resourceId: 'resource-1'
+    })).toBeTruthy();
   });
 
   it('requires a client message identity for optimistic Chat reconciliation', () => {
@@ -198,7 +261,10 @@ describe('Ariadne Runtime protocol', () => {
       runId: 'run-1',
       title: '测试运行',
       status: 'running',
-      userFacingLabel: '执行中'
+      userFacingLabel: '执行中',
+      aggregateVersion: 1,
+      checkpointStage: 'running',
+      recoveryStatus: 'none'
     } as const;
     expect(runSummarySchema.safeParse({
       ...base,
@@ -272,15 +338,23 @@ describe('Ariadne Runtime protocol', () => {
       protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
       runtimeInstanceId,
       type: 'event',
-      sequence: 1,
       event: {
-        kind: 'runtime.status.changed',
-        status: {
-          availability: 'ready',
-          runtimeVersion: '0.1.0',
-          protocolVersion: '1.0',
-          capabilities: ['companion.chat'],
-          observedAt: '2026-07-21T12:00:00.000Z'
+        eventId: 'event-1',
+        cursor: 1,
+        schemaVersion: '2.0',
+        aggregateType: 'runtime',
+        aggregateId: 'runtime',
+        aggregateVersion: 1,
+        occurredAt: '2026-07-21T12:00:00.000Z',
+        event: {
+          kind: 'runtime.status.changed',
+          status: {
+            availability: 'ready',
+            runtimeVersion: '0.1.0',
+            protocolVersion: '2.0',
+            capabilities: ['companion.chat'],
+            observedAt: '2026-07-21T12:00:00.000Z'
+          }
         }
       }
     }).type).toBe('event');
@@ -292,20 +366,28 @@ describe('Ariadne Runtime protocol', () => {
       protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
       runtimeInstanceId,
       type: 'event',
-      sequence: 2,
       event: {
-        kind: 'companion.message.changed',
-        message: {
-          messageId: 'message-interrupted',
-          sessionId: 'session-interrupted',
-          role: 'assistant',
-          content: '已收到的部分内容',
-          status: 'interrupted',
-          createdAt: '2026-07-22T00:00:00.000Z',
-          error: {
-            code: 'COMPANION_TURN_PROTOCOL_ERROR',
-            message: 'Agent 提案格式无效，请重试。',
-            retryable: true
+        eventId: 'event-2',
+        cursor: 2,
+        schemaVersion: '2.0',
+        aggregateType: 'companion',
+        aggregateId: 'message-interrupted',
+        aggregateVersion: 1,
+        occurredAt: '2026-07-22T00:00:00.000Z',
+        event: {
+          kind: 'companion.message.changed',
+          message: {
+            messageId: 'message-interrupted',
+            sessionId: 'session-interrupted',
+            role: 'assistant',
+            content: '已收到的部分内容',
+            status: 'interrupted',
+            createdAt: '2026-07-22T00:00:00.000Z',
+            error: {
+              code: 'COMPANION_TURN_PROTOCOL_ERROR',
+              message: 'Agent 提案格式无效，请重试。',
+              retryable: true
+            }
           }
         }
       }
@@ -314,11 +396,93 @@ describe('Ariadne Runtime protocol', () => {
     expect(message).toMatchObject({
       type: 'event',
       event: {
-        message: {
-          status: 'interrupted',
-          error: { code: 'COMPANION_TURN_PROTOCOL_ERROR', retryable: true }
+        event: {
+          message: {
+            status: 'interrupted',
+            error: { code: 'COMPANION_TURN_PROTOCOL_ERROR', retryable: true }
+          }
         }
       }
     });
+  });
+
+  it('keeps Browser capability traffic on the private Runtime-to-Main protocol', () => {
+    const request = parseRuntimeToHostMessage({
+      protocol: ARIADNE_RUNTIME_PROTOCOL,
+      protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
+      runtimeInstanceId,
+      type: 'capability_request',
+      requestId: 'browser-request-1',
+      capability: 'browser',
+      operation: {
+        kind: 'browser.navigate',
+        url: 'https://example.test/'
+      }
+    });
+    expect(request).toMatchObject({
+      type: 'capability_request',
+      capability: 'browser',
+      operation: { kind: 'browser.navigate' }
+    });
+
+    const response = parseHostToRuntimeMessage({
+      protocol: ARIADNE_RUNTIME_PROTOCOL,
+      protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
+      runtimeInstanceId,
+      type: 'capability_response',
+      requestId: 'browser-request-1',
+      outcome: {
+        ok: true,
+        result: { available: true }
+      }
+    });
+    expect(response).toMatchObject({
+      type: 'capability_response',
+      outcome: { ok: true, result: { available: true } }
+    });
+
+    expect(() => parseRuntimeToHostMessage({
+      ...request,
+      operation: { kind: 'browser.navigate', url: 'file:///etc/passwd' }
+    })).toThrow();
+  });
+
+  it('keeps remote MCP JSON-RPC typed while credentials remain opaque', () => {
+    const request = parseRuntimeToHostMessage({
+      protocol: ARIADNE_RUNTIME_PROTOCOL,
+      protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
+      runtimeInstanceId,
+      type: 'capability_request',
+      requestId: 'mcp-request-1',
+      capability: 'mcp_remote',
+      operation: {
+        kind: 'mcp.remote.connect',
+        serverId: 'docs',
+        endpoint: 'https://mcp.example.test/messages',
+        credentialRef: 'mcp.docs'
+      }
+    });
+    expect(request).toMatchObject({
+      capability: 'mcp_remote',
+      operation: {
+        kind: 'mcp.remote.connect',
+        credentialRef: 'mcp.docs'
+      }
+    });
+    expect(JSON.stringify(request)).not.toContain('access_token');
+
+    expect(() => parseRuntimeToHostMessage({
+      ...request,
+      operation: {
+        kind: 'mcp.remote.send',
+        connectionId: '861ff28e-9b93-4eb7-8451-76dbb0bb3002',
+        message: {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/list',
+          unexpected: true
+        }
+      }
+    })).toThrow();
   });
 });

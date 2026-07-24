@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const ARIADNE_RUNTIME_PROTOCOL = 'ariadne_runtime' as const;
-export const ARIADNE_RUNTIME_PROTOCOL_VERSION = '1.0' as const;
+export const ARIADNE_RUNTIME_PROTOCOL_VERSION = '2.0' as const;
 // Public Runtime payloads may contain a persisted Companion message of up to
 // 2,000,000 characters. Reserve enough UTF-8 envelope space for that contract
 // while retaining a hard IPC memory ceiling.
@@ -35,7 +35,15 @@ export const resourceReferenceSchema = z
     resourceId: nonEmptyIdSchema,
     name: z.string().trim().min(1).max(512),
     mediaType: z.string().trim().min(1).max(255),
-    sizeBytes: z.number().int().nonnegative().max(2 * 1024 * 1024 * 1024)
+    sizeBytes: z.number().int().nonnegative().max(2 * 1024 * 1024 * 1024),
+    hash: z.string().regex(/^[a-f0-9]{64}$/),
+    lifecycle: z.enum(['temporary', 'session', 'run', 'persistent']),
+    sensitivity: z.enum(['public', 'workspace', 'sensitive', 'secret']),
+    provenance: z.object({
+      origin: z.string().trim().min(1).max(128),
+      sourceId: nonEmptyIdSchema.optional(),
+      summary: z.string().trim().min(1).max(1_024).optional()
+    }).strict()
   })
   .strict();
 
