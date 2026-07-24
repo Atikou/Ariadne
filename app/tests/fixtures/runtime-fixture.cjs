@@ -1,5 +1,43 @@
 const protocol = 'ariadne_runtime';
-const protocolVersion = '1.0';
+const protocolVersion = '2.0';
+let capabilityBootstrap;
+
+function sendReady(message) {
+  process.send({
+    protocol,
+    protocolVersion,
+    runtimeInstanceId: message.runtimeInstanceId,
+    type: 'ready',
+    runtimeVersion: process.env.ARIADNE_TEST_RUNTIME_VERSION || message.runtimeVersion,
+    capabilities: [],
+    storageSchemas: { fixture: 1 },
+    readyAt: new Date().toISOString()
+  }, () => process.send({
+    protocol,
+    protocolVersion,
+    runtimeInstanceId: message.runtimeInstanceId,
+    type: 'event',
+    event: {
+      eventId: 'fixture-ready-1',
+      cursor: 1,
+      schemaVersion: '2.0',
+      aggregateType: 'runtime',
+      aggregateId: 'runtime',
+      aggregateVersion: 1,
+      occurredAt: new Date().toISOString(),
+      event: {
+        kind: 'runtime.status.changed',
+        status: {
+          availability: 'ready',
+          runtimeVersion: process.env.ARIADNE_TEST_RUNTIME_VERSION || message.runtimeVersion,
+          protocolVersion,
+          capabilities: [],
+          observedAt: new Date().toISOString()
+        }
+      }
+    }
+  }));
+}
 
 process.on('message', (message) => {
   if (!message || message.protocol !== protocol || message.protocolVersion !== protocolVersion) {
@@ -7,16 +45,35 @@ process.on('message', (message) => {
     return;
   }
   if (message.type === 'bootstrap') {
-    process.send({
-      protocol,
-      protocolVersion,
-      runtimeInstanceId: message.runtimeInstanceId,
-      type: 'ready',
-      runtimeVersion: process.env.ARIADNE_TEST_RUNTIME_VERSION || message.runtimeVersion,
-      capabilities: [],
-      storageSchemas: { fixture: 1 },
-      readyAt: new Date().toISOString()
-    });
+    if (process.env.ARIADNE_TEST_RUNTIME_BEHAVIOR === 'capability_on_bootstrap') {
+      capabilityBootstrap = message;
+      process.send({
+        protocol,
+        protocolVersion,
+        runtimeInstanceId: message.runtimeInstanceId,
+        type: 'capability_request',
+        requestId: 'fixture-browser-health',
+        capability: 'browser',
+        operation: { kind: 'browser.health' }
+      });
+      return;
+    }
+    sendReady(message);
+    return;
+  }
+  if (message.type === 'capability_response') {
+    if (
+      !capabilityBootstrap
+      || message.requestId !== 'fixture-browser-health'
+      || message.outcome?.ok !== true
+      || message.outcome.result?.available !== true
+    ) {
+      process.exit(92);
+      return;
+    }
+    const bootstrap = capabilityBootstrap;
+    capabilityBootstrap = undefined;
+    sendReady(bootstrap);
     return;
   }
   if (message.type === 'request') {

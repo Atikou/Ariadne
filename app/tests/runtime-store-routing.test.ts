@@ -1,4 +1,4 @@
-import type { RuntimeCommand, RuntimeEvent } from '@ariadne/protocol/public';
+import type { RuntimeCommand, RuntimeEventEnvelope } from '@ariadne/protocol/public';
 import type { AriadneApi } from '../src/shared/contract';
 import { describe, expect, it } from 'vitest';
 
@@ -6,6 +6,7 @@ import {
   RuntimeStore,
   runtimeRequestErrorMessage
 } from '../src/renderer/src/core/runtime/runtime-store';
+import { emptyRuntimeSnapshot, runtimeEnvelope } from './runtime-event-fixture';
 
 describe('RuntimeStore command routing', () => {
   it('keeps Companion cancellation separate from Agent cancellation', async () => {
@@ -87,21 +88,31 @@ describe('RuntimeStore command routing', () => {
   });
 
   it('settles unfinished activities when their Run reaches a terminal state', async () => {
-    let emit!: (event: RuntimeEvent) => void;
+    let emit!: (event: RuntimeEventEnvelope) => void;
     const store = new RuntimeStore({
       getStatus: async () => ({
-        availability: 'stopped',
+        availability: 'ready',
         capabilities: [],
         observedAt: new Date().toISOString()
       }),
-      request: async () => ({ kind: 'acknowledged' }),
+      request: async (command) => {
+        if (command.kind === 'runtime.snapshot.get') return emptyRuntimeSnapshot();
+        if (command.kind === 'models.list' || command.kind === 'models.check') {
+          return { kind: 'models.catalog', models: [] };
+        }
+        if (command.kind === 'companion.sessions.list') {
+          return { kind: 'companion.sessions', sessions: [] };
+        }
+        if (command.kind === 'trace.list') return { kind: 'trace', entries: [] };
+        return { kind: 'acknowledged' };
+      },
       onEvent: (listener) => {
         emit = listener;
         return () => {};
       }
     });
     await store.initialize();
-    emit({
+    emit(runtimeEnvelope({
       kind: 'run.activity',
       activity: {
         activityId: 'tool-1',
@@ -111,17 +122,20 @@ describe('RuntimeStore command routing', () => {
         title: 'read_file',
         occurredAt: new Date().toISOString()
       }
-    });
-    emit({
+    }, 1));
+    emit(runtimeEnvelope({
       kind: 'run.changed',
       run: {
         runId: 'agent-run',
         origin: 'agent',
         title: '检查项目',
         status: 'cancelled',
-        userFacingLabel: '已取消'
+        userFacingLabel: '已取消',
+        aggregateVersion: 2,
+        checkpointStage: 'cancelled',
+        recoveryStatus: 'none'
       }
-    });
+    }, 2));
 
     expect(store.getSnapshot().activities).toEqual([
       expect.objectContaining({ activityId: 'tool-1', status: 'skipped' })

@@ -1,7 +1,9 @@
-import { app, Menu, Notification, Tray } from 'electron';
+import { app, Menu, Notification, shell, Tray } from 'electron';
 import { join } from 'node:path';
+import type { RuntimeCapabilityRequest } from '@ariadne/protocol/host';
 import type { AgentSettingsUpdate, AgentSettingsView, OpenWorkspaceResult } from '@shared/contract';
 import { AgentSettingsRepository } from './persistence/agent-settings-repository';
+import { McpOAuthCredentialVault } from './persistence/mcp-oauth-credential-vault';
 import { ElectronSafeStorageCipher } from './persistence/secret-cipher';
 import { StateRepository } from './persistence/state-repository';
 import { registerIpcHandlers } from './ipc/register-ipc';
@@ -14,6 +16,8 @@ import { InterruptionPolicy } from './services/interruption-policy';
 import { TerminalSessionService } from './services/terminal-service';
 import { WorkspaceFileService } from './services/workspace-file-service';
 import { ApprovalNotificationService } from './services/approval-notification-service';
+import { BrowserService } from './services/browser-service';
+import { McpRemoteService } from './runtime/mcp-remote-service';
 import { PreferencesCoordinator } from './services/preferences-coordinator';
 import { MainWindowController } from './windows/main-window';
 import { RendererSource } from './windows/renderer-source';
@@ -35,11 +39,22 @@ export class ApplicationController {
     userDataPath: app.getPath('userData'),
     packaged: app.isPackaged
   });
+  private readonly secretCipher = new ElectronSafeStorageCipher();
   private readonly agentSettings = new AgentSettingsRepository(
     join(app.getPath('userData'), 'settings.toml'),
-    new ElectronSafeStorageCipher(),
+    this.secretCipher,
     this.defaultWorkspaceRoot,
     join(app.getPath('userData'), 'agent-settings.json')
+  );
+  private readonly mcpOAuthVault = new McpOAuthCredentialVault(
+    join(app.getPath('userData'), 'mcp-oauth-vault.json'),
+    this.secretCipher
+  );
+  private readonly mcpRemote = new McpRemoteService(
+    this.mcpOAuthVault,
+    async (url) => {
+      await shell.openExternal(url);
+    }
   );
   private readonly gameActivity = new UnavailableGameActivityDetector();
   private readonly interruptionPolicy = new InterruptionPolicy();
@@ -55,6 +70,11 @@ export class ApplicationController {
   private readonly terminals = new TerminalSessionService((workspaceId) => (
     this.workspaceFiles.getRoot(workspaceId)
   ));
+  private readonly browser = new BrowserService({
+    audit: (event) => {
+      console.info('[browser-audit]', JSON.stringify(event));
+    }
+  });
   private readonly runtime = new RuntimeSupervisor(this.createRuntimeConfiguration());
   private readonly rendererSource = new RendererSource(join(__dirname, '../renderer'), {
     allowDevelopmentServer: !app.isPackaged
@@ -104,6 +124,11 @@ export class ApplicationController {
     return runElectronSmokeTest(window, outputRoot);
   }
 
+  async handleOpenUrl(rawUrl: string): Promise<boolean> {
+    await this.mcpOAuthVault.initialize();
+    return this.mcpRemote.handleOAuthCallback(rawUrl);
+  }
+
   async prepareToQuit(): Promise<void> {
     this.isQuitting = true;
     if (!this.cleanupPromise) {
@@ -119,6 +144,9 @@ export class ApplicationController {
         this.removeApprovalNotificationEvents = null;
         this.approvalNotifications.dispose();
         await this.runtime.stop('app_quit');
+        await this.mcpRemote.dispose();
+        await this.mcpOAuthVault.flush();
+        this.browser.dispose();
         this.rendererSource.stop();
         this.terminals.dispose();
         this.tray?.destroy();
@@ -129,8 +157,18 @@ export class ApplicationController {
   }
 
   private async startApplication(): Promise<void> {
-    await Promise.all([this.state.initialize(), this.agentSettings.initialize()]);
-    this.workspaceFiles.setWorkspaces(this.agentSettings.getRuntimeSettings().workspaces);
+    await Promise.all([
+      this.state.initialize(),
+      this.agentSettings.initialize(),
+      this.mcpOAuthVault.initialize()
+    ]);
+    const initialRuntimeSettings = this.agentSettings.getRuntimeSettings();
+    this.workspaceFiles.setWorkspaces(initialRuntimeSettings.workspaces);
+    this.browser.configure(
+      initialRuntimeSettings.runtimePolicy.browser,
+      initialRuntimeSettings.workspaces[0]?.workspaceId ?? 'primary'
+    );
+    await this.mcpRemote.configure(initialRuntimeSettings.runtimePolicy.mcp.servers);
     this.runtime.configure(this.createRuntimeConfiguration());
     const rendererUrl = this.rendererSource.start();
     const window = this.mainWindow.create(rendererUrl);
@@ -148,7 +186,7 @@ export class ApplicationController {
       mainWindow: this.mainWindow
     });
     this.removeApprovalNotificationEvents = this.runtime.onEvent((event) => {
-      void this.approvalNotifications.handleRuntimeEvent(event).catch((error: unknown) => {
+      void this.approvalNotifications.handleRuntimeEvent(event.event).catch((error: unknown) => {
         console.error('Approval notification event handling failed.', error);
       });
     });
@@ -162,7 +200,8 @@ export class ApplicationController {
   }
 
   private createRuntimeConfiguration() {
-    return createDesktopRuntimeConfiguration({
+    return {
+      ...createDesktopRuntimeConfiguration({
       appPath: app.getAppPath(),
       userDataPath: app.getPath('userData'),
       resourcesPath: process.resourcesPath,
@@ -170,7 +209,13 @@ export class ApplicationController {
       packaged: app.isPackaged,
       executablePath: process.execPath,
       agentSettings: this.agentSettings.getRuntimeSettings()
-    });
+      }),
+      capabilityHandler: async (request: RuntimeCapabilityRequest) => {
+        if (request.capability === 'browser') return this.browser.handle(request.operation);
+        if (request.capability === 'mcp_remote') return this.mcpRemote.handle(request.operation);
+        throw new Error('host_capability_unknown');
+      }
+    };
   }
 
   private async updateAgentSettings(settings: AgentSettingsUpdate): Promise<AgentSettingsView> {
@@ -203,6 +248,11 @@ export class ApplicationController {
 
   private async applyAgentSettings(saved: AgentSettingsView): Promise<void> {
     this.workspaceFiles.setWorkspaces(saved.workspaces);
+    this.browser.configure(
+      saved.runtimePolicy.browser,
+      saved.workspaces[0]?.workspaceId ?? 'primary'
+    );
+    await this.mcpRemote.configure(saved.runtimePolicy.mcp.servers);
     await this.runtime.restart(this.createRuntimeConfiguration());
   }
 

@@ -10,6 +10,7 @@ if (isSmokeTest && smokeUserData) {
 }
 
 if (process.platform === 'win32') app.setAppUserModelId('com.ariadne.desktop');
+if (app.isPackaged) app.setAsDefaultProtocolClient('ariadne');
 
 const hasSingleInstanceLock = isSmokeTest || app.requestSingleInstanceLock();
 
@@ -25,7 +26,22 @@ if (!hasSingleInstanceLock) {
       console.error('Application could not be shown.', error);
     });
   };
-  app.on('second-instance', showFromUserAction);
+  const handleOpenUrl = (url: string): void => {
+    void application.handleOpenUrl(url)
+      .then(() => application.showFromUserAction())
+      .catch((error: unknown) => {
+        console.error('Rejected MCP OAuth callback.', error);
+      });
+  };
+  app.on('second-instance', (_event, argv) => {
+    const callback = findMcpOAuthCallback(argv);
+    if (callback) handleOpenUrl(callback);
+    else showFromUserAction();
+  });
+  app.on('open-url', (event, url) => {
+    event.preventDefault();
+    handleOpenUrl(url);
+  });
   app.on('activate', showFromUserAction);
   app.on('before-quit', (event) => {
     if (quitPrepared) return;
@@ -44,6 +60,12 @@ if (!hasSingleInstanceLock) {
   void app.whenReady()
     .then(async () => {
       await application.start();
+      const startupCallback = findMcpOAuthCallback(process.argv);
+      if (startupCallback) {
+        await application.handleOpenUrl(startupCallback).catch((error: unknown) => {
+          console.error('Rejected startup MCP OAuth callback.', error);
+        });
+      }
       const smokeOutput = process.env.ARIADNE_SMOKE_TEST_OUTPUT;
       if (process.env.ARIADNE_SMOKE_TEST === '1' && smokeOutput) {
         let exitCode = 1;
@@ -61,4 +83,8 @@ if (!hasSingleInstanceLock) {
       process.exitCode = 1;
       app.quit();
     });
+}
+
+function findMcpOAuthCallback(values: readonly string[]): string | undefined {
+  return values.find((value) => /^ariadne:\/\/oauth\/mcp(?:[?#]|$)/u.test(value));
 }

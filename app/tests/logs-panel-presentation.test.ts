@@ -2,7 +2,10 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { traceMessageForDisplay } from '../src/shared/log-entry-presentation';
+import {
+  traceMessageForDisplay,
+  traceMetadataForDisplay
+} from '../src/shared/log-entry-presentation';
 
 describe('Logs panel presentation', () => {
   it('does not display an empty or category-identical trace message', () => {
@@ -18,6 +21,26 @@ describe('Logs panel presentation', () => {
       category: 'runtime.request.error',
       message: '模型服务暂时不可用。'
     })).toBe('模型服务暂时不可用。');
+  });
+
+  it('renders structured diagnostic metadata for inspection', () => {
+    expect(traceMetadataForDisplay({
+      category: 'companion.proposal.protocol',
+      message: '协议校验失败',
+      metadata: {
+        lifecycleStage: 'schema_validation',
+        fieldPaths: ['risk'],
+        retryable: true
+      }
+    })).toBe([
+      '{',
+      '  "lifecycleStage": "schema_validation",',
+      '  "fieldPaths": [',
+      '    "risk"',
+      '  ],',
+      '  "retryable": true',
+      '}'
+    ].join('\n'));
   });
 
   it('clips long categories inside a separated flexible grid column', async () => {

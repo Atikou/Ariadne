@@ -29,7 +29,7 @@ try {
   if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
     throw "Electron smoke test did not create a result file."
   }
-  $result = Get-Content -Raw -LiteralPath $resultPath | ConvertFrom-Json
+  $result = Get-Content -Raw -Encoding UTF8 -LiteralPath $resultPath | ConvertFrom-Json
   if ($result.passed -ne $true) {
     throw "Electron smoke result did not pass."
   }

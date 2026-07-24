@@ -105,6 +105,7 @@ export function createDesktopRuntimeConfiguration(
     }),
     routingStrategy: input.agentSettings.routingStrategy,
     agentPermissions: structuredClone(input.agentSettings.permissions),
+    runtimePolicy: structuredClone(input.agentSettings.runtimePolicy),
     workspaces: input.agentSettings.workspaces.map((workspace) => ({
       workspaceId: workspace.workspaceId,
       label: basename(workspace.rootPath) || 'Ariadne Workspace',

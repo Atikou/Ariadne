@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createDefaultRuntimePolicySnapshot } from '@ariadne/protocol/settings';
 
 import { RuntimeSupervisor, type RuntimeSupervisorOptions } from '../src/main/runtime/runtime-supervisor';
 
@@ -33,11 +34,29 @@ describe('RuntimeSupervisor', () => {
     });
     expect(supervisor.getStatus()).toMatchObject({
       availability: 'ready',
-      protocolVersion: '1.0'
+      protocolVersion: '2.0'
     });
     expect(statuses).toContain('starting');
     expect(statuses).toContain('ready');
   }, 30_000);
+
+  it('brokers private Runtime capability requests through Main before readiness', async () => {
+    const runtimeEntry = path.resolve(process.cwd(), 'tests', 'fixtures', 'runtime-fixture.cjs');
+    const options = createSupervisorOptions(runtimeEntry, {
+      ...process.env,
+      ARIADNE_TEST_RUNTIME_BEHAVIOR: 'capability_on_bootstrap'
+    }, []);
+    const requests: string[] = [];
+    options.capabilityHandler = async (request) => {
+      requests.push(request.operation.kind);
+      return { available: true };
+    };
+    const supervisor = new RuntimeSupervisor(options);
+    supervisors.push(supervisor);
+
+    await expect(supervisor.start()).resolves.toMatchObject({ type: 'ready' });
+    expect(requests).toEqual(['browser.health']);
+  }, 15_000);
 
   it('rejects in-flight work and restarts after an unexpected child exit', async () => {
     const environment = {
@@ -163,13 +182,15 @@ describe('RuntimeSupervisor', () => {
     supervisor.onStatus(() => { throw new Error('broken status observer'); });
     supervisor.onStatus((status) => observedStatuses.push(status.availability));
     supervisor.onEvent(() => { throw new Error('broken event observer'); });
-    supervisor.onEvent((event) => observedEvents.push(event.kind));
+    supervisor.onEvent((event) => observedEvents.push(event.event.kind));
 
     try {
       await supervisor.start();
       expect(supervisor.getStatus().availability).toBe('ready');
       expect(observedStatuses).toContain('ready');
-      expect(observedEvents).toContain('runtime.status.changed');
+      await vi.waitFor(() => {
+        expect(observedEvents).toContain('runtime.status.changed');
+      });
       expect(consoleError).toHaveBeenCalled();
     } finally {
       consoleError.mockRestore();
@@ -234,6 +255,7 @@ function createSupervisorOptions(
       sandboxMode: 'workspace-write',
       allowedPermissions: ['read', 'write', 'shell', 'network', 'dangerous']
     },
+    runtimePolicy: createDefaultRuntimePolicySnapshot(),
     workspaces: [{
       workspaceId: 'test',
       label: 'Test workspace',

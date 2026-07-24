@@ -20,9 +20,21 @@ describe('Ariadne desktop architecture boundary', () => {
       const source = await readFile(file, 'utf8');
       const normalized = file.replaceAll('\\', '/');
       const isRuntimeHost = normalized.includes('/src/main/runtime/');
-      if (/createServer\s*\(|\.listen\s*\(|\bfetch\s*\(|node:https?|https?\.request\s*\(/.test(source)) {
+      const isBrowserCapability = normalized.endsWith('/src/main/services/browser-service.ts');
+      const isMainCompositionRoot = normalized.endsWith('/src/main/application.ts');
+      if (/createServer\s*\(|\.listen\s*\(/.test(source)) {
         offenders.push(file);
-      } else if (!isRuntimeHost && /child_process|node:child_process|@ariadne\/protocol\/host/.test(source)) {
+      } else if (
+        /\bfetch\s*\(|node:https?|https?\.request\s*\(/.test(source)
+        && !isBrowserCapability
+      ) {
+        offenders.push(file);
+      } else if (
+        !isRuntimeHost
+        && !isBrowserCapability
+        && !isMainCompositionRoot
+        && /child_process|node:child_process|@ariadne\/protocol\/host/.test(source)
+      ) {
         offenders.push(file);
       }
     }

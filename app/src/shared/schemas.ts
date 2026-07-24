@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { modelInferenceProfileSchema } from '@ariadne/protocol/public';
+import { runtimePolicySnapshotSchema } from '@ariadne/protocol/settings';
 import type { JsonObject, JsonValue } from './contract';
 import {
   AGENT_APPROVAL_POLICIES,
@@ -98,7 +99,8 @@ export const agentSettingsUpdateSchema = z
     workspaceRoot: absolutePathSchema,
     workspaceAccess: z.enum(['read', 'write']),
     localModelRoots: z.array(absolutePathSchema).max(8),
-    providers: z.record(agentProviderIdSchema, agentProviderSettingsUpdateSchema)
+    providers: z.record(agentProviderIdSchema, agentProviderSettingsUpdateSchema),
+    runtimePolicy: runtimePolicySnapshotSchema.optional()
   })
   .strict();
 
@@ -119,7 +121,7 @@ const agentWorkspaceSettingsViewSchema = z.object({
 }).strict();
 
 export const agentSettingsViewSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
   routingStrategy: agentRoutingStrategySchema,
   permissionMode: z.enum(AGENT_PERMISSION_MODES),
   customPermissions: z.object({
@@ -131,7 +133,8 @@ export const agentSettingsViewSchema = z.object({
   workspaceAccess: z.enum(['read', 'write']),
   workspaces: z.array(agentWorkspaceSettingsViewSchema).min(1).max(32),
   localModelRoots: z.array(absolutePathSchema).max(8),
-  providers: z.record(agentProviderIdSchema, agentProviderSettingsViewSchema)
+  providers: z.record(agentProviderIdSchema, agentProviderSettingsViewSchema),
+  runtimePolicy: runtimePolicySnapshotSchema
 }).strict();
 
 export const showWindowRequestSchema = z

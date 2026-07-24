@@ -167,7 +167,7 @@ export interface AgentProviderSettingsView {
 }
 
 export interface AgentSettingsView {
-  schemaVersion: 1;
+  schemaVersion: 2;
   routingStrategy: AgentRoutingStrategy;
   permissionMode: AgentPermissionMode;
   customPermissions: AgentCustomPermissions;
@@ -176,6 +176,7 @@ export interface AgentSettingsView {
   workspaces: AgentWorkspaceSettingsView[];
   localModelRoots: string[];
   providers: Record<AgentProviderId, AgentProviderSettingsView>;
+  runtimePolicy: RuntimePolicySnapshot;
 }
 
 export interface AgentWorkspaceSettingsView {
@@ -201,6 +202,7 @@ export interface AgentSettingsUpdate {
   workspaceAccess: 'read' | 'write';
   localModelRoots: string[];
   providers: Record<AgentProviderId, AgentProviderSettingsUpdate>;
+  runtimePolicy?: RuntimePolicySnapshot | undefined;
 }
 
 export type WakeSource = 'user' | 'shortcut' | 'voice' | 'system';
@@ -307,7 +309,7 @@ export interface AriadneApi {
   runtime: {
     getStatus(): Promise<RuntimeStatus>;
     request(command: RuntimeCommand): Promise<RuntimeResult>;
-    onEvent(listener: (event: RuntimeEvent) => void): () => void;
+    onEvent(listener: (event: RuntimeEventEnvelope) => void): () => void;
   };
   system: {
     getCapabilityStatuses(): Promise<CapabilityStatus[]>;
@@ -334,7 +336,8 @@ export interface AriadneApi {
 import type {
   ModelInferenceProfile,
   RuntimeCommand,
-  RuntimeEvent,
+  RuntimeEventEnvelope,
   RuntimeResult,
   RuntimeStatus
 } from '@ariadne/protocol/public';
+import type { RuntimePolicySnapshot } from '@ariadne/protocol/settings';

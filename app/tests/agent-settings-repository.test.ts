@@ -62,7 +62,14 @@ describe('AgentSettingsRepository', () => {
     await repository.initialize();
 
     const defaults = repository.getView();
+    expect(defaults.schemaVersion).toBe(2);
     expect(defaults.routingStrategy).toBe('cloud-first');
+    expect(defaults.runtimePolicy).toMatchObject({
+      schemaVersion: 1,
+      mcp: { servers: [], legacySseFallback: false },
+      browser: { sessionMode: 'temporary', allowSensitiveInput: false },
+      telemetry: { enabled: false }
+    });
     expect(defaults.providers.openai.apiKeyStatus).toBe('missing');
     expect(parseToml(await readFile(file, 'utf8'))).toMatchObject({
       permissionMode: 'request',
@@ -167,6 +174,8 @@ describe('AgentSettingsRepository', () => {
     await repository.initialize();
     const migrated = repository.getView();
     expect(migrated.routingStrategy).toBe('local-first');
+    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.runtimePolicy.embedding).toEqual({ provider: 'lexical' });
     expect(migrated.workspaceRoot).toBe(directory);
     expect(migrated.workspaceAccess).toBe('write');
     expect(migrated.workspaces).toEqual([{ workspaceId: 'primary', rootPath: directory, access: 'write' }]);

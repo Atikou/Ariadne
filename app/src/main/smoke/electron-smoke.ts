@@ -99,6 +99,18 @@ interface PopoutObservation {
   untrustedWindowDenied: boolean;
 }
 
+interface LiveTraceObservation {
+  eventReceived: boolean;
+  panelRendered: boolean;
+  category: string | null;
+  message: string | null;
+  level: string | null;
+  metadataVisible: boolean;
+  errorPanelRendered: boolean;
+  errorMessage: string | null;
+  errorMetadataVisible: boolean;
+}
+
 export async function runElectronSmokeTest(window: BrowserWindow, outputRoot: string): Promise<boolean> {
   if (!isAbsolute(outputRoot)) throw new Error('ARIADNE_SMOKE_TEST_OUTPUT must be absolute.');
   await mkdir(outputRoot, { recursive: true });
@@ -123,6 +135,7 @@ export async function runElectronSmokeTest(window: BrowserWindow, outputRoot: st
 
   try {
     const observation = await waitForRendererReady(window);
+    const liveTraceObservation = await verifyLiveTracePanel(window);
     const popoutObservation = await verifyDockviewPopout(window);
     const settingsTomlCreated = await fileExists(join(app.getPath('userData'), 'settings.toml'));
     window.setSkipTaskbar(true);
@@ -171,6 +184,14 @@ export async function runElectronSmokeTest(window: BrowserWindow, outputRoot: st
       && observation.providerDisclosureWorks
       && observation.narrowSettingsLayoutFits
       && observation.logsLayoutNoOverlap
+      && liveTraceObservation.eventReceived
+      && liveTraceObservation.panelRendered
+      && liveTraceObservation.category === 'companion.turn.input'
+      && liveTraceObservation.level === 'info'
+      && liveTraceObservation.metadataVisible
+      && liveTraceObservation.errorPanelRendered
+      && Boolean(liveTraceObservation.errorMessage)
+      && liveTraceObservation.errorMetadataVisible
       && popoutObservation.created
       && popoutObservation.rendered
       && popoutObservation.privilegedBridgeAbsent
@@ -183,6 +204,7 @@ export async function runElectronSmokeTest(window: BrowserWindow, outputRoot: st
     await writeFile(join(outputRoot, 'electron-runtime-smoke.json'), JSON.stringify({
       passed,
       observation,
+      liveTraceObservation,
       popoutObservation,
       settingsTomlCreated,
       consoleErrors,
@@ -193,6 +215,95 @@ export async function runElectronSmokeTest(window: BrowserWindow, outputRoot: st
   } finally {
     window.webContents.removeListener('console-message', onConsoleMessage);
   }
+}
+
+async function verifyLiveTracePanel(window: BrowserWindow): Promise<LiveTraceObservation> {
+  return window.webContents.executeJavaScript(`(async () => {
+    const runtime = window.ariadne?.runtime;
+    const logsTab = document.querySelector('.module-tab[data-module-id="logs"]');
+    if (logsTab instanceof HTMLElement) logsTab.click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    if (
+      typeof runtime?.request !== 'function'
+      || typeof runtime?.onEvent !== 'function'
+    ) {
+      return {
+        eventReceived: false,
+        panelRendered: false,
+        category: null,
+        message: null,
+        level: null,
+        metadataVisible: false,
+        errorPanelRendered: false,
+        errorMessage: null,
+        errorMetadataVisible: false
+      };
+    }
+
+    let removeListener = () => {};
+    const liveEntry = new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        removeListener();
+        resolve(null);
+      }, 8_000);
+      removeListener = runtime.onEvent((envelope) => {
+        const event = envelope?.event;
+        if (event?.kind !== 'trace.appended' || event.entry?.category !== 'companion.turn.input') return;
+        clearTimeout(timeout);
+        removeListener();
+        resolve(event.entry);
+      });
+    });
+
+    let accepted = null;
+    try {
+      accepted = await runtime.request({
+        kind: 'companion.chat.start',
+        clientMessageId: 'electron-smoke-live-trace-' + crypto.randomUUID(),
+        workspaceId: 'primary',
+        message: 'Electron smoke live Trace delivery check',
+        routingStrategy: 'privacy-first',
+        resources: []
+      });
+    } catch {}
+    const entry = await liveEntry;
+    if (accepted?.kind === 'companion.chat.accepted') {
+      try {
+        await runtime.request({ kind: 'companion.chat.cancel', runId: accepted.runId });
+      } catch {}
+    }
+
+    const deadline = Date.now() + 5_000;
+    let row = null;
+    let errorRow = null;
+    while (Date.now() < deadline) {
+      row = [...document.querySelectorAll('.logs-panel .log-row')].find((candidate) =>
+        candidate.querySelector('code')?.textContent?.trim() === 'companion.turn.input'
+      ) ?? null;
+      errorRow = [...document.querySelectorAll('.logs-panel .log-row.is-error')].find((candidate) =>
+        candidate.querySelector('code')?.textContent?.trim() === 'companion.turn.error'
+      ) ?? null;
+      if (row && errorRow) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const message = row?.querySelector('.log-copy > p')?.textContent?.trim() ?? null;
+    const details = row?.querySelector('.log-copy details');
+    const errorMessage = errorRow?.querySelector('.log-copy > p')?.textContent?.trim() ?? null;
+    const errorDetails = errorRow?.querySelector('.log-copy details');
+    return {
+      eventReceived: Boolean(entry),
+      panelRendered: Boolean(row && message),
+      category: entry?.category ?? null,
+      message,
+      level: entry?.level ?? null,
+      metadataVisible: details instanceof HTMLDetailsElement
+        && details.textContent?.includes('inputPreview') === true,
+      errorPanelRendered: Boolean(errorRow && errorMessage),
+      errorMessage,
+      errorMetadataVisible: errorDetails instanceof HTMLDetailsElement
+        && errorDetails.textContent?.includes('errorCode') === true
+    };
+  })()`, true) as Promise<LiveTraceObservation>;
 }
 
 async function verifyDockviewPopout(mainWindow: BrowserWindow): Promise<PopoutObservation> {

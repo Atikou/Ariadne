@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { RuntimeEvent } from '@ariadne/protocol/public';
+import type { RuntimeEventEnvelope } from '@ariadne/protocol/public';
 import type { AriadneApi, TerminalDataEvent, TerminalExitEvent } from '@shared/contract';
 import { IPC_CHANNELS } from '@shared/ipc';
 
@@ -22,7 +22,7 @@ const api: AriadneApi = {
   runtime: {
     getStatus: () => ipcRenderer.invoke(IPC_CHANNELS.runtimeStatus),
     request: (command) => ipcRenderer.invoke(IPC_CHANNELS.runtimeRequest, command),
-    onEvent: (listener) => subscribe<RuntimeEvent>(IPC_CHANNELS.runtimeEvent, listener)
+    onEvent: (listener) => subscribe<RuntimeEventEnvelope>(IPC_CHANNELS.runtimeEvent, listener)
   },
   system: {
     getCapabilityStatuses: () => ipcRenderer.invoke(IPC_CHANNELS.systemCapabilityStatuses),

@@ -13,6 +13,7 @@ import type {
   RunSummary,
   RuntimeCommand,
   RuntimeEvent,
+  RuntimeEventEnvelope,
   RuntimeResult,
   RuntimeStatus,
   TraceEntry,
@@ -87,6 +88,11 @@ export class RuntimeStore {
   private refreshPromise: Promise<void> | null = null;
   private modelCheckPromise: Promise<void> | null = null;
   private removeEventListener: (() => void) | null = null;
+  private snapshotRevision: number | null = null;
+  private lastEventCursor = 0;
+  private readonly seenEventIds = new Set<string>();
+  private readonly aggregateVersions = new Map<string, number>();
+  private bufferedEvents: RuntimeEventEnvelope[] = [];
   private sessionSelectionGeneration = 0;
   private pendingChatTurn: PendingChatTurn | null = null;
 
@@ -103,7 +109,7 @@ export class RuntimeStore {
     if (!this.initializePromise) {
       const generation = ++this.initializationGeneration;
       this.removeEventListener = this.api.onEvent((event) => {
-        if (generation === this.initializationGeneration) this.applyEvent(event);
+        if (generation === this.initializationGeneration) this.receiveEvent(event);
       });
       this.initializePromise = this.initializeRuntime(generation);
     }
@@ -116,6 +122,11 @@ export class RuntimeStore {
     this.removeEventListener?.();
     this.removeEventListener = null;
     this.initializePromise = null;
+    this.snapshotRevision = null;
+    this.lastEventCursor = 0;
+    this.seenEventIds.clear();
+    this.aggregateVersions.clear();
+    this.bufferedEvents = [];
   }
 
   async refresh(): Promise<void> {
@@ -132,13 +143,14 @@ export class RuntimeStore {
     this.update({ lastError: null });
     this.checkModelsInBackground();
     const selectedSessionId = this.snapshot.selectedSessionId;
+    const domainSnapshot = await this.api.request({ kind: 'runtime.snapshot.get' });
+    if (domainSnapshot.kind !== 'runtime.snapshot') {
+      throw new Error('Runtime returned an invalid snapshot result.');
+    }
+    this.applyResult(domainSnapshot);
     const commands: RuntimeCommand[] = [
       { kind: 'models.list' },
       { kind: 'companion.sessions.list' },
-      { kind: 'agent.proposals.list' },
-      { kind: 'runs.list' },
-      { kind: 'permissions.list' },
-      { kind: 'planHandoffs.list' },
       { kind: 'trace.list', limit: 200 }
     ];
     const settled = await Promise.allSettled(commands.map((command) => this.requestAndApply(command)));
@@ -461,6 +473,12 @@ export class RuntimeStore {
       case 'runtime.status':
         this.applyStatus(result.status);
         return;
+      case 'runtime.snapshot':
+        this.applyDomainSnapshot(result.snapshot);
+        return;
+      case 'events.replay':
+        for (const event of result.events) this.receiveEvent(event);
+        return;
       case 'models.catalog':
         this.update({ models: result.models });
         return;
@@ -506,8 +524,50 @@ export class RuntimeStore {
         this.update({ planHandoffs: upsertBy(this.snapshot.planHandoffs, result.handoff, 'handoffId') });
         return;
       case 'trace':
-        this.update({ trace: result.entries });
+        this.update({ trace: mergeTraceEntries(this.snapshot.trace, result.entries) });
     }
+  }
+
+  private applyDomainSnapshot(snapshot: Extract<RuntimeResult, { kind: 'runtime.snapshot' }>['snapshot']): void {
+    this.snapshotRevision = snapshot.revision;
+    this.lastEventCursor = Math.max(this.lastEventCursor, snapshot.revision);
+    this.aggregateVersions.clear();
+    for (const run of snapshot.runs) {
+      this.aggregateVersions.set(`run:${run.runId}`, run.aggregateVersion);
+    }
+    this.update({
+      runs: snapshot.runs,
+      permissions: snapshot.permissions,
+      planHandoffs: snapshot.planHandoffs,
+      proposals: snapshot.proposals
+    });
+    const buffered = this.bufferedEvents
+      .filter((event) => event.cursor > snapshot.revision)
+      .sort((left, right) => left.cursor - right.cursor);
+    this.bufferedEvents = [];
+    for (const event of buffered) this.receiveEvent(event);
+  }
+
+  private receiveEvent(envelope: RuntimeEventEnvelope): void {
+    if (this.snapshotRevision === null) {
+      this.bufferedEvents.push(envelope);
+      if (envelope.event.kind === 'runtime.status.changed') {
+        this.applyEvent(envelope.event);
+      }
+      return;
+    }
+    if (envelope.cursor <= this.snapshotRevision || this.seenEventIds.has(envelope.eventId)) return;
+    const aggregateKey = `${envelope.aggregateType}:${envelope.aggregateId}`;
+    const currentVersion = this.aggregateVersions.get(aggregateKey) ?? 0;
+    if (envelope.aggregateVersion <= currentVersion) return;
+    this.aggregateVersions.set(aggregateKey, envelope.aggregateVersion);
+    this.seenEventIds.add(envelope.eventId);
+    if (this.seenEventIds.size > 4_000) {
+      const oldest = this.seenEventIds.values().next();
+      if (!oldest.done) this.seenEventIds.delete(oldest.value);
+    }
+    this.lastEventCursor = Math.max(this.lastEventCursor, envelope.cursor);
+    this.applyEvent(envelope.event);
   }
 
   private applyEvent(event: RuntimeEvent): void {
@@ -558,7 +618,7 @@ export class RuntimeStore {
         this.update({ planHandoffs: upsertBy(this.snapshot.planHandoffs, event.handoff, 'handoffId') });
         return;
       case 'trace.appended':
-        this.update({ trace: [...this.snapshot.trace.slice(-499), event.entry] });
+        this.update({ trace: mergeTraceEntries(this.snapshot.trace, [event.entry]) });
     }
   }
 
@@ -662,6 +722,17 @@ export class RuntimeStore {
     this.snapshot = { ...this.snapshot, ...patch };
     for (const listener of this.listeners) listener();
   }
+}
+
+function mergeTraceEntries(
+  current: readonly TraceEntry[],
+  incoming: readonly TraceEntry[],
+): TraceEntry[] {
+  const entries = new Map<string, TraceEntry>();
+  for (const entry of [...current, ...incoming]) entries.set(entry.traceId, entry);
+  return [...entries.values()]
+    .sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt))
+    .slice(-500);
 }
 
 export function runtimeRequestErrorMessage(

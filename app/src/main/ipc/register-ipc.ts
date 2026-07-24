@@ -9,7 +9,7 @@ import {
   type WebContents
 } from 'electron';
 import { Buffer } from 'node:buffer';
-import { runtimeCommandSchema, runtimeEventSchema } from '@ariadne/protocol/public';
+import { runtimeCommandSchema, runtimeEventEnvelopeSchema } from '@ariadne/protocol/public';
 import { IPC_CHANNELS } from '@shared/ipc';
 import {
   agentSettingsUpdateSchema,
@@ -65,7 +65,7 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     dependencies.terminals.close(event.sender.id, request.sessionId);
   });
   const removeRuntimeEvents = dependencies.runtime.onEvent((event) => {
-    const parsed = runtimeEventSchema.parse(event);
+    const parsed = runtimeEventEnvelopeSchema.parse(event);
     for (const renderer of dependencies.mainWindow.getPrivilegedRendererContents()) {
       renderer.send(IPC_CHANNELS.runtimeEvent, parsed);
     }

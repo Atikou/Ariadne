@@ -5,6 +5,11 @@ import { parse as parseToml, stringify as stringifyToml, type TomlTable } from '
 import { z } from 'zod';
 import { modelInferenceProfileSchema, type ModelInferenceProfile } from '@ariadne/protocol/public';
 import {
+  createDefaultRuntimePolicySnapshot,
+  runtimePolicySnapshotSchema,
+  type RuntimePolicySnapshot
+} from '@ariadne/protocol/settings';
+import {
   AGENT_APPROVAL_POLICIES,
   AGENT_PERMISSION_MODES,
   AGENT_PROVIDER_CATALOG,
@@ -54,7 +59,7 @@ const persistedProviderFileSchema = z.object({
   encryptedApiKey: encryptedApiKeySchema.optional()
 }).strict();
 const persistedAgentSettingsBase = {
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
   routingStrategy: agentRoutingStrategySchema,
   localModelRoots: z.array(z.string().min(1).max(32_768).refine(
     (value) => /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value)
@@ -67,16 +72,19 @@ const persistedAgentSettingsSchema = z.object({
   workspaceRoot: absoluteWorkspacePathSchema,
   workspaceAccess: z.enum(['read', 'write']),
   workspaces: z.array(persistedWorkspaceSchema).min(1).max(32),
-  providers: z.record(agentProviderIdSchema, persistedProviderSchema)
+  providers: z.record(agentProviderIdSchema, persistedProviderSchema),
+  runtimePolicy: runtimePolicySnapshotSchema
 }).strict();
 const persistedAgentSettingsFileSchema = z.object({
   ...persistedAgentSettingsBase,
+  schemaVersion: z.union([z.literal(1), z.literal(2)]),
   permissionMode: z.enum(AGENT_PERMISSION_MODES).optional(),
   customPermissions: customPermissionsSchema.optional(),
   workspaceRoot: absoluteWorkspacePathSchema.optional(),
   workspaceAccess: z.enum(['read', 'write']).optional(),
   workspaces: z.array(persistedWorkspaceSchema).min(1).max(32).optional(),
-  providers: z.partialRecord(agentProviderIdSchema, persistedProviderFileSchema)
+  providers: z.partialRecord(agentProviderIdSchema, persistedProviderFileSchema),
+  runtimePolicy: runtimePolicySnapshotSchema.optional()
 }).strict();
 
 type PersistedAgentSettings = z.infer<typeof persistedAgentSettingsSchema>;
@@ -110,6 +118,7 @@ export interface RuntimeAgentSettings {
   workspaces: AgentWorkspaceSettingsView[];
   localModelRoots: string[];
   providers: Record<AgentProviderId, RuntimeAgentProviderSettings>;
+  runtimePolicy: RuntimePolicySnapshot;
 }
 
 export interface AddWorkspaceResult {
@@ -152,7 +161,7 @@ export class AgentSettingsRepository {
 
   getView(): AgentSettingsView {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       routingStrategy: this.settings.routingStrategy,
       permissionMode: this.settings.permissionMode,
       customPermissions: structuredClone(this.settings.customPermissions),
@@ -166,7 +175,8 @@ export class AgentSettingsRepository {
         model: provider.model,
         inference: structuredClone(provider.inference),
         apiKeyStatus: this.apiKeyStatus(provider.encryptedApiKey)
-      }))
+      })),
+      runtimePolicy: structuredClone(this.settings.runtimePolicy)
     };
   }
 
@@ -188,7 +198,8 @@ export class AgentSettingsRepository {
           inference: structuredClone(provider.inference),
           ...(apiKey ? { apiKey } : {})
         };
-      })
+      }),
+      runtimePolicy: structuredClone(this.settings.runtimePolicy)
     };
   }
 
@@ -213,6 +224,7 @@ export class AgentSettingsRepository {
       next.workspaceAccess = workspaceAccessFor(update.permissionMode, update.customPermissions);
       next.workspaces = normalizeWorkspaceCatalog(update.workspaceRoot, next.workspaceAccess, next.workspaces);
       next.localModelRoots = [...new Set(update.localModelRoots)];
+      if (update.runtimePolicy) next.runtimePolicy = structuredClone(update.runtimePolicy);
       for (const id of AGENT_PROVIDER_IDS) {
         const source = update.providers[id];
         const target = next.providers[id];
@@ -361,7 +373,7 @@ function createDefaultAgentSettings(defaultWorkspaceRoot: string): PersistedAgen
     allowedPermissions: [...AGENT_TOOL_PERMISSIONS]
   };
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     routingStrategy: 'cloud-first',
     permissionMode: 'request',
     customPermissions,
@@ -375,7 +387,8 @@ function createDefaultAgentSettings(defaultWorkspaceRoot: string): PersistedAgen
       model: AGENT_PROVIDER_CATALOG[id].defaultModel,
       inference: structuredClone(AGENT_PROVIDER_CATALOG[id].defaultInference),
       encryptedApiKey: null
-    }])) as PersistedAgentSettings['providers']
+    }])) as PersistedAgentSettings['providers'],
+    runtimePolicy: createDefaultRuntimePolicySnapshot()
   };
 }
 
@@ -398,6 +411,7 @@ function parsePersistedAgentSettings(input: unknown, defaultWorkspaceRoot: strin
   return persistedAgentSettingsSchema.parse({
     ...defaults,
     ...parsed,
+    schemaVersion: 2,
     permissionMode,
     customPermissions,
     workspaceRoot,
@@ -413,7 +427,8 @@ function parsePersistedAgentSettings(input: unknown, defaultWorkspaceRoot: strin
             encryptedApiKey: saved.encryptedApiKey ?? null
           }
         : defaults.providers[id]];
-    }))
+    })),
+    runtimePolicy: parsed.runtimePolicy ?? defaults.runtimePolicy
   });
 }
 
@@ -426,6 +441,7 @@ function toTomlDocument(settings: PersistedAgentSettings): TomlTable {
     workspaceAccess: settings.workspaceAccess,
     localModelRoots: settings.localModelRoots,
     customPermissions: structuredClone(settings.customPermissions),
+    runtimePolicy: structuredClone(settings.runtimePolicy),
     workspaces: settings.workspaces.map((workspace) => ({ ...workspace })),
     providers: Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => {
       const provider = settings.providers[id];

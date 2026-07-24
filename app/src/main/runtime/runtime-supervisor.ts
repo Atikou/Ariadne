@@ -13,12 +13,14 @@ import {
   type ModelProviderBootstrap,
   type RuntimeReady,
   type RuntimeResponse,
+  type RuntimeCapabilityRequest,
   type RuntimeToHostMessage
 } from '@ariadne/protocol/host';
+import type { RuntimePolicySnapshot } from '@ariadne/protocol/settings';
 import {
   runtimeCommandSchema,
   type RuntimeCommand,
-  type RuntimeEvent,
+  type RuntimeEventEnvelope,
   type RuntimeResult,
   type RuntimeStatus
 } from '@ariadne/protocol/public';
@@ -44,6 +46,7 @@ export interface RuntimeSupervisorOptions {
   modelProviders: ModelProviderBootstrap[];
   routingStrategy: 'local-first' | 'cloud-first' | 'privacy-first' | 'quality-first';
   agentPermissions: AgentPermissionsBootstrap;
+  runtimePolicy: RuntimePolicySnapshot;
   workspaces: RuntimeWorkspaceConfiguration[];
   profile: string;
   appVersion: string;
@@ -56,6 +59,9 @@ export interface RuntimeSupervisorOptions {
   shutdownTimeoutMs?: number;
   restartDelaysMs?: readonly number[];
   restartStabilityMs?: number;
+  capabilityHandler?: (
+    request: RuntimeCapabilityRequest
+  ) => Promise<Record<string, unknown>>;
 }
 
 interface PendingRequest {
@@ -99,14 +105,15 @@ export class RuntimeSupervisor {
   private restartTimer: NodeJS.Timeout | null = null;
   private restartStabilityTimer: NodeJS.Timeout | null = null;
   private restartCount = 0;
-  private lastSequence = 0;
+  private lastEventCursor = 0;
+  private eventDeliveryQueue: Promise<void> = Promise.resolve();
   private lastDiagnostic: string | null = null;
   private stopping = false;
   private disposed = false;
   private capabilities: RuntimeStatus['capabilities'] = [];
   private currentStatus: RuntimeStatus = this.createStatus('stopped');
   private readonly pending = new Map<string, PendingRequest>();
-  private readonly eventListeners = new Set<(event: RuntimeEvent) => void>();
+  private readonly eventListeners = new Set<(event: RuntimeEventEnvelope) => void>();
   private readonly statusListeners = new Set<(status: RuntimeStatus) => void>();
 
   constructor(options: RuntimeSupervisorOptions) {
@@ -119,7 +126,7 @@ export class RuntimeSupervisor {
     return structuredClone(this.currentStatus);
   }
 
-  onEvent(listener: (event: RuntimeEvent) => void): () => void {
+  onEvent(listener: (event: RuntimeEventEnvelope) => void): () => void {
     this.eventListeners.add(listener);
     return () => this.eventListeners.delete(listener);
   }
@@ -139,7 +146,7 @@ export class RuntimeSupervisor {
     this.stopping = false;
     this.restartCount = 0;
     this.clearRestartStabilityTimer();
-    this.lastSequence = 0;
+    this.lastEventCursor = 0;
     this.lastDiagnostic = null;
     this.readySnapshot = null;
   }
@@ -153,7 +160,7 @@ export class RuntimeSupervisor {
       this.stopping = false;
       this.restartCount = 0;
       this.clearRestartStabilityTimer();
-      this.lastSequence = 0;
+      this.lastEventCursor = 0;
       this.lastDiagnostic = null;
       this.readySnapshot = null;
       return this.startNow();
@@ -333,6 +340,7 @@ export class RuntimeSupervisor {
       modelProviders: this.options.modelProviders.map((provider) => ({ ...provider })),
       routingStrategy: this.options.routingStrategy,
       agentPermissions: structuredClone(this.options.agentPermissions),
+      runtimePolicy: structuredClone(this.options.runtimePolicy),
       profile: this.options.profile,
       workspaces: this.options.workspaces.map((workspace) => ({ ...workspace })),
       production: this.options.production
@@ -360,12 +368,14 @@ export class RuntimeSupervisor {
         this.handleResponse(message);
         return;
       case 'event':
-        if (message.sequence <= this.lastSequence) {
-          this.handleProtocolViolation('Runtime 事件序号未单调递增。');
-          return;
-        }
-        this.lastSequence = message.sequence;
-        this.notifyEventListeners(message.event);
+        this.eventDeliveryQueue = this.eventDeliveryQueue
+          .then(() => this.deliverEvent(message.event))
+          .catch((error) => {
+            this.handleProtocolViolation(toError(error, 'Runtime event replay failed.').message);
+          });
+        return;
+      case 'capability_request':
+        void this.handleCapabilityRequest(child, message);
         return;
       case 'shutdown_complete':
         if (
@@ -374,6 +384,44 @@ export class RuntimeSupervisor {
         ) {
           this.shutdownAttempt.resolve();
         }
+    }
+  }
+
+  private async handleCapabilityRequest(
+    child: ChildProcess,
+    message: RuntimeCapabilityRequest
+  ): Promise<void> {
+    const handler = this.options.capabilityHandler;
+    try {
+      if (!handler) throw new Error('host_capability_unavailable');
+      const result = await handler(message);
+      if (child !== this.child || message.runtimeInstanceId !== this.runtimeInstanceId) return;
+      await this.send(child, {
+        protocol: ARIADNE_RUNTIME_PROTOCOL,
+        protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
+        runtimeInstanceId: message.runtimeInstanceId,
+        type: 'capability_response',
+        requestId: message.requestId,
+        outcome: { ok: true, result }
+      });
+    } catch (error) {
+      if (child !== this.child || message.runtimeInstanceId !== this.runtimeInstanceId) return;
+      const failure = toError(error, 'Host capability failed.');
+      await this.send(child, {
+        protocol: ARIADNE_RUNTIME_PROTOCOL,
+        protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
+        runtimeInstanceId: message.runtimeInstanceId,
+        type: 'capability_response',
+        requestId: message.requestId,
+        outcome: {
+          ok: false,
+          error: {
+            code: 'host_capability_failed',
+            message: failure.message.slice(0, 1_024),
+            retryable: false
+          }
+        }
+      }).catch(() => undefined);
     }
   }
 
@@ -422,7 +470,6 @@ export class RuntimeSupervisor {
     this.child = null;
     this.runtimeInstanceId = null;
     this.readySnapshot = null;
-    this.lastSequence = 0;
     if (this.shutdownAttempt?.child === child) this.shutdownAttempt.resolve();
     this.failStartup(error);
     this.rejectPending(error);
@@ -441,7 +488,6 @@ export class RuntimeSupervisor {
     this.child = null;
     this.runtimeInstanceId = null;
     this.readySnapshot = null;
-    this.lastSequence = 0;
     if (this.shutdownAttempt?.child === child) this.shutdownAttempt.resolve();
     const unexpected = !this.stopping && !this.disposed;
     const detail = unexpected
@@ -547,11 +593,33 @@ export class RuntimeSupervisor {
         console.error('Runtime status observer failed.', error);
       }
     }
-    const event: RuntimeEvent = { kind: 'runtime.status.changed', status: snapshot };
-    this.notifyEventListeners(event);
   }
 
-  private notifyEventListeners(event: RuntimeEvent): void {
+  private async deliverEvent(event: RuntimeEventEnvelope): Promise<void> {
+    if (event.cursor <= this.lastEventCursor) return;
+    if (this.lastEventCursor > 0 && event.cursor > this.lastEventCursor + 1) {
+      while (this.lastEventCursor + 1 < event.cursor) {
+        const replay = await this.request({
+          kind: 'events.replay',
+          afterCursor: this.lastEventCursor,
+          limit: 2_000
+        });
+        if (replay.kind !== 'events.replay' || replay.events.length === 0) {
+          throw new Error(`Runtime event gap after cursor ${this.lastEventCursor}.`);
+        }
+        for (const replayed of replay.events) {
+          if (replayed.cursor >= event.cursor) break;
+          this.notifyEventListeners(replayed);
+          this.lastEventCursor = replayed.cursor;
+        }
+      }
+    }
+    if (event.cursor <= this.lastEventCursor) return;
+    this.notifyEventListeners(event);
+    this.lastEventCursor = event.cursor;
+  }
+
+  private notifyEventListeners(event: RuntimeEventEnvelope): void {
     for (const listener of this.eventListeners) {
       try {
         listener(structuredClone(event));

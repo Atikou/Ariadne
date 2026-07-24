@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { createDefaultRuntimePolicySnapshot } from '@ariadne/protocol/settings';
 import { createDesktopRuntimeConfiguration, resolveDefaultWorkspaceRoot } from '../src/main/runtime/runtime-configuration';
 
 describe('desktop Runtime configuration', () => {
@@ -29,6 +30,7 @@ describe('desktop Runtime configuration', () => {
           { workspaceId: 'workspace-secondary', rootPath: path.resolve(process.cwd(), 'secondary'), access: 'write' }
         ],
         localModelRoots: [path.resolve(process.cwd(), '.test-models')],
+        runtimePolicy: createDefaultRuntimePolicySnapshot(),
         providers: {
           openai: { enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'openai-test', inference: {}, apiKey: 'openai-secret' },
           deepseek: { enabled: true, baseUrl: 'https://api.deepseek.com', model: 'deepseek-test', inference: {}, apiKey: 'deepseek-secret' },
@@ -43,6 +45,7 @@ describe('desktop Runtime configuration', () => {
       approvalPolicy: 'risk-based',
       proposalApproval: 'automatic'
     });
+    expect(configuration.runtimePolicy).toEqual(createDefaultRuntimePolicySnapshot());
     expect(configuration.environment).toMatchObject({
       OPENAI_API_KEY: 'openai-secret',
       DEEPSEEK_API_KEY: 'deepseek-secret',
@@ -157,6 +160,7 @@ function testRuntimeSettings(
     workspaceAccess: 'write',
     workspaces: [{ workspaceId: 'primary', rootPath: workspaceRoot, access: 'write' }],
     localModelRoots: [],
+    runtimePolicy: createDefaultRuntimePolicySnapshot(),
     providers: {
       openai: { enabled: false, baseUrl: 'https://api.openai.com/v1', model: 'openai-test', inference: {} },
       deepseek: { enabled: false, baseUrl: 'https://api.deepseek.com', model: 'deepseek-test', inference: {} },

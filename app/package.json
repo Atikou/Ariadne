@@ -18,10 +18,12 @@
     "test": "vitest run",
     "package:prepare": "npm run build --workspace @ariadne/protocol && npm run build --workspace @ariadne/runtime && node ../scripts/prepare-runtime-package.mjs --arch=x64",
     "package:dir": "npm run package:prepare && npm run build && electron-builder --win --x64 --dir",
-    "package:win": "node ../scripts/verify-windows-release-signing-environment.mjs && npm run package:prepare && npm run build && electron-builder --win nsis --x64 --config.forceCodeSigning=true && node ../scripts/verify-windows-release-signatures.mjs"
+    "package:win:build": "npm run package:prepare && npm run build && electron-builder --win nsis --x64 --config.forceCodeSigning=true",
+    "package:win": "node ../scripts/verify-windows-release-signing-environment.mjs && npm run package:win:build && node ../scripts/verify-packaged-runtime-assets.mjs && node ../scripts/verify-windows-release-signatures.mjs"
   },
   "dependencies": {
     "@ariadne/protocol": "file:../packages/protocol",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "dockview-react": "^7.0.2",
@@ -49,6 +51,14 @@
   "build": {
     "appId": "com.ariadne.desktop",
     "artifactName": "Ariadne-${version}-${arch}.${ext}",
+    "protocols": [
+      {
+        "name": "Ariadne MCP OAuth",
+        "schemes": [
+          "ariadne"
+        ]
+      }
+    ],
     "directories": {
       "output": "../dist/electron"
     },
@@ -91,7 +101,10 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "include": "build/installer.nsh",
+      "runAfterFinish": false
     }
   }
 }

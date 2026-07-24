@@ -24,13 +24,15 @@ describe('production packaging pipeline', () => {
       'utf8'
     );
 
-    expect(appPackage.scripts['package:win']).toContain('package:prepare');
+    expect(appPackage.scripts['package:win']).toContain('package:win:build');
+    expect(appPackage.scripts['package:win:build']).toContain('package:prepare');
     expect(appPackage.scripts['package:prepare']).toContain('build --workspace @ariadne/protocol');
     expect(appPackage.scripts['package:prepare']).toContain('build --workspace @ariadne/runtime');
     expect(appPackage.scripts['package:prepare']).toContain('--arch=x64');
-    expect(appPackage.scripts['package:win']).toContain('--x64');
+    expect(appPackage.scripts['package:win:build']).toContain('--x64');
     expect(appPackage.scripts['package:win']).toContain('verify-windows-release-signing-environment.mjs');
-    expect(appPackage.scripts['package:win']).toContain('--config.forceCodeSigning=true');
+    expect(appPackage.scripts['package:win:build']).toContain('--config.forceCodeSigning=true');
+    expect(appPackage.scripts['package:win']).toContain('verify-packaged-runtime-assets.mjs');
     expect(appPackage.scripts['package:win']).toContain('verify-windows-release-signatures.mjs');
     expect(rootPackage.scripts['verify:release']).toContain('audit:dependencies');
     expect(rootPackage.scripts['verify:release']).toContain('audit:runtime-independence');

@@ -3,12 +3,13 @@ import { describe, expect, it, vi } from 'vitest';
 import type {
   CompanionMessage,
   RuntimeCommand,
-  RuntimeEvent,
+  RuntimeEventEnvelope,
   RuntimeResult,
   RuntimeStatus
 } from '@ariadne/protocol/public';
 import { RuntimeStore } from '../src/renderer/src/core/runtime/runtime-store';
 import type { AriadneApi } from '../src/shared/contract';
+import { emptyRuntimeSnapshot, runtimeEnvelope } from './runtime-event-fixture';
 
 const stoppedStatus: RuntimeStatus = {
   availability: 'stopped',
@@ -61,7 +62,7 @@ describe('RuntimeStore Chat sending', () => {
   });
 
   it('renders an assistant thinking placeholder immediately, then replaces both optimistic messages from events', async () => {
-    let emit: ((event: RuntimeEvent) => void) | undefined;
+    let emit: ((event: RuntimeEventEnvelope) => void) | undefined;
     let resolveRequest: ((result: RuntimeResult) => void) | undefined;
     const pendingRequest = new Promise<RuntimeResult>((resolve) => {
       resolveRequest = resolve;
@@ -69,6 +70,11 @@ describe('RuntimeStore Chat sending', () => {
     let authoritativeMessages: CompanionMessage[] = [];
     const request = vi.fn((command: RuntimeCommand): Promise<RuntimeResult> => {
       if (command.kind === 'companion.chat.start') return pendingRequest;
+      if (command.kind === 'runtime.snapshot.get') return Promise.resolve(emptyRuntimeSnapshot(1));
+      if (command.kind === 'models.list' || command.kind === 'models.check') {
+        return Promise.resolve({ kind: 'models.catalog', models: [] });
+      }
+      if (command.kind === 'trace.list') return Promise.resolve({ kind: 'trace', entries: [] });
       if (command.kind === 'companion.messages.list') {
         return Promise.resolve({ kind: 'companion.messages', messages: authoritativeMessages });
       }
@@ -88,6 +94,17 @@ describe('RuntimeStore Chat sending', () => {
     };
     const store = new RuntimeStore(api);
     await store.initialize();
+    emit?.(runtimeEnvelope({
+      kind: 'runtime.status.changed',
+      status: {
+        availability: 'ready',
+        capabilities: [],
+        observedAt: '2026-07-22T00:00:00.000Z'
+      }
+    }, 1));
+    await vi.waitFor(() => {
+      expect(store.getSnapshot().status.availability).toBe('ready');
+    });
 
     const sending = store.sendMessage('发送后立即出现', { modelId: 'model-1', workspaceId: 'primary' });
     const [optimistic, thinking] = store.getSnapshot().messages;
@@ -128,10 +145,10 @@ describe('RuntimeStore Chat sending', () => {
       }
     ];
 
-    emit?.({
+    emit?.(runtimeEnvelope({
       kind: 'companion.message.changed',
       message: authoritativeMessages[0]!
-    });
+    }, 2));
 
     expect(store.getSnapshot().selectedSessionId).toBe('session-1');
     expect(store.getSnapshot().messages).toHaveLength(2);
@@ -146,10 +163,10 @@ describe('RuntimeStore Chat sending', () => {
       content: ''
     });
 
-    emit?.({
+    emit?.(runtimeEnvelope({
       kind: 'companion.message.changed',
       message: authoritativeMessages[1]!
-    });
+    }, 3));
 
     expect(store.getSnapshot().messages).toEqual(authoritativeMessages);
 
