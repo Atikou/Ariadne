@@ -3,33 +3,48 @@
 ```text
 Ariadne/
 ├─ app/
-│  ├─ src/main/          # Electron 生命周期和桌面系统能力
-│  ├─ src/preload/       # 固定、类型化的 Renderer 桥
-│  ├─ src/renderer/      # 桌面 UI
-│  ├─ src/shared/        # 仅限 app 内部的桌面 IPC 契约
-│  └─ tests/             # 桌面壳测试
-├─ runtime/
-│  └─ README.md          # 空占位，不参与构建
+│  ├─ src/main/runtime/       # Runtime 配置与唯一生命周期控制器
+│  ├─ src/main/smoke/         # 真实 Electron 冒烟验证
+│  ├─ src/main/windows/       # 主窗口、Popout 白名单与无端口 Renderer 源
+│  ├─ src/main/               # 托盘、终端、文件等桌面能力
+│  ├─ src/preload/            # 固定、类型化的 Renderer 桥
+│  ├─ src/renderer/public/    # Dockview 独立窗口的最小同源文档
+│  ├─ src/renderer/           # React + Dockview UI 和 RuntimeStore
+│  ├─ src/shared/             # App 内部桌面 IPC 契约
+│  └─ tests/                  # App 边界、UI 与 Supervisor 测试
 ├─ packages/protocol/
-│  └─ README.md          # 空占位，不参与构建
+│  ├─ src/public.ts           # Renderer 安全的公开协议
+│  ├─ src/host.ts             # Main ↔ Runtime 私有进程协议
+│  ├─ src/common.ts           # 共享基础 schema
+│  └─ tests/                  # 版本、尺寸、严格校验与安全测试
+├─ runtime/
+│  ├─ src/application/        # RuntimeFacade 与运行上下文
+│  ├─ src/transport/          # Node IPC Runtime 宿主
+│  ├─ src/entry/              # 子进程入口
+│  ├─ src/*                   # Ariadne 自有的 Agent 核心能力
+│  ├─ native/                 # Windows 原生沙箱与烟雾工程
+│  ├─ config/                 # 配置模板
+│  ├─ scripts/                # 模型运行时和沙箱发布脚本
+│  └─ tests/                  # 独立 Runtime 集成与边界测试
+├─ scripts/electron-smoke.ps1 # 真实窗口联调入口
+├─ artifacts/                 # 验证输出，不是运行时数据目录
 └─ docs/
 ```
 
-根 `package.json` 目前只注册 `app` workspace。`runtime` 和 `packages/protocol` 不包含 `package.json`、源码或构建产物，防止工程误认为后端已接入。
+根 `package.json` 将 `app`、`packages/protocol` 和 `runtime` 注册为 npm workspaces，构建顺序固定为 Protocol → Runtime → App。
 
-## app 内部职责
+## 依赖方向
 
-- `src/main/windows`：主窗口、安全选项和窗口状态。
-- `src/main/ipc`：固定桌面能力 IPC 和 sender 校验。
-- `src/main/persistence`：仅保存桌面偏好和布局。
-- `src/main/services`：终端、受限工作区文件树和系统能力。
-- `src/preload`：最小能力桥。
-- `src/renderer/src/modules`：从原 `apps/desktop` 保留的完整桌面模块集合，包括 Chat 标尺、消息时间/复制/改写、会话管理、Agent 状态、计划、工具输出、日志、权限、文件、终端和设置。
-- `src/renderer/src/core/mock`：仅供桌面壳交互与视觉验收的 Renderer 本地状态，不是 Server、Runtime 客户端或 Agent 实现。
+```text
+app ────────┐
+            ├──> packages/protocol
+runtime ────┘
 
-以下目录当前不应出现：
+app -X-> runtime/src
+runtime -X-> app/src
+Renderer -X-> Node/Electron/数据库/任意传输
+```
 
-- `app/src/main/runtime` 或后端适配器；
-- `app/src/main/agent-*`；
-- Renderer Agent store、Runtime 客户端、业务状态同步或任务执行实现；
-- HTTP/SSE 客户端或本地 Server fixture。
+Dockview Popout 是桌面壳的按需窗口能力，不是第二个 App/Renderer 实例：模块 DOM 和服务仍由主 Renderer 管理，Main 只负责创建经过白名单校验、无脚本且无 Preload 的原生承载窗口；Popout WebContents 不在 IPC 授权集合中。
+
+`runtime/native` 只保存 Ariadne 原生沙箱实现；Runtime 不包含第二套 DesktopHost、入站 HTTP Server、网页测试台、运行状态、模型权重或 `.env`。
