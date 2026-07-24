@@ -1,0 +1,17 @@
+{
+  "workspaceRoot": "..",
+  "models": {
+    "default": "auto",
+    "directory": "../Models",
+    "autoDiscover": true,
+    "watch": true,
+    "loadPolicy": "lazy",
+    "maxLoadedModels": 1,
+    "idleUnloadMs": 600000,
+    "clients": []
+  },
+  "routing": {
+    "strategy": "privacy-first",
+    "fallback": true
+  }
+}

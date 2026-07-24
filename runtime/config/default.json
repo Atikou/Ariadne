@@ -1,0 +1,211 @@
+{
+  "workspaceRoot": "..",
+  "workspaces": [
+    { "id": "repo", "label": "仓库根目录", "root": ".." },
+    { "id": "ariadne-runtime", "label": "Ariadne Runtime", "root": "." }
+  ],
+  "models": {
+    "default": "auto",
+    "directory": "../Models",
+    "autoDiscover": true,
+    "watch": true,
+    "loadPolicy": "lazy",
+    "maxLoadedModels": 1,
+    "idleUnloadMs": 600000,
+    "clients": [
+      {
+        "kind": "api",
+        "name": "cloud-openai",
+        "providerId": "openai",
+        "protocol": "openai-compatible",
+        "location": "remote",
+        "baseUrl": "https://api.openai.com/v1",
+        "apiKeyEnv": "OPENAI_API_KEY",
+        "model": "gpt-4o-mini",
+        "pricePer1kInputUsd": 0.00015,
+        "pricePer1kOutputUsd": 0.0006,
+        "routerProfile": {
+          "defaultLevel": 2,
+          "relativeCost": "medium",
+          "supportsVision": true,
+          "canDraft": true,
+          "canReview": true,
+          "allowedRoles": ["primary", "draft", "review", "final"],
+          "capabilities": {
+            "text": true,
+            "code": true,
+            "architecture": false,
+            "toolCalling": true,
+            "jsonMode": true,
+            "longContext": true,
+            "image": true,
+            "ocr": true,
+            "uiScreenshot": true,
+            "chartUnderstanding": true,
+            "imageGeneration": false
+          },
+          "privacy": {
+            "remote": true,
+            "allowSensitive": false
+          }
+        }
+      },
+      {
+        "kind": "api",
+        "name": "cloud-deepseek",
+        "providerId": "deepseek",
+        "protocol": "openai-compatible",
+        "location": "remote",
+        "baseUrl": "https://api.deepseek.com",
+        "apiKeyEnv": "DEEPSEEK_API_KEY",
+        "model": "deepseek-v4-flash",
+        "inference": {
+          "reasoning": {
+            "modes": ["off", "on"],
+            "defaultMode": "on",
+            "efforts": ["high", "max"],
+            "defaultEffort": "high"
+          }
+        },
+        "pricePer1kInputUsd": 0.00027,
+        "pricePer1kOutputUsd": 0.0011,
+        "routerProfile": {
+          "defaultLevel": 3,
+          "relativeCost": "medium",
+          "canDraft": true,
+          "canReview": true,
+          "allowedRoles": ["primary", "draft", "review", "final"],
+          "capabilities": {
+            "text": true,
+            "code": true,
+            "architecture": true,
+            "toolCalling": true,
+            "jsonMode": true,
+            "longContext": true,
+            "image": false,
+            "ocr": false,
+            "uiScreenshot": false,
+            "diagramUnderstanding": false,
+            "imageGeneration": false
+          },
+          "privacy": {
+            "remote": true,
+            "allowSensitive": false
+          }
+        }
+      },
+      {
+        "kind": "api",
+        "name": "cloud-kimi",
+        "providerId": "kimi",
+        "protocol": "openai-compatible",
+        "location": "remote",
+        "baseUrl": "https://api.moonshot.ai/v1",
+        "apiKeyEnv": "MOONSHOT_API_KEY",
+        "model": "kimi-k3",
+        "inference": {
+          "reasoning": {
+            "modes": ["on"],
+            "defaultMode": "on",
+            "efforts": ["low", "high", "max"],
+            "defaultEffort": "max"
+          }
+        },
+        "routerProfile": {
+          "defaultLevel": 3,
+          "relativeCost": "medium",
+          "supportsVision": true,
+          "canDraft": true,
+          "canReview": true,
+          "allowedRoles": ["primary", "draft", "review", "final"],
+          "capabilities": {
+            "text": true,
+            "code": true,
+            "architecture": true,
+            "toolCalling": true,
+            "jsonMode": true,
+            "longContext": true,
+            "image": true,
+            "ocr": true,
+            "uiScreenshot": true,
+            "diagramUnderstanding": true,
+            "imageGeneration": false
+          },
+          "privacy": {
+            "remote": true,
+            "allowSensitive": false
+          }
+        }
+      },
+      {
+        "kind": "api",
+        "name": "cloud-anthropic",
+        "providerId": "anthropic",
+        "protocol": "anthropic-messages",
+        "location": "remote",
+        "baseUrl": "https://api.anthropic.com",
+        "apiKeyEnv": "ANTHROPIC_API_KEY",
+        "model": "claude-sonnet-4-6",
+        "maxTokens": 4096,
+        "pricePer1kInputUsd": 0.003,
+        "pricePer1kOutputUsd": 0.015,
+        "routerProfile": {
+          "defaultLevel": 3,
+          "relativeCost": "high",
+          "supportsVision": true,
+          "canDraft": true,
+          "canReview": true,
+          "allowedRoles": ["primary", "review", "final"],
+          "capabilities": {
+            "text": true,
+            "code": true,
+            "architecture": true,
+            "toolCalling": true,
+            "jsonMode": true,
+            "longContext": true,
+            "image": true,
+            "ocr": true,
+            "uiScreenshot": true,
+            "chartUnderstanding": true,
+            "diagramUnderstanding": true,
+            "spatialReasoning": true,
+            "imageGeneration": false,
+            "imageEditing": false
+          },
+          "privacy": {
+            "remote": true,
+            "allowSensitive": false
+          }
+        }
+      }
+    ]
+  },
+  "routing": {
+    "strategy": "local-first",
+    "fallback": true
+  },
+  "scheduler": {
+    "unattendedGoalPatterns": [],
+    "gitPollIntervalMs": 5000,
+    "cronMissPolicy": "skip",
+    "dailySummaryCron": "0 9 * * *",
+    "dailySummaryGoal": "生成昨日工作区变更与未消费通知的简要摘要（只读分析，不执行写操作）"
+  },
+  "security": {
+    "sandbox": {
+      "mode": "workspace-write",
+      "writableRoots": [],
+      "toolReadRoots": [],
+      "readOnlySubpaths": ["../.git", "../.agent", "../.agents"],
+      "allowLoopback": false,
+      "resourceLimits": {
+        "maxProcesses": 32,
+        "maxMemoryBytes": 2147483648
+      }
+    },
+    "shell": {
+      "denyCommands": [],
+      "allowCommands": []
+    }
+  }
+}

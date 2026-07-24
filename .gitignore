@@ -1,6 +1,11 @@
 node_modules/
 out/
 dist/
+runtime/.runtime/
+packaging/runtime/node_modules/
+app/.runtime-package/
+runtime/native/**/bin/
+runtime/native/**/obj/
 coverage/
 *.log
 *.tsbuildinfo
@@ -15,3 +20,4 @@ restore-stderr.log
 artifacts/ariadne-smoke.png
 artifacts/ariadne-loaded.png
 artifacts/ariadne-ui-dark.png
+artifacts/electron-runtime-smoke/

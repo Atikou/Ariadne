@@ -1,0 +1,9 @@
+{
+  "name": "@ariadne/runtime-distribution",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Production dependency tree for the standalone Ariadne Runtime process",
+  "dependencies": {
+    "@ariadne/runtime": "file:../../runtime"
+  }
+}

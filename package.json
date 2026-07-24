@@ -4,14 +4,22 @@
   "private": true,
   "description": "Ariadne Electron desktop shell",
   "workspaces": [
-    "app"
+    "app",
+    "packages/protocol",
+    "runtime"
   ],
   "scripts": {
     "dev": "npm run dev --workspace @ariadne/app",
     "start": "npm run start --workspace @ariadne/app",
-    "build": "npm run build --workspace @ariadne/app",
-    "typecheck": "npm run typecheck --workspace @ariadne/app",
-    "test": "npm run test --workspace @ariadne/app",
+    "build": "npm run build --workspace @ariadne/protocol && npm run build --workspace @ariadne/runtime && npm run build --workspace @ariadne/app",
+    "typecheck": "npm run typecheck --workspace @ariadne/protocol && npm run typecheck --workspace @ariadne/runtime && npm run typecheck --workspace @ariadne/app",
+    "test": "npm run build --workspace @ariadne/protocol && npm run build --workspace @ariadne/runtime && npm run test --workspace @ariadne/protocol && npm run test --workspace @ariadne/runtime && npm run test --workspace @ariadne/app",
+    "test:electron": "npm run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/electron-smoke.ps1",
+    "audit:runtime-independence": "node scripts/audit-runtime-independence.mjs",
+    "audit:dependencies": "npm audit --audit-level=high && npm audit --prefix packaging/runtime --omit=dev --audit-level=high",
+    "verify:release": "npm run audit:dependencies && npm run test && npm run audit:runtime-independence && npm run test:electron && npm run package:win",
+    "package:dir": "npm run package:dir --workspace @ariadne/app",
+    "package:win": "npm run package:win --workspace @ariadne/app",
     "electron:install": "npm run electron:install --workspace @ariadne/app"
   }
 }

@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>Ariadne.WindowsSandbox</AssemblyName>
+    <RootNamespace>Ariadne.WindowsSandbox</RootNamespace>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseAppHost>true</UseAppHost>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+    <DebugType>embedded</DebugType>
+    <AriadneTrustedPublisherSha256 Condition="'$(AriadneTrustedPublisherSha256)' == ''"></AriadneTrustedPublisherSha256>
+  </PropertyGroup>
+  <ItemGroup>
+    <AssemblyMetadata Include="AriadneTrustedPublisherSha256" Value="$(AriadneTrustedPublisherSha256)" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.0" />
+  </ItemGroup>
+</Project>

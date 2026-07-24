@@ -1,0 +1,44 @@
+{
+  "name": "@ariadne/runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Portless Agent runtime for the Ariadne desktop application",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "main": "dist/entry/runtime-process.js",
+  "files": [
+    "dist/",
+    "config/",
+    "scripts/model-runtime/"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "start": "node dist/entry/runtime-process.js",
+    "dev": "tsx src/cli/main.ts",
+    "models:check": "tsx src/cli/check-models.ts",
+    "models:runtime:setup": "node scripts/setup-model-runtimes.mjs",
+    "sandbox:native:build": "node scripts/publish-windows-sandbox.mjs",
+    "sandbox:status": "tsx src/cli/sandbox.ts status",
+    "sandbox:setup": "tsx src/cli/sandbox.ts setup",
+    "storage:status": "tsx src/cli/storage.ts status",
+    "storage:cleanup": "tsx src/cli/storage.ts cleanup"
+  },
+  "dependencies": {
+    "@ariadne/protocol": "file:../packages/protocol",
+    "@lancedb/lancedb": "^0.30.0",
+    "chokidar": "^5.0.0",
+    "croner": "^10.0.1",
+    "node-llama-cpp": "^3.19.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "tsx": "^4.19.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

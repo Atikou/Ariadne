@@ -1,0 +1,11 @@
+export * from "./types.js";
+export { OpenAICompatibleClient } from "./OpenAICompatibleClient.js";
+export { AnthropicClient } from "./AnthropicClient.js";
+export { createModelClient, createModelClients } from "./ModelFactory.js";
+export { ModelRouter } from "./ModelRouter.js";
+export type { ClientPricing, ModelRouterOptions, RouteOptions } from "./ModelRouter.js";
+export { MetricsRegistry } from "./MetricsRegistry.js";
+export type { CallMetric, ClientStats } from "./MetricsRegistry.js";
+export * from "./local/index.js";
+export { MODEL_TASK_TYPES, isModelTaskType, parseModelTaskTypeOrError } from "./taskType.js";
+export type { ModelTaskType } from "./taskType.js";

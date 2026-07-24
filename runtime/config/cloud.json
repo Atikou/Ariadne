@@ -1,0 +1,141 @@
+{
+  "workspaceRoot": "..",
+  "models": {
+    "default": "cloud-openai",
+    "directory": "../Models",
+    "autoDiscover": true,
+    "watch": true,
+    "loadPolicy": "lazy",
+    "maxLoadedModels": 1,
+    "idleUnloadMs": 600000,
+    "clients": [
+      {
+        "kind": "api",
+        "name": "cloud-openai",
+        "providerId": "openai",
+        "protocol": "openai-compatible",
+        "location": "remote",
+        "baseUrl": "https://api.openai.com/v1",
+        "apiKeyEnv": "OPENAI_API_KEY",
+        "model": "gpt-4o-mini",
+        "routerProfile": {
+          "defaultLevel": 2,
+          "relativeCost": "medium",
+          "supportsVision": true,
+          "capabilities": {
+            "text": true,
+            "code": true,
+            "toolCalling": true,
+            "jsonMode": true,
+            "image": true,
+            "ocr": true,
+            "uiScreenshot": true
+          }
+        }
+      },
+      {
+        "kind": "api",
+        "name": "cloud-deepseek",
+        "providerId": "deepseek",
+        "protocol": "openai-compatible",
+        "location": "remote",
+        "baseUrl": "https://api.deepseek.com",
+        "apiKeyEnv": "DEEPSEEK_API_KEY",
+        "model": "deepseek-v4-flash",
+        "inference": {
+          "reasoning": {
+            "modes": ["off", "on"],
+            "defaultMode": "on",
+            "efforts": ["high", "max"],
+            "defaultEffort": "high"
+          }
+        },
+        "routerProfile": {
+          "defaultLevel": 3,
+          "relativeCost": "medium",
+          "canDraft": true,
+          "canReview": true,
+          "allowedRoles": ["primary", "draft", "review", "final"],
+          "capabilities": {
+            "text": true,
+            "code": true,
+            "architecture": true,
+            "toolCalling": true,
+            "jsonMode": true,
+            "longContext": true,
+            "image": false
+          }
+        }
+      },
+      {
+        "kind": "api",
+        "name": "cloud-kimi",
+        "providerId": "kimi",
+        "protocol": "openai-compatible",
+        "location": "remote",
+        "baseUrl": "https://api.moonshot.ai/v1",
+        "apiKeyEnv": "MOONSHOT_API_KEY",
+        "model": "kimi-k3",
+        "inference": {
+          "reasoning": {
+            "modes": ["on"],
+            "defaultMode": "on",
+            "efforts": ["low", "high", "max"],
+            "defaultEffort": "max"
+          }
+        },
+        "routerProfile": {
+          "defaultLevel": 3,
+          "relativeCost": "medium",
+          "supportsVision": true,
+          "canDraft": true,
+          "canReview": true,
+          "allowedRoles": ["primary", "draft", "review", "final"],
+          "capabilities": {
+            "text": true,
+            "code": true,
+            "architecture": true,
+            "toolCalling": true,
+            "jsonMode": true,
+            "longContext": true,
+            "image": true,
+            "ocr": true,
+            "uiScreenshot": true,
+            "diagramUnderstanding": true
+          }
+        }
+      },
+      {
+        "kind": "api",
+        "name": "cloud-anthropic",
+        "providerId": "anthropic",
+        "protocol": "anthropic-messages",
+        "location": "remote",
+        "baseUrl": "https://api.anthropic.com",
+        "apiKeyEnv": "ANTHROPIC_API_KEY",
+        "model": "claude-sonnet-4-6",
+        "maxTokens": 4096,
+        "routerProfile": {
+          "defaultLevel": 3,
+          "relativeCost": "high",
+          "supportsVision": true,
+          "capabilities": {
+            "text": true,
+            "code": true,
+            "architecture": true,
+            "toolCalling": true,
+            "jsonMode": true,
+            "image": true,
+            "ocr": true,
+            "uiScreenshot": true,
+            "diagramUnderstanding": true
+          }
+        }
+      }
+    ]
+  },
+  "routing": {
+    "strategy": "cloud-first",
+    "fallback": true
+  }
+}
