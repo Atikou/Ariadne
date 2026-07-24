@@ -10,11 +10,17 @@ export class StateRepository {
   constructor(private readonly filePath: string) {}
 
   async initialize(): Promise<void> {
+    let raw: string;
     try {
-      const raw = await readFile(this.filePath, 'utf8');
-      this.state = persistedStateSchema.parse(JSON.parse(raw));
+      raw = await readFile(this.filePath, 'utf8');
     } catch (error) {
       if (isMissingFile(error)) return;
+      throw error;
+    }
+
+    try {
+      this.state = persistedStateSchema.parse(JSON.parse(raw));
+    } catch {
       await this.backupInvalidState();
       this.state = createDefaultState();
     }
@@ -49,10 +55,15 @@ export class StateRepository {
   }
 
   private async update(mutator: (state: PersistedState) => PersistedState): Promise<void> {
-    const next = persistedStateSchema.parse(mutator(this.getSnapshot()));
-    this.state = next;
-    this.writeQueue = this.writeQueue.then(() => this.writeSnapshot(next));
-    await this.writeQueue;
+    const operation = this.writeQueue
+      .catch(() => undefined)
+      .then(async () => {
+        const next = persistedStateSchema.parse(mutator(this.getSnapshot()));
+        await this.writeSnapshot(next);
+        this.state = next;
+      });
+    this.writeQueue = operation;
+    await operation;
   }
 
   private async writeSnapshot(state: PersistedState): Promise<void> {
@@ -68,7 +79,8 @@ export class StateRepository {
       await rename(this.filePath, backupPath);
       console.warn(`Invalid state was moved to ${backupPath}`);
     } catch (error) {
-      if (!isMissingFile(error)) console.warn('Unable to back up invalid application state', error);
+      if (isMissingFile(error)) return;
+      throw new Error('Unable to preserve invalid application state before recovery.');
     }
   }
 }

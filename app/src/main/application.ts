@@ -1,5 +1,8 @@
-import { app, Menu, Tray } from 'electron';
+import { app, Menu, Notification, Tray } from 'electron';
 import { join } from 'node:path';
+import type { AgentSettingsUpdate, AgentSettingsView, OpenWorkspaceResult } from '@shared/contract';
+import { AgentSettingsRepository } from './persistence/agent-settings-repository';
+import { ElectronSafeStorageCipher } from './persistence/secret-cipher';
 import { StateRepository } from './persistence/state-repository';
 import { registerIpcHandlers } from './ipc/register-ipc';
 import {
@@ -10,29 +13,77 @@ import {
 import { InterruptionPolicy } from './services/interruption-policy';
 import { TerminalSessionService } from './services/terminal-service';
 import { WorkspaceFileService } from './services/workspace-file-service';
+import { ApprovalNotificationService } from './services/approval-notification-service';
+import { PreferencesCoordinator } from './services/preferences-coordinator';
 import { MainWindowController } from './windows/main-window';
+import { RendererSource } from './windows/renderer-source';
+import { createDesktopRuntimeConfiguration, resolveDefaultWorkspaceRoot } from './runtime/runtime-configuration';
+import { RuntimeSupervisor } from './runtime/runtime-supervisor';
+import { runElectronSmokeTest } from './smoke/electron-smoke';
 
 export class ApplicationController {
   private isQuitting = false;
   private cleanupPromise: Promise<void> | null = null;
   private startPromise: Promise<void> | null = null;
+  private agentSettingsOperationQueue: Promise<void> = Promise.resolve();
   private tray: Tray | null = null;
   private removeIpcHandlers: (() => void) | null = null;
+  private removeApprovalNotificationEvents: (() => void) | null = null;
   private readonly state = new StateRepository(join(app.getPath('userData'), 'state.json'));
+  private readonly defaultWorkspaceRoot = resolveDefaultWorkspaceRoot({
+    appPath: app.getAppPath(),
+    userDataPath: app.getPath('userData'),
+    packaged: app.isPackaged
+  });
+  private readonly agentSettings = new AgentSettingsRepository(
+    join(app.getPath('userData'), 'settings.toml'),
+    new ElectronSafeStorageCipher(),
+    this.defaultWorkspaceRoot,
+    join(app.getPath('userData'), 'agent-settings.json')
+  );
   private readonly gameActivity = new UnavailableGameActivityDetector();
+  private readonly interruptionPolicy = new InterruptionPolicy();
   private readonly systemCapabilities = new SystemCapabilityCatalog(
     new ElectronAutoLaunchService(),
     this.gameActivity
   );
-  private readonly terminals = new TerminalSessionService();
-  private readonly workspaceFiles = new WorkspaceFileService();
+  private readonly preferences = new PreferencesCoordinator(this.state, this.systemCapabilities);
+  private readonly workspaceFiles = new WorkspaceFileService([{
+    workspaceId: 'primary',
+    rootPath: this.defaultWorkspaceRoot
+  }]);
+  private readonly terminals = new TerminalSessionService((workspaceId) => (
+    this.workspaceFiles.getRoot(workspaceId)
+  ));
+  private readonly runtime = new RuntimeSupervisor(this.createRuntimeConfiguration());
+  private readonly rendererSource = new RendererSource(join(__dirname, '../renderer'), {
+    allowDevelopmentServer: !app.isPackaged
+  });
   private readonly mainWindow = new MainWindowController(
     this.state,
     this.gameActivity,
-    new InterruptionPolicy(),
+    this.interruptionPolicy,
     () => this.isQuitting,
     () => this.requestQuit()
   );
+  private readonly approvalNotifications = new ApprovalNotificationService({
+    isSupported: () => Notification.isSupported(),
+    isWindowFocused: () => this.mainWindow.isApplicationFocused(),
+    canNotify: async () => this.interruptionPolicy.evaluate(
+      { source: 'system', allowTemporaryTopmost: false },
+      await this.gameActivity.getSnapshot(),
+      this.state.getPreferences()
+    ).allow,
+    create: (content) => {
+      const notification = new Notification(content);
+      return {
+        onClick: (handler) => notification.once('click', handler),
+        show: () => notification.show(),
+        close: () => notification.close()
+      };
+    },
+    activateApplication: () => this.showFromUserActionSafely()
+  });
 
   async start(): Promise<void> {
     if (!this.startPromise) {
@@ -47,34 +98,137 @@ export class ApplicationController {
     await this.mainWindow.show({ source: 'user', allowTemporaryTopmost: false });
   }
 
+  async runSmokeTest(outputRoot: string): Promise<boolean> {
+    const window = this.mainWindow.get();
+    if (!window) throw new Error('Main window is unavailable for smoke verification.');
+    return runElectronSmokeTest(window, outputRoot);
+  }
+
   async prepareToQuit(): Promise<void> {
     this.isQuitting = true;
     if (!this.cleanupPromise) {
       this.cleanupPromise = (async () => {
+        await this.agentSettingsOperationQueue;
+        await this.preferences.flush();
         await this.mainWindow.saveWindowStateNow();
         await this.state.flush();
+        await this.agentSettings.flush();
         this.removeIpcHandlers?.();
         this.removeIpcHandlers = null;
+        this.removeApprovalNotificationEvents?.();
+        this.removeApprovalNotificationEvents = null;
+        this.approvalNotifications.dispose();
+        await this.runtime.stop('app_quit');
+        this.rendererSource.stop();
         this.terminals.dispose();
+        this.tray?.destroy();
+        this.tray = null;
       })();
     }
     await this.cleanupPromise;
   }
 
   private async startApplication(): Promise<void> {
-    await this.state.initialize();
-    const window = this.mainWindow.create();
+    await Promise.all([this.state.initialize(), this.agentSettings.initialize()]);
+    this.workspaceFiles.setWorkspaces(this.agentSettings.getRuntimeSettings().workspaces);
+    this.runtime.configure(this.createRuntimeConfiguration());
+    const rendererUrl = this.rendererSource.start();
+    const window = this.mainWindow.create(rendererUrl);
     this.removeIpcHandlers = registerIpcHandlers({
       getWindow: () => this.mainWindow.get(),
+      agentSettings: this.agentSettings,
+      updateAgentSettings: (settings) => this.updateAgentSettings(settings),
+      updatePreferences: (preferences) => this.preferences.update(preferences),
+      addWorkspaceRoot: (rootPath) => this.addWorkspaceRoot(rootPath),
       state: this.state,
       systemCapabilities: this.systemCapabilities,
       terminals: this.terminals,
       workspaceFiles: this.workspaceFiles,
+      runtime: this.runtime,
       mainWindow: this.mainWindow
+    });
+    this.removeApprovalNotificationEvents = this.runtime.onEvent((event) => {
+      void this.approvalNotifications.handleRuntimeEvent(event).catch((error: unknown) => {
+        console.error('Approval notification event handling failed.', error);
+      });
+    });
+    await this.mainWindow.waitUntilRendererLoaded();
+    void this.runtime.start().catch(() => {
+      console.error('Runtime was unavailable during application startup.');
     });
     this.tray = await this.createTray();
     window.on('show', () => this.updateTrayMenu());
     window.on('hide', () => this.updateTrayMenu());
+  }
+
+  private createRuntimeConfiguration() {
+    return createDesktopRuntimeConfiguration({
+      appPath: app.getAppPath(),
+      userDataPath: app.getPath('userData'),
+      resourcesPath: process.resourcesPath,
+      appVersion: app.getVersion(),
+      packaged: app.isPackaged,
+      executablePath: process.execPath,
+      agentSettings: this.agentSettings.getRuntimeSettings()
+    });
+  }
+
+  private async updateAgentSettings(settings: AgentSettingsUpdate): Promise<AgentSettingsView> {
+    return this.runAgentSettingsOperation(async () => {
+      const checkpoint = this.agentSettings.createCheckpoint();
+      const saved = await this.agentSettings.save(settings);
+      try {
+        await this.applyAgentSettings(saved);
+        return saved;
+      } catch (error) {
+        return this.rollbackAgentSettings(checkpoint, error);
+      }
+    });
+  }
+
+  private async addWorkspaceRoot(rootPath: string): Promise<OpenWorkspaceResult> {
+    return this.runAgentSettingsOperation(async () => {
+      const checkpoint = this.agentSettings.createCheckpoint();
+      const result = await this.agentSettings.addWorkspaceRoot(rootPath);
+      if (result.added) {
+        try {
+          await this.applyAgentSettings(result.settings);
+        } catch (error) {
+          return this.rollbackAgentSettings(checkpoint, error);
+        }
+      }
+      return { workspaceId: result.workspace.workspaceId, rootPath: result.workspace.rootPath };
+    });
+  }
+
+  private async applyAgentSettings(saved: AgentSettingsView): Promise<void> {
+    this.workspaceFiles.setWorkspaces(saved.workspaces);
+    await this.runtime.restart(this.createRuntimeConfiguration());
+  }
+
+  private async rollbackAgentSettings(
+    checkpoint: ReturnType<AgentSettingsRepository['createCheckpoint']>,
+    originalError: unknown
+  ): Promise<never> {
+    try {
+      const restored = await this.agentSettings.restore(checkpoint);
+      await this.applyAgentSettings(restored);
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [originalError, rollbackError],
+        'Runtime 配置应用失败，且恢复上一份设置时发生错误。'
+      );
+    }
+    throw originalError;
+  }
+
+  private runAgentSettingsOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.agentSettingsOperationQueue.then(operation);
+    this.agentSettingsOperationQueue = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
   }
 
   private requestQuit(): void {
@@ -86,7 +240,7 @@ export class ApplicationController {
     const icon = await app.getFileIcon(process.execPath, { size: 'small' });
     const tray = new Tray(icon);
     tray.setToolTip('Ariadne');
-    tray.on('double-click', () => void this.showFromUserAction());
+    tray.on('double-click', () => this.showFromUserActionSafely());
     this.updateTrayMenu(tray);
     return tray;
   }
@@ -97,7 +251,7 @@ export class ApplicationController {
       Menu.buildFromTemplate([
         {
           label: '显示 Ariadne',
-          click: () => void this.showFromUserAction()
+          click: () => this.showFromUserActionSafely()
         },
         { type: 'separator' },
         {
@@ -106,5 +260,11 @@ export class ApplicationController {
         }
       ])
     );
+  }
+
+  private showFromUserActionSafely(): void {
+    void this.showFromUserAction().catch((error: unknown) => {
+      console.error('Application could not be shown.', error);
+    });
   }
 }

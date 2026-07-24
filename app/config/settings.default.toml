@@ -1,0 +1,46 @@
+# Ariadne settings template. The live file is stored in Electron userData/settings.toml.
+schemaVersion = 1
+routingStrategy = "cloud-first"
+permissionMode = "request"
+localModelRoots = []
+
+[customPermissions]
+approvalPolicy = "risk-based"
+sandboxMode = "workspace-write"
+allowedPermissions = ["read", "write", "shell", "network", "dangerous"]
+
+[providers.openai]
+enabled = true
+baseUrl = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+
+[providers.openai.inference]
+
+[providers.deepseek]
+enabled = true
+baseUrl = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+
+[providers.deepseek.inference.reasoning]
+modes = ["off", "on"]
+defaultMode = "on"
+efforts = ["high", "max"]
+defaultEffort = "high"
+
+[providers.kimi]
+enabled = true
+baseUrl = "https://api.moonshot.ai/v1"
+model = "kimi-k3"
+
+[providers.kimi.inference.reasoning]
+modes = ["on"]
+defaultMode = "on"
+efforts = ["low", "high", "max"]
+defaultEffort = "max"
+
+[providers.anthropic]
+enabled = true
+baseUrl = "https://api.anthropic.com"
+model = "claude-sonnet-4-6"
+
+[providers.anthropic.inference]

@@ -1,7 +1,18 @@
-import { clipboard, ipcMain, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
+import {
+  clipboard,
+  dialog,
+  ipcMain,
+  nativeTheme,
+  type BrowserWindow,
+  type IpcMainEvent,
+  type IpcMainInvokeEvent,
+  type WebContents
+} from 'electron';
 import { Buffer } from 'node:buffer';
+import { runtimeCommandSchema, runtimeEventSchema } from '@ariadne/protocol/public';
 import { IPC_CHANNELS } from '@shared/ipc';
 import {
+  agentSettingsUpdateSchema,
   clipboardWriteRequestSchema,
   closeTerminalRequestSchema,
   createTerminalSessionRequestSchema,
@@ -13,26 +24,37 @@ import {
   workspaceDirectoryRequestSchema,
   writeTerminalRequestSchema
 } from '@shared/schemas';
+import type { AgentSettingsUpdate, AgentSettingsView, OpenWorkspaceResult, UserPreferences } from '@shared/contract';
+import type { AgentSettingsRepository } from '../persistence/agent-settings-repository';
 import type { StateRepository } from '../persistence/state-repository';
 import type { SystemCapabilityCatalog } from '../services/system-capabilities';
 import type { TerminalSessionService } from '../services/terminal-service';
 import type { WorkspaceFileService } from '../services/workspace-file-service';
 import type { MainWindowController } from '../windows/main-window';
+import type { RuntimeSupervisor } from '../runtime/runtime-supervisor';
 
 const MAX_LAYOUT_BYTES = 2 * 1024 * 1024;
 
 interface IpcDependencies {
   getWindow(): BrowserWindow | null;
+  agentSettings: AgentSettingsRepository;
+  updateAgentSettings(settings: AgentSettingsUpdate): Promise<AgentSettingsView>;
+  updatePreferences(preferences: UserPreferences): Promise<UserPreferences>;
+  addWorkspaceRoot(rootPath: string): Promise<OpenWorkspaceResult>;
   state: StateRepository;
   systemCapabilities: SystemCapabilityCatalog;
   terminals: TerminalSessionService;
   mainWindow: MainWindowController;
+  runtime: RuntimeSupervisor;
   workspaceFiles: WorkspaceFileService;
 }
 
 export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
   const channels: string[] = Object.values(IPC_CHANNELS);
-  const trusted = (event: IpcMainInvokeEvent): void => assertTrustedSender(event, dependencies.getWindow());
+  const trusted = (event: IpcMainInvokeEvent): void => assertTrustedSender(
+    event,
+    dependencies.mainWindow.getPrivilegedRendererContents()
+  );
   const terminalWriteListener = createValidatedTerminalListener(dependencies, writeTerminalRequestSchema, (event, request) => {
     dependencies.terminals.write(event.sender.id, request);
   });
@@ -41,6 +63,22 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
   });
   const terminalCloseListener = createValidatedTerminalListener(dependencies, closeTerminalRequestSchema, (event, request) => {
     dependencies.terminals.close(event.sender.id, request.sessionId);
+  });
+  const removeRuntimeEvents = dependencies.runtime.onEvent((event) => {
+    const parsed = runtimeEventSchema.parse(event);
+    for (const renderer of dependencies.mainWindow.getPrivilegedRendererContents()) {
+      renderer.send(IPC_CHANNELS.runtimeEvent, parsed);
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.agentSettingsLoad, (event) => {
+    trusted(event);
+    return dependencies.agentSettings.getView();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.agentSettingsUpdate, async (event, input: unknown) => {
+    trusted(event);
+    return dependencies.updateAgentSettings(agentSettingsUpdateSchema.parse(input));
   });
 
   ipcMain.handle(IPC_CHANNELS.clipboardWrite, (event, input: unknown) => {
@@ -71,11 +109,17 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
 
   ipcMain.handle(IPC_CHANNELS.preferencesUpdate, async (event, input: unknown) => {
     trusted(event);
-    const next = userPreferencesSchema.parse(input);
-    const previous = dependencies.state.getPreferences();
-    await dependencies.systemCapabilities.applyPreferences(previous, next);
-    await dependencies.state.savePreferences(next);
-    return dependencies.state.getPreferences();
+    return dependencies.updatePreferences(userPreferencesSchema.parse(input));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.runtimeStatus, (event) => {
+    trusted(event);
+    return dependencies.runtime.getStatus();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.runtimeRequest, async (event, input: unknown) => {
+    trusted(event);
+    return dependencies.runtime.request(runtimeCommandSchema.parse(input));
   });
 
   ipcMain.handle(IPC_CHANNELS.systemCapabilityStatuses, async (event) => {
@@ -91,6 +135,20 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
   ipcMain.handle(IPC_CHANNELS.workspaceListDirectory, async (event, input: unknown) => {
     trusted(event);
     return dependencies.workspaceFiles.listDirectory(workspaceDirectoryRequestSchema.parse(input));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.workspaceOpenDirectory, async (event) => {
+    trusted(event);
+    const window = dependencies.getWindow();
+    if (!window) throw new Error('Main window is unavailable.');
+    const selection = await dialog.showOpenDialog(window, {
+      title: '打开工作区',
+      buttonLabel: '打开工作区',
+      properties: ['openDirectory']
+    });
+    const rootPath = selection.filePaths[0];
+    if (selection.canceled || !rootPath) return null;
+    return dependencies.addWorkspaceRoot(rootPath);
   });
 
   ipcMain.handle(IPC_CHANNELS.terminalCreate, (event, input: unknown) => {
@@ -114,25 +172,36 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
   ipcMain.handle(IPC_CHANNELS.windowTitleBarTheme, (event, input: unknown) => {
     trusted(event);
     const theme = titleBarThemeSchema.parse(input);
-    dependencies.getWindow()?.setTitleBarOverlay({
+    nativeTheme.themeSource = theme;
+    const window = dependencies.getWindow();
+    const backgroundColor = theme === 'dark' ? '#0d0f13' : '#eceef2';
+    window?.setBackgroundColor(backgroundColor);
+    window?.setTitleBarOverlay({
       color: theme === 'dark' ? '#111318' : '#f4f5f7',
       symbolColor: theme === 'dark' ? '#d9dde7' : '#252832',
       height: 44
     });
+    for (const child of dependencies.mainWindow.getPopoutWindows()) child.setBackgroundColor(backgroundColor);
   });
 
   return () => {
+    removeRuntimeEvents();
     ipcMain.removeListener(IPC_CHANNELS.terminalWrite, terminalWriteListener);
     ipcMain.removeListener(IPC_CHANNELS.terminalResize, terminalResizeListener);
     ipcMain.removeListener(IPC_CHANNELS.terminalClose, terminalCloseListener);
-    const renderer = dependencies.getWindow()?.webContents;
-    if (renderer) dependencies.terminals.closeOwnedBy(renderer.id);
+    for (const renderer of dependencies.mainWindow.getPrivilegedRendererContents()) {
+      dependencies.terminals.closeOwnedBy(renderer.id);
+    }
     for (const channel of channels) ipcMain.removeHandler(channel);
   };
 }
 
-function assertTrustedSender(event: IpcMainEvent | IpcMainInvokeEvent, window: BrowserWindow | null): void {
-  if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) {
+function assertTrustedSender(
+  event: IpcMainEvent | IpcMainInvokeEvent,
+  trustedRenderers: readonly WebContents[]
+): void {
+  const trustedSender = trustedRenderers.find((renderer) => renderer === event.sender);
+  if (!trustedSender || event.senderFrame !== trustedSender.mainFrame) {
     throw new Error('Rejected IPC from an untrusted sender.');
   }
 }
@@ -144,7 +213,7 @@ function createValidatedTerminalListener<T>(
 ): (event: IpcMainEvent, input: unknown) => void {
   return (event, input) => {
     try {
-      assertTrustedSender(event, dependencies.getWindow());
+      assertTrustedSender(event, dependencies.mainWindow.getPrivilegedRendererContents());
       handle(event, schema.parse(input));
     } catch (error) {
       console.error('Rejected terminal IPC request.', error);

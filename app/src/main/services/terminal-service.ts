@@ -17,6 +17,9 @@ interface ManagedTerminalSession extends TerminalSession {
 
 export class TerminalSessionService {
   private readonly sessions = new Map<string, ManagedTerminalSession>();
+  private readonly ownerDestroyedListeners = new Map<number, { owner: WebContents; listener: () => void }>();
+
+  constructor(private readonly resolveWorkingDirectory: (workspaceId: string) => string) {}
 
   create(owner: WebContents, request: CreateTerminalSessionRequest): TerminalSession {
     if (process.platform !== 'win32') throw new Error('PowerShell and CMD terminals require Windows.');
@@ -25,7 +28,7 @@ export class TerminalSessionService {
     const activeSessionCount = [...this.sessions.values()].filter((session) => session.ownerId === owner.id).length;
     if (activeSessionCount >= MAX_SESSIONS_PER_RENDERER) throw new Error('Too many terminal sessions are open.');
 
-    const cwd = process.cwd();
+    const cwd = this.resolveWorkingDirectory(request.workspaceId);
     const shell = resolveShell(request.shell);
     const terminal = spawn(shell.executable, shell.args, {
       name: 'xterm-256color',
@@ -37,23 +40,27 @@ export class TerminalSessionService {
         TERM: 'xterm-256color',
         COLORTERM: 'truecolor'
       },
-      useConpty: true
+      useConpty: true,
+      useConptyDll: true
     });
 
     const session: ManagedTerminalSession = {
       id: request.sessionId,
+      workspaceId: request.workspaceId,
       shell: request.shell,
       cwd,
       ownerId: owner.id,
       pty: terminal
     };
     this.sessions.set(session.id, session);
+    this.watchOwner(owner);
 
     terminal.onData((data) => {
       if (!owner.isDestroyed()) owner.send(IPC_CHANNELS.terminalData, { sessionId: session.id, data });
     });
     terminal.onExit(({ exitCode, signal }) => {
       this.sessions.delete(session.id);
+      this.releaseOwnerIfIdle(session.ownerId);
       if (!owner.isDestroyed()) {
         owner.send(IPC_CHANNELS.terminalExit, {
           sessionId: session.id,
@@ -63,7 +70,12 @@ export class TerminalSessionService {
       }
     });
 
-    return { id: session.id, shell: session.shell, cwd: session.cwd };
+    return {
+      id: session.id,
+      workspaceId: session.workspaceId,
+      shell: session.shell,
+      cwd: session.cwd
+    };
   }
 
   write(ownerId: number, request: WriteTerminalRequest): void {
@@ -79,6 +91,7 @@ export class TerminalSessionService {
     if (!session || session.ownerId !== ownerId) return;
     this.sessions.delete(sessionId);
     safelyKill(session.pty);
+    this.releaseOwnerIfIdle(ownerId);
   }
 
   closeOwnedBy(ownerId: number): void {
@@ -90,12 +103,31 @@ export class TerminalSessionService {
   dispose(): void {
     for (const session of this.sessions.values()) safelyKill(session.pty);
     this.sessions.clear();
+    for (const { owner, listener } of this.ownerDestroyedListeners.values()) {
+      owner.removeListener('destroyed', listener);
+    }
+    this.ownerDestroyedListeners.clear();
   }
 
   private getOwnedSession(ownerId: number, sessionId: string): ManagedTerminalSession {
     const session = this.sessions.get(sessionId);
     if (!session || session.ownerId !== ownerId) throw new Error('Terminal session was not found.');
     return session;
+  }
+
+  private watchOwner(owner: WebContents): void {
+    if (this.ownerDestroyedListeners.has(owner.id)) return;
+    const listener = (): void => this.closeOwnedBy(owner.id);
+    this.ownerDestroyedListeners.set(owner.id, { owner, listener });
+    owner.once('destroyed', listener);
+  }
+
+  private releaseOwnerIfIdle(ownerId: number): void {
+    if ([...this.sessions.values()].some((session) => session.ownerId === ownerId)) return;
+    const watched = this.ownerDestroyedListeners.get(ownerId);
+    if (!watched) return;
+    watched.owner.removeListener('destroyed', watched.listener);
+    this.ownerDestroyedListeners.delete(ownerId);
   }
 }
 

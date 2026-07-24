@@ -1,6 +1,16 @@
 import { z } from 'zod';
+import { modelInferenceProfileSchema } from '@ariadne/protocol/public';
 import type { JsonObject, JsonValue } from './contract';
-import { SYSTEM_CAPABILITIES } from './contract';
+import {
+  AGENT_APPROVAL_POLICIES,
+  AGENT_PERMISSION_MODES,
+  AGENT_PROVIDER_IDS,
+  AGENT_SANDBOX_MODES,
+  AGENT_TOOL_PERMISSIONS,
+  SYSTEM_CAPABILITIES
+} from './contract';
+
+export const agentProviderIdSchema = z.enum(AGENT_PROVIDER_IDS);
 
 export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
   z.union([
@@ -47,6 +57,83 @@ export const userPreferencesSchema = z
   })
   .strict();
 
+export const agentRoutingStrategySchema = z.enum([
+  'local-first',
+  'cloud-first',
+  'privacy-first',
+  'quality-first'
+]);
+
+const absolutePathSchema = z.string().trim().min(1).max(32_768).refine(
+  (value) => /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value),
+  '模型目录必须使用绝对路径。'
+);
+
+const httpsUrlSchema = z.string().trim().url().max(2_048).refine(
+  (value) => new URL(value).protocol === 'https:',
+  '远程模型地址必须使用 HTTPS。'
+);
+
+const agentProviderSettingsUpdateSchema = z
+  .object({
+    enabled: z.boolean(),
+    baseUrl: httpsUrlSchema,
+    model: z.string().trim().min(1).max(256),
+    inference: modelInferenceProfileSchema,
+    apiKey: z.string().trim().min(8).max(8_192).optional(),
+    clearApiKey: z.boolean()
+  })
+  .strict()
+  .refine((value) => !(value.apiKey && value.clearApiKey), '不能同时替换和清除 API Key。');
+
+export const agentSettingsUpdateSchema = z
+  .object({
+    routingStrategy: agentRoutingStrategySchema,
+    permissionMode: z.enum(AGENT_PERMISSION_MODES),
+    customPermissions: z.object({
+      approvalPolicy: z.enum(AGENT_APPROVAL_POLICIES),
+      sandboxMode: z.enum(AGENT_SANDBOX_MODES),
+      allowedPermissions: z.array(z.enum(AGENT_TOOL_PERMISSIONS)).min(1).max(5)
+    }).strict(),
+    workspaceRoot: absolutePathSchema,
+    workspaceAccess: z.enum(['read', 'write']),
+    localModelRoots: z.array(absolutePathSchema).max(8),
+    providers: z.record(agentProviderIdSchema, agentProviderSettingsUpdateSchema)
+  })
+  .strict();
+
+export const apiKeyStatusSchema = z.enum(['missing', 'configured', 'unavailable']);
+
+const agentProviderSettingsViewSchema = z.object({
+  enabled: z.boolean(),
+  baseUrl: httpsUrlSchema,
+  model: z.string().trim().min(1).max(256),
+  inference: modelInferenceProfileSchema,
+  apiKeyStatus: apiKeyStatusSchema
+}).strict();
+
+const agentWorkspaceSettingsViewSchema = z.object({
+  workspaceId: z.string().trim().min(1).max(128),
+  rootPath: absolutePathSchema,
+  access: z.enum(['read', 'write'])
+}).strict();
+
+export const agentSettingsViewSchema = z.object({
+  schemaVersion: z.literal(1),
+  routingStrategy: agentRoutingStrategySchema,
+  permissionMode: z.enum(AGENT_PERMISSION_MODES),
+  customPermissions: z.object({
+    approvalPolicy: z.enum(AGENT_APPROVAL_POLICIES),
+    sandboxMode: z.enum(AGENT_SANDBOX_MODES),
+    allowedPermissions: z.array(z.enum(AGENT_TOOL_PERMISSIONS)).min(1).max(5)
+  }).strict(),
+  workspaceRoot: absolutePathSchema,
+  workspaceAccess: z.enum(['read', 'write']),
+  workspaces: z.array(agentWorkspaceSettingsViewSchema).min(1).max(32),
+  localModelRoots: z.array(absolutePathSchema).max(8),
+  providers: z.record(agentProviderIdSchema, agentProviderSettingsViewSchema)
+}).strict();
+
 export const showWindowRequestSchema = z
   .object({
     source: z.enum(['user', 'shortcut', 'voice', 'system']),
@@ -59,12 +146,14 @@ export const titleBarThemeSchema = z.enum(['dark', 'light']);
 export const systemCapabilitySchema = z.enum(SYSTEM_CAPABILITIES);
 
 const terminalSessionIdSchema = z.string().uuid();
+const workspaceIdSchema = z.string().trim().min(1).max(128);
 const terminalColumnsSchema = z.number().int().min(2).max(500);
 const terminalRowsSchema = z.number().int().min(1).max(300);
 
 export const createTerminalSessionRequestSchema = z
   .object({
     sessionId: terminalSessionIdSchema,
+    workspaceId: workspaceIdSchema,
     shell: z.enum(['powershell', 'cmd']),
     columns: terminalColumnsSchema,
     rows: terminalRowsSchema
@@ -92,6 +181,7 @@ export const closeTerminalRequestSchema = z
 
 export const workspaceDirectoryRequestSchema = z
   .object({
+    workspaceId: workspaceIdSchema,
     relativePath: z.string().max(2_000).refine((value) => {
       if (value === '') return true;
       if (value.includes('\\') || value.startsWith('/') || value.endsWith('/')) return false;

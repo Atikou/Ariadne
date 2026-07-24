@@ -15,9 +15,13 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "package:prepare": "npm run build --workspace @ariadne/protocol && npm run build --workspace @ariadne/runtime && node ../scripts/prepare-runtime-package.mjs --arch=x64",
+    "package:dir": "npm run package:prepare && npm run build && electron-builder --win --x64 --dir",
+    "package:win": "node ../scripts/verify-windows-release-signing-environment.mjs && npm run package:prepare && npm run build && electron-builder --win nsis --x64 --config.forceCodeSigning=true && node ../scripts/verify-windows-release-signatures.mjs"
   },
   "dependencies": {
+    "@ariadne/protocol": "file:../packages/protocol",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "dockview-react": "^7.0.2",
@@ -25,6 +29,9 @@
     "node-pty": "^1.1.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "smol-toml": "^1.7.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -33,9 +40,58 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.0",
     "electron": "^43.1.1",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.6",
     "vitest": "^4.1.0"
+  },
+  "build": {
+    "appId": "com.ariadne.desktop",
+    "artifactName": "Ariadne-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "../dist/electron"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".runtime-package/runtime-runner",
+        "to": "runtime-runner",
+        "filter": [
+          "node.exe",
+          "LICENSE",
+          ".ariadne-node-runtime.json"
+        ]
+      },
+      {
+        "from": "../packaging/runtime/node_modules",
+        "to": "runtime/node_modules"
+      },
+      {
+        "from": "../runtime/.runtime/windows-sandbox",
+        "to": "runtime/node_modules/@ariadne/runtime/.runtime/windows-sandbox"
+      },
+      {
+        "from": "../runtime/.runtime/transformers",
+        "to": "runtime/node_modules/@ariadne/runtime/.runtime/transformers"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

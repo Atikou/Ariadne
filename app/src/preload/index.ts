@@ -1,8 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { RuntimeEvent } from '@ariadne/protocol/public';
 import type { AriadneApi, TerminalDataEvent, TerminalExitEvent } from '@shared/contract';
 import { IPC_CHANNELS } from '@shared/ipc';
 
 const api: AriadneApi = {
+  agentSettings: {
+    load: () => ipcRenderer.invoke(IPC_CHANNELS.agentSettingsLoad),
+    update: (settings) => ipcRenderer.invoke(IPC_CHANNELS.agentSettingsUpdate, settings)
+  },
   clipboard: {
     writeText: (request) => ipcRenderer.invoke(IPC_CHANNELS.clipboardWrite, request)
   },
@@ -13,6 +18,11 @@ const api: AriadneApi = {
   preferences: {
     load: () => ipcRenderer.invoke(IPC_CHANNELS.preferencesLoad),
     update: (preferences) => ipcRenderer.invoke(IPC_CHANNELS.preferencesUpdate, preferences)
+  },
+  runtime: {
+    getStatus: () => ipcRenderer.invoke(IPC_CHANNELS.runtimeStatus),
+    request: (command) => ipcRenderer.invoke(IPC_CHANNELS.runtimeRequest, command),
+    onEvent: (listener) => subscribe<RuntimeEvent>(IPC_CHANNELS.runtimeEvent, listener)
   },
   system: {
     getCapabilityStatuses: () => ipcRenderer.invoke(IPC_CHANNELS.systemCapabilityStatuses),
@@ -27,6 +37,7 @@ const api: AriadneApi = {
     onExit: (listener) => subscribe<TerminalExitEvent>(IPC_CHANNELS.terminalExit, listener)
   },
   workspace: {
+    openDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.workspaceOpenDirectory),
     listDirectory: (request) => ipcRenderer.invoke(IPC_CHANNELS.workspaceListDirectory, request)
   },
   window: {
