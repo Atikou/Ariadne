@@ -1,0 +1,264 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-24",
+  "statusValues": [
+    "verified",
+    "partial",
+    "not_accepted",
+    "not_applicable"
+  ],
+  "rows": [
+    {
+      "module": "protocol-2.0",
+      "source": [
+        "packages/protocol/src"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_applicable",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
+      "notes": "Strict Public/Host/Headless envelopes, snapshot, replay cursor, Resource, Memory and Task Checkpoint commands."
+    },
+    {
+      "module": "run-aggregate-and-outbox",
+      "source": [
+        "runtime/src/run",
+        "runtime/src/events"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_accepted",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
+      "notes": "Typed commands, optimistic aggregate version, checkpoints, transactional outbox and idempotent replay."
+    },
+    {
+      "module": "tool-contract-and-agent-action",
+      "source": [
+        "runtime/src/tools",
+        "runtime/src/agent/AgentActionAdmission.ts",
+        "runtime/src/agent/ToolConcurrencyPlanner.ts"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_accepted",
+      "realWindow": "not_accepted",
+      "realMachine": "not_accepted",
+      "notes": "Zod 4 is the contract source. Native tools and text fallback normalize to AgentAction. Real Provider qualification remains pending."
+    },
+    {
+      "module": "tool-checkpoint-and-recovery",
+      "source": [
+        "runtime/src/run/RunToolCheckpointCoordinator.ts",
+        "runtime/src/app/startupRecovery.ts"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_accepted",
+      "realWindow": "not_accepted",
+      "realMachine": "not_accepted",
+      "notes": "Intent/start/result ledger and recovery_required handling are automated; forced-kill acceptance with real side effects is pending."
+    },
+    {
+      "module": "content-authority-and-egress",
+      "source": [
+        "runtime/src/core/ContentEnvelope.ts",
+        "runtime/src/security"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_accepted",
+      "realWindow": "not_accepted",
+      "realMachine": "not_accepted",
+      "notes": "Files, web, command output, diffs, MCP and SubAgent content remain data; secret egress is denied."
+    },
+    {
+      "module": "eval-harness",
+      "source": [
+        "runtime/src/eval"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_accepted",
+      "realWindow": "not_applicable",
+      "realMachine": "not_accepted",
+      "notes": "Eleven isolated scenarios exist. Provider/model success-rate, cost and tool-count evidence is pending."
+    },
+    {
+      "module": "context-token-summary-memory",
+      "source": [
+        "runtime/src/context",
+        "runtime/src/model/TokenCounter.ts"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_accepted",
+      "realWindow": "not_accepted",
+      "realMachine": "not_accepted",
+      "notes": "Exact local tokenizer, conservative remote counter, skip-capable packing, strict summaries and governed editable memory."
+    },
+    {
+      "module": "local-embedding",
+      "source": [
+        "runtime/src/context/EmbeddingService.ts",
+        "runtime/config/embedding-models.json"
+      ],
+      "unit": "verified",
+      "integration": "partial",
+      "realModel": "not_accepted",
+      "realWindow": "not_applicable",
+      "realMachine": "not_accepted",
+      "notes": "GGUF integration and pinned BGE-M3 manifest are tested; model weights are external and not present in repository acceptance."
+    },
+    {
+      "module": "code-intelligence-and-repo-map",
+      "source": [
+        "runtime/src/context/LspCodeIntelligenceProvider.ts",
+        "runtime/src/context/TreeSitterWasmIntelligenceProvider.ts",
+        "runtime/src/context/ProjectIndex.ts"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_applicable",
+      "realWindow": "not_applicable",
+      "realMachine": "not_accepted",
+      "notes": "TS/JS, JSON/Markdown, Python and C# fixtures, fake LSP and Tree-sitter fallback are covered."
+    },
+    {
+      "module": "mcp",
+      "source": [
+        "packages/protocol/src/host.ts",
+        "runtime/src/mcp",
+        "runtime/src/sandbox",
+        "app/src/main/runtime/mcp-remote-service.ts",
+        "app/src/main/persistence/mcp-oauth-credential-vault.ts"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_applicable",
+      "realWindow": "not_accepted",
+      "realMachine": "not_accepted",
+      "notes": "Official transports, ToolContract adaptation, native sandbox process leases, Main-owned Streamable HTTP, encrypted OAuth/PKCE state and authorization denial are automated. Signed-helper STDIO and real OAuth server acceptance remain pending."
+    },
+    {
+      "module": "skills-and-hooks",
+      "source": [
+        "runtime/src/skills",
+        "runtime/src/hooks"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_accepted",
+      "realWindow": "not_applicable",
+      "realMachine": "not_accepted",
+      "notes": "Instruction hierarchy and durable session/run/model/tool/subagent/stop lifecycle hooks are connected. Skill scripts receive no extra authority."
+    },
+    {
+      "module": "resource-registry",
+      "source": [
+        "runtime/src/resources"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_applicable",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
+      "notes": "Content addressed storage, opaque public IDs, metadata update and deletion are covered."
+    },
+    {
+      "module": "browser-service",
+      "source": [
+        "app/src/main/services/browser-service.ts",
+        "runtime/src/tools/browserTools.ts"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_accepted",
+      "realWindow": "partial",
+      "realMachine": "not_accepted",
+      "notes": "Main-owned isolated WebContentsView health and dynamic capability registration are verified. Real HTTPS navigation, redirect, input and download acceptance is pending."
+    },
+    {
+      "module": "headless-ndjson",
+      "source": [
+        "runtime/src/transport/HeadlessRuntimeHost.ts",
+        "runtime/src/entry/headless.ts"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_accepted",
+      "realWindow": "not_applicable",
+      "realMachine": "not_accepted",
+      "notes": "Real child process, cursor reconnect, shutdown and --once behavior are covered."
+    },
+    {
+      "module": "task-compare-restore",
+      "source": [
+        "runtime/src/orchestrator/TaskCheckpointService.ts",
+        "runtime/src/orchestrator/TaskRollback.ts"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_applicable",
+      "realWindow": "not_accepted",
+      "realMachine": "not_accepted",
+      "notes": "Ledger-scoped files, hash conflicts and reversible restore checkpoints are covered."
+    },
+    {
+      "module": "provider-resilience-and-telemetry",
+      "source": [
+        "runtime/src/model/ProviderResilience.ts",
+        "runtime/src/telemetry"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_accepted",
+      "realWindow": "not_applicable",
+      "realMachine": "not_accepted",
+      "notes": "Retry-After, backoff, limits, circuit, first-token boundary, endpoint allowlist and attribute redaction are covered."
+    },
+    {
+      "module": "database-migration",
+      "source": [
+        "runtime/src/storage/sqliteMigration.ts",
+        "runtime/config/schema-compatibility.json"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_applicable",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
+      "notes": "Pre-migration backup, atomic rollback and newer-schema rejection are covered. N-1 package upgrade/downgrade acceptance is pending."
+    },
+    {
+      "module": "runtime-policy-settings",
+      "source": [
+        "packages/protocol/src/settings.ts",
+        "app/src/main/persistence/agent-settings-repository.ts",
+        "app/src/main/runtime/runtime-configuration.ts"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_applicable",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
+      "notes": "Schema 2 persists and bootstraps non-secret MCP, Skills, Hooks, Browser, telemetry, resilience and Embedding policy. OAuth exchange is Main-owned and settings carry only opaque credential references."
+    },
+    {
+      "module": "windows-release",
+      "source": [
+        "app/build/installer.nsh",
+        "scripts/verify-release-contract.mjs",
+        "scripts/verify-packaged-runtime-assets.mjs",
+        "scripts/verify-windows-release-signatures.mjs"
+      ],
+      "unit": "verified",
+      "integration": "partial",
+      "realModel": "not_accepted",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
+      "notes": "Static installer and fail-closed signing gates are verified. Signed package install, upgrade, rollback, downgrade and uninstall require a clean Windows machine."
+    }
+  ]
+}

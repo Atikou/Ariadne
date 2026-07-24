@@ -3,7 +3,8 @@
 ```text
 Ariadne/
 ├─ app/
-│  ├─ src/main/runtime/       # Runtime 配置与唯一生命周期控制器
+│  ├─ src/main/runtime/       # Runtime 生命周期、Host capability 与 Main-owned MCP HTTP/OAuth
+│  ├─ src/main/persistence/   # 设置、桌面状态与安全凭据存储
 │  ├─ src/main/smoke/         # 真实 Electron 冒烟验证
 │  ├─ src/main/windows/       # 主窗口、Popout 白名单与无端口 Renderer 源
 │  ├─ src/main/               # 托盘、终端、文件等桌面能力
@@ -15,13 +16,18 @@ Ariadne/
 ├─ packages/protocol/
 │  ├─ src/public.ts           # Renderer 安全的公开协议
 │  ├─ src/host.ts             # Main ↔ Runtime 私有进程协议
+│  ├─ src/headless.ts         # stdin/stdout NDJSON 协议
+│  ├─ src/settings.ts         # 版本化、非密钥 runtimePolicy
 │  ├─ src/common.ts           # 共享基础 schema
 │  └─ tests/                  # 版本、尺寸、严格校验与安全测试
 ├─ runtime/
 │  ├─ src/application/        # RuntimeFacade 与运行上下文
 │  ├─ src/transport/          # Node IPC Runtime 宿主
 │  ├─ src/entry/              # 子进程入口
-│  ├─ src/*                   # Ariadne 自有的 Agent 核心能力
+│  ├─ src/run/ + src/events/  # RunAggregate、checkpoint、账本与持久 outbox
+│  ├─ src/mcp/ + src/sandbox/ # MCP 适配与受控进程边界
+│  ├─ src/context/            # Token、摘要、记忆、Embedding 与代码理解
+│  ├─ src/*                   # 其余 Ariadne Agent、Tool、Policy 与扩展能力
 │  ├─ native/                 # Windows 原生沙箱与烟雾工程
 │  ├─ config/                 # 配置模板
 │  ├─ scripts/                # 模型运行时和沙箱发布脚本

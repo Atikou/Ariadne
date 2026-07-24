@@ -11,11 +11,13 @@ flowchart LR
   R["Renderer<br/>React + Dockview"] -->|"固定 Preload API"| P["Preload<br/>sandbox + contextIsolation"]
   P -->|"受限 Electron IPC"| M["Electron Main"]
   M --> D["桌面能力<br/>主窗口/受控 Popout/托盘/终端/文件/剪贴板"]
+  M --> B["Host Capability Broker<br/>Browser/资源导入/安全存储"]
   M --> S["RuntimeSupervisor"]
   S -->|"版本化 Node IPC"| T["Ariadne Runtime"]
   T --> A["Companion / Agent / 模型"]
   T --> C["上下文 / 记忆 / 计划 / 工具"]
-  T --> X["权限 / 调度 / 追踪 / 持久化"]
+  T --> X["RunAggregate / Outbox / 权限 / 持久化"]
+  T -.->|"私有 capability request"| B
 ```
 
 ## 2. 组件职责
@@ -24,7 +26,7 @@ flowchart LR
 |---|---|---|
 | 主 Renderer | UI、输入、状态投影、应用级审批弹窗、Dockview 布局 | Node、文件系统、子进程、数据库、模型调用、系统通知 |
 | Preload | 暴露固定且类型化的桌面与 Runtime API | 通用 `ipcRenderer`、任意 channel、端口、路径和密钥 |
-| Electron Main | 窗口/托盘/通知/终端/文件/剪贴板、Runtime 生命周期、协议转发 | Agent 编排、模型、记忆、工具业务逻辑 |
+| Electron Main | 窗口/托盘/通知/终端/文件/剪贴板、Browser Service、安全存储、Runtime 生命周期、Host capability broker | Agent 编排、模型、记忆、工具策略与执行逻辑 |
 | Runtime | Companion、Agent、模型、上下文、记忆、计划、工具、权限、调度、持久化 | Electron UI 和桌面窗口 |
 | Protocol | 严格 schema、版本、请求/响应/事件和公开 DTO | 业务实现和存储模型 |
 
@@ -43,9 +45,10 @@ flowchart LR
 协议分为 Public 与 Host 两层：
 
 - Public 可经 Preload 进入 Renderer，只包含公开状态、命令结果、事件和资源引用。
-- Host 只存在于 Main 与 Runtime，包含启动根目录、实例标识、请求 ID 和关闭控制。
-- 所有入站消息均经严格 schema 校验；未知字段、错误版本、错误实例和非单调事件序号会被拒绝。
-- 单条消息不超过 8 MiB；文件和图片不得以 Base64 穿过 IPC。该上限覆盖公开 2,000,000 字符消息契约，但仍在两个传输方向执行 fail-closed 尺寸检查。
+- Host 只存在于 Main 与 Runtime，包含启动根目录、实例标识、请求 ID、关闭控制和 Runtime → Main capability request/response；Host DTO 绝不进入 Renderer。
+- 协议版本为 `2.0`。所有入站消息均经严格 schema 校验；未知字段、错误版本、错误实例、无效 cursor 和超限消息会被拒绝。
+- Public 资源只使用 opaque `ResourceReference`，不会携带绝对路径或文件 Base64。私有 Browser capability 可把有界截图/下载字节从 Main 交给 Runtime，Runtime 必须立即登记 Resource Registry，再向 Public 层返回 opaque ID。
+- 单条消息不超过 8 MiB；两个传输方向都执行 fail-closed 尺寸检查。
 
 ```mermaid
 sequenceDiagram
@@ -54,10 +57,15 @@ sequenceDiagram
   participant UI as Renderer
   Main->>Runtime: bootstrap(version, roots, workspaces)
   Runtime-->>Main: ready(capabilities, storageSchemas)
-  UI->>Main: runtime.request(publicCommand)
+  UI->>Main: runtime.snapshot.get
   Main->>Runtime: request(requestId, command)
-  Runtime-->>Main: response(result) / event(sequence)
-  Main-->>UI: public result / public event
+  Runtime-->>Main: response(snapshot@revision)
+  Main-->>UI: 单一 revision 快照
+  Runtime-->>Main: event(RuntimeEventEnvelope@cursor)
+  Main-->>UI: 持久 event
+  UI->>Main: events.replay(afterCursor)
+  Runtime->>Main: capability_request(Browser/资源/凭据引用)
+  Main-->>Runtime: capability_response
   Main->>Runtime: shutdown(deadline)
   Runtime-->>Main: shutdown_complete
 ```
@@ -70,7 +78,8 @@ sequenceDiagram
 - 所有未完成请求在退出或协议违规时统一拒绝，不留下悬挂 Promise。
 - Runtime 收到优雅关闭请求后停止产生新事件、拒绝新请求，并在同一关闭截止时间内等待已接受请求完成；截止时间到达后才继续释放存储与进程资源。
 - Runtime 状态和事件观察者彼此隔离；单个窗口或通知观察者抛错不会打断 Supervisor 消息处理，也不会阻止其他观察者接收事件。
-- Ariadne 目标专用事件桥以 TraceIndex 启动边界和增量游标读取持久化事件，再按索引定位 segment；单次突发不受公开 `trace.list` 的 2,000 条查询上限影响。索引批次必须完整读取后才提交游标；segment 暂时不可用、轮转路径尚未同步或对应索引事件不可解析时本轮失败并保留原游标，待持久化状态恢复后重试，不能静默跳过事件。只有无索引兼容场景才回退到尾部窗口扫描。
+- 业务状态由 `RunAggregate` typed command 改变，并在同一 SQLite 事务内提交 aggregate、checkpoint、tool ledger 和 domain event outbox；Runtime 通过持久 cursor 分页重放 outbox。Trace 与 OpenTelemetry 只能消费已提交领域事实，用于诊断和观测，不能驱动业务恢复。
+- 事件消费者以 `eventId + aggregateVersion` 幂等应用；断线、重启、分页和重复投递不会推进未完整提交的 cursor，也不会回退到 Trace 扫描。
 - 长时间 Agent 执行不占用普通 IPC 请求超时：提案或审批先返回持久化状态，后续执行、恢复和终态通过 Runtime 事件发布。
 - Main 只向 Renderer 发布稳定诊断，不转发原始 stderr、路径或内部异常对象。
 - App 启动会等待 `loadURL` 真正完成；Renderer 载入失败进入顶层受控退出，不能以空白窗口伪装成启动成功。
@@ -89,6 +98,8 @@ sequenceDiagram
 - 桌面状态和 Agent 设置文件读取失败或格式损坏时 fail-closed；只有成功把损坏文件原样改名留档后才允许以默认值恢复，避免把唯一故障证据覆盖掉。
 - 会改变系统状态的桌面偏好按顺序执行；如果持久化失败，Main 会补偿恢复上一份系统设置，补偿失败则同时报告原始错误和恢复错误。
 - 模型与权限设置保存在 Electron `userData/settings.toml`；API Key 由 Main 使用系统安全存储加密，Preload 与 Renderer 不接收明文。旧 `agent-settings.json` 只在首次启动时迁移并改名留档，不再参与正常读写。
+- MCP、Skills、Hooks、Browser、Telemetry、Provider resilience 和 Embedding 使用 schema 2 设置中的版本化 `runtimePolicy` 快照；Main 只把严格校验后的非密钥字段和 opaque credential reference 注入 Host bootstrap。schema 1 只执行一次前向迁移，不与新格式双写。
+- MCP STDIO 不使用 SDK 的直接 spawn：Runtime 通过原生 Sandbox v5 的认证 process lease 获得有界双工 I/O，Main/Helper 负责取消、断线和进程树回收。远程 MCP 的官方 Streamable HTTP SDK、OAuth 2.1/PKCE、动态客户端信息和 token 全部驻留 Electron Main；Runtime 只经私有 Host capability 交换 JSON-RPC 与 opaque connection ID。凭据由 `safeStorage` 加密保存，`ariadne://oauth/mcp` 回调必须匹配已保存 state。
 - Chat 权限菜单提供“请求批准 / 替我审批 / 完全访问权限 / 自定义”四档；前三档映射到固定的提案审批、Ariadne Run 权限与沙箱组合，自定义档读取 `settings.toml` 的 `customPermissions`。
 
 ## 7. Provider、Protocol 与模型能力
@@ -103,9 +114,15 @@ sequenceDiagram
 
 Chat 只发送通用的 `reasoningMode` 与 `reasoningEffort`。Runtime 根据当前模型 profile 再次校验，避免界面把不受支持的参数发给本地模型或远程 API。完整映射见 [Provider 协议与模型推理配置](Provider协议与模型推理配置.md)。
 
+Chat 选择“自动选择模型”时，Companion、Agent 与结果表达分别按既有路由策略选择模型。用户显式选择具体模型时，Runtime 把可执行的 `clientName` 作为服务端模型绑定写入 Agent 提案，而不是依赖 Renderer 状态或模型展示名；首次 Agent 执行、权限恢复、计划恢复、中断恢复和 Agent 结果表达都从该持久化绑定创建模型调用。手动绑定找不到对应客户端或请求客户端与实际客户端不一致时必须 fail-closed，禁止静默回退到本地或其他远程模型。Trace 同时记录选择模式、请求客户端、实际客户端、模型名、协议版本和匹配结果。
+
+Provider 原生 Tool Calling 和文本 JSON fallback 都先转换成同一 `AgentAction`。工具契约以 Zod 4 `ToolContract<I,O>` 为唯一来源，Provider JSON Schema 从输入 Schema 派生；审批、并发计划、checkpoint、账本和恢复不会因 Provider 路径而分叉。Provider qualification matrix 分别记录 native tools、fallback、stream、reasoning、取消、tokenizer 和错误行为，不能根据“兼容”标签推断能力。
+
+统一 resilience policy 负责错误分类、`Retry-After`、指数退避与 jitter、请求/Token 限流、并发上限和按 Provider/模型熔断。流式输出产生首个 token 后禁止透明重试。
+
 ## 8. Renderer 状态流
 
-Renderer 的 `RuntimeStore` 通过固定桥获取初始状态，并消费 Runtime 事件更新会话、消息、模型、提案、运行、活动、权限、计划和追踪记录。Runtime 事件桥会增量投影持久化的权限、计划和追踪变化；最终 Companion 消息也走同一公开事件边界。Renderer 不再生成 Mock 任务或伪造执行进度。
+Renderer 的 `RuntimeStore` 先调用 `runtime.snapshot.get` 获得同一 revision 的初始状态，再从该 revision 对应 cursor 幂等应用 `RuntimeEventEnvelope`；断线后使用 `events.replay` 补齐缺口。会话、消息、模型、提案、Run、活动、权限、计划、资源和诊断都由这条公开状态流投影，Renderer 不再并行拼接不同时间点的多个列表，也不生成 Mock 任务或伪造执行进度。
 
 Public Run 显式标记 `origin=agent|companion`，Renderer 据此分别使用 `runs.cancel` 和 `companion.chat.cancel`。等待权限或计划时 Agent 已暂停，`runs.cancel` 会拒绝对应申请并复用同一终态收敛链路。审批 DTO 保留实际请求能力、风险、完整目标与允许作用域；Renderer 只能提交请求允许范围内的能力子集与 once/session/project/workspace 作用域，启动前校验失败仍同步返回错误，只有已进入 `executing` 的提案才切换为后台执行。
 
@@ -133,4 +150,6 @@ Chat 发送时由 Renderer 生成 `clientMessageId`，先将用户消息以 pend
 
 ## 9. 发布边界
 
-开发态可使用系统独立 Node 启动 Runtime。打包态必须随应用装配专用 Node runner、Runtime 构建产物和受信任的 Windows 沙箱 helper。安装包发布前还要验证安装器、主 EXE 和内嵌沙箱 helper 的签名、证书摘要、时间戳及 helper manifest 哈希，并验证模型与工具审批全链路、数据升级/回滚以及安装/卸载行为。
+开发态可使用系统独立 Node 启动 Runtime。打包态必须随应用装配专用 Node runner、Runtime 构建产物、模型 Runtime 和受信任的 Windows Sandbox helper。数据库迁移在写入前创建一致性备份，事务失败原子回滚；旧程序拒绝写入更新 Schema，降级只通过恢复对应版本备份完成。
+
+NSIS 使用 assisted installer：安装、升级和卸载前回收残留应用/helper；静默卸载默认保留用户数据，交互卸载只有用户显式确认才删除。`verify:release` 按依赖、契约、Protocol、Runtime、App、独立性、真实 Electron、原生 Sandbox、模型 Runtime、安装包签名和产物签名顺序 fail-closed。缺少正式证书、模型资产或干净 Windows 验收机时，发布验收必须保持未完成。

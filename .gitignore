@@ -21,4 +21,5 @@ artifacts/ariadne-smoke.png
 artifacts/ariadne-loaded.png
 artifacts/ariadne-ui-dark.png
 artifacts/electron-runtime-smoke/
+artifacts/electron-runtime-smoke-final/
 artifacts/ariadne-live-*.png

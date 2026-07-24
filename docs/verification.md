@@ -1,98 +1,129 @@
-# 验证说明
+# Ariadne P0/P1 验证说明
 
-## 自动验证
+> 状态日期：2026-07-24。自动回归不能替代真实模型、正式签名或干净机器验收。
+
+## 1. 开发门禁
+
+协议发生变化后必须先构建 Protocol，再检查或测试下游。根命令已经固定该顺序：
 
 ```powershell
 npm.cmd run typecheck
-npm.cmd run audit:runtime-independence
 npm.cmd test
-npm.cmd run build
+npm.cmd run audit:runtime-independence
+npm.cmd run verify:release-contract
 npm.cmd run test:electron
-npm.cmd run verify:release
 ```
 
-`verify:release` 是严格发布门禁：除下述 Protocol → Runtime → App 验证外，还会执行根依赖与独立 Runtime 依赖审计、Runtime 独立性审计、真实 Electron 冒烟，最后生成并复验受信任 Windows 安装包。缺少签名环境或模型资产时必须失败。
+当前证据：
 
-根级测试命令按 Protocol → Runtime → App 顺序执行，重点覆盖：
+| 层 | 自动测试 | 结果 |
+|---|---:|---|
+| Protocol | 18 | 通过 |
+| Runtime | 162 | 通过 |
+| App | 163 | 通过 |
+| 合计 | 343 | 通过 |
 
-- 协议严格校验、版本、消息尺寸和私有字段隔离；
-- Runtime 无 Electron 依赖、无本地 HTTP Server、无端口监听；新 Chat 在 workspace 归属失败时有界停止并补偿新会话，同时保护已有会话不被误删；
-- Runtime 进程握手、请求/响应、会话持久化、并发启动/停止、关闭截止时间内的已接收请求排空和 fail-closed；
-- Agent 提案、执行、恢复、拒绝终态以及权限/计划/活动/追踪的增量事件闭环，并验证超过旧查询窗口上限的单批索引 Trace 不丢失，以及索引 segment 暂时不可读时不推进游标、恢复后能够重试投递；
-- Main 唯一拥有 Runtime 子进程，Renderer/Preload 不接触 Host 协议；
-- Supervisor 请求超时、崩溃退避重启、稳定窗口后的计数清零和退出清理；
-- Renderer 模块注册、状态投影、对话滚动、复制动作、中文文案和 Dockview 布局；
-- Dockview 标签越过主窗口边界后创建受控 Popout、完成渲染、确认 Popout 没有高权限 Preload/IPC 能力、关闭后回停，并拒绝非白名单外部窗口；
-- Provider/Protocol 分离、设置 JSON 迁移、API Key 加密状态与四个独立凭据槽位；
-- 模型推理 profile 校验、DeepSeek/Kimi 请求字段映射及厂商私有推理上下文隔离；
-- Agent/Companion Run 来源与取消路由、暂停 Run 取消、审批能力子集与作用域、启动前拒绝传播，以及 `run_start` 前取消不产生孤儿会话/消息；
-- Companion 会话删除把 Agent 访问 retire 与持久删除意图放在同一事务；权威删除失败时精确恢复提案、会话授权和 Agent 链接，进程中断后按会话存在性收敛，已删除会话先重建向量再确认意图，恢复竞争、存储或重建不可判定会 fail-closed；提交后 `DETACH`/派生向量清理失败只触发连接重建和脱敏诊断，不反转已提交的关系数据删除；
-- 稳定工作区 ID/根、读写级别、只读权限上限、文件与终端显式工作区授权、真实路径/Junction 越界约束、终端会话所有权、明确会话删除后的 workspace sidecar 延迟落盘与后续写入自愈，以及 ConPTY helper 配置；
-- 桌面偏好系统副作用与持久化的串行提交、失败补偿、损坏状态/设置文件保全失败时的 fail-closed，以及 Runtime 观察者故障隔离。
+全量 TypeScript 检查、Runtime 独立性审计、发布契约静态检查，以及真实 Electron 窗口加真实 Runtime 子进程冒烟均已通过。精确数量以当前命令输出为准。
 
-2026-07-22 当前自动回归已扩展到 Protocol、Runtime、App 的进程生命周期、持久化失败恢复、权限工作区、Renderer 竞态与生产打包边界。精确测试数以命令输出为准，不能替代下述发布门禁。
+## 2. P0 自动覆盖
 
-## Runtime 独立性审计
+- Protocol 2.0 的 Public、Host、Headless 严格 envelope、未知字段和版本拒绝。
+- `RunAggregate` typed command、非法转换、`expectedAggregateVersion` 竞争和 `recovery_required`。
+- aggregate、checkpoint、tool ledger、domain event outbox 的事务提交。
+- outbox 断线、重启、缺口、分页、重复事件及消费者幂等。
+- 单 revision `runtime.snapshot.get`、`events.replay` 和 Renderer 的 `eventId + aggregateVersion` 投影。
+- Zod 4 `ToolContract` 的嵌套字段、枚举、必填、未知字段和输出校验。
+- native tool 与文本 fallback 到同一 `AgentAction`，以及最多两次无副作用协议修复。
+- 安全只读工具并发、资源冲突串行、取消、超时、部分失败和结果顺序。
+- 工具 intent/start/result checkpoint、幂等键、文件哈希恢复和不确定副作用阻塞。
+- 文件、网页、命令输出、Diff、MCP、SubAgent 的指令权限隔离及 secret egress gate。
+- Browser 服务健康与工具注册一致性。
+- 11 类隔离工作区 Eval 场景。
 
-`npm.cmd run audit:runtime-independence` 只读取 Ariadne 当前工作树，检查所有 `file:` 依赖仍位于项目根内、根发布脚本不引用项目外路径，并拒绝 Runtime 入站 HTTP Server 和端口监听。
+## 3. P1 自动覆盖
 
-完整范围见 [Runtime 独立性审计](Runtime独立性审计.md)。命令会把机器可读 JSON 写到标准输出，任一独立性约束失败时返回非零状态；该审计不替代功能测试、真实窗口或签名发布验收。
+- 精确/保守 TokenCounter、输出与工具 Schema 预留、超大 section 跳过。
+- GGUF Embedding 接口、严格摘要 Schema、记忆生命周期及 list/get/update/delete。
+- TS/JS、JSON/Markdown、Python、C# fixture，LSP 假服务、Tree-sitter fallback 和 Repo Map。
+- MCP Streamable HTTP、HTTPS 限制、ToolContract 适配、原生沙箱双工 STDIO、Main-owned OAuth/PKCE、state/授权拒绝、凭据加密、崩溃和工具变更通知。
+- Skills 指令优先级，session/run/model/tool/subagent/stop Hook 的超时、拒绝和 delivery 去重。
+- Resource Registry 内容寻址、opaque DTO、更新与删除。
+- Browser 安全默认值、动态能力和 Runtime 工具适配。
+- Headless NDJSON 的 cursor、重连、取消、`--once` 与退出码。
+- Task Checkpoint compare/restore 的账本范围与哈希冲突。
+- Provider 限流、退避、熔断和首 token 后不可透明重试。
+- OTel endpoint allowlist 与属性脱敏。
+- 数据库迁移前备份、事务回滚及新 Schema 拒写。
+- NSIS 生命周期和发布资产静态契约。
 
-## Windows 生产打包
-
-只验证独立 Runtime 生产依赖树与 Node runner：
+Windows 原生 Sandbox helper 还需独立构建并执行受限 Runner 冒烟；当前工作树的协议输入、Broker pipe、路径别名/Junction/Symlink、资源限制和受限 Runner 均已通过：
 
 ```powershell
-node scripts/prepare-runtime-package.mjs --dependencies-only --arch=x64
+npm.cmd run sandbox:native:build --workspace @ariadne/runtime
+dotnet run --project runtime/native/Ariadne.WindowsSandbox.RunnerSmokeTests/Ariadne.WindowsSandbox.RunnerSmokeTests.csproj -c Release --no-build
 ```
 
-正式打包命令为：
+## 4. Runtime 独立性
 
 ```powershell
-npm.cmd run package:win
+npm.cmd run audit:runtime-independence
 ```
 
-它会先验证签名环境，再重建 Protocol/Runtime，下载并校验固定版本 Node runner，用独立 lockfile 安装 Runtime 生产依赖，并要求受信任、自包含的 Windows Sandbox helper 和 Transformers Runtime。Electron Builder 被强制要求代码签名；构建结束后会验证安装器、主 EXE 与内嵌 Windows Sandbox helper 的 Authenticode 状态、发布者证书摘要和时间戳，并交叉校验 helper manifest 的文件名、版本、文件哈希与发布者摘要。正式执行前必须由发布环境安全注入应用与 helper 的发布者证书摘要、签名凭据、SignTool 绝对路径及 HTTPS 时间戳服务；不得把证书或实际标识写入仓库。当前开发机只完成了依赖装配和未签名自包含 helper 的构建验证，未生成可发布安装包。
+该审计只读取当前工作树，验证：
 
-## 真实 Electron 冒烟
+- workspace 与 `file:` 依赖不越出当前仓库；
+- Runtime 不创建入站 HTTP Server、不监听端口；
+- 构建与发布脚本不引用仓库外实现；
+- Electron Main → Node IPC → Runtime 是桌面应用唯一执行路径。
 
-`npm.cmd run test:electron` 会先做完整生产构建，再用隔离的临时 `userData` 启动应用。它验证：
+它不替代功能测试、真实窗口或发布机验收。
 
-1. 主窗口和 Renderer 根节点实际完成绘制；
-2. 固定 Runtime Preload 桥存在；
-3. Runtime 通过真实子进程 IPC 达到 `ready`；
-4. 有可用模型时输入区可用；无模型时禁用输入并显示设置引导；
-5. 打开自定义下拉菜单，验证菜单通过顶层 Portal 渲染、根据窗口边界自动翻转或回缩，并保持紧凑选项高度；
-6. 验证“打开工作区”和“新建会话”是可见的带文字主操作；通过界面在当前工作区创建会话并从公开协议列表读回，同时验证 Runtime 返回同一 `workspaceId`、工作区会话树的折叠/展开、紧凑行、悬停详情、双击行内重命名和置顶；
-7. 使用显式 `workspaceId` 读取文件目录并创建/关闭真实 ConPTY 终端，同时确认未知工作区会被 Main 拒绝；
-8. 设置页显示四个远程 Provider、四个独立 API Key 输入框并生成 `settings.toml`；旧 `agent-settings.json` 仅执行一次迁移；
-9. Chat 权限菜单显示“请求批准 / 替我审批 / 完全访问权限 / 自定义 (settings.toml)”四档，选择后保存并重启 Runtime；
-10. 用户消息保留前后空格与换行，单行气泡不被错误拉高；
-11. Renderer 控制台没有 error；
-12. 将“对话”模块标签拖出主窗口，验证第二个原生窗口完成渲染、没有高权限 Preload 桥，关闭后模块回到主工作区；
-13. 尝试打开非白名单外部窗口并确认被 Main 拒绝；
-14. 验证 Popout 与主窗口主题初始一致、实时同步；
-15. 保存截图和结构化 JSON 报告，并确认清理后 Electron 正常退出。
+## 5. 真实 Electron
 
-输出位于：
+```powershell
+npm.cmd run test:electron
+```
+
+该命令使用隔离的临时 `userData` 启动真实 Electron 和真实 Runtime 子进程，验证主 Renderer、固定 Preload、Runtime ready、单快照/事件状态流、工作区与会话、设置、Dockview Popout 安全边界及 Renderer 控制台。
+
+证据输出：
 
 - `artifacts/electron-runtime-smoke/electron-runtime-smoke.json`
 - `artifacts/electron-runtime-smoke/electron-runtime-smoke.png`
 
-临时 Runtime 数据在验证结束后移入系统回收站，避免污染真实用户数据。
+这项测试没有注入真实远程/本地模型，也没有覆盖真实网站下载或正式安装器。
 
-## Windows 原生沙箱
+## 6. 发布门禁
 
-以下工程应使用 Release 配置构建：
+只检查无需证书的静态契约：
 
 ```powershell
-dotnet build runtime/native/Ariadne.WindowsSandbox/Ariadne.WindowsSandbox.csproj -c Release
-dotnet build runtime/native/Ariadne.WindowsSandbox.SmokeTests/Ariadne.WindowsSandbox.SmokeTests.csproj -c Release
-dotnet build runtime/native/Ariadne.WindowsSandbox.RunnerSmokeTests/Ariadne.WindowsSandbox.RunnerSmokeTests.csproj -c Release
+npm.cmd run verify:release-contract
 ```
 
-烟雾测试可能修改本机账户、ACL 或防火墙，必须在隔离虚拟机运行；普通开发机只做编译验证。
+正式门禁：
 
-## 尚未覆盖的发布验收
+```powershell
+npm.cmd run verify:release
+```
 
-真实模型回答、工具/权限/计划完整链路、压力测试、原生 helper 正式签名、数据升级/回滚、安装包生成与签名仍是发布前门槛，详见 [Runtime 接入 TODO](Runtime接入-TODO.md)。
+`verify:release` 依次执行依赖审计、发布契约、Protocol、Runtime、App、独立性、真实 Electron、签名环境、Windows 安装包构建、打包 Runtime/模型/Sandbox 资产校验和 Authenticode 产物校验。缺少证书、固定模型资产或受信任 helper 时必须失败，不能降级成“跳过但通过”。
+
+NSIS 行为：
+
+- 安装、升级和卸载前回收残留应用及 Sandbox helper；
+- 静默卸载默认保留用户数据；
+- 交互卸载只有用户显式确认才删除用户数据；
+- 数据库升级前备份，失败回滚；降级通过恢复版本化备份完成。
+
+## 7. 尚未验收
+
+- 真实远程 Provider 与真实本地聊天模型：工具、权限、计划、取消、强杀恢复。
+- 实际 BGE-M3 GGUF 资产的多语言语义召回。
+- 签名原生 helper 下的真实 MCP STDIO 服务，以及真实远程 OAuth 首次授权、刷新、撤销和断线恢复。
+- Browser 真实 HTTPS、重定向、敏感输入和下载隔离。
+- 真实 OTLP collector。
+- 正式签名应用、安装器和 Sandbox helper。
+- 干净 Windows 机器上的全新安装、N-1 升级、迁移失败回滚、备份降级和卸载。
+
+逐模块状态由 [verification-matrix.json](verification-matrix.json) 记录；`not_accepted` 不能因单元测试通过而改成 `verified`。
