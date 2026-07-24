@@ -1,6 +1,6 @@
 # Ariadne
 
-Ariadne 是一个以 Electron 为桌面宿主、以独立 Node 子进程承载 Agent 能力的桌面应用。Agent 核心完整维护在本项目的 `runtime/` 中，桌面端不依赖外部源码仓库、Mock、本地 HTTP 或端口通信。
+Ariadne 是一个以 Electron 为桌面宿主、以独立 Node 子进程承载 Agent 能力的桌面应用。Agent 核心完整维护在本项目的 `runtime/` 中，桌面端通过 Node IPC 使用真实 Runtime，不使用 Mock、本地 HTTP 或端口通信。
 
 ## 架构
 
@@ -64,5 +64,6 @@ npm.cmd run test:electron
 - [Renderer UI 架构](docs/ui-architecture.md)
 - [Provider 协议与模型推理配置](docs/Provider协议与模型推理配置.md)
 - [Runtime 独立性审计](docs/Runtime独立性审计.md)
+- [Agent 成熟度差距、模块审阅与改进路线](docs/Agent成熟度差距与改进路线.md)
 - [Runtime 接入 TODO 与完成状态](docs/Runtime接入-TODO.md)
 - [验证说明](docs/verification.md)

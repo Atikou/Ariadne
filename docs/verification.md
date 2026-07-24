@@ -34,7 +34,7 @@ npm.cmd run verify:release
 
 ## Runtime 独立性审计
 
-`npm.cmd run audit:runtime-independence` 只读取 Ariadne 当前工作树，验证生产源码、打包资源和根发布脚本不依赖任何外部 Agent 源项目；同时检查所有 `file:` 依赖仍位于项目根内，并拒绝 Runtime 入站 HTTP Server、端口监听和旧品牌残留。
+`npm.cmd run audit:runtime-independence` 只读取 Ariadne 当前工作树，检查所有 `file:` 依赖仍位于项目根内、根发布脚本不引用项目外路径，并拒绝 Runtime 入站 HTTP Server 和端口监听。
 
 完整范围见 [Runtime 独立性审计](Runtime独立性审计.md)。命令会把机器可读 JSON 写到标准输出，任一独立性约束失败时返回非零状态；该审计不替代功能测试、真实窗口或签名发布验收。
 

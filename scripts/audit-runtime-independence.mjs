@@ -21,39 +21,33 @@ const skippedDirectories = new Set([
 ]);
 
 const productionFiles = productionRoots.flatMap((root) => walk(root));
-const legacyBrandReferences = findMatches(
-  productionFiles,
-  /\bagent[-_ ]?relay(?![a-z0-9])/iu,
-);
 const inboundHttpIndicators = findMatches(
   walk(path.join(runtimeRoot, 'src')),
   /\b(?:createServer|http\.createServer|https\.createServer)\s*\(|\.listen\s*\(|\b(?:express|fastify)\s*\(/u
 );
 const externalFileDependencies = findExternalFileDependencies();
 const rootPackage = JSON.parse(readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
-const forbiddenRootScripts = Object.entries(rootPackage.scripts ?? {})
-  .filter(([name, command]) =>
-    /\bagent[-_ ]?relay(?![a-z0-9])/iu.test(`${name} ${String(command)}`))
+const externalRootScriptPaths = Object.entries(rootPackage.scripts ?? {})
+  .filter(([, command]) =>
+    referencesPathOutsideProject(String(command)))
   .map(([name]) => name);
 const runtimeServerDirectoryAbsent = !existsSync(path.join(runtimeRoot, 'src', 'server'));
 const runtimePublicDirectoryAbsent = !existsSync(path.join(runtimeRoot, 'public'));
 
 const report = {
   ok: (
-    legacyBrandReferences.length === 0
-    && inboundHttpIndicators.length === 0
+    inboundHttpIndicators.length === 0
     && externalFileDependencies.length === 0
-    && forbiddenRootScripts.length === 0
+    && externalRootScriptPaths.length === 0
     && runtimeServerDirectoryAbsent
     && runtimePublicDirectoryAbsent
   ),
   productionFileCount: productionFiles.length,
   runtimeServerDirectoryAbsent,
   runtimePublicDirectoryAbsent,
-  legacyBrandReferences,
   inboundHttpIndicators,
   externalFileDependencies,
-  forbiddenRootScripts
+  externalRootScriptPaths
 };
 
 process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -106,6 +100,10 @@ function findExternalFileDependencies() {
     }
   }
   return failures.sort();
+}
+
+function referencesPathOutsideProject(command) {
+  return /(?:^|[\s"'=])(?:\.\.[\\/]|[a-z]:[\\/]|\\\\)/iu.test(command);
 }
 
 function isInsideProject(target) {

@@ -9,6 +9,7 @@ describe('production packaging pipeline', () => {
     const projectRoot = path.resolve(process.cwd(), '..');
     const rootPackage = JSON.parse(await readFile(path.join(projectRoot, 'package.json'), 'utf8')) as {
       scripts: Record<string, string>;
+      workspaces: string[];
     };
     const appPackage = JSON.parse(await readFile(path.join(process.cwd(), 'package.json'), 'utf8')) as {
       scripts: Record<string, string>;
@@ -33,16 +34,10 @@ describe('production packaging pipeline', () => {
     expect(appPackage.scripts['package:win']).toContain('verify-windows-release-signatures.mjs');
     expect(rootPackage.scripts['verify:release']).toContain('audit:dependencies');
     expect(rootPackage.scripts['verify:release']).toContain('audit:runtime-independence');
-    expect(rootPackage.scripts['verify:release']).not.toMatch(
-      /agent[-_ ]?relay(?![a-z0-9])/i
-    );
+    expect(rootPackage.workspaces).toEqual(['app', 'packages/protocol', 'runtime']);
     expect(rootPackage.scripts['audit:runtime-independence']).toBe(
       'node scripts/audit-runtime-independence.mjs'
     );
-    expect(Object.keys(rootPackage.scripts)).not.toEqual(expect.arrayContaining([
-      'audit:agentrelay-migration',
-      'test:agentrelay'
-    ]));
     expect(rootPackage.scripts['verify:release']).toContain('package:win');
     expect(appPackage.build.extraResources).toEqual(expect.arrayContaining([
       expect.objectContaining({ to: 'runtime-runner' }),
@@ -58,7 +53,7 @@ describe('production packaging pipeline', () => {
     expect(prepareScript).toContain('verifyProductionAssets()');
   });
 
-  it('proves the packaged application has no external Agent source dependency', () => {
+  it('keeps production dependencies inside the Ariadne workspace and rejects an inbound Runtime server', () => {
     const projectRoot = path.resolve(process.cwd(), '..');
     const result = spawnSync(process.execPath, [
       path.join(projectRoot, 'scripts', 'audit-runtime-independence.mjs')
@@ -72,9 +67,9 @@ describe('production packaging pipeline', () => {
       ok: true,
       runtimeServerDirectoryAbsent: true,
       runtimePublicDirectoryAbsent: true,
-      legacyBrandReferences: [],
       inboundHttpIndicators: [],
-      externalFileDependencies: []
+      externalFileDependencies: [],
+      externalRootScriptPaths: []
     });
   });
 

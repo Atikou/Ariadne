@@ -4,7 +4,7 @@
 
 Ariadne 将桌面体验与 Agent 执行彻底分层：App 负责显示、输入、用户确认和桌面系统能力；Runtime 负责 Agent、模型、记忆、工具、任务和业务数据；Protocol 是两者唯一共享边界。
 
-Ariadne Runtime 是本项目自有且唯一的 Agent 业务核心。Agent 循环、工具执行、计划、策略、上下文、记忆、调度、SubAgent、权限和沙箱逻辑均在当前仓库维护；构建、测试与发布不得读取其他源码项目。Electron Host 只负责进程生命周期、Node IPC/Public DTO、配置和桌面能力注入。独立性证据见 [Runtime 独立性审计](Runtime独立性审计.md)。
+Ariadne Runtime 是本项目自有且唯一的 Agent 业务核心。Agent 循环、工具执行、计划、策略、上下文、记忆、调度、SubAgent、权限和沙箱逻辑均在当前仓库维护；构建、测试与发布只使用当前 monorepo workspace 与固定打包资产。Electron Host 只负责进程生命周期、Node IPC/Public DTO、配置和桌面能力注入。独立性证据见 [Runtime 独立性审计](Runtime独立性审计.md)。
 
 ```mermaid
 flowchart LR

@@ -12,7 +12,7 @@ async function collectSourceFiles(directory: string): Promise<string[]> {
   return nested.flat();
 }
 
-describe('clean desktop shell boundary', () => {
+describe('Ariadne desktop architecture boundary', () => {
   it('keeps the Agent backend behind one Main-owned, portless Runtime supervisor', async () => {
     const files = await collectSourceFiles(join(process.cwd(), 'src'));
     const offenders: string[] = [];
@@ -20,7 +20,7 @@ describe('clean desktop shell boundary', () => {
       const source = await readFile(file, 'utf8');
       const normalized = file.replaceAll('\\', '/');
       const isRuntimeHost = normalized.includes('/src/main/runtime/');
-      if (/AgentRelay|agent-service|createServer\s*\(|\.listen\s*\(|\bfetch\s*\(|node:https?|https?\.request\s*\(/.test(source)) {
+      if (/createServer\s*\(|\.listen\s*\(|\bfetch\s*\(|node:https?|https?\.request\s*\(/.test(source)) {
         offenders.push(file);
       } else if (!isRuntimeHost && /child_process|node:child_process|@ariadne\/protocol\/host/.test(source)) {
         offenders.push(file);

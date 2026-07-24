@@ -16,7 +16,7 @@
 
 - [x] Agent、模型、上下文、记忆、工具、权限、计划、调度、存储和追踪核心完整维护在 `runtime/src`。
 - [x] Runtime 不包含入站 HTTP Server、DesktopHost、网页测试台、运行状态、模型权重或 `.env`。
-- [x] 建立 Runtime 独立性审计，发布流程不读取或测试任何外部源码仓库。
+- [x] 建立 Runtime 独立性审计，构建、测试和发布只使用当前 monorepo workspace 与固定打包资产。
 - [x] 提供 Ariadne 自带的 Transformers JSONL Worker，并确认项目内本地模型链路不依赖外部应用。
 - [x] 建立可由独立 Node 启动的 Runtime 入口和 Node IPC Host。
 - [x] 将安装目录、数据目录、模型目录和工作区改为 Host 注入。
@@ -62,7 +62,7 @@
 - [x] App 模块、布局、消息动作、中文界面和终端生命周期测试。
 - [x] 设置 JSON 迁移、凭据不回传、Provider 配置注入、推理映射与实际 Chat stream 集成测试。
 - [x] 真实 Electron + 真实 Runtime 冒烟：窗口渲染、主 Renderer Preload 桥、Runtime 就绪、会话创建、Chat 可用/禁用状态、设置页与 JSON 落盘、Popout 创建/主题同步/回停且无高权限 Preload、正常退出、零 Renderer 控制台错误和截图。
-- [x] Runtime 独立性审计通过，发布流程不依赖外部 Agent 源项目或其工作树状态。
+- [x] Runtime 独立性审计通过，生产依赖和根发布脚本均限制在当前 Ariadne 工作区内。
 - [ ] 配置真实本地模型，完成“输入 → 模型流式回答 → 持久化”的桌面全链路测试。
 - [ ] 完成至少一个真实工具调用、权限拒绝/一次性允许、计划确认、取消和崩溃恢复的 UI 全链路测试。
 - [ ] 做长会话、并发请求、大型工作区索引和长时间运行压力测试。
