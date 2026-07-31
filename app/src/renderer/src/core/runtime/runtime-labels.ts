@@ -1,4 +1,9 @@
-import type { PermissionRequest, RunActivity, RunSummary, RuntimeStatus } from '@ariadne/protocol/public';
+import type {
+  PermissionRequest,
+  RunActivity,
+  RunSummary,
+  RuntimeStatus,
+} from '@ariadne/protocol/public';
 
 const runtimeAvailabilityLabels: Record<RuntimeStatus['availability'], string> = {
   stopped: '已停止',
@@ -15,20 +20,12 @@ const runStatusLabels: Record<RunSummary['status'], string> = {
   running: '执行中',
   waiting_permission: '等待权限确认',
   waiting_plan_handoff: '等待计划确认',
+  waiting_budget: '等待追加预算',
+  paused: '已暂停',
   completed: '已完成',
   failed: '失败',
   cancelled: '已取消',
   interrupted: '已中断'
-};
-
-const activityKindLabels: Record<RunActivity['kind'], string> = {
-  model: '模型',
-  tool: '工具',
-  plan: '计划',
-  subagent: '子 Agent',
-  status: '状态',
-  warning: '警告',
-  error: '错误'
 };
 
 const riskLabels: Record<PermissionRequest['permissionItems'][number]['risk'], string> = {
@@ -46,8 +43,9 @@ export function formatRunStatus(status: RunSummary['status']): string {
   return runStatusLabels[status];
 }
 
-export function formatActivityKind(kind: RunActivity['kind']): string {
-  return activityKindLabels[kind];
+export function formatActivityKind(activity: RunActivity): string {
+  if (activity.activityType === 'tool') return '工具';
+  return activity.kind === 'context_compaction' ? '上下文压缩' : '工作上下文裁剪';
 }
 
 export function formatRisk(risk: PermissionRequest['permissionItems'][number]['risk']): string {

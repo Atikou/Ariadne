@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { FolderLock, ListChecks, RotateCw, ShieldCheck } from 'lucide-react';
+import { FolderLock, ListChecks, ShieldCheck } from 'lucide-react';
 import type {
   AgentCapability,
   AgentProposal,
   PermissionRequest,
   PlanHandoff,
-  RunSummary,
   WorkspaceAccessMode
 } from '@ariadne/protocol/public';
 import type { ModuleServices } from '@renderer/core/modules/module-contract';
@@ -21,22 +20,27 @@ import {
   commonApprovalScopes,
   type ApprovalScope
 } from '@renderer/modules/chat/permission-decision-policy';
+import { resolveApprovalSessionId } from '@shared/conversation-approval-state';
+import { PlanContractView } from '@renderer/modules/agent-plan/PlanContractView';
 
 type PendingApproval =
   | { kind: 'proposal'; id: string; createdAt: string; proposal: AgentProposal }
   | { kind: 'permission'; id: string; createdAt: string; request: PermissionRequest }
-  | { kind: 'plan'; id: string; createdAt: string; handoff: PlanHandoff }
-  | { kind: 'permission_resume'; id: string; createdAt: string; request: PermissionRequest; run: RunSummary }
-  | { kind: 'plan_resume'; id: string; createdAt: string; handoff: PlanHandoff; run: RunSummary };
+  | { kind: 'plan'; id: string; createdAt: string; handoff: PlanHandoff };
 
-export function ApprovalCenter({ services }: { services: ModuleServices }): React.JSX.Element | null {
+export function ConversationApprovalCards(
+  { services, sessionId }: { services: ModuleServices; sessionId: string | null },
+): React.JSX.Element | null {
   const snapshot = useRuntimeSnapshot(services.runtime);
   const [workspaceAccess, setWorkspaceAccess] = useState<WorkspaceAccessMode>('write');
   const pending = useMemo<PendingApproval[]>(() => {
-    const runs = new Map(snapshot.runs.map((run) => [run.runId, run]));
+    if (!sessionId) return [];
+    const belongsToSession = (candidateSessionId: string | undefined, runId?: string): boolean =>
+      resolveApprovalSessionId({ sessionId: candidateSessionId, runId }, snapshot.runs) === sessionId;
     return [
       ...snapshot.proposals
-        .filter((proposal) => proposal.status === 'pending')
+        .filter((proposal) =>
+          proposal.status === 'pending' && belongsToSession(proposal.sessionId))
         .map((proposal) => ({
           kind: 'proposal' as const,
           id: proposal.proposalId,
@@ -44,7 +48,8 @@ export function ApprovalCenter({ services }: { services: ModuleServices }): Reac
           proposal
         })),
       ...snapshot.permissions
-        .filter((request) => request.status === 'pending')
+        .filter((request) =>
+          request.status === 'pending' && belongsToSession(request.sessionId, request.runId))
         .map((request) => ({
           kind: 'permission' as const,
           id: request.requestId,
@@ -52,39 +57,22 @@ export function ApprovalCenter({ services }: { services: ModuleServices }): Reac
           request
         })),
       ...snapshot.planHandoffs
-        .filter((handoff) => handoff.status === 'pending')
+        .filter((handoff) =>
+          handoff.status === 'pending' && belongsToSession(handoff.sessionId, handoff.runId))
         .map((handoff) => ({
           kind: 'plan' as const,
           id: handoff.handoffId,
           createdAt: handoff.createdAt,
           handoff
-        })),
-      ...snapshot.permissions.flatMap((request) => {
-        const run = runs.get(request.runId);
-        return request.status === 'approved' && run?.status === 'waiting_permission'
-          ? [{
-              kind: 'permission_resume' as const,
-              id: request.requestId,
-              createdAt: request.createdAt,
-              request,
-              run
-            }]
-          : [];
-      }),
-      ...snapshot.planHandoffs.flatMap((handoff) => {
-        const run = runs.get(handoff.runId);
-        return handoff.status === 'approved' && run?.status === 'waiting_plan_handoff'
-          ? [{
-              kind: 'plan_resume' as const,
-              id: handoff.handoffId,
-              createdAt: handoff.createdAt,
-              handoff,
-              run
-            }]
-          : [];
-      })
+        }))
     ].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
-  }, [snapshot.permissions, snapshot.planHandoffs, snapshot.proposals, snapshot.runs]);
+  }, [
+    sessionId,
+    snapshot.permissions,
+    snapshot.planHandoffs,
+    snapshot.proposals,
+    snapshot.runs,
+  ]);
 
   useEffect(() => {
     void services.agentSettings.load()
@@ -93,49 +81,36 @@ export function ApprovalCenter({ services }: { services: ModuleServices }): Reac
     return services.events.subscribe('chat:workspace-access-changed', setWorkspaceAccess);
   }, [services]);
 
-  const current = pending[0];
-  if (!current) return null;
-  const heading = approvalHeading(current.kind);
+  if (pending.length === 0) return null;
 
   return (
-    <aside className="approval-center" role="region" aria-live="polite" aria-label={heading.title}>
-      <header className="approval-center-header">
-        <span className="approval-center-icon"><ShieldCheck size={16} /></span>
-        <div>
-          <strong>{heading.title}</strong>
-          <small>{heading.subtitle}</small>
-        </div>
-        {pending.length > 1 && <span className="approval-center-count">待处理 {pending.length}</span>}
-      </header>
-      {current.kind === 'proposal' && <AgentProposalApproval
-            key={current.id}
+    <div className="conversation-approval-stack" role="region" aria-live="polite" aria-label="待确认操作">
+      {pending.map((current) => {
+        const heading = approvalHeading(current.kind);
+        return <section className="approval-center" key={current.id} aria-label={heading.title}>
+          <header className="approval-center-header">
+            <span className="approval-center-icon"><ShieldCheck size={16} /></span>
+            <div>
+              <strong>{heading.title}</strong>
+              <small>{heading.subtitle}</small>
+            </div>
+          </header>
+          {current.kind === 'proposal' && <AgentProposalApproval
             proposal={current.proposal}
             runtime={services.runtime}
             workspaceAccess={workspaceAccess}
           />}
-      {current.kind === 'permission' && <PermissionRequestApproval
-        key={current.id}
-        request={current.request}
-        runtime={services.runtime}
-      />}
-      {current.kind === 'plan' && <PlanHandoffApproval
-        key={current.id}
-        handoff={current.handoff}
-        runtime={services.runtime}
-      />}
-      {current.kind === 'permission_resume' && <ResumeApproval
-        key={current.id}
-        title={current.request.title}
-        detail={current.run.detail}
-        onResume={() => services.runtime.resumePermission(current.request.requestId)}
-      />}
-      {current.kind === 'plan_resume' && <ResumeApproval
-        key={current.id}
-        title={current.handoff.title}
-        detail={current.run.detail}
-        onResume={() => services.runtime.resumePlan(current.handoff.handoffId)}
-      />}
-    </aside>
+          {current.kind === 'permission' && <PermissionRequestApproval
+            request={current.request}
+            runtime={services.runtime}
+          />}
+          {current.kind === 'plan' && <PlanHandoffApproval
+            handoff={current.handoff}
+            runtime={services.runtime}
+          />}
+        </section>;
+      })}
+    </div>
   );
 }
 
@@ -297,6 +272,9 @@ function PlanHandoffApproval({ handoff, runtime }: {
 }): React.JSX.Element {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const approvable = handoff.plan.planState === 'ready_for_confirmation'
+    && handoff.plan.completeness === 'complete'
+    && !handoff.plan.qualityIssues.some((issue) => issue.severity === 'critical');
 
   const respond = async (decision: 'approve' | 'reject'): Promise<void> => {
     if (submitting) return;
@@ -312,55 +290,16 @@ function PlanHandoffApproval({ handoff, runtime }: {
 
   return <div className="approval-center-body">
     <div className="approval-center-title">
-      <strong><ListChecks size={16} />{handoff.title}</strong>
-      <span>{handoff.steps.length} 步</span>
+      <strong><ListChecks size={16} />{handoff.plan.title}</strong>
+      <span>Plan v{handoff.plan.version} · {handoff.plan.steps.length} 步</span>
     </div>
-    <p>{handoff.summary}</p>
-    <ol className="approval-permission-list">
-      {handoff.steps.map((step) => <li key={step.stepId}>
-        <span><b>{step.title}</b>{step.detail && <small>{step.detail}</small>}</span>
-      </li>)}
-    </ol>
+    <PlanContractView plan={handoff.plan} compact />
+    {!approvable && <p className="approval-center-error">计划契约不完整或未通过质量校验，不能批准。</p>}
     {error && <p className="approval-center-error">{error}</p>}
     <div className="approval-center-actions">
       <button type="button" className="secondary-button" disabled={submitting} onClick={() => void respond('reject')}>拒绝</button>
-      <button type="button" className="primary-button" disabled={submitting} onClick={() => void respond('approve')}>
-        <ShieldCheck size={13} />批准计划
-      </button>
-    </div>
-  </div>;
-}
-
-function ResumeApproval({ title, detail, onResume }: {
-  title: string;
-  detail: string | undefined;
-  onResume: () => Promise<void>;
-}): React.JSX.Element {
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const resume = async (): Promise<void> => {
-    if (submitting) return;
-    setSubmitting(true);
-    setError(null);
-    try {
-      await onResume();
-    } catch (resumeError) {
-      setSubmitting(false);
-      setError(runtimeRequestErrorMessage(resumeError, '恢复 Agent 运行失败。'));
-    }
-  };
-
-  return <div className="approval-center-body">
-    <div className="approval-center-title">
-      <strong><RotateCw size={16} />{title}</strong>
-      <span>可重试</span>
-    </div>
-    <p>{detail ?? '权限或计划已经批准，但上次恢复没有完成。暂停快照仍然保留，可以从原位置继续。'}</p>
-    {error && <p className="approval-center-error">{error}</p>}
-    <div className="approval-center-actions">
-      <button type="button" className="primary-button" disabled={submitting} onClick={() => void resume()}>
-        <RotateCw size={13} />重新继续
+      <button type="button" className="primary-button" disabled={submitting || !approvable} onClick={() => void respond('approve')}>
+        <ShieldCheck size={13} />批准 Plan v{handoff.plan.version}
       </button>
     </div>
   </div>;
@@ -374,9 +313,6 @@ function approvalHeading(kind: PendingApproval['kind']): { title: string; subtit
       return { title: '具体操作授权', subtitle: '确认即将执行的工具和目标' };
     case 'plan':
       return { title: '执行计划确认', subtitle: '确认计划后进入执行阶段' };
-    case 'permission_resume':
-    case 'plan_resume':
-      return { title: '恢复 Agent', subtitle: '上次续跑未完成，可从暂停位置重试' };
   }
 }
 

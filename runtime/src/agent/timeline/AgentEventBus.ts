@@ -5,6 +5,7 @@ export type ActivityEventListener = (event: AgentActivityEvent) => void;
 /** 进程内 Activity 事件总线（按 runId 订阅；重放走磁盘 events.jsonl，不在内存保留历史）。 */
 export class AgentEventBus {
   private readonly listeners = new Map<string, Set<ActivityEventListener>>();
+  private readonly globalListeners = new Set<ActivityEventListener>();
 
   publish(event: AgentActivityEvent): void {
     const runId = this.runIdFromEvent(event);
@@ -13,6 +14,9 @@ export class AgentEventBus {
       for (const fn of subs) {
         fn(event);
       }
+    }
+    for (const fn of this.globalListeners) {
+      fn(event);
     }
   }
 
@@ -24,6 +28,11 @@ export class AgentEventBus {
     }
     set.add(listener);
     return () => set!.delete(listener);
+  }
+
+  subscribeAll(listener: ActivityEventListener): () => void {
+    this.globalListeners.add(listener);
+    return () => this.globalListeners.delete(listener);
   }
 
   clearRun(runId: string): void {

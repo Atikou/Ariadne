@@ -7,6 +7,8 @@ $appRoot = Join-Path $projectRoot "app"
 $electronPath = Join-Path $projectRoot "node_modules\electron\dist\electron.exe"
 $artifactRoot = if ($OutputRoot) { $OutputRoot } else { Join-Path $projectRoot "artifacts\electron-runtime-smoke" }
 $resultPath = Join-Path $artifactRoot "electron-runtime-smoke.json"
+$stdoutPath = Join-Path $artifactRoot "electron-runtime-smoke.stdout.log"
+$stderrPath = Join-Path $artifactRoot "electron-runtime-smoke.stderr.log"
 $smokeDataRoot = Join-Path ([IO.Path]::GetTempPath()) ("AriadneSmoke-" + [guid]::NewGuid().ToString("N"))
 
 if (-not [IO.Path]::IsPathRooted($artifactRoot)) {
@@ -17,12 +19,15 @@ if (-not (Test-Path -LiteralPath $electronPath -PathType Leaf)) {
 }
 
 New-Item -ItemType Directory -Path $smokeDataRoot | Out-Null
+New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
 try {
   Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
   $env:ARIADNE_SMOKE_TEST = "1"
   $env:ARIADNE_SMOKE_TEST_OUTPUT = $artifactRoot
   $env:ARIADNE_SMOKE_USER_DATA = $smokeDataRoot
-  $process = Start-Process -FilePath $electronPath -ArgumentList $appRoot -Wait -PassThru -WindowStyle Hidden
+  $process = Start-Process -FilePath $electronPath -ArgumentList $appRoot -Wait -PassThru -WindowStyle Hidden `
+    -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
   if ($process.ExitCode -ne 0) {
     throw "Electron smoke test failed with exit code $($process.ExitCode)."
   }

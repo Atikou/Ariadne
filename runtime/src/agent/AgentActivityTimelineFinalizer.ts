@@ -14,6 +14,7 @@ export interface AgentActivityTimelineSink {
   completeStep(stepId: string, result?: string): void;
   completeRun(summary: string): void;
   partialCompleteRun?(summary: string, title?: string): void;
+  pauseRun?(summary: string, title?: string): void;
   failRun(error: string): void;
   cancelRun(reason?: string): void;
 }
@@ -53,7 +54,7 @@ export function finalizeAgentActivityTimeline(input: FinalizeAgentActivityTimeli
     const summary =
       input.partialSummary ||
       `运行预算耗尽：${input.budgetExhausted ?? "unknown"}（恢复 ${ledger.recoveryTurns}/${input.maxRecoveryTurns}）`;
-    partialCompleteOrFail(tl, summary, "部分完成 · 预算耗尽");
+    pauseOrFail(tl, summary, "等待追加执行预算");
     return;
   }
 
@@ -77,7 +78,7 @@ export function finalizeAgentActivityTimeline(input: FinalizeAgentActivityTimeli
     const waitingForPlan = stop === "awaiting_plan_handoff";
     const defaultMessage = waitingForPlan ? "等待计划审批" : "等待工具授权";
     const summary = input.partialSummary || input.completionGuard?.reason || defaultMessage;
-    partialCompleteOrFail(tl, summary, defaultMessage);
+    pauseOrFail(tl, summary, defaultMessage);
     return;
   }
 
@@ -117,6 +118,18 @@ function partialCompleteOrFail(
 ): void {
   if (typeof tl.partialCompleteRun === "function") {
     tl.partialCompleteRun(summary.slice(0, 800), title);
+    return;
+  }
+  tl.failRun(title);
+}
+
+function pauseOrFail(
+  tl: AgentActivityTimelineSink,
+  summary: string,
+  title: string,
+): void {
+  if (typeof tl.pauseRun === "function") {
+    tl.pauseRun(summary.slice(0, 800), title);
     return;
   }
   tl.failRun(title);

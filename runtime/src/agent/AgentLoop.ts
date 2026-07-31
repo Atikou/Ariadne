@@ -46,6 +46,12 @@ import {
   type PlanHandoffStore,
 } from "../policy/PlanHandoffStore.js";
 import type { PlanHandoffPayload } from "../policy/planHandoffTypes.js";
+import type { AgentPlanStore } from "../plan/AgentPlanStore.js";
+import {
+  renderAgentPlanMarkdown,
+  type AgentPlanContract,
+  type AgentPlanExecutionReport,
+} from "../plan/AgentPlanContract.js";
 import type { AgentToolStep } from "./toolStep.js";
 import { isSuccessfulToolStep } from "./toolStepOutcome.js";
 import {
@@ -110,6 +116,10 @@ export interface AgentRunResult {
   permissionRequest?: PermissionRequestPayload;
   /** 计划→执行交接（与 permissionRequest 分离）。 */
   planHandoff?: PlanHandoffPayload;
+  /** 计划模式产生的结构化、版本化契约；澄清态与待确认态均由此表达。 */
+  agentPlan?: AgentPlanContract;
+  /** 已批准计划的逐步骤执行证据。 */
+  agentPlanExecutionReport?: AgentPlanExecutionReport;
   /** 本次运行实际生效的模式、预算、调用计数与停止原因。 */
   executionMeta: AgentExecutionMeta;
   /** 首轮模型调用的 Smart 路由摘要（默认 Smart 路径；显式 clientName 时省略）。 */
@@ -197,6 +207,8 @@ export interface AgentLoopOptions {
   permissionRequestStore?: PermissionRequestStore;
   /** 计划交接存储（HTTP 入口注入单例）。 */
   planHandoffStore?: PlanHandoffStore;
+  /** 版本化计划契约存储；计划交接与执行续跑共享同一份冻结契约。 */
+  agentPlanStore?: AgentPlanStore;
   /** 会话级已批准作用域权限。 */
   sessionPermissionGrants?: SessionPermissionGrants;
   /** 本轮一次性已批准作用域权限。 */
@@ -281,7 +293,9 @@ export class AgentLoop {
     this.pauseCoordinator = new AgentPauseCoordinator({
       permissionRequestStore: options.permissionRequestStore ?? defaultPermissionRequestStore,
       planHandoffStore: options.planHandoffStore ?? defaultPlanHandoffStore,
+      agentPlanStore: options.agentPlanStore,
       pausedRunStore: options.pausedRunStore ?? defaultPausedRunStore,
+      runRepository: options.runRepository,
       runId: options.runId,
       sessionId: options.sessionId,
       projectId: options.projectId,
@@ -369,7 +383,16 @@ export class AgentLoop {
     const handoffExecutionContext = [
       "内部运行态：用户已通过权限弹窗批准执行计划。",
       "这不是一条用户消息，不要复述、感谢或询问是否继续。",
-      '下一条回复必须直接输出一个 ReAct JSON 对象：{"action":"tool",...} 或 {"action":"final","answer":"..."}。',
+      pausedRun.approvedPlan
+        ? `必须执行已批准的 ${pausedRun.approvedPlan.planId} v${pausedRun.approvedPlan.version}，不得静默改变范围。`
+        : "当前是旧版计划交接；如果计划范围不明确，应停止并说明需要重新规划。",
+      pausedRun.approvedPlan
+        ? `冻结执行契约：\n${renderAgentPlanMarkdown(pausedRun.approvedPlan)}`
+        : "",
+      "执行中发现计划错误、范围变化或完成标准无法满足时，停止当前范围并明确要求生成新版本计划；不得自行改写已批准计划。",
+      "最终回复必须在 final.planExecution 中引用准确的 planId/version，并逐项报告每个计划步骤的 status、actualScope、evidence、deviations 和 blockingReason。",
+      "已完成步骤必须包含验证证据；范围偏差必须记录且会阻止旧版本被标记完成，随后应重新规划。",
+      '下一条回复必须直接输出一个 ReAct JSON 对象：{"action":"tool",...} 或 {"action":"final","answer":"...","planExecution":{...}}。',
       "如果需要创建嵌套路径的新文件，调用 write_file 时必须使用 createDirs:true。",
     ].join("\n");
     const executionSystemPrompt = `${this.buildSystemPrompt(pausedRun.system)}\n\n${handoffExecutionContext}`;
@@ -420,6 +443,7 @@ export class AgentLoop {
     return {
       chat: this.options.chat,
       registry: this.options.registry,
+      workspaceRoot: this.options.workspaceRoot,
       allowedToolNames,
       signal: this.options.signal,
       sensitive: this.options.sensitive,
@@ -431,6 +455,7 @@ export class AgentLoop {
       runId: this.options.runId,
       policy: this.policy,
       pausedRun: session.pausedRun,
+      requiresPlanContract: this.policy.mode === "plan" && this.options.skipPlanHandoff !== true,
       capabilityEscalations: this.toolState.capabilityEscalations,
       completionCriteria: this.toolState.completionCriteria,
       getEffectiveIntent: () => this.getEffectiveIntent(),
@@ -444,17 +469,36 @@ export class AgentLoop {
       onModelTurn: this.options.onModelTurn,
       onStep: this.options.onStep,
       onToken: this.options.onToken,
+      onWorkingContextCompacted: (input) => {
+        const activity = this.options.timeline?.startSystemActivity({
+          kind: "working_context_compaction",
+          title: "模型工作上下文已裁剪",
+          summaryType: "working_set",
+          beforeChars: input.beforeChars,
+        });
+        if (activity) {
+          this.options.timeline?.completeSystemActivity(activity.id, {
+            summary: "已压缩模型工作上下文",
+            processedMessages: input.processedMessages,
+            beforeChars: input.beforeChars,
+            afterChars: input.afterChars,
+            summaryType: "working_set",
+          });
+        }
+      },
       assertNotCancelled: () => this.assertNotCancelled(),
       isCancelledError: (err) => this.isCancelledError(err),
       makeToolCallId: (iteration, tool) => this.toolExecution.makeToolCallId(iteration, tool),
       writeAgentDecisionTrace: (input) => this.writeAgentDecisionTrace(input),
-      createPlanHandoff: (input) => this.pauseCoordinator.createPlanHandoff({
+      createPlanFinalization: (input) => this.pauseCoordinator.createPlanFinalization({
         ...input,
         runtime: this.buildPauseRuntimeSnapshot(),
       }),
       executeToolStep: (input) => this.executeToolStep(input),
-      continueAfterToolStep: (input) => this.toolExecution.continueAfterToolStep(input),
-      continueAfterToolBatch: (inputs) => this.toolExecution.continueAfterToolBatch(inputs),
+      recordToolBatchObservations: (inputs) =>
+        this.toolExecution.recordToolBatchObservations(inputs),
+      continueAfterRecordedToolBatch: (inputs) =>
+        this.toolExecution.continueAfterRecordedToolBatch(inputs),
       buildPartialAnswer: (steps, budgetExhausted, goal) =>
         this.buildPartialAnswer(steps, budgetExhausted, goal),
       finishRun: (input) => this.finishRun(input),
@@ -503,6 +547,7 @@ export class AgentLoop {
         system,
         effectiveGoal,
         isResume,
+        resumeState: this.options.resumeState,
         pausedRun,
         initialSessionId,
         initialSteps,
@@ -577,6 +622,7 @@ export class AgentLoop {
       contextManager: this.options.contextManager,
       sessionTaskManager: this.sessionTaskManager,
       runStateStore: this.options.runStateStore,
+      resumeState: this.options.resumeState,
       projectIndex: this.options.projectIndex,
       workspaceRoot: this.options.workspaceRoot,
       runRoutingMeta: this.runRoutingMeta,
@@ -599,6 +645,8 @@ export class AgentLoop {
     stopReason?: AgentStopReason;
     permissionRequest?: PermissionRequestPayload;
     planHandoff?: PlanHandoffPayload;
+    agentPlan?: AgentPlanContract;
+    agentPlanExecutionReport?: AgentPlanExecutionReport;
     awaitingPermission?: boolean;
     awaitingPlanHandoff?: boolean;
     completionGuard?: CompletionGuardResult;
@@ -675,6 +723,8 @@ export class AgentLoop {
     modelTurns: number;
     consumedNotifications: AgentNotification[];
     skipJitPause?: boolean;
+    activityBatchId?: string;
+    activityDependsOnToolCallIds?: string[];
   }): Promise<
     | { kind: "step"; step: AgentToolStep }
     | { kind: "pause"; result: AgentRunResult }
@@ -688,6 +738,8 @@ export class AgentLoop {
       goal: input.goal,
       messages: input.messages,
       skipJitPause: input.skipJitPause,
+      activityBatchId: input.activityBatchId,
+      activityDependsOnToolCallIds: input.activityDependsOnToolCallIds,
     });
 
     if (pipelineResult.kind === "pause") {

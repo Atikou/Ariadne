@@ -60,6 +60,7 @@ export function createDesktopRuntimeConfiguration(
       ? join(packagedRuntimeRoot, 'dist', 'entry', 'runtime-process.js')
       : resolve(input.appPath, '..', 'runtime', 'dist', 'entry', 'runtime-process.js');
   const installRoot = resolve(dirname(runtimeEntry), '..', '..');
+  const runtimeBuildManifestPath = join(installRoot, 'dist', 'runtime-build.json');
   const configuredExecutable = allowDevelopmentOverrides
     ? environment.ARIADNE_RUNTIME_NODE_EXECUTABLE?.trim()
     : undefined;
@@ -83,6 +84,7 @@ export function createDesktopRuntimeConfiguration(
 
   return {
     runtimeEntry,
+    runtimeBuildManifestPath,
     installRoot,
     dataRoot: join(input.userDataPath, 'runtime'),
     modelRoots: [...new Set([

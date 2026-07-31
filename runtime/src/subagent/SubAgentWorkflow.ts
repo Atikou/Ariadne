@@ -61,6 +61,9 @@ export class SubAgentWorkflow {
           dispatchDepth: options.dispatchDepth,
           signal: options.signal,
           maxCostUsd: options.maxCostUsd,
+          activityTimeline: options.activityTimeline,
+          activityRunId: options.activityRunId,
+          activityParentId: options.activityParentId,
         });
         this.writeTrace(this.stateCenter.complete(dispatchId, { mode: "single", result }));
         return;

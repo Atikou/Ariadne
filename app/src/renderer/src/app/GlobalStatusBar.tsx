@@ -8,7 +8,7 @@ export function GlobalStatusBar({ services, saveStatus }: { services: ModuleServ
   const runtime = useRuntimeSnapshot(services.runtime);
   const available = runtime.status.availability === 'ready';
   const activeRun = runtime.runs.find((run) => run.origin === 'agent' && [
-    'queued', 'running', 'waiting_permission', 'waiting_plan_handoff'
+    'queued', 'running', 'waiting_permission', 'waiting_plan_handoff', 'waiting_budget'
   ].includes(run.status));
   const pendingPermissions = runtime.permissions.filter((request) => request.status === 'pending').length;
   const readyModel = runtime.models.find((model) => model.availability === 'ready');

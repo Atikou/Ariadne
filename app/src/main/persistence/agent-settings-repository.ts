@@ -16,6 +16,7 @@ import {
   AGENT_PROVIDER_IDS,
   AGENT_SANDBOX_MODES,
   AGENT_TOOL_PERMISSIONS,
+  WORKSPACE_ARCHIVE_RETENTION_MS,
   type AgentApprovalPolicy,
   type AgentCustomPermissions,
   type AgentPermissionMode,
@@ -42,8 +43,22 @@ const customPermissionsSchema = z.object({
 const persistedWorkspaceSchema = z.object({
   workspaceId: z.string().trim().min(1).max(128),
   rootPath: absoluteWorkspacePathSchema,
-  access: z.enum(['read', 'write'])
-}).strict();
+  access: z.enum(['read', 'write']),
+  pinned: z.literal(true).optional(),
+  archivedAt: z.string().datetime().optional(),
+  purgeAfter: z.string().datetime().optional(),
+  purgedAt: z.string().datetime().optional()
+}).strict().superRefine((workspace, context) => {
+  if (!workspace.archivedAt && (workspace.purgeAfter || workspace.purgedAt)) {
+    context.addIssue({ code: 'custom', message: 'Workspace cleanup metadata requires archivedAt.' });
+  }
+  if (workspace.purgeAfter && workspace.purgedAt) {
+    context.addIssue({ code: 'custom', message: 'A workspace cannot be pending and completed cleanup at the same time.' });
+  }
+  if (workspace.archivedAt && workspace.pinned) {
+    context.addIssue({ code: 'custom', message: 'An archived workspace cannot remain pinned.' });
+  }
+});
 const persistedProviderSchema = z.object({
   enabled: z.boolean(),
   baseUrl: z.string().url().max(2_048).refine((value) => new URL(value).protocol === 'https:'),
@@ -276,6 +291,76 @@ export class AgentSettingsRepository {
     return { added, settings: this.getView(), workspace };
   }
 
+  async setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<AgentSettingsView> {
+    await this.commitSettings((current) => updateWorkspace(current, workspaceId, (workspace) => {
+      if (workspace.archivedAt) throw new Error('已归档工作区不能置顶。');
+      if (!pinned) {
+        const { pinned: _pinned, ...rest } = workspace;
+        return rest;
+      }
+      return { ...workspace, pinned: true as const };
+    }));
+    return this.getView();
+  }
+
+  async archiveWorkspace(
+    workspaceId: string,
+    archivedAt = new Date()
+  ): Promise<AgentSettingsView> {
+    if (workspaceId === 'primary') throw new Error('默认会话目录不能归档。');
+    const archivedAtIso = archivedAt.toISOString();
+    const purgeAfter = new Date(archivedAt.getTime() + WORKSPACE_ARCHIVE_RETENTION_MS).toISOString();
+    await this.commitSettings((current) => updateWorkspace(current, workspaceId, (workspace) => {
+      if (workspace.archivedAt) return workspace;
+      const { pinned: _pinned, purgedAt: _purgedAt, ...rest } = workspace;
+      return { ...rest, archivedAt: archivedAtIso, purgeAfter };
+    }));
+    return this.getView();
+  }
+
+  async restoreWorkspace(workspaceId: string): Promise<AgentSettingsView> {
+    await this.commitSettings((current) => updateWorkspace(current, workspaceId, (workspace) => {
+      const {
+        archivedAt: _archivedAt,
+        purgeAfter: _purgeAfter,
+        purgedAt: _purgedAt,
+        ...active
+      } = workspace;
+      return active;
+    }));
+    return this.getView();
+  }
+
+  dueArchivedWorkspaceIds(now = new Date()): string[] {
+    const timestamp = now.getTime();
+    return this.settings.workspaces
+      .filter((workspace) => workspace.archivedAt
+        && workspace.purgeAfter
+        && !workspace.purgedAt
+        && Date.parse(workspace.purgeAfter) <= timestamp)
+      .map((workspace) => workspace.workspaceId);
+  }
+
+  nextArchivedWorkspacePurgeAt(): string | null {
+    return this.settings.workspaces
+      .flatMap((workspace) => workspace.archivedAt && workspace.purgeAfter && !workspace.purgedAt
+        ? [workspace.purgeAfter]
+        : [])
+      .sort()[0] ?? null;
+  }
+
+  async markWorkspacePurged(workspaceId: string, purgedAt = new Date()): Promise<AgentSettingsView> {
+    await this.commitSettings((current) => updateWorkspace(current, workspaceId, (workspace) => {
+      if (!workspace.archivedAt || !workspace.purgeAfter || workspace.purgedAt) return workspace;
+      if (Date.parse(workspace.purgeAfter) > purgedAt.getTime()) {
+        throw new Error('工作区尚未达到永久清理时间。');
+      }
+      const { purgeAfter: _purgeAfter, ...archived } = workspace;
+      return { ...archived, purgedAt: purgedAt.toISOString() };
+    }));
+    return this.getView();
+  }
+
   async flush(): Promise<void> {
     await this.writeQueue;
   }
@@ -496,7 +581,13 @@ function normalizeWorkspaceCatalog(
   workspaces: readonly AgentWorkspaceSettingsView[]
 ): AgentWorkspaceSettingsView[] {
   const normalizedPrimaryRoot = resolve(primaryRoot);
-  const result: AgentWorkspaceSettingsView[] = [{ workspaceId: 'primary', rootPath: normalizedPrimaryRoot, access }];
+  const existingPrimary = workspaces.find((workspace) => workspace.workspaceId === 'primary');
+  const result: AgentWorkspaceSettingsView[] = [{
+    workspaceId: 'primary',
+    rootPath: normalizedPrimaryRoot,
+    access,
+    ...workspaceLifecycleMetadata(existingPrimary)
+  }];
   const workspaceIds = new Set(['primary']);
   for (const workspace of workspaces) {
     const rootPath = resolve(workspace.rootPath);
@@ -507,6 +598,30 @@ function normalizeWorkspaceCatalog(
     if (result.length === 32) break;
   }
   return result;
+}
+
+function workspaceLifecycleMetadata(
+  workspace: AgentWorkspaceSettingsView | undefined
+): Pick<AgentWorkspaceSettingsView, 'pinned' | 'archivedAt' | 'purgeAfter' | 'purgedAt'> {
+  if (!workspace) return {};
+  return {
+    ...(workspace.pinned ? { pinned: true } : {}),
+    ...(workspace.archivedAt ? { archivedAt: workspace.archivedAt } : {}),
+    ...(workspace.purgeAfter ? { purgeAfter: workspace.purgeAfter } : {}),
+    ...(workspace.purgedAt ? { purgedAt: workspace.purgedAt } : {})
+  };
+}
+
+function updateWorkspace(
+  settings: PersistedAgentSettings,
+  workspaceId: string,
+  update: (workspace: PersistedAgentSettings['workspaces'][number]) => PersistedAgentSettings['workspaces'][number]
+): PersistedAgentSettings {
+  const index = settings.workspaces.findIndex((workspace) => workspace.workspaceId === workspaceId);
+  if (index < 0) throw new Error('工作区不存在。');
+  const workspaces = [...settings.workspaces];
+  workspaces[index] = update(workspaces[index]!);
+  return { ...settings, workspaces };
 }
 
 function workspaceIdForRoot(rootPath: string): string {

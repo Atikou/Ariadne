@@ -31,7 +31,8 @@ describe('chat message actions', () => {
       readFile(join(rendererRoot, 'app', 'styles.css'), 'utf8')
     ]);
 
-    expect(panel).toContain('<p className="message-content">{text}</p>');
+    expect(panel).toContain('<p className="message-content">{visibleText}</p>');
+    expect(panel).toContain('const visibleText = formalAnswerVisible ? text');
     expect(panel).not.toContain('text.split(');
     expect(panel).toContain('const message = draft;');
     expect(panel).toContain('if (!message.trim()');
@@ -49,7 +50,7 @@ describe('chat message actions', () => {
     expect(panel).not.toMatch(/\b(?:Bot|User)\b/);
     expect(styles).not.toContain('.message-avatar');
     expect(styles).toMatch(/\.user-message \.message-content\s*\{[^}]*background:\s*var\(--user-message-bg\);/);
-    expect(styles).toMatch(/\.user-message \.message-content\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*13px;/);
+    expect(styles).toMatch(/\.user-message \.message-content\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*var\(--radius-lg\);/);
   });
 
   it('uses the user-message end edge as a hard boundary for assistant content', async () => {

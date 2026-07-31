@@ -102,6 +102,16 @@ export const CompanionMessageStatusSchema = z.enum([
 ]);
 export type CompanionMessageStatus = z.infer<typeof CompanionMessageStatusSchema>;
 
+export const CompanionMessageReasoningSchema = z.object({
+  content: z.string(),
+  status: z.enum(["streaming", "completed", "interrupted"]),
+  source: z.enum(["provider", "summary"]),
+  startedAt: z.string().datetime(),
+  completedAt: z.string().datetime().optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+}).strict();
+export type CompanionMessageReasoning = z.infer<typeof CompanionMessageReasoningSchema>;
+
 export const CompanionMessageSchema = z.object({
   id: z.string().min(1),
   sessionId: z.string().min(1),
@@ -115,6 +125,7 @@ export const CompanionMessageSchema = z.object({
   storageRoot: z.string().min(1),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  reasoning: CompanionMessageReasoningSchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 }).strict();
 export type CompanionMessage = z.infer<typeof CompanionMessageSchema>;

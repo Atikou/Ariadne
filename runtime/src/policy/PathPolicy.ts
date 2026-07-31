@@ -208,12 +208,12 @@ export class PathPolicy {
       };
     }
 
-    const matchedRoot = sharedMatchedRoot(decisions) ?? this.primaryRoot;
-    const preparedInput = prepareInputForScope(input, specs, decisions, matchedRoot);
+    const executionRoot = resolveExecutionRoot(this.primaryRoot, specs, decisions);
+    const preparedInput = prepareInputForScope(input, specs, decisions, executionRoot);
     return {
       decision,
       decisions,
-      workspaceRoot: matchedRoot,
+      workspaceRoot: executionRoot,
       input: preparedInput,
       audit,
       audits,
@@ -425,6 +425,34 @@ function sharedMatchedRoot(decisions: PathAccessDecision[]): string | undefined 
   return roots.length === 1 ? roots[0] : undefined;
 }
 
+function resolveExecutionRoot(
+  primaryRoot: string,
+  specs: PathSpec[],
+  decisions: PathAccessDecision[],
+): string {
+  const targets = decisions.map((decision) => decision.realPath ?? decision.normalizedPath);
+  if (targets.every((target) => isInsideScope(primaryRoot, target))) return primaryRoot;
+
+  const matchedRoot = sharedMatchedRoot(decisions) ?? primaryRoot;
+  try {
+    if (fs.statSync(matchedRoot).isDirectory()) return matchedRoot;
+    return path.dirname(matchedRoot);
+  } catch {
+    const exactFileScope = decisions.every((decision, index) => {
+      const target = decision.realPath ?? decision.normalizedPath;
+      const spec = specs[index];
+      return Boolean(spec)
+        && !isDirectoryPathField(spec!.field)
+        && canonicalizeExistingPath(target) === canonicalizeExistingPath(matchedRoot);
+    });
+    return exactFileScope ? path.dirname(matchedRoot) : matchedRoot;
+  }
+}
+
+function isDirectoryPathField(field: string): boolean {
+  return field === "root" || field === "dir" || field === "cwd";
+}
+
 function prepareInputForScope(
   input: Record<string, unknown>,
   specs: PathSpec[],
@@ -435,7 +463,13 @@ function prepareInputForScope(
   specs.forEach((spec, index) => {
     const decision = decisions[index];
     if (!decision?.allowed || !decision.matchedScope) return;
-    const rel = path.relative(matchedRoot, decision.normalizedPath).replace(/\\/g, "/") || ".";
+    // Use the canonical/real target when available. On Windows the model may
+    // supply an 8.3 alias (ADMINI~1) while the matched scope is canonicalized
+    // to the long path (Administrator). Relativizing those two spellings
+    // directly produces a false ../../ traversal that the tool sandbox rejects
+    // after the user has already approved the exact operation.
+    const preparedTarget = decision.realPath ?? decision.normalizedPath;
+    const rel = path.relative(matchedRoot, preparedTarget).replace(/\\/g, "/") || ".";
     if (spec.arrayIndex != null) {
       const values = Array.isArray(prepared[spec.field]) ? [...(prepared[spec.field] as unknown[])] : [];
       values[spec.arrayIndex] = rel;

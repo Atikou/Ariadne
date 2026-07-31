@@ -1,4 +1,4 @@
-import type { AgentLoop, AgentRunResult, LoopChatFn } from "../agent/AgentLoop.js";
+import type { AgentRunResult, LoopChatFn } from "../agent/AgentLoop.js";
 import type { AgentModelTurnEvent } from "../agent/AgentModelTurn.js";
 import type { AgentToolStep } from "../agent/toolStep.js";
 import type { AgentCompletionContext } from "../agent/completion/TaskCompletionContract.js";
@@ -12,7 +12,10 @@ import type { PlanHandoffStore } from "../policy/PlanHandoffStore.js";
 import type { PermissionRequestStore } from "../policy/PermissionRequestStore.js";
 import { findBlockingAgentPause } from "../policy/permissionPauseGate.js";
 import type { PausedRunStore } from "../agent/PausedRunStore.js";
-import type { AgentLoopFactory } from "./AgentLoopFactory.js";
+import type {
+  AgentExecutionEngine,
+  AgentExecutionEngineRegistry,
+} from "./AgentExecutionEngine.js";
 import type { AgentRunLifecycle } from "./AgentRunLifecycle.js";
 import type { AgentRunRegistry } from "./AgentRunRegistry.js";
 import type { RunAggregateRepository } from "../run/RunAggregateRepository.js";
@@ -40,7 +43,7 @@ export interface PreparedAgentRequest {
     sessionId?: string;
     task: TaskRecord;
     run: { id: string };
-    loop: AgentLoop;
+    engine: AgentExecutionEngine;
   };
 }
 
@@ -65,7 +68,7 @@ export interface AgentRequestServiceDeps {
   taskService: Pick<TaskService, "resolveOrCreateTask" | "createDetachedTask">;
   runs: RunAggregateRepository;
   agentRunRegistry: AgentRunRegistry;
-  agentLoopFactory: AgentLoopFactory;
+  executionEngines: AgentExecutionEngineRegistry;
   agentRunLifecycle: AgentRunLifecycle;
   makeChatFn: (forceClient?: string) => LoopChatFn;
   planHandoffStore?: PlanHandoffStore;
@@ -97,7 +100,7 @@ export class AgentRequestService {
     let result: AgentRunResult;
     try {
       this.deps.agentRunLifecycle.traceStart(ctx);
-      result = await ctx.loop.run(ctx.message, ctx.system);
+      result = await ctx.engine.run(ctx.message, ctx.system);
     } catch (error) {
       const resultBody = this.deps.agentRunLifecycle.finalizeFailure(ctx, error);
       try {
@@ -306,8 +309,12 @@ export class AgentRequestService {
         registeredForCancel = true;
       }
       const workspaceRoot = this.deps.sessionWorkspace.workspaceForSession(sessionId);
-      const timeline = callbacks?.enableTimeline
-        ? new AgentTimelineService({ workspaceRoot, onEvent: callbacks.onActivityEvent })
+      const timeline = callbacks?.enableTimeline && sessionId
+        ? new AgentTimelineService({
+            projectRoot: workspaceRoot,
+            storageRoot: this.deps.sessionWorkspace.activityRootForSession(sessionId),
+            onEvent: callbacks.onActivityEvent,
+          })
         : undefined;
       timeline?.createRun({
         id: run.id,
@@ -326,7 +333,7 @@ export class AgentRequestService {
         },
       });
 
-      const loop = this.deps.agentLoopFactory.create({
+      const engine = this.deps.executionEngines.create({
         chat: makeChat ?? this.deps.makeChatFn(),
         autoConfirm: payload.autoConfirm ?? false,
         sensitive: payload.sensitive,
@@ -350,7 +357,7 @@ export class AgentRequestService {
         completionCriteria: completionContext?.completionCriteria,
       });
 
-      return { ctx: { message, system: payload.system, sessionId, task, run, loop } };
+      return { ctx: { message, system: payload.system, sessionId, task, run, engine } };
     } catch (error) {
       if (registeredForCancel) this.deps.agentRunRegistry.unregister(run.id);
       return {

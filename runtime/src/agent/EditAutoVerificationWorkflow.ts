@@ -9,7 +9,7 @@ export interface EditAutoVerificationWorkflowInput {
 
 export interface EditAutoVerificationWorkflowResult {
   tool: "read_file";
-  input: { path: string };
+  input: { path: string; startLine: number; lineCount: number };
   thought: string;
 }
 
@@ -31,9 +31,16 @@ export class EditAutoVerificationWorkflow {
     const raw = asRecord(input.step.resultLayers?.raw) ?? asRecord(input.step.output) ?? {};
     const path = readString(raw.path) ?? readFirstString(raw.restoredFiles);
     if (!path) return undefined;
+    const changedStartLine = readPositiveInteger(raw.changedStartLine) ?? 1;
+    const changedEndLine = Math.max(
+      changedStartLine,
+      readPositiveInteger(raw.changedEndLine) ?? changedStartLine,
+    );
+    const startLine = Math.max(1, changedStartLine - 3);
+    const lineCount = Math.min(200, Math.max(1, changedEndLine - startLine + 4));
     return {
       tool: "read_file",
-      input: { path },
+      input: { path, startLine, lineCount },
       thought: "自动读回刚写入的文件，验证实际内容与 diff 是否一致。",
     };
   }
@@ -45,6 +52,12 @@ function readString(value: unknown): string | undefined {
 
 function readFirstString(value: unknown): string | undefined {
   return Array.isArray(value) ? value.map(readString).find(Boolean) : undefined;
+}
+
+function readPositiveInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : undefined;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

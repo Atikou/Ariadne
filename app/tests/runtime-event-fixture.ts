@@ -44,10 +44,13 @@ function metadataFor(event: RuntimeEvent): {
   switch (event.kind) {
     case "runtime.status.changed":
       return { aggregateType: "runtime", aggregateId: "runtime" };
+    case "companion.reasoning.delta":
     case "companion.token.delta":
       return { aggregateType: "companion", aggregateId: event.messageId };
     case "companion.message.changed":
       return { aggregateType: "companion", aggregateId: event.message.messageId };
+    case "companion.message.removed":
+      return { aggregateType: "companion", aggregateId: event.messageId };
     case "agent.proposal.changed":
       return { aggregateType: "proposal", aggregateId: event.proposal.proposalId };
     case "run.changed":

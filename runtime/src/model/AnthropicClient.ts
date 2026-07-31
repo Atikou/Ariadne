@@ -36,6 +36,7 @@ export interface AnthropicOptions {
 interface AnthropicContentBlock {
   type: string;
   text?: string;
+  thinking?: string;
   id?: string;
   name?: string;
   input?: unknown;
@@ -120,7 +121,7 @@ export class AnthropicClient implements ModelClient {
       .join("\n\n");
 
     try {
-      if (request.onToken) {
+      if (request.onToken || request.onReasoningToken) {
         const response = await fetch(`${this.baseUrl}/v1/messages`, {
           method: "POST",
           headers: this.headers(),
@@ -149,6 +150,7 @@ export class AnthropicClient implements ModelClient {
         }
 
         let content = "";
+        let reasoningContent = "";
         let modelName = this.model;
         let inputTokens: number | undefined;
         let outputTokens: number | undefined;
@@ -199,12 +201,20 @@ export class AnthropicClient implements ModelClient {
             const delta = data.delta as {
               type?: string;
               text?: string;
+              thinking?: string;
               partial_json?: string;
             } | undefined;
             const text = delta?.type === "text_delta" ? delta.text ?? "" : "";
             if (text) {
               content += text;
               request.onToken?.(text);
+            }
+            const thinking = delta?.type === "thinking_delta"
+              ? delta.thinking ?? ""
+              : "";
+            if (thinking) {
+              reasoningContent += thinking;
+              request.onReasoningToken?.(thinking);
             }
             if (delta?.type === "input_json_delta") {
               const index = typeof data.index === "number" ? data.index : -1;
@@ -230,6 +240,7 @@ export class AnthropicClient implements ModelClient {
 
         return {
           content,
+          ...(reasoningContent ? { reasoningContent } : {}),
           toolCalls: [...streamedToolCalls.entries()]
             .sort(([left], [right]) => left - right)
             .flatMap(([index, call]) => call.name
@@ -284,6 +295,13 @@ export class AnthropicClient implements ModelClient {
           .filter((b) => b.type === "text")
           .map((b) => b.text ?? "")
           .join(""),
+        ...(() => {
+          const reasoningContent = blocks
+            .filter((block) => block.type === "thinking")
+            .map((block) => block.thinking ?? block.text ?? "")
+            .join("");
+          return reasoningContent ? { reasoningContent } : {};
+        })(),
         toolCalls: parseToolCalls(blocks),
         clientName: this.name,
         modelName: data.model ?? this.model,

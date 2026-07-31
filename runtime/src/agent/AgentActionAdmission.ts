@@ -5,6 +5,10 @@ import {
   type AgentAction,
   type ToolAction,
 } from "./AgentActionParser.js";
+import {
+  isImmediatelyParallelObservationAction,
+  isParallelObservationTool,
+} from "./ToolConcurrencyPlanner.js";
 
 export const MAX_AGENT_PROTOCOL_REPAIRS = 2;
 
@@ -12,6 +16,7 @@ export type AgentProtocolFailureCategory =
   | "format_error"
   | "unknown_tool"
   | "argument_error"
+  | "unsafe_tool_batch"
   | "provider_temporary_error"
   | "unrecoverable_error";
 
@@ -28,6 +33,7 @@ export function admitAgentModelAction(input: {
   nativeToolCalls?: readonly ToolCall[];
   registry: ToolRegistry;
   allowedToolNames: ReadonlySet<string>;
+  workspaceRoot?: string;
 }): AgentActionAdmission {
   const action = parseAgentModelAction(input.content, input.nativeToolCalls);
   if (!action) {
@@ -43,6 +49,7 @@ export function admitAgentModelAction(input: {
   }
 
   const calls = toToolActions(action);
+  const contracts = [];
   for (const call of calls) {
     if (!input.allowedToolNames.has(call.tool)) {
       return {
@@ -59,6 +66,7 @@ export function admitAgentModelAction(input: {
         issues: [`未知或未授权工具: ${call.tool}`],
       };
     }
+    contracts.push(contract);
     const normalized = contract.normalizeInput
       ? contract.normalizeInput(call.input ?? {})
       : call.input ?? {};
@@ -72,6 +80,29 @@ export function admitAgentModelAction(input: {
         ),
       };
     }
+  }
+
+  if (
+    action.action === "tools"
+    && (
+      contracts.some((contract) => !isParallelObservationTool(contract))
+      || (
+        input.workspaceRoot
+        && action.tools.some((call) => !isImmediatelyParallelObservationAction(
+          { action: "tool", ...call },
+          input.registry,
+          input.workspaceRoot!,
+        ))
+      )
+    )
+  ) {
+    return {
+      ok: false,
+      category: "unsafe_tool_batch",
+      issues: [
+        "tools 批量动作仅允许无需中途授权、无副作用且可并发的工作区内只读工具；跨工作区读取、写入、Shell、网络和高风险工具必须逐轮单独调用",
+      ],
+    };
   }
 
   return { ok: true, action };

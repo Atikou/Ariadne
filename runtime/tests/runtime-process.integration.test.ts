@@ -1,6 +1,6 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,7 +42,8 @@ describe('portless Runtime process', () => {
     expect(ready.type).toBe('ready');
     if (ready.type !== 'ready') throw new Error('unreachable');
     expect(ready.capabilities).toContain('companion.chat');
-    expect(ready.storageSchemas).toMatchObject({ memory: 41, companion: 8, tools: 2 });
+    expect(ready.capabilities).toContain('companion.agent-plan');
+    expect(ready.storageSchemas).toMatchObject({ memory: 42, companion: 9, tools: 2 });
 
     child.send(request(bootstrap, 'status-1', { kind: 'runtime.status.get' }));
     const status = await inbox.nextResponse('status-1');
@@ -85,6 +86,24 @@ describe('portless Runtime process', () => {
       error: { code: 'workspace_not_authorized' }
     });
 
+    child.send(request(bootstrap, 'plan-chat-start', {
+      kind: 'companion.chat.start',
+      clientMessageId: 'plan-chat-user',
+      workspaceId: 'primary',
+      modelId: 'cloud-openai',
+      message: 'Create a read-only implementation plan',
+      agentMode: 'plan',
+      resources: []
+    }));
+    const planAccepted = await inbox.nextResponse('plan-chat-start');
+    expect(planAccepted.outcome, JSON.stringify(planAccepted.outcome)).toMatchObject({
+      ok: true,
+      result: {
+        kind: 'companion.chat.accepted',
+        executionMode: 'agent-plan'
+      }
+    });
+
     const exit = waitForExit(child);
     child.send({
       protocol: ARIADNE_RUNTIME_PROTOCOL,
@@ -111,12 +130,30 @@ describe('portless Runtime process', () => {
     expect(await exit).not.toBe(0);
     expect(stderr()).toContain('invalid_protocol_message');
   }, 15_000);
+
+  it('fails closed when Main bootstraps a different Runtime build', async () => {
+    const child = startChild();
+    const stderr = collectStderr(child);
+    const exit = waitForExit(child);
+    const bootstrap = createBootstrap();
+    child.send({
+      ...bootstrap,
+      runtimeBuildFingerprint: 'b'.repeat(64)
+    });
+
+    expect(await exit).not.toBe(0);
+    expect(stderr()).toContain('initialization_failed');
+  }, 15_000);
 });
 
 function startChild(): ChildProcess {
   const child = fork(runtimeEntry, [], {
     cwd: packageRoot,
-    env: { ...process.env, AGENT_PROFILE: 'local-only' },
+    env: {
+      ...process.env,
+      AGENT_PROFILE: 'local-only',
+      ARIADNE_RUNTIME_PROCESS_TEST_KEY: 'runtime-process-test-key'
+    },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     windowsHide: true
   });
@@ -136,11 +173,22 @@ function createBootstrap(): RuntimeBootstrap {
     type: 'bootstrap',
     appVersion: '0.1.0',
     runtimeVersion: '0.1.0',
+    runtimeBuildFingerprint: runtimeBuildFingerprint(),
     installRoot: packageRoot,
     dataRoot,
     modelRoots: [],
+    modelProviders: [{
+      providerId: 'openai',
+      name: 'cloud-openai',
+      protocol: 'openai-compatible',
+      credentialEnvironmentVariable: 'ARIADNE_RUNTIME_PROCESS_TEST_KEY',
+      enabled: true,
+      baseUrl: 'https://127.0.0.1:1/v1',
+      model: 'runtime-process-test-model',
+      inference: {}
+    }],
     runtimePolicy: createDefaultRuntimePolicySnapshot(),
-    profile: 'local-only',
+    profile: 'default',
     workspaces: [
       {
         workspaceId: 'primary',
@@ -157,6 +205,16 @@ function createBootstrap(): RuntimeBootstrap {
     ],
     production: false
   };
+}
+
+function runtimeBuildFingerprint(): string {
+  const manifest = JSON.parse(
+    readFileSync(path.join(packageRoot, 'dist', 'runtime-build.json'), 'utf8')
+  ) as { fingerprint?: unknown };
+  if (typeof manifest.fingerprint !== 'string') {
+    throw new Error('Runtime build manifest is missing a fingerprint.');
+  }
+  return manifest.fingerprint;
 }
 
 function request(

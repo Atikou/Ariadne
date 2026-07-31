@@ -193,9 +193,6 @@ export class DataLifecycleService {
   }
 
   onSessionDeleted(sessionId: string, runIds: string[]): { runIds: string[]; bytesFreed: number } {
-    if (runIds.length === 0) {
-      return { runIds: [], bytesFreed: 0 };
-    }
     const result = cleanupSessionArtifacts({
       dataDir: this.deps.dataDir,
       workspaceRoot: this.deps.workspaceRoot,

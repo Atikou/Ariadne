@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { promises as fs, statSync } from "node:fs";
+import { createReadStream, promises as fs, statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
+import readline from "node:readline";
 import { z } from "zod";
 
 import {
   DEFAULT_GIT_DIFF_MAX_BYTES,
   DEFAULT_LIST_LIMIT,
   DEFAULT_LIST_MAX_DEPTH,
-  DEFAULT_READ_MAX_BYTES,
   DEFAULT_SEARCH_CONTEXT_LINES,
   DEFAULT_SEARCH_MAX_RESULTS,
 } from "./constants.js";
@@ -49,12 +49,6 @@ function normalizedChangePath(ctx: ToolContext, relativePath: string): string {
   } catch {
     return path.resolve(ctx.workspaceRoot, relativePath);
   }
-}
-
-function truncateOutput(text: string, maxBytes: number): { text: string; truncated: boolean } {
-  const buf = Buffer.from(text, "utf-8");
-  if (buf.byteLength <= maxBytes) return { text, truncated: false };
-  return { text: buf.subarray(0, maxBytes).toString("utf-8"), truncated: true };
 }
 
 async function backupOneFile(
@@ -112,12 +106,151 @@ function normalizeReadFileEncoding(value: string): "utf8" | "base64" {
   return value as "utf8" | "base64";
 }
 
+const LARGE_FILE_RANGE_THRESHOLD_BYTES = 64 * 1024;
+const READ_CHUNK_MAX_BYTES = 2_400;
+const DEFAULT_READ_LINE_COUNT = 200;
+const MAX_READ_LINE_COUNT = 1_000;
+const MAX_FULL_OVERWRITE_BYTES = 64 * 1024;
+
+async function atomicWriteUtf8(fullPath: string, content: string): Promise<void> {
+  const temporaryPath = path.join(
+    path.dirname(fullPath),
+    `.${path.basename(fullPath)}.ariadne-${randomUUID()}.tmp`,
+  );
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    handle = await fs.open(temporaryPath, "wx");
+    await handle.writeFile(content, "utf-8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await fs.rename(temporaryPath, fullPath);
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function readByteRange(
+  fullPath: string,
+  byteOffset: number,
+  maxBytes: number,
+  sizeBytes: number,
+): Promise<{
+  bytes: Buffer;
+  bytesRead: number;
+  nextByteOffset?: number;
+  eof: boolean;
+}> {
+  const handle = await fs.open(fullPath, "r");
+  try {
+    const available = Math.max(0, sizeBytes - byteOffset);
+    const requested = Math.min(maxBytes, available);
+    const bytes = Buffer.alloc(requested);
+    const { bytesRead } = requested > 0
+      ? await handle.read(bytes, 0, requested, byteOffset)
+      : { bytesRead: 0 };
+    const nextByteOffset = byteOffset + bytesRead;
+    const eof = nextByteOffset >= sizeBytes;
+    return {
+      bytes: bytes.subarray(0, bytesRead),
+      bytesRead,
+      ...(eof ? {} : { nextByteOffset }),
+      eof,
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readLineRange(
+  fullPath: string,
+  startLine: number,
+  requestedLineCount: number,
+  maxBytes: number,
+): Promise<{
+  content: string;
+  startLine: number;
+  endLine: number;
+  lineCount: number;
+  requestedLineCount: number;
+  totalLines: number;
+  nextStartLine?: number;
+  eof: boolean;
+  truncated: boolean;
+  requiresByteRange: boolean;
+}> {
+  const stream = createReadStream(fullPath, { encoding: "utf-8" });
+  const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const selected: string[] = [];
+  const requestedEndLine = startLine + requestedLineCount - 1;
+  let totalLines = 0;
+  let selectedBytes = 0;
+  let endLine = startLine - 1;
+  let truncated = false;
+  let requiresByteRange = false;
+  for await (const line of lines) {
+    totalLines += 1;
+    if (totalLines < startLine || totalLines > requestedEndLine || truncated) continue;
+    const separatorBytes = selected.length > 0 ? 1 : 0;
+    const lineBytes = Buffer.byteLength(line, "utf-8");
+    if (selectedBytes + separatorBytes + lineBytes > maxBytes) {
+      truncated = true;
+      if (selected.length === 0) {
+        const clipped = Buffer.from(line, "utf-8").subarray(0, maxBytes).toString("utf-8");
+        selected.push(clipped);
+        selectedBytes = Buffer.byteLength(clipped, "utf-8");
+        endLine = totalLines;
+        requiresByteRange = true;
+      }
+      continue;
+    }
+    selected.push(line);
+    selectedBytes += separatorBytes + lineBytes;
+    endLine = totalLines;
+  }
+  const eof = endLine >= totalLines && !requiresByteRange;
+  return {
+    content: selected.join("\n"),
+    startLine,
+    endLine,
+    lineCount: selected.length,
+    requestedLineCount,
+    totalLines,
+    ...(!eof && !requiresByteRange ? { nextStartLine: Math.max(startLine, endLine + 1) } : {}),
+    eof,
+    truncated,
+    requiresByteRange,
+  };
+}
+
 const readFileInputSchema = z.object({
   path: z.string().min(1),
   encoding: z.enum(["utf8", "base64", "utf-8"]).default("utf8"),
   startLine: z.number().int().positive().optional(),
   endLine: z.number().int().positive().optional(),
-  maxBytes: z.number().int().positive().optional(),
+  lineCount: z.number().int().positive().max(MAX_READ_LINE_COUNT).optional(),
+  byteOffset: z.number().int().nonnegative().optional(),
+  maxBytes: z.number().int().positive().max(READ_CHUNK_MAX_BYTES).default(READ_CHUNK_MAX_BYTES),
+}).superRefine((input, context) => {
+  if (input.lineCount != null && input.endLine != null) {
+    context.addIssue({
+      code: "custom",
+      path: ["lineCount"],
+      message: "lineCount and endLine cannot be used together.",
+    });
+  }
+  if (
+    input.byteOffset != null
+    && (input.startLine != null || input.endLine != null || input.lineCount != null)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["byteOffset"],
+      message: "byteOffset cannot be combined with line-based ranges.",
+    });
+  }
 });
 
 /** read_file：读取工作区内文本文件。 */
@@ -127,7 +260,8 @@ export const readFileTool: ToolContract<
 > = {
   ...WORKSPACE_READ_CONTRACT,
   name: "read_file",
-  description: "读取工作区内的文本文件；返回 sha256 供写入时并发校验。",
+  description:
+    "分段读取工作区文件并返回范围、游标与 sha256。大文件必须指定 startLine+lineCount；单行压缩文件使用 byteOffset+maxBytes。",
   inputSchema: readFileInputSchema,
   async execute(input, ctx) {
     const encoding = normalizeReadFileEncoding(input.encoding);
@@ -148,35 +282,105 @@ export const readFileTool: ToolContract<
         observationFailure("not_a_file", `不是文件：${displayPath}`, { path: displayPath }),
       );
     }
-    const buf = await fs.readFile(full);
-    const sizeBytes = buf.byteLength;
-    const sha256 = hashContent(buf.toString("utf-8"));
-
-    let text = buf.toString("utf-8");
-    if (input.startLine != null || input.endLine != null) {
-      const lines = text.split(/\r?\n/);
-      const start = (input.startLine ?? 1) - 1;
-      const end = input.endLine ?? lines.length;
-      text = lines.slice(start, end).join("\n");
+    const sizeBytes = fileStat.size;
+    const sha256 = await hashFile(full);
+    const hasLineRange =
+      input.startLine != null || input.endLine != null || input.lineCount != null;
+    const hasByteRange = input.byteOffset != null;
+    if (
+      sizeBytes > LARGE_FILE_RANGE_THRESHOLD_BYTES
+      && !hasLineRange
+      && !hasByteRange
+    ) {
+      return attachOutcome(
+        {
+          found: true,
+          path: displayPath,
+          content: "",
+          sizeBytes,
+          encoding,
+          sha256,
+          rangeRequired: true,
+          recommended: {
+            startLine: 1,
+            lineCount: DEFAULT_READ_LINE_COUNT,
+            maxBytes: READ_CHUNK_MAX_BYTES,
+          },
+        },
+        observationFailure(
+          "range_required",
+          `Large file ${displayPath} requires startLine+lineCount or byteOffset+maxBytes.`,
+          {
+            path: displayPath,
+            suggestedNextActions: [{
+              tool: "read_file",
+              reason: "Read the first bounded line range.",
+              input: {
+                path: displayPath,
+                startLine: 1,
+                lineCount: DEFAULT_READ_LINE_COUNT,
+              },
+            }],
+          },
+        ),
+      );
     }
 
-    const limit = input.maxBytes ?? DEFAULT_READ_MAX_BYTES;
-    const { text: clipped, truncated } = truncateOutput(text, limit);
-    const content =
-      encoding === "base64" ? Buffer.from(clipped, "utf-8").toString("base64") : clipped;
+    if (encoding === "base64" || hasByteRange) {
+      const byteOffset = input.byteOffset ?? 0;
+      const range = await readByteRange(full, byteOffset, input.maxBytes, sizeBytes);
+      const content = encoding === "base64"
+        ? range.bytes.toString("base64")
+        : range.bytes.toString("utf-8");
+      return attachOutcome(
+        {
+          found: true,
+          path: displayPath,
+          content,
+          sizeBytes,
+          encoding,
+          sha256,
+          byteOffset,
+          bytesRead: range.bytesRead,
+          nextByteOffset: range.nextByteOffset,
+          eof: range.eof,
+          truncated: !range.eof,
+        },
+        observationSuccess(`已读取 ${displayPath} 的字节范围`),
+      );
+    }
+
+    const startLine = input.startLine ?? 1;
+    const requestedLineCount = input.lineCount
+      ?? (input.endLine != null
+        ? Math.max(1, input.endLine - startLine + 1)
+        : DEFAULT_READ_LINE_COUNT);
+    const range = await readLineRange(
+      full,
+      startLine,
+      requestedLineCount,
+      input.maxBytes,
+    );
 
     return attachOutcome(
       {
         found: true,
-        path: input.path,
-        content,
+        path: displayPath,
+        content: range.content,
         sizeBytes,
         encoding,
-        truncated,
-        lineCount: text.split(/\r?\n/).length,
+        truncated: range.truncated || !range.eof,
+        startLine: range.startLine,
+        endLine: range.endLine,
+        lineCount: range.lineCount,
+        requestedLineCount: range.requestedLineCount,
+        totalLines: range.totalLines,
+        nextStartLine: range.nextStartLine,
+        eof: range.eof,
+        requiresByteRange: range.requiresByteRange,
         sha256,
       },
-      observationSuccess(`已读取 ${input.path.replace(/\\/g, "/")}`),
+      observationSuccess(`已读取 ${displayPath} 的行范围`),
     );
   },
 };
@@ -396,6 +600,7 @@ export const writeFileTool: ToolContract<
     createOnly: z.ZodDefault<z.ZodBoolean>;
     overwrite: z.ZodDefault<z.ZodBoolean>;
     expectedHash: z.ZodOptional<z.ZodString>;
+    expectedSha256: z.ZodOptional<z.ZodString>;
     backup: z.ZodDefault<z.ZodBoolean>;
     createDirs: z.ZodDefault<z.ZodBoolean>;
   }>,
@@ -406,19 +611,24 @@ export const writeFileTool: ToolContract<
     afterHash: string;
     backupPath?: string;
     diff: string;
+    diffTruncated: boolean;
     patchPreview: string;
     isNew: boolean;
+    changedStartLine: number;
+    changedEndLine: number;
   }
 > = {
   ...WORKSPACE_WRITE_CONTRACT,
   name: "write_file",
-  description: "写入工作区文件；默认备份并返回 diff。修改已有文件建议用 apply_patch。",
+  description:
+    "创建小文件或完整替换小文件；替换已有文件必须提供 read_file 返回的 expectedSha256。已有大文件应使用 apply_patch。",
   inputSchema: z.object({
     path: z.string().min(1),
     content: z.string(),
     createOnly: z.boolean().default(false),
     overwrite: z.boolean().default(true),
     expectedHash: z.string().optional(),
+    expectedSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
     backup: z.boolean().default(true),
     createDirs: z.boolean().default(true),
   }),
@@ -439,8 +649,25 @@ export const writeFileTool: ToolContract<
     if (oldContent !== null && !input.overwrite) {
       throw new Error(`文件已存在且 overwrite=false：${input.path}`);
     }
-    if (input.expectedHash != null && beforeHash != null && beforeHash !== input.expectedHash) {
-      throw new Error(`expectedHash 不匹配，文件可能已被修改：${input.path}`);
+    const expectedSha256 = input.expectedSha256 ?? input.expectedHash;
+    if (oldContent !== null && !expectedSha256) {
+      throw new Error(
+        `Replacing an existing file requires expectedSha256 from read_file: ${input.path}`,
+      );
+    }
+    if (
+      oldContent !== null
+      && Buffer.byteLength(oldContent, "utf-8") > MAX_FULL_OVERWRITE_BYTES
+    ) {
+      throw new Error(
+        `write_file refuses to replace an existing file larger than ${MAX_FULL_OVERWRITE_BYTES} bytes; use apply_patch: ${input.path}`,
+      );
+    }
+    if (expectedSha256 != null && beforeHash == null) {
+      throw new Error(`expectedSha256 target does not exist: ${input.path}`);
+    }
+    if (expectedSha256 != null && beforeHash !== expectedSha256) {
+      throw new Error(`expectedSha256 mismatch; re-read the target range: ${input.path}`);
     }
 
     const diff = buildUnifiedDiff(oldContent ?? "", input.content, input.path);
@@ -456,7 +683,7 @@ export const writeFileTool: ToolContract<
       if (input.createDirs) {
         await fs.mkdir(path.dirname(full), { recursive: true });
       }
-      await fs.writeFile(full, input.content, "utf-8");
+      await atomicWriteUtf8(full, input.content);
     } catch (writeErr) {
       if (
         (writeErr as NodeJS.ErrnoException).code === "ENOENT" &&
@@ -465,7 +692,7 @@ export const writeFileTool: ToolContract<
       ) {
         try {
           await fs.mkdir(path.dirname(full), { recursive: true });
-          await fs.writeFile(full, input.content, "utf-8");
+          await atomicWriteUtf8(full, input.content);
         } catch (retryErr) {
           if (backupPath && oldContent !== null) {
             await ctx.storage!.restoreFileFromBackup(backupPath, full);
@@ -489,15 +716,20 @@ export const writeFileTool: ToolContract<
       diff,
     });
 
+    const visibleDiff = truncateDiff(diff, 8_000);
+    const changedEndLine = Math.max(1, input.content.split(/\r?\n/).length);
     return {
       path: input.path,
       changeId,
       beforeHash,
       afterHash,
       backupPath,
-      diff,
-      patchPreview: diff,
+      diff: visibleDiff.diff,
+      diffTruncated: visibleDiff.truncated,
+      patchPreview: visibleDiff.diff,
       isNew: oldContent === null,
+      changedStartLine: 1,
+      changedEndLine,
     };
   },
 };
@@ -509,6 +741,7 @@ export const applyPatchTool: ToolContract<
     search: z.ZodString;
     replace: z.ZodString;
     expectedHash: z.ZodOptional<z.ZodString>;
+    expectedSha256: z.ZodOptional<z.ZodString>;
     backup: z.ZodDefault<z.ZodBoolean>;
   }>,
   {
@@ -518,16 +751,21 @@ export const applyPatchTool: ToolContract<
     afterHash: string;
     backupPath: string;
     diff: string;
+    diffTruncated: boolean;
+    changedStartLine: number;
+    changedEndLine: number;
   }
 > = {
   ...WORKSPACE_WRITE_CONTRACT,
   name: "apply_patch",
-  description: "对已有文件做 search/replace；search 必须唯一匹配，默认备份并返回 diff。",
+  description:
+    "按唯一锚点局部修改已有文件；必须提供 read_file 返回的 expectedSha256，默认备份并返回 diff 与新哈希。",
   inputSchema: z.object({
     path: z.string().min(1),
     search: z.string().min(1),
     replace: z.string(),
     expectedHash: z.string().optional(),
+    expectedSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
     backup: z.boolean().default(true),
   }),
   async execute(input, ctx) {
@@ -536,8 +774,12 @@ export const applyPatchTool: ToolContract<
     const oldContent = await fs.readFile(full, "utf-8");
     const beforeHash = hashContent(oldContent);
 
-    if (input.expectedHash != null && beforeHash !== input.expectedHash) {
-      throw new Error(`expectedHash 不匹配：${input.path}`);
+    const expectedSha256 = input.expectedSha256 ?? input.expectedHash;
+    if (!expectedSha256) {
+      throw new Error(`apply_patch requires expectedSha256 from read_file: ${input.path}`);
+    }
+    if (beforeHash !== expectedSha256) {
+      throw new Error(`expectedSha256 mismatch; re-read the target range: ${input.path}`);
     }
 
     const first = oldContent.indexOf(input.search);
@@ -565,7 +807,7 @@ export const applyPatchTool: ToolContract<
     }
 
     try {
-      await fs.writeFile(full, newContent, "utf-8");
+      await atomicWriteUtf8(full, newContent);
     } catch (writeErr) {
       if (backupPath) {
         await ctx.storage.restoreFileFromBackup(backupPath, full);
@@ -582,7 +824,20 @@ export const applyPatchTool: ToolContract<
       diff,
     });
 
-    return { path: input.path, changeId, beforeHash, afterHash, backupPath, diff };
+    const visibleDiff = truncateDiff(diff, 8_000);
+    const changedStartLine = oldContent.slice(0, first).split(/\r?\n/).length;
+    const replacementLines = Math.max(1, input.replace.split(/\r?\n/).length);
+    return {
+      path: input.path,
+      changeId,
+      beforeHash,
+      afterHash,
+      backupPath,
+      diff: visibleDiff.diff,
+      diffTruncated: visibleDiff.truncated,
+      changedStartLine,
+      changedEndLine: changedStartLine + replacementLines - 1,
+    };
   },
 };
 

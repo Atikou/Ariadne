@@ -264,6 +264,20 @@ export class CompanionKnowledgeService {
     modelName?: string;
     force?: boolean;
     outputMode?: CompanionOutputMode;
+    lifecycle?: {
+      onStarted?: (input: {
+        processedMessages: number;
+        beforeChars: number;
+        summaryType: string;
+      }) => void;
+      onCompleted?: (input: {
+        processedMessages: number;
+        beforeChars: number;
+        afterChars: number;
+        summaryType: string;
+      }) => void;
+      onFailed?: (error: unknown) => void;
+    };
   }): Promise<CompanionSummaryStatus> {
     const outputMode = input.outputMode ?? "bounded";
     const messages = input.storage.listMessages(input.sessionId, 200);
@@ -291,17 +305,35 @@ export class CompanionKnowledgeService {
     if (!first || !last) {
       return CompanionSummaryStatusSchema.parse({ generated: false, reason: "empty_source" });
     }
-    const summary = buildExtractiveSummary(source.map((message) => `${message.role}: ${message.content}`));
-    const record = input.storage.createSummary({
-      sessionId: input.sessionId,
-      sourceMessageStartId: first.id,
-      sourceMessageEndId: last.id,
-      summary,
-      topics: [...extractTopics(summary), `mode:${outputMode}`],
-      modelName: input.modelName,
-    });
-    await new CompanionVectorIndex(input.storage).indexSummary(record);
-    return CompanionSummaryStatusSchema.parse({ generated: true, summaryId: record.id });
+    const beforeChars = source.reduce((sum, message) => sum + message.content.length, 0);
+    const lifecycleInput = {
+      processedMessages: source.length,
+      beforeChars,
+      summaryType: "companion_session_summary",
+    };
+    input.lifecycle?.onStarted?.(lifecycleInput);
+    try {
+      const summary = buildExtractiveSummary(
+        source.map((message) => `${message.role}: ${message.content}`),
+      );
+      const record = input.storage.createSummary({
+        sessionId: input.sessionId,
+        sourceMessageStartId: first.id,
+        sourceMessageEndId: last.id,
+        summary,
+        topics: [...extractTopics(summary), `mode:${outputMode}`],
+        modelName: input.modelName,
+      });
+      await new CompanionVectorIndex(input.storage).indexSummary(record);
+      input.lifecycle?.onCompleted?.({
+        ...lifecycleInput,
+        afterChars: summary.length,
+      });
+      return CompanionSummaryStatusSchema.parse({ generated: true, summaryId: record.id });
+    } catch (error) {
+      input.lifecycle?.onFailed?.(error);
+      throw error;
+    }
   }
 }
 
@@ -330,8 +362,15 @@ export function filterMessagesForMode(
   messages: CompanionMessage[],
   outputMode: CompanionOutputMode,
 ): CompanionMessage[] {
-  if (outputMode === "unrestricted") return messages;
-  return messages.filter((message) => messageMode(message) !== "unrestricted");
+  const conversationMessages = messages.filter(isConversationMessage);
+  if (outputMode === "unrestricted") return conversationMessages;
+  return conversationMessages.filter((message) => messageMode(message) !== "unrestricted");
+}
+
+function isConversationMessage(message: CompanionMessage): boolean {
+  const responseType = message.metadata?.responseType;
+  return responseType !== "agent_proposal"
+    && responseType !== "agent_proposal_delivery_pending";
 }
 
 export function filterSummariesForMode(

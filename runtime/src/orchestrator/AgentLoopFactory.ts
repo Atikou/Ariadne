@@ -1,4 +1,8 @@
 import { AgentLoop, type AgentLoopOptions } from "../agent/AgentLoop.js";
+import type {
+  AgentExecutionEngineFactory,
+  AgentExecutionEngineKind,
+} from "./AgentExecutionEngine.js";
 
 export interface AgentLoopFactoryDeps {
   workspaceRoot: string;
@@ -17,6 +21,7 @@ export interface AgentLoopFactoryDeps {
   maxSubAgentDispatchDepth?: number;
   permissionRequestStore?: AgentLoopOptions["permissionRequestStore"];
   planHandoffStore?: AgentLoopOptions["planHandoffStore"];
+  agentPlanStore?: AgentLoopOptions["agentPlanStore"];
   sessionPermissionGrants?: AgentLoopOptions["sessionPermissionGrants"];
   workspaceGrantStore?: AgentLoopOptions["workspaceGrantStore"];
   pausedRunStore?: AgentLoopOptions["pausedRunStore"];
@@ -52,7 +57,9 @@ export interface AgentLoopCreationRequest {
   completionCriteria?: AgentLoopOptions["completionCriteria"];
 }
 
-export class AgentLoopFactory {
+export class AgentLoopFactory implements AgentExecutionEngineFactory {
+  readonly kind: AgentExecutionEngineKind = "react_loop";
+
   constructor(private readonly deps: AgentLoopFactoryDeps) {}
 
   create(request: AgentLoopCreationRequest): AgentLoop {
@@ -91,6 +98,7 @@ export function buildAgentLoopOptions(
     resumeState: request.resumeState,
     permissionRequestStore: deps.permissionRequestStore,
     planHandoffStore: deps.planHandoffStore,
+    agentPlanStore: deps.agentPlanStore,
     sessionPermissionGrants: deps.sessionPermissionGrants,
     workspaceGrantStore: deps.workspaceGrantStore,
     workspaceConfigScopes: deps.resolveWorkspaceConfigScopes?.(request.sessionId) ?? [],

@@ -28,6 +28,7 @@ import { createProcessSandbox } from "../sandbox/createProcessSandbox.js";
 import type { ProcessSandbox } from "../sandbox/ProcessSandbox.js";
 import { LocalModelService } from "../model/local/LocalModelService.js";
 import { PlanApprovalManager, PlanDraftApiService, PlanService, PlanStore, PlanValidator } from "../plan/index.js";
+import { AgentPlanStore } from "../plan/AgentPlanStore.js";
 import { Orchestrator } from "../orchestrator/Orchestrator.js";
 import { RunAggregateRepository } from "../run/RunAggregateRepository.js";
 import { RunStateStore } from "../orchestrator/RunStateStore.js";
@@ -159,6 +160,7 @@ export class AppContext {
   readonly dataLifecycle: DataLifecycleService;
   readonly permissionRequestStore: PermissionRequestStore;
   readonly planHandoffStore: PlanHandoffStore;
+  readonly agentPlanStore: AgentPlanStore;
   readonly sessionPermissionGrants: SessionPermissionGrants;
   readonly workspaceGrantStore: WorkspaceGrantStore;
   readonly pausedRunStore: PausedRunStore;
@@ -226,6 +228,7 @@ export class AppContext {
     dataLifecycle: DataLifecycleService;
     permissionRequestStore?: PermissionRequestStore;
     planHandoffStore?: PlanHandoffStore;
+    agentPlanStore?: AgentPlanStore;
     sessionPermissionGrants?: SessionPermissionGrants;
     workspaceGrantStore?: WorkspaceGrantStore;
     pausedRunStore?: PausedRunStore;
@@ -291,6 +294,7 @@ export class AppContext {
     this.dataLifecycle = opts.dataLifecycle;
     this.permissionRequestStore = opts.permissionRequestStore ?? defaultPermissionRequestStore;
     this.planHandoffStore = opts.planHandoffStore ?? defaultPlanHandoffStore;
+    this.agentPlanStore = opts.agentPlanStore ?? new AgentPlanStore();
     this.sessionPermissionGrants = opts.sessionPermissionGrants ?? defaultSessionPermissionGrants;
     this.workspaceGrantStore = opts.workspaceGrantStore ?? new WorkspaceGrantStore();
     this.pausedRunStore = opts.pausedRunStore ?? defaultPausedRunStore;
@@ -643,6 +647,7 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
   const runStateStore = new RunStateStore(contextManager.db);
   const permissionRequestStore = new PermissionRequestStore(contextManager.db.connection);
   const planHandoffStore = new PlanHandoffStore(contextManager.db.connection);
+  const agentPlanStore = new AgentPlanStore(contextManager.db.connection);
   const sessionPermissionGrants = new SessionPermissionGrants(contextManager.db.connection);
   const workspaceGrantStore = new WorkspaceGrantStore(contextManager.db.connection);
   const pausedRunStore = new PausedRunStore(contextManager.db.connection);
@@ -773,6 +778,7 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
 
   const orchestrator = new Orchestrator({
     workspaceRoot,
+    activityDataRoot: dataDir,
     resolveWorkspaceRoot: (sessionId?: string) => {
       if (!sessionId) return workspaceCatalog.defaultRoot;
       const session = contextManager.getSession(sessionId);
@@ -817,6 +823,7 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     agentRunRegistry,
     permissionRequestStore,
     planHandoffStore,
+    agentPlanStore,
     sessionPermissionGrants,
     workspaceGrantStore,
     pausedRunStore,
@@ -853,11 +860,19 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     }
   });
 
+  const recoveredResumeClaims = pausedRunStore.recoverInterruptedClaims();
+  if (recoveredResumeClaims > 0) {
+    trace.write({
+      type: "startup_recovery_paused_run_claims",
+      recoveredClaims: recoveredResumeClaims,
+    });
+  }
   const startupRecovery = recoverOnStartup({
     runs,
     notificationQueue,
     trace,
     pausedRunStore,
+    permissionRequestStore,
     planHandoffStore,
     subAgentWorkspaceRecovery,
   });
@@ -948,6 +963,7 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     dataLifecycle,
     permissionRequestStore,
     planHandoffStore,
+    agentPlanStore,
     sessionPermissionGrants,
     workspaceGrantStore,
     pausedRunStore,

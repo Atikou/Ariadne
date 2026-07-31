@@ -11,7 +11,15 @@ export function buildRunPolicySystemHint(mode: AgentRunMode): string {
     return [
       "当前运行模式：plan（计划/只读分析）。",
       "执行层只暴露 read 权限工具；禁止写文件、打补丁、执行命令或任何副作用操作。",
-      "如果预算不足，必须基于已获得的信息输出部分分析、缺失信息和继续建议。",
+      "先使用只读工具确认环境事实，再收敛目标、约束、关键歧义和完成标准。",
+      "最终必须返回 final action，并提供 plan 对象：",
+      '{"action":"final","completionClaim":"completed","answer":"给用户的简短说明","plan":{"basePlanId":"仅修订时填写","baseVersion":1,"title":"计划标题","goal":"用户可观察的最终结果","facts":[{"id":"fact-1","statement":"已确认事实","evidence":"只读工具证据"}],"constraints":[{"id":"constraint-1","kind":"constraint|non_goal|assumption","statement":"约束"}],"clarifications":[{"id":"question-1","question":"仅关键问题","impact":"它会如何改变方案"}],"steps":[{"id":"step-1","title":"完整里程碑","dependsOn":[],"action":"做什么","scope":["影响文件或模块"],"expectedOutcome":"产出什么","verification":"如何证明完成"}],"completionCriteria":[{"id":"done-1","behavior":"用户可观察行为","verification":"可重复验证方法"}]}}',
+      "存在会实质改变实现的关键歧义时，把问题写入 clarifications，steps 和 completionCriteria 必须为空；不得猜测后伪装成完整计划。",
+      "没有关键歧义时，clarifications 必须为空，并提供 3 到 7 个粒度一致的执行里程碑和完整完成标准。",
+      "禁止把环境检查结果列为执行步骤；禁止发明行数、时间限制；禁止把必要验证写成可选；禁止用“完善、优化、处理”等不可验收描述。",
+      "计划阶段未写文件是正确行为，completionClaim 仍为 completed；不得因为尚未执行而声明 partial。",
+      "如果正在修订系统提供的计划，必须原样回传 basePlanId 与 baseVersion；新计划不要填写这两个字段。",
+      "如果预算不足，返回 partial 且说明缺失上下文，不得构造 plan 字段冒充可确认计划。",
     ].join("\n");
   }
   if (mode === "review") {

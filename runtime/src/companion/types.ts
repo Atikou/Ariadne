@@ -2,6 +2,7 @@ import type { CompanionOutputMode } from "./CompanionMemoryContracts.js";
 
 export type {
   CompanionMessage,
+  CompanionMessageReasoning,
   CompanionMessageRole,
   CompanionMessageStatus,
   CompanionSession,

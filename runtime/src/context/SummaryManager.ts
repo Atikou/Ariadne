@@ -9,6 +9,12 @@ export interface SummaryManagerOptions {
   summarize?: SummarizeFn;
 }
 
+export interface CompressionSnapshot {
+  pendingMessages: number;
+  pendingChars: number;
+  needed: boolean;
+}
+
 /** 历史摘要：超过阈值时将旧消息压缩为 chunk_summary。 */
 export class SummaryManager {
   private readonly threshold: number;
@@ -26,9 +32,17 @@ export class SummaryManager {
   }
 
   needsCompression(sessionId: string): boolean {
+    return this.compressionSnapshot(sessionId).needed;
+  }
+
+  compressionSnapshot(sessionId: string): CompressionSnapshot {
     const endId = this.summaries.lastChunkEndMessageId(sessionId);
     const pending = this.messages.getUnsummarized(sessionId, endId);
-    return pending.length > this.threshold;
+    return {
+      pendingMessages: pending.length,
+      pendingChars: pending.reduce((sum, message) => sum + message.content.length, 0),
+      needed: pending.length > this.threshold,
+    };
   }
 
   async compressIfNeeded(sessionId: string): Promise<SummaryRecord | null> {

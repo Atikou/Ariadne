@@ -1,6 +1,7 @@
 import type { AgentNotification } from "../background/types.js";
 import type { ContextManager } from "../context/ContextManager.js";
 import type { ChatMessage } from "../model/types.js";
+import type { RunState } from "../orchestrator/runStateTypes.js";
 import { wrapExternalToolOutput } from "../util/injection.js";
 import { renderNotifications } from "./AgentNotificationRenderer.js";
 import type { PausedRunSnapshot } from "./PausedRunStore.js";
@@ -40,6 +41,7 @@ export interface AgentRunBootstrapInput {
   system?: string;
   effectiveGoal: string;
   isResume: boolean;
+  resumeState?: RunState;
   pausedRun?: PausedRunSnapshot;
   initialSessionId?: string;
   initialSteps: AgentToolStep[];
@@ -117,8 +119,7 @@ export async function bootstrapAgentRunSession(
   if (isResume) {
     messages.push({
       role: "system",
-      content:
-        "Ariadne runtime resume: continue from the saved RunState. This is not a user message.",
+      content: renderResumeCheckpoint(input.resumeState),
     });
   }
 
@@ -211,6 +212,30 @@ export async function bootstrapAgentRunSession(
       system: input.system,
     },
   };
+}
+
+export function renderResumeCheckpoint(state: RunState | undefined): string {
+  if (!state) {
+    return "Ariadne runtime resume: continue from the saved checkpoint. This is not a user message.";
+  }
+  const ranges = state.readRanges.slice(-20).map((range) => ({
+    path: range.path,
+    sha256: range.sha256,
+    startLine: range.startLine,
+    endLine: range.endLine,
+    byteOffset: range.byteOffset,
+    bytesRead: range.bytesRead,
+    eof: range.eof,
+  }));
+  return [
+    "Ariadne runtime resume checkpoint (authoritative, not user content).",
+    `goal=${JSON.stringify(state.goal)}.`,
+    `completedTools=${JSON.stringify(state.toolResultRefs.slice(-30))}.`,
+    `readRanges=${JSON.stringify(ranges)}.`,
+    `cumulativeBudgetUsage=${JSON.stringify(state.budgetUsage)}.`,
+    state.partialSummary ? `partialSummary=${JSON.stringify(state.partialSummary)}.` : "",
+    "Continue from the next unfinished action. Do not repeat an unchanged file range or completed side effect.",
+  ].filter(Boolean).join(" ");
 }
 
 export type WorkflowArtifacts = {

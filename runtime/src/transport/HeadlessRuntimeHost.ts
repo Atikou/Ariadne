@@ -98,11 +98,13 @@ export class HeadlessRuntimeHost {
         (event) => this.onRuntimeEvent(event),
         bootstrap.runtimeVersion,
         {
+          activityDataRoot: bootstrap.dataRoot,
           conversationWorkspaceStateFile: `${bootstrap.dataRoot}/conversation-workspaces.json`,
           workspaces: bootstrap.workspaces,
           ...(bootstrap.agentPermissions ? {
             proposalApproval: bootstrap.agentPermissions.proposalApproval,
             allowedPermissions: bootstrap.agentPermissions.allowedPermissions,
+            agentPermissionPolicy: bootstrap.agentPermissions.permissionPolicy,
           } : {}),
         },
       );

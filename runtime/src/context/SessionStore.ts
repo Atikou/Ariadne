@@ -7,8 +7,13 @@ import type { SessionRecord } from "./types.js";
 export class SessionStore {
   constructor(private readonly db: DatabaseManager) {}
 
-  create(title = "新会话", projectId?: string, workspaceKey?: string): SessionRecord {
-    const id = randomUUID();
+  create(
+    title = "新会话",
+    projectId?: string,
+    workspaceKey?: string,
+    preferredId?: string,
+  ): SessionRecord {
+    const id = preferredId?.trim() || randomUUID();
     const ts = nowIso();
     this.db.connection
       .prepare(

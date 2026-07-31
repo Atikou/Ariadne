@@ -262,6 +262,131 @@ describe("manual model routing binding", () => {
     }]);
   });
 
+  it("completes an Agent handoff in the original processing message", async () => {
+    const root = temporaryRoot("ariadne-result-message-bridge-");
+    const companionRoot = path.join(root, "companion");
+    const service = new CompanionService({
+      projectRoot: root,
+      defaultStorageRoot: companionRoot,
+      directChat: async (): Promise<ModelResponse> =>
+        modelResponse("Agent 已完成项目检查。"),
+    });
+    companionServices.push(service);
+    const created = service.createSession({ title: "Processing message bridge" });
+    const storage = service.storageManager.get(companionRoot);
+    const sourceTurn = storage.createMessage({
+      sessionId: created.session.id,
+      role: "user",
+      content: "检查项目",
+    });
+    const processingMessage = storage.createMessage({
+      id: "processing-message-1",
+      sessionId: created.session.id,
+      role: "assistant",
+      content: "",
+      status: "streaming",
+      memoryEligible: false,
+      reasoning: {
+        content: "先核对项目边界。",
+        status: "completed",
+        source: "provider",
+        startedAt: "2026-07-22T00:00:00.000Z",
+        completedAt: "2026-07-22T00:00:02.000Z",
+        durationMs: 2_000,
+      },
+    });
+    const now = new Date().toISOString();
+    const payload = {
+      sourceTurnId: sourceTurn.id,
+      companionSessionId: created.session.id,
+      originalRequest: "检查项目",
+      workspaceKey: "primary",
+      draft: {
+        reason: "需要读取项目",
+        interpretedTask: "读取项目并给出结果",
+        requestedCapabilities: ["file-read"] as const,
+        risk: "read-only" as const,
+      },
+    };
+    const pendingProposal = {
+      schemaVersion: 1 as const,
+      id: "proposal-message-bridge-1",
+      sourceTurnId: sourceTurn.id,
+      companionSessionId: created.session.id,
+      reason: payload.draft.reason,
+      originalRequest: payload.originalRequest,
+      interpretedTask: payload.draft.interpretedTask,
+      requestedCapabilities: ["file-read"] as const,
+      requestedScope: [root],
+      risk: "read-only" as const,
+      workspaceKey: "primary",
+      status: "pending" as const,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const outbox = storage.enqueueAgentProposalOutbox({
+      payload,
+      assistantMessageId: processingMessage.id,
+      content: "",
+      metadata: { companionRunId: "companion-run-1" },
+    });
+    expect(storage.claimAgentProposalOutbox(outbox.id).status).toBe("claimed");
+    const delivered = storage.completeAgentProposalOutbox(outbox.id, pendingProposal);
+    expect(delivered.assistantMessage.id).toBe(processingMessage.id);
+
+    const executing = storage.continueAgentProposalTurn({
+      ...pendingProposal,
+      agentSessionId: "agent-session-message-bridge-1",
+      status: "executing",
+      respondedAt: now,
+      grantId: "grant-message-bridge-1",
+      updatedAt: now,
+    });
+    expect(executing).toMatchObject({
+      id: processingMessage.id,
+      status: "streaming",
+      memoryEligible: false,
+      reasoning: {
+        content: "先核对项目边界。",
+        status: "completed",
+      },
+    });
+
+    const result = await service.presentAgentResult({
+      companionStorageRoot: companionRoot,
+      proposal: {
+        ...pendingProposal,
+        agentSessionId: "agent-session-message-bridge-1",
+        status: "completed",
+        respondedAt: now,
+        grantId: "grant-message-bridge-1",
+        runId: "agent-run-message-bridge-1",
+        outcome: {
+          status: "completed",
+          answer: "项目检查完成",
+        },
+        updatedAt: now,
+      },
+    });
+
+    expect(result.message).toMatchObject({
+      id: processingMessage.id,
+      content: "Agent 已完成项目检查。",
+      status: "completed",
+      memoryEligible: true,
+      reasoning: {
+        content: "先核对项目边界。",
+        status: "completed",
+      },
+      metadata: {
+        processingDurationMs: expect.any(Number),
+      },
+    });
+    expect(storage.listMessages(created.session.id).filter((message) =>
+      message.role === "assistant")).toHaveLength(1);
+  });
+
   it("logs the requested and resolved client and never falls back from a manual binding", async () => {
     const traces: TraceEvent[] = [];
     const localChat = vi.fn(async (): Promise<ModelResponse> => modelResponse("local", {

@@ -57,7 +57,7 @@ export class PlanService {
     mode?: PlanMode;
     planner: Planner;
   }): Promise<PlanDraftRecord> {
-    const legacy = await input.planner.generatePlan(input.goal, input.context);
+    const legacy = await input.planner.generateExecutablePlan(input.goal, input.context);
     return this.createDraftFromLegacyPlan(bindPlanTools(legacy, { registry: this.options.registry }), {
       sessionId: input.sessionId,
       requestId: input.requestId,
@@ -158,7 +158,7 @@ export class PlanService {
       });
     }
 
-    const legacy = await input.planner.generatePlan(goal, context);
+    const legacy = await input.planner.generateExecutablePlan(goal, context);
     return this.createDraftFromLegacyPlan(bindPlanTools(legacy, { registry: this.options.registry }), {
       sessionId: input.sessionId,
       originType: "import_preview",
@@ -221,7 +221,10 @@ export class PlanService {
       markdown ? `上一版 Markdown 预览（v${input.baseVersion}，不可执行）：\n${markdown}` : undefined,
     ].filter((part): part is string => Boolean(part));
 
-    const legacy = await input.planner.generatePlan(input.goal, contextParts.join("\n\n"));
+    const legacy = await input.planner.generateExecutablePlan(
+      input.goal,
+      contextParts.join("\n\n"),
+    );
     const bound = bindPlanTools(legacy, { registry: this.options.registry });
     const draft = this.prepareDraftFromLegacyPlan(bound, {
       planId: input.planId,

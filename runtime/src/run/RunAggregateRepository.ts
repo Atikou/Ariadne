@@ -380,6 +380,22 @@ export class RunAggregateRepository {
       }
       return;
     }
+    if (command.type === "run.tool_retry") {
+      const update = this.database.connection.prepare(
+        `UPDATE tool_ledger
+         SET status='intended', aggregate_version=?, started_at=NULL, updated_at=?
+         WHERE idempotency_key=? AND run_id=? AND status='started'`,
+      ).run(
+        aggregate.aggregateVersion,
+        now,
+        command.idempotencyKey,
+        aggregate.id,
+      );
+      if (Number(update.changes) !== 1) {
+        throw new Error(`tool_ledger_transition_invalid:${command.idempotencyKey}:retry`);
+      }
+      return;
+    }
     if (command.type === "run.tool_result") {
       const update = this.database.connection.prepare(
         `UPDATE tool_ledger SET
@@ -487,6 +503,13 @@ function mutationFor(
         command.reason,
         "run.plan_handoff_requested",
       );
+    case "run.wait_budget":
+      return waitingMutation(
+        "paused",
+        "waiting_budget",
+        command.reason,
+        "run.budget_waiting",
+      );
     case "run.pause":
       return waitingMutation("paused", "paused", command.reason, "run.paused", "recoverable");
     case "run.require_recovery":
@@ -530,6 +553,21 @@ function mutationFor(
           ),
         },
         eventKind: "run.tool_started",
+      };
+    case "run.tool_retry":
+      return {
+        status: "running",
+        checkpointStage: "tool_intended",
+        recoveryStatus: "none",
+        state: {
+          ...existing.state,
+          inFlightEffects: existing.state.inFlightEffects.map((effect) =>
+            effect.idempotencyKey === command.idempotencyKey
+              ? { ...effect, status: "intended" }
+              : effect,
+          ),
+        },
+        eventKind: "run.tool_retry_prepared",
       };
     case "run.tool_result":
       return {

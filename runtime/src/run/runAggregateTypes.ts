@@ -18,6 +18,7 @@ export type RunCheckpointStage =
   | "blocked"
   | "waiting_confirmation"
   | "waiting_plan_handoff"
+  | "waiting_budget"
   | "paused"
   | "recovery_required"
   | "tool_intended"
@@ -157,6 +158,7 @@ export type RunCommand =
   | (ExistingRunCommand & { type: "run.block"; reason: RunWaitReason })
   | (ExistingRunCommand & { type: "run.request_confirmation"; reason: RunWaitReason })
   | (ExistingRunCommand & { type: "run.request_plan_handoff"; reason: RunWaitReason })
+  | (ExistingRunCommand & { type: "run.wait_budget"; reason: RunWaitReason })
   | (ExistingRunCommand & { type: "run.pause"; reason: RunWaitReason })
   | (ExistingRunCommand & {
       type: "run.require_recovery";
@@ -174,6 +176,10 @@ export type RunCommand =
     })
   | (ExistingRunCommand & {
       type: "run.tool_start";
+      idempotencyKey: string;
+    })
+  | (ExistingRunCommand & {
+      type: "run.tool_retry";
       idempotencyKey: string;
     })
   | (ExistingRunCommand & {

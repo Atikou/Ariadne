@@ -95,6 +95,11 @@ export interface RunAgentToolActionInput {
   action: ToolAction;
   iteration: number;
   toolCallId: string;
+  activityBatchId?: string;
+  activityLaneId?: string;
+  activityParentId?: string;
+  activityDependsOnToolCallIds?: string[];
+  verifiesToolCallId?: string;
   steps: AgentToolStep[];
   goal: string;
   workflowRoute: Pick<
@@ -256,14 +261,34 @@ export async function runAgentToolAction(
   const inputRecord = (action.input ?? {}) as Record<string, unknown>;
 
   if (!tool) {
-    activity.startTool({ tool: action.tool, toolInput: inputRecord, iteration, toolCallId });
+    activity.startTool({
+      tool: action.tool,
+      toolInput: inputRecord,
+      iteration,
+      toolCallId,
+      batchId: input.activityBatchId,
+      laneId: input.activityLaneId,
+      parentActivityId: input.activityParentId,
+      dependsOnToolCallIds: input.activityDependsOnToolCallIds,
+      verifiesToolCallId: input.verifiesToolCallId,
+    });
     activity.fail(`未知工具：${action.tool}`);
     return { step: { ...base, error: `未知工具：${action.tool}` } };
   }
 
   const toolPermission = ctx.registry.resolvePrimaryPermission(action.tool, inputRecord) ?? tool.permissions[0];
 
-  activity.startTool({ tool: action.tool, toolInput: inputRecord, iteration, toolCallId });
+  activity.startTool({
+    tool: action.tool,
+    toolInput: inputRecord,
+    iteration,
+    toolCallId,
+    batchId: input.activityBatchId,
+    laneId: input.activityLaneId,
+    parentActivityId: input.activityParentId,
+    dependsOnToolCallIds: input.activityDependsOnToolCallIds,
+    verifiesToolCallId: input.verifiesToolCallId,
+  });
   if (!ctx.isToolExposed(action.tool)) {
     const err = `工具「${action.tool}」仅主 Agent 可用，当前上下文不可调用。`;
     activity.fail(err);
@@ -345,6 +370,9 @@ export async function runAgentToolAction(
       parentAgentIntent: ctx.getIntent(),
       parentAgentWorkflowType: ctx.reconciledWorkflowType ?? ctx.policyWorkflowType,
       subAgentCostBudgetUsd: ctx.subAgentCostBudgetUsd,
+      activityTimeline: ctx.timeline,
+      activityRunId,
+      activityParentId: activity.activityId,
     },
   });
 
@@ -358,6 +386,7 @@ export async function runAgentToolAction(
     activity.fail(step.error ?? "工具执行授权被拒绝", {
       outcomeKind: step.outcomeKind,
       workspaceAccess: pathAccess?.audit,
+      permissionAudit: buildActivityPermissionAudit(authorization, pathAccess),
     });
     return { step, workflowWrite: writeOrchestration };
   }
@@ -368,7 +397,9 @@ export async function runAgentToolAction(
   if (!input.isRecovery) {
     const cached = ctx.toolResultCache.lookup(action.tool, cacheInputRecord);
     if (cached) {
-      activity.ok("复用本 run 缓存结果");
+      activity.ok("复用本 run 缓存结果", {
+        permissionAudit: buildActivityPermissionAudit(authorization, pathAccess),
+      });
       return {
         step: buildCachedToolStep(ctx, withPermission, tool, cached.entry.output),
         workflowWrite: writeOrchestration,
@@ -394,7 +425,10 @@ export async function runAgentToolAction(
           toolPermission,
           reason: executionDecision.reason ?? "工具执行许可生成失败",
         });
-    activity.fail(step.error ?? "工具执行被阻止", { outcomeKind: step.outcomeKind });
+    activity.fail(step.error ?? "工具执行被阻止", {
+      outcomeKind: step.outcomeKind,
+      permissionAudit: buildActivityPermissionAudit(executionDecision, pathAccess),
+    });
     return { step, workflowWrite: writeOrchestration };
   }
 
@@ -460,6 +494,16 @@ export async function runAgentToolAction(
     });
     const rawPath = action.input?.path;
     const path = typeof rawPath === "string" ? rawPath : undefined;
+    const outputRecord = result.output && typeof result.output === "object"
+      && !Array.isArray(result.output)
+      ? result.output as Record<string, unknown>
+      : undefined;
+    const changeId = typeof outputRecord?.changeId === "string"
+      ? outputRecord.changeId
+      : undefined;
+    const fileChangeRecord = changeId
+      ? ctx.registry.getStorage()?.getFileChange(changeId)
+      : undefined;
     const summary = layers.userDisplay.summary.slice(0, 200) || result.message;
     if (result.outcomeClass === "observation_failure") {
       activity.observe(summary, {
@@ -467,19 +511,28 @@ export async function runAgentToolAction(
         outcomeKind: result.outcomeKind,
         exitCode: result.outcomeExitCode,
         command: result.outcomeCommand,
+        output: result.output,
         workspaceAccess: pathAccess?.audit,
+        permissionAudit: buildActivityPermissionAudit(executionDecision, pathAccess),
       });
     } else if (result.outcomeClass === "execution_error") {
       activity.fail(summary, {
         durationMs: result.durationMs,
         outcomeKind: result.outcomeKind,
+        output: result.output,
         workspaceAccess: pathAccess?.audit,
+        permissionAudit: buildActivityPermissionAudit(executionDecision, pathAccess),
       });
     } else {
       activity.ok(summary, {
         durationMs: result.durationMs,
-        changedFiles: path ? [path] : undefined,
+        changedFiles: isMutationTool(action.tool) && path ? [path] : undefined,
+        fileChangeRecords: fileChangeRecord ? [fileChangeRecord] : undefined,
+        command: result.outcomeCommand,
+        exitCode: result.outcomeExitCode,
+        output: result.output,
         workspaceAccess: pathAccess?.audit,
+        permissionAudit: buildActivityPermissionAudit(executionDecision, pathAccess),
       });
     }
     const step = applyOutcomeToStep(withPermission, outcome, {
@@ -503,7 +556,13 @@ export async function runAgentToolAction(
   }
 
   const errMsg = result.error ?? result.message;
-  activity.fail(errMsg, { durationMs: result.durationMs, outcomeKind: result.outcomeKind });
+  activity.fail(errMsg, {
+    durationMs: result.durationMs,
+    outcomeKind: result.outcomeKind,
+    output: result.output,
+    error: result.error,
+    permissionAudit: buildActivityPermissionAudit(executionDecision, pathAccess),
+  });
   const failedStep = applyOutcomeToStep(
     withPermission,
     {
@@ -522,4 +581,25 @@ export async function runAgentToolAction(
   );
   ctx.failedActionMemory.record(failedStep);
   return { step: failedStep, workflowWrite: writeOrchestration };
+}
+
+function isMutationTool(toolName: string): boolean {
+  return toolName === "write_file"
+    || toolName === "apply_patch"
+    || toolName === "rollback_change";
+}
+
+function buildActivityPermissionAudit(
+  decision: ToolExecutionEvaluation,
+  pathAccess: ToolPathPreparation | undefined,
+): Record<string, unknown> {
+  return {
+    allowed: decision.allowed,
+    blocked: decision.blocked,
+    phase: decision.phase,
+    blockReasonKind: decision.blockReasonKind,
+    reason: decision.reason,
+    permissionDecision: decision.permissionDecision,
+    workspaceAccess: pathAccess?.audit,
+  };
 }

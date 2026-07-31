@@ -18,6 +18,50 @@ afterEach(() => {
 });
 
 describe("startup recovery", () => {
+  it("restores a pending permission pause instead of converting it to generic recovery", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "ariadne-startup-permission-"));
+    temporaryRoots.push(root);
+    const database = new DatabaseManager(root);
+    const runs = new RunAggregateRepository(database);
+
+    createRunningRun(runs, "permission-run");
+
+    recoverOnStartup({
+      runs,
+      notificationQueue: new NotificationQueue(path.join(root, "notifications.jsonl")),
+      pausedRunStore: {
+        get: (runId: string) => runId === "permission-run"
+          ? {
+              runId,
+              goal: "write a file",
+              messages: [],
+              steps: [],
+              modelTurns: 1,
+              pendingAction: { toolCallId: "call-1", tool: "write_file", input: { path: "a.txt" } },
+              mode: "implement",
+              permissionPolicy: "confirmBeforeWrite",
+              createdAt: new Date().toISOString(),
+            }
+          : null,
+      } as never,
+      permissionRequestStore: {
+        getPendingByRunId: (runId: string) => runId === "permission-run"
+          ? { id: "permission-1", runId, status: "pending" }
+          : null,
+      } as never,
+      planHandoffStore: {
+        getPendingByRunId: () => null,
+      } as never,
+    });
+
+    expect(runs.get("permission-run")).toMatchObject({
+      status: "waiting_confirmation",
+      recoveryStatus: "none",
+      waitReason: { code: "permission_pause_interrupted" },
+    });
+    database.close();
+  });
+
   it("resumes unstarted intents but requires a decision for uncertain non-resumable effects", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "ariadne-startup-recovery-"));
     temporaryRoots.push(root);

@@ -5,9 +5,16 @@ import type { AgentPromptStrategySummary, AgentRouterDecisionSummary } from "../
 import type { AgentStepPlan } from "../plan/types.js";
 import type { PermissionRequestPayload } from "../policy/permissionRequestTypes.js";
 import type { PlanHandoffPayload } from "../policy/planHandoffTypes.js";
+import type {
+  AgentPlanContract,
+  AgentPlanExecutionReport,
+} from "../plan/AgentPlanContract.js";
 import type { TraceLogger } from "../trace/TraceLogger.js";
 import type { RunStateStore } from "../orchestrator/RunStateStore.js";
-import { buildRunStateFromAgentRun } from "../orchestrator/runStateTypes.js";
+import {
+  buildRunStateFromAgentRun,
+  type RunState,
+} from "../orchestrator/runStateTypes.js";
 import { finalizeAgentActivityTimeline } from "./AgentActivityTimelineFinalizer.js";
 import type { CapabilityEscalationRecord } from "./CapabilityEscalation.js";
 import type { BudgetManager } from "./BudgetManager.js";
@@ -32,6 +39,8 @@ export interface AgentRunFinalizeInput {
   stopReason?: AgentStopReason;
   permissionRequest?: PermissionRequestPayload;
   planHandoff?: PlanHandoffPayload;
+  agentPlan?: AgentPlanContract;
+  agentPlanExecutionReport?: AgentPlanExecutionReport;
   awaitingPermission?: boolean;
   awaitingPlanHandoff?: boolean;
   completionGuard?: CompletionGuardResult;
@@ -55,6 +64,7 @@ export interface AgentRunFinalizeContext {
   contextManager?: ContextManager;
   sessionTaskManager: SessionTaskManager;
   runStateStore?: RunStateStore;
+  resumeState?: RunState;
   projectIndex?: ProjectIndex;
   workspaceRoot: string;
   runRoutingMeta?: {
@@ -83,6 +93,8 @@ export interface AgentRunFinalizeResult {
   awaitingPlanHandoff?: boolean;
   permissionRequest?: PermissionRequestPayload;
   planHandoff?: PlanHandoffPayload;
+  agentPlan?: AgentPlanContract;
+  agentPlanExecutionReport?: AgentPlanExecutionReport;
   executionMeta: AgentExecutionMeta;
   routerDecision?: AgentRouterDecisionSummary;
   promptStrategy?: AgentPromptStrategySummary;
@@ -99,7 +111,38 @@ export async function finalizeAgentRun(
   writeAgentStepPlanTrace(ctx, input.steps);
   let compressed = false;
   if (ctx.contextManager && input.sessionId) {
-    const result = await ctx.contextManager.finalizeTurn(input.sessionId, input.userMessage);
+    let compressionActivityId: string | undefined;
+    const result = await ctx.contextManager.finalizeTurn(
+      input.sessionId,
+      input.userMessage,
+      {
+        onStarted: (snapshot) => {
+          compressionActivityId = ctx.timeline?.startSystemActivity({
+            kind: "context_compaction",
+            title: "正在自动压缩上下文",
+            summaryType: "chunk_summary",
+            beforeChars: snapshot.pendingChars,
+          }).id;
+        },
+        onCompleted: ({ before, after, summary }) => {
+          if (!compressionActivityId) return;
+          ctx.timeline?.completeSystemActivity(compressionActivityId, {
+            summary: "已自动压缩上下文",
+            processedMessages: Math.max(0, before.pendingMessages - after.pendingMessages),
+            beforeChars: before.pendingChars,
+            afterChars: after.pendingChars,
+            summaryType: summary.summaryType,
+          });
+        },
+        onFailed: (error) => {
+          if (!compressionActivityId) return;
+          ctx.timeline?.failSystemActivity(
+            compressionActivityId,
+            error instanceof Error ? error.message : String(error),
+          );
+        },
+      },
+    );
     compressed = result.compressed !== null;
   }
 
@@ -123,6 +166,8 @@ export async function finalizeAgentRun(
 
   const permissionRequest = input.permissionRequest;
   const planHandoff = input.planHandoff;
+  const agentPlan = input.agentPlan;
+  const agentPlanExecutionReport = input.agentPlanExecutionReport;
   const awaitingPermission = input.awaitingPermission === true;
   const awaitingPlanHandoff = input.awaitingPlanHandoff === true;
 
@@ -165,6 +210,7 @@ export async function finalizeAgentRun(
         taskId: ctx.taskId,
         steps: input.steps,
         executionMeta,
+        priorState: ctx.resumeState,
         projectIndexStats: ctx.projectIndex
           ? (() => {
               const stats = ctx.projectIndex!.getStats("default", ctx.workspaceRoot);
@@ -200,6 +246,8 @@ export async function finalizeAgentRun(
     awaitingPlanHandoff,
     permissionRequest,
     planHandoff,
+    agentPlan,
+    agentPlanExecutionReport,
     executionMeta,
     routerDecision: ctx.runRoutingMeta?.routerDecision,
     promptStrategy: ctx.runRoutingMeta?.promptStrategy,

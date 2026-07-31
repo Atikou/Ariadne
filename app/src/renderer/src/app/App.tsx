@@ -9,7 +9,6 @@ import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
 import { formatRuntimeAvailability } from '@renderer/core/runtime/runtime-labels';
 import { ConfirmDialog } from '@renderer/shared/ui/ActionDialog';
 import { ActivityBar } from './ActivityBar';
-import { ApprovalCenter } from './ApprovalCenter';
 import { CommandPalette } from './CommandPalette';
 import { GlobalStatusBar } from './GlobalStatusBar';
 import { ModuleMenu } from './ModuleMenu';
@@ -75,6 +74,11 @@ export function App(): React.JSX.Element {
     for (const id of ids) openModule(dockviewApi, builtinModuleRegistry, id);
   };
 
+  useEffect(() => services.events.subscribe('module:open', (id) => {
+    const definition = builtinModuleRegistry.get(id);
+    if (definition) handleOpenModule(definition.id);
+  }), [services, dockviewApi]);
+
   return (
     <main className="app-shell">
       <header className="app-titlebar">
@@ -115,7 +119,6 @@ export function App(): React.JSX.Element {
         </div>
       </div>
       <GlobalStatusBar services={services} saveStatus={saveStatus} />
-      <ApprovalCenter services={services} />
       <CommandPalette
         open={commandOpen}
         registry={builtinModuleRegistry}

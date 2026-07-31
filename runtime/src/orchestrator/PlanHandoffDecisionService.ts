@@ -7,6 +7,7 @@ import type {
   PlanHandoffRespondInput,
 } from "../policy/planHandoffTypes.js";
 import type { RunAggregateRepository } from "../run/RunAggregateRepository.js";
+import type { AgentPlanStore } from "../plan/AgentPlanStore.js";
 
 export class PlanHandoffDecisionConsistencyError extends Error {
   readonly code = "PLAN_HANDOFF_STATE_INCONSISTENT";
@@ -23,6 +24,7 @@ export class PlanHandoffDecisionService {
     private readonly handoffs: PlanHandoffStore,
     private readonly runs: Pick<RunAggregateRepository, "get" | "execute">,
     private readonly pausedRuns: Pick<PausedRunStore, "delete">,
+    private readonly plans?: AgentPlanStore,
   ) {}
 
   respond(id: string, input: PlanHandoffRespondInput): PlanHandoffPayload | null {
@@ -61,6 +63,13 @@ export class PlanHandoffDecisionService {
         throw new PlanHandoffDecisionConsistencyError(
           `计划交接 ${current.id} 在决定事务中丢失 pending 状态`,
         );
+      }
+      if (current.plan && this.plans) {
+        if (input.decision === "approve") {
+          this.plans.markApproved(current.plan.planId, current.plan.version);
+        } else {
+          this.plans.markSuperseded(current.plan.planId, current.plan.version);
+        }
       }
 
       if (run && input.decision === "reject") {

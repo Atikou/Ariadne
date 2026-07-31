@@ -33,6 +33,43 @@ async function manager(options: ConstructorParameters<typeof ContextManager>[0] 
 }
 
 describe("summary and memory governance", () => {
+  it("does not publish a compression lifecycle below the confirmed threshold", async () => {
+    const context = await manager({ dataDir: "", messageThreshold: 2 });
+    const session = context.createSession("no compression");
+    context.saveUserMessage(session.id, "one");
+    context.saveUserMessage(session.id, "two");
+    const events: string[] = [];
+
+    const result = await context.finalizeTurn(session.id, undefined, {
+      onStarted: () => events.push("started"),
+      onCompleted: () => events.push("completed"),
+      onFailed: () => events.push("failed"),
+    });
+
+    expect(result.compressed).toBeNull();
+    expect(events).toEqual([]);
+  });
+
+  it("publishes exactly one start and one terminal event for recursive compression", async () => {
+    const context = await manager({ dataDir: "", messageThreshold: 1 });
+    const session = context.createSession("compression");
+    context.saveUserMessage(session.id, "one");
+    context.saveUserMessage(session.id, "two");
+    context.saveUserMessage(session.id, "three");
+    const events: string[] = [];
+
+    const result = await context.finalizeTurn(session.id, undefined, {
+      onStarted: () => events.push("started"),
+      onCompleted: ({ before, after }) => {
+        events.push(`completed:${before.pendingMessages}:${after.pendingMessages}`);
+      },
+      onFailed: () => events.push("failed"),
+    });
+
+    expect(result.compressed).not.toBeNull();
+    expect(events).toEqual(["started", "completed:3:0"]);
+  });
+
   it("records schema version, source range, and explicit degraded summary state", async () => {
     const context = await manager({ dataDir: "", messageThreshold: 1 });
     const session = context.createSession("summary");

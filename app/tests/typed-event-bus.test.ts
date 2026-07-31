@@ -22,4 +22,15 @@ describe('TypedEventBus', () => {
     expect(handler).toHaveBeenCalledOnce();
     expect(handler).toHaveBeenCalledWith(preferences);
   });
+
+  it('replays retained navigation state to a module mounted after the click', () => {
+    const bus = new TypedEventBus<AppEventMap>();
+    bus.emitRetained('session-activity:select-run', { runId: 'run-7' });
+    const handler = vi.fn();
+
+    bus.subscribe('session-activity:select-run', handler);
+
+    expect(handler).toHaveBeenCalledOnce();
+    expect(handler).toHaveBeenCalledWith({ runId: 'run-7' });
+  });
 });

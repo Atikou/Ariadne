@@ -38,6 +38,7 @@ export class PlanStepAgentExecutor implements StepExecutor {
       step.description ? `说明：${step.description}` : "",
       step.acceptance ? `验收：${step.acceptance}` : "",
       step.tool ? `建议首选工具：${step.tool}` : "",
+      step.toolInput ? `建议工具参数：${JSON.stringify(step.toolInput)}` : "",
       step.requiredContext?.length ? `相关上下文：${step.requiredContext.join(", ")}` : "",
     ]
       .filter(Boolean)

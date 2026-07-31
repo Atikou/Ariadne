@@ -41,6 +41,13 @@ describe('desktop Runtime configuration', () => {
     });
 
     expect(configuration.profile).toBe('default');
+    expect(configuration.runtimeBuildManifestPath).toBe(path.resolve(
+      process.cwd(),
+      '..',
+      'runtime',
+      'dist',
+      'runtime-build.json'
+    ));
     expect(configuration.agentPermissions).toMatchObject({
       approvalPolicy: 'risk-based',
       proposalApproval: 'automatic'
@@ -127,6 +134,15 @@ describe('desktop Runtime configuration', () => {
       'dist',
       'entry',
       'runtime-process.js'
+    ));
+    expect(configuration.runtimeBuildManifestPath).toBe(path.join(
+      resourcesPath,
+      'runtime',
+      'node_modules',
+      '@ariadne',
+      'runtime',
+      'dist',
+      'runtime-build.json'
     ));
     expect(configuration.executablePath).toBe(path.join(
       resourcesPath,

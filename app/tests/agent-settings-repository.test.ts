@@ -10,6 +10,7 @@ import {
 import type { SecretCipher } from '../src/main/persistence/secret-cipher';
 import {
   AGENT_PROVIDER_IDS,
+  WORKSPACE_ARCHIVE_RETENTION_MS,
   type AgentCustomPermissions,
   type AgentProviderId,
   type AgentSettingsUpdate
@@ -250,6 +251,49 @@ describe('AgentSettingsRepository', () => {
 
     expect(results.map((result) => result.added).sort()).toEqual([false, true]);
     expect(repository.getView().workspaces.filter((workspace) => workspace.rootPath === workspaceRoot)).toHaveLength(1);
+  });
+
+  it('persists workspace pinning and enforces the seven-day archive cleanup lifecycle', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-archive-'));
+    temporaryDirectories.push(directory);
+    const repository = new AgentSettingsRepository(join(directory, 'settings.toml'), cipher, directory);
+    await repository.initialize();
+    const opened = await repository.addWorkspaceRoot(join(directory, 'workspace-to-archive'));
+    const workspaceId = opened.workspace.workspaceId;
+    const archivedAt = new Date('2026-07-30T00:00:00.000Z');
+    const purgeAt = new Date(archivedAt.getTime() + WORKSPACE_ARCHIVE_RETENTION_MS);
+
+    await repository.setWorkspacePinned(workspaceId, true);
+    expect(repository.getView().workspaces.find((workspace) => workspace.workspaceId === workspaceId))
+      .toMatchObject({ pinned: true });
+
+    await repository.archiveWorkspace(workspaceId, archivedAt);
+    expect(repository.getView().workspaces.find((workspace) => workspace.workspaceId === workspaceId))
+      .toMatchObject({
+        archivedAt: archivedAt.toISOString(),
+        purgeAfter: purgeAt.toISOString()
+      });
+    expect(repository.getView().workspaces.find((workspace) => workspace.workspaceId === workspaceId))
+      .not.toHaveProperty('pinned');
+    expect(repository.dueArchivedWorkspaceIds(new Date(purgeAt.getTime() - 1))).toEqual([]);
+    expect(repository.dueArchivedWorkspaceIds(purgeAt)).toEqual([workspaceId]);
+    expect(repository.nextArchivedWorkspacePurgeAt()).toBe(purgeAt.toISOString());
+
+    await repository.markWorkspacePurged(workspaceId, purgeAt);
+    expect(repository.getView().workspaces.find((workspace) => workspace.workspaceId === workspaceId))
+      .toMatchObject({ purgedAt: purgeAt.toISOString() });
+    expect(repository.nextArchivedWorkspacePurgeAt()).toBeNull();
+
+    const reloaded = new AgentSettingsRepository(join(directory, 'settings.toml'), cipher, directory);
+    await reloaded.initialize();
+    expect(reloaded.getView().workspaces.find((workspace) => workspace.workspaceId === workspaceId))
+      .toMatchObject({ archivedAt: archivedAt.toISOString(), purgedAt: purgeAt.toISOString() });
+
+    await reloaded.restoreWorkspace(workspaceId);
+    const restored = reloaded.getView().workspaces.find((workspace) => workspace.workspaceId === workspaceId);
+    expect(restored).not.toHaveProperty('archivedAt');
+    expect(restored).not.toHaveProperty('purgeAfter');
+    expect(restored).not.toHaveProperty('purgedAt');
   });
 
   it('normalizes duplicate persisted workspace identifiers before Host authorization', async () => {

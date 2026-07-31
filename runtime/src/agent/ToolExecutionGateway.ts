@@ -306,7 +306,7 @@ export class ToolExecutionGateway {
     ));
     let checkpoint: ToolCheckpointToken | undefined;
     if (this.checkpoints && input.toolCallId) {
-      checkpoint = this.checkpoints.intend({
+      const intent = this.checkpoints.intend({
         toolCallId: input.toolCallId,
         toolName: tool.name,
         toolVersion: tool.version,
@@ -314,6 +314,8 @@ export class ToolExecutionGateway {
         effects: tool.effects,
         resumable: tool.supportsResume,
       });
+      if (intent.kind === "replay") return intent.result;
+      checkpoint = intent.token;
       this.checkpoints.start(checkpoint);
     }
     const result = await this.registry.run(input.toolName, preparedInput, {

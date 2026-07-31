@@ -134,6 +134,9 @@ export class SubAgentCoordinator {
           dispatchDepth: options.dispatchDepth,
           signal: options.signal,
           maxCostUsd: costSliceUsd,
+          activityTimeline: options.activityTimeline,
+          activityRunId: options.activityRunId,
+          activityParentId: options.activityParentId,
         }),
     );
 

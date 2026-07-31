@@ -83,6 +83,7 @@ export class UnifiedAssistantHandoffService {
     const proposal = this.deps.coordinator.recordResumedExecution(runId, result);
     if (!proposal?.outcome) return result;
     const companionPresentation = await this.deliver(proposal);
+    if (!companionPresentation) return result;
     const body = isRecord(result.body)
       ? { ...result.body, companionPresentation }
       : { result: result.body, companionPresentation };
@@ -159,7 +160,13 @@ export class UnifiedAssistantHandoffService {
     return { restored, completed, failed };
   }
 
-  private async deliver(proposal: AgentProposal): Promise<CompanionAgentResultDelivery> {
+  private async deliver(proposal: AgentProposal): Promise<CompanionAgentResultDelivery | undefined> {
+    if (
+      proposal.outcome?.status === "waiting_permission"
+      || proposal.outcome?.status === "waiting_plan_handoff"
+    ) {
+      return undefined;
+    }
     try {
       const companionStorageRoot = this.deps.coordinator.getCompanionStorageRoot(proposal.id);
       if (!companionStorageRoot) throw new Error("companion_agent_result_storage_binding_missing");

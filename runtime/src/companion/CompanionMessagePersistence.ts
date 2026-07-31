@@ -21,6 +21,12 @@ export interface CompanionMessageRow {
   created_at: string;
   updated_at: string;
   metadata_json: string | null;
+  reasoning_content: string | null;
+  reasoning_status: "streaming" | "completed" | "interrupted" | null;
+  reasoning_source: "provider" | "summary" | null;
+  reasoning_started_at: string | null;
+  reasoning_completed_at: string | null;
+  reasoning_duration_ms: number | null;
 }
 
 export function mapCompanionMessageRow(row: CompanionMessageRow): CompanionMessage {
@@ -37,6 +43,25 @@ export function mapCompanionMessageRow(row: CompanionMessageRow): CompanionMessa
     storageRoot: row.storage_root,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    ...(row.reasoning_content !== null
+      && row.reasoning_status
+      && row.reasoning_source
+      && row.reasoning_started_at
+      ? {
+          reasoning: {
+            content: row.reasoning_content,
+            status: row.reasoning_status,
+            source: row.reasoning_source,
+            startedAt: row.reasoning_started_at,
+            ...(row.reasoning_completed_at
+              ? { completedAt: row.reasoning_completed_at }
+              : {}),
+            ...(row.reasoning_duration_ms !== null
+              ? { durationMs: row.reasoning_duration_ms }
+              : {}),
+          },
+        }
+      : {}),
     metadata: parseJsonObject(row.metadata_json),
   });
 }

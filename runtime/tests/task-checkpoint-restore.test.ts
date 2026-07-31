@@ -20,9 +20,11 @@ describe("task checkpoint restore", () => {
     const { root, registry } = await fixture();
     const target = path.join(root, "file.txt");
     await writeFile(target, "before", "utf8");
+    const expectedSha256 = await readVersionHash(registry, root, "file.txt");
     const changed = await registry.run("write_file", {
       path: "file.txt",
       content: "after",
+      expectedSha256,
     }, context(root));
     const sourceChangeId = (changed.output as { changeId: string }).changeId;
 
@@ -86,9 +88,11 @@ describe("task checkpoint restore", () => {
   it("lists only the Run ledger changes and compares before restoring", async () => {
     const { root, registry } = await fixture();
     await writeFile(path.join(root, "tracked.txt"), "before", "utf8");
+    const expectedSha256 = await readVersionHash(registry, root, "tracked.txt");
     const changed = await registry.run("write_file", {
       path: "tracked.txt",
       content: "after",
+      expectedSha256,
     }, context(root));
     await registry.run("write_file", {
       path: "other.txt",
@@ -128,6 +132,22 @@ function context(workspaceRoot: string) {
     workspaceRoot,
     requestId: "run-1",
     sessionId: "session-1",
-    allowedPermissions: ["write" as const],
+    allowedPermissions: ["read" as const, "write" as const],
   };
+}
+
+async function readVersionHash(
+  registry: ReturnType<typeof createDefaultRegistry>,
+  workspaceRoot: string,
+  filePath: string,
+): Promise<string> {
+  const read = await registry.run("read_file", {
+    path: filePath,
+    startLine: 1,
+    lineCount: 1,
+  }, context(workspaceRoot));
+  if (!read.ok) throw new Error(read.error ?? "read_file_failed");
+  const sha256 = (read.output as { sha256?: unknown }).sha256;
+  if (typeof sha256 !== "string") throw new Error("read_file_missing_sha256");
+  return sha256;
 }

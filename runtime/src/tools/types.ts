@@ -29,6 +29,9 @@ export interface ToolContext {
   parentAgentIntent?: string;
   parentAgentWorkflowType?: string;
   subAgentCostBudgetUsd?: number;
+  activityTimeline?: import("../agent/timeline/AgentTimelineService.js").AgentTimelineService;
+  activityRunId?: string;
+  activityParentId?: string;
   projectAllowedPermissions?: ToolPermission[];
   workspaceAccess?: Record<string, unknown>;
   processSandbox?: import("../sandbox/ProcessSandbox.js").ProcessSandbox;

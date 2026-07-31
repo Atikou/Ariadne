@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ModelInferenceProfileSchema } from '../src/config/types.js';
 import { OpenAICompatibleClient, toCompatibleMessages } from '../src/model/OpenAICompatibleClient.js';
@@ -61,16 +61,63 @@ describe('model inference option mapping', () => {
     expect(body).not.toHaveProperty('temperature');
   });
 
-  it('only returns private reasoning history to Providers that require it', () => {
-    const messages = [{
+  it('keeps completed-turn reasoning out of later context and only preserves tool continuation reasoning', () => {
+    const completedTurn = [{
       role: 'assistant' as const,
       content: 'final answer',
       reasoningContent: 'private provider context'
     }];
-    expect(toCompatibleMessages(messages, true)[0]).toMatchObject({
-      reasoning_content: 'private provider context'
+    expect(toCompatibleMessages(completedTurn, true)[0]).not.toHaveProperty('reasoning_content');
+
+    const toolContinuation = [{
+      role: 'assistant' as const,
+      content: '',
+      reasoningContent: 'tool continuation context',
+      toolCalls: [{ id: 'call-1', name: 'lookup', arguments: {} }]
+    }, {
+      role: 'tool' as const,
+      content: 'result',
+      toolCallId: 'call-1'
+    }];
+    expect(toCompatibleMessages(toolContinuation, true)[0]).toMatchObject({
+      reasoning_content: 'tool continuation context'
     });
-    expect(toCompatibleMessages(messages, false)[0]).not.toHaveProperty('reasoning_content');
+    expect(toCompatibleMessages(toolContinuation, false)[0]).not.toHaveProperty('reasoning_content');
+  });
+
+  it('streams reasoning_content before final answer content on separate callbacks', async () => {
+    globalThis.fetch = async () => new Response([
+      `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: '分析' } }] })}`,
+      `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: '过程' } }] })}`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: '最终' } }] })}`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: '答案' } }] })}`,
+      'data: [DONE]',
+      ''
+    ].join('\n\n'), {
+      headers: { 'content-type': 'text/event-stream' }
+    });
+    const onReasoningToken = vi.fn();
+    const onToken = vi.fn();
+    const client = new OpenAICompatibleClient({
+      name: 'deepseek-stream',
+      providerId: 'deepseek',
+      model: 'deepseek-reasoner',
+      location: 'remote',
+      baseUrl: 'https://api.deepseek.test',
+      apiKey: 'test-key'
+    });
+
+    await expect(client.chat({
+      messages: [{ role: 'user', content: 'test' }],
+      inference: { reasoningMode: 'on', reasoningEffort: 'high' },
+      onReasoningToken,
+      onToken
+    })).resolves.toMatchObject({
+      reasoningContent: '分析过程',
+      content: '最终答案'
+    });
+    expect(onReasoningToken.mock.calls.flat()).toEqual(['分析', '过程']);
+    expect(onToken.mock.calls.flat()).toEqual(['最终', '答案']);
   });
 });
 

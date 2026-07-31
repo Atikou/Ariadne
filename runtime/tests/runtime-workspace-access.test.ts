@@ -91,6 +91,7 @@ function bootstrap(
     type: 'bootstrap',
     appVersion: 'test',
     runtimeVersion: 'test',
+    runtimeBuildFingerprint: 'a'.repeat(64),
     installRoot: packageRoot,
     dataRoot,
     modelRoots: [],

@@ -26,6 +26,7 @@ describe("AgentRequestService permission boundary", () => {
       sessionWorkspace: {
         ensureSession: () => "session-1",
         workspaceForSession: () => root,
+        activityRootForSession: () => path.join(root, "session-owner"),
         projectIdForSession: () => "project-1",
       },
       taskService: {
@@ -56,7 +57,7 @@ describe("AgentRequestService permission boundary", () => {
         register: () => new AbortController(),
         unregister: () => undefined,
       },
-      agentLoopFactory: {
+      executionEngines: {
         create: (request: Record<string, unknown>) => {
           loopRequests.push(request);
           return { run: async () => ({ answer: "ok" }) };
@@ -69,8 +70,8 @@ describe("AgentRequestService permission boundary", () => {
           runId: "run-1",
           taskId: "task-1",
         }),
-        finalizeFailure: () => ({
-          error: "failed",
+        finalizeFailure: (_context: unknown, error: unknown) => ({
+          error: error instanceof Error ? error.message : String(error),
           code: "INTERNAL_ERROR",
           runId: "run-1",
           taskId: "task-1",
@@ -96,7 +97,7 @@ describe("AgentRequestService permission boundary", () => {
         },
       );
 
-      expect(result.status).toBe(200);
+      expect(result).toMatchObject({ status: 200 });
       expect(loopRequests[0]).toMatchObject({
         allowedPermissions: ["read", "write", "dangerous"],
         runGrantedPermissions: ["read"],

@@ -86,6 +86,7 @@ import type {
   CompanionChatInput,
   CompanionChatResult,
 } from "./CompanionChatContracts.js";
+import type { AgentProposal } from "../assistant/AgentHandoffContracts.js";
 import type { TraceLogger } from "../trace/TraceLogger.js";
 
 export type CompanionPostCommitFailure =
@@ -640,6 +641,15 @@ export class CompanionService {
     input: CompanionAgentResultPresentationInput,
   ): Promise<CompanionAgentResultPresented> {
     return this.agentResultPresenter.present(input);
+  }
+
+  continueAgentProposalTurn(input: {
+    proposal: AgentProposal;
+    companionStorageRoot: string;
+  }) {
+    return this.storageManager
+      .get(input.companionStorageRoot)
+      .continueAgentProposalTurn(input.proposal);
   }
 
   async summarize(input: {

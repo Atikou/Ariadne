@@ -22,4 +22,5 @@ artifacts/ariadne-loaded.png
 artifacts/ariadne-ui-dark.png
 artifacts/electron-runtime-smoke/
 artifacts/electron-runtime-smoke-final/
+artifacts/deepseek-agent-plan-smoke.json
 artifacts/ariadne-live-*.png

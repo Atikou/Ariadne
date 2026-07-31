@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { RuntimeCommand, RuntimeEventEnvelope, RuntimeResult, RuntimeStatus } from '@ariadne/protocol/public';
 import type { AriadneApi } from '../src/shared/contract';
@@ -212,6 +212,181 @@ describe('RuntimeStore startup loading', () => {
       selectedSessionId: 'session-1',
       messages: [{ messageId: 'message-1', sessionId: 'session-1', content: '按需加载' }]
     });
+  });
+
+  it('reconciles a missing permission payload when a Run enters waiting_permission', async () => {
+    const commands: RuntimeCommand[] = [];
+    let listener: ((event: RuntimeEventEnvelope) => void) | undefined;
+    const store = new RuntimeStore({
+      getStatus: async () => ({
+        availability: 'ready',
+        capabilities: [],
+        observedAt: '2026-07-25T04:09:00.000Z'
+      }),
+      request: async (command) => {
+        commands.push(command);
+        if (command.kind === 'runtime.snapshot.get') return emptyRuntimeSnapshot();
+        if (command.kind === 'models.list' || command.kind === 'models.check') {
+          return { kind: 'models.catalog', models: [] };
+        }
+        if (command.kind === 'companion.sessions.list') {
+          return { kind: 'companion.sessions', sessions: [] };
+        }
+        if (command.kind === 'trace.list') return { kind: 'trace', entries: [] };
+        if (command.kind === 'permissions.list') {
+          return {
+            kind: 'permissions',
+            requests: [{
+              requestId: 'permission-1',
+              runId: 'run-1',
+              workspaceId: 'primary',
+              workspaceLabel: 'E:\\Temp',
+              approvalVersion: 'approval-1',
+              title: '写入项目文件',
+              reason: '需要写入文件才能继续。',
+              permissionItems: [{
+                itemId: 'write-1',
+                capability: 'write_file',
+                targetLabel: 'workspace-file.txt',
+                reason: '实现用户要求',
+                risk: 'medium',
+                approvalScopes: ['once']
+              }],
+              status: 'pending',
+              createdAt: '2026-07-25T04:09:01.000Z'
+            }]
+          };
+        }
+        return { kind: 'acknowledged' };
+      },
+      onEvent: (next) => {
+        listener = next;
+        return () => { listener = undefined; };
+      }
+    });
+    await store.initialize();
+
+    listener?.(runtimeEnvelope({
+      kind: 'run.changed',
+      run: {
+        runId: 'run-1',
+        sessionId: 'agent-session-1',
+        origin: 'agent',
+        title: '修改项目',
+        status: 'waiting_permission',
+        userFacingLabel: '等待权限确认',
+        aggregateVersion: 1,
+        checkpointStage: 'waiting_confirmation',
+        recoveryStatus: 'none',
+        timing: {
+          activeDurationMs: 0,
+          activeSince: '2026-07-25T04:09:00.000Z'
+        },
+        startedAt: '2026-07-25T04:09:00.000Z'
+      }
+    }, 1));
+
+    await vi.waitFor(() => {
+      expect(store.getSnapshot().permissions).toEqual([
+        expect.objectContaining({ requestId: 'permission-1', runId: 'run-1', status: 'pending' })
+      ]);
+    });
+    expect(commands.filter((command) => command.kind === 'permissions.list')).toHaveLength(1);
+  });
+
+  it('preserves the whole-turn processing clock when a Companion message binds to an Agent Run', async () => {
+    let listener: ((event: RuntimeEventEnvelope) => void) | undefined;
+    const store = new RuntimeStore({
+      getStatus: async () => ({
+        availability: 'ready',
+        capabilities: [],
+        observedAt: '2026-07-22T00:00:00.000Z'
+      }),
+      request: async (command) => {
+        if (command.kind === 'runtime.snapshot.get') return emptyRuntimeSnapshot();
+        if (command.kind === 'models.list' || command.kind === 'models.check') {
+          return { kind: 'models.catalog', models: [] };
+        }
+        if (command.kind === 'companion.sessions.list') {
+          return {
+            kind: 'companion.sessions',
+            sessions: [{
+              sessionId: 'companion-session-1',
+              workspaceId: 'primary',
+              title: '检查项目',
+              pinned: false,
+              createdAt: '2026-07-22T00:00:00.000Z',
+              updatedAt: '2026-07-22T00:00:00.000Z'
+            }]
+          };
+        }
+        if (command.kind === 'companion.messages.list') {
+          return { kind: 'companion.messages', messages: [] };
+        }
+        if (command.kind === 'trace.list') return { kind: 'trace', entries: [] };
+        return { kind: 'acknowledged' };
+      },
+      onEvent: (next) => {
+        listener = next;
+        return () => { listener = undefined; };
+      }
+    });
+    await store.initialize();
+    await store.selectSession('companion-session-1');
+
+    listener?.(runtimeEnvelope({
+      kind: 'companion.message.changed',
+      message: {
+        messageId: 'user-turn-1',
+        sessionId: 'companion-session-1',
+        role: 'user',
+        content: '检查项目',
+        status: 'completed',
+        createdAt: '2026-07-22T00:00:00.000Z'
+      }
+    }, 1));
+    listener?.(runtimeEnvelope({
+      kind: 'companion.message.changed',
+      message: {
+        messageId: 'assistant-turn-1',
+        sessionId: 'companion-session-1',
+        runId: 'agent-run-1',
+        role: 'assistant',
+        content: '',
+        status: 'streaming',
+        createdAt: '2026-07-22T00:00:00.000Z'
+      }
+    }, 2));
+    listener?.(runtimeEnvelope({
+      kind: 'run.changed',
+      run: {
+        runId: 'agent-run-1',
+        sessionId: 'companion-session-1',
+        origin: 'agent',
+        title: '检查项目',
+        status: 'running',
+        userFacingLabel: '正在处理',
+        aggregateVersion: 1,
+        checkpointStage: 'running',
+        recoveryStatus: 'none',
+        timing: {
+          activeDurationMs: 2_000,
+          activeSince: '2026-07-22T00:00:07.000Z'
+        },
+        startedAt: '2026-07-22T00:00:05.000Z'
+      }
+    }, 3));
+
+    expect(store.getSnapshot().runs).toContainEqual(expect.objectContaining({
+      runId: 'agent-run-1',
+      origin: 'agent',
+      startedAt: '2026-07-22T00:00:00.000Z',
+      sourceMessageId: 'user-turn-1',
+      timing: {
+        activeDurationMs: 7_000,
+        activeSince: '2026-07-22T00:00:07.000Z'
+      }
+    }));
   });
 });
 

@@ -3,7 +3,6 @@ import type {
   PermissionRequest,
   PlanHandoff,
   MemoryRecord as PublicMemoryRecord,
-  RunActivity,
   RunSummary,
   TraceEntry
 } from '@ariadne/protocol/public';
@@ -66,20 +65,100 @@ export function projectMessage(message: CompanionMessage) {
     && message.status === 'completed'
     && !message.content.trim();
   const error = projectCompanionMessageError(message, emptyCompletedAssistant);
+  const runId = typeof message.metadata?.runId === 'string'
+    ? message.metadata.runId
+    : typeof message.metadata?.agentRunId === 'string'
+      ? message.metadata.agentRunId
+      : typeof message.metadata?.companionRunId === 'string'
+        ? message.metadata.companionRunId
+        : undefined;
+  const processingDurationMs = typeof message.metadata?.processingDurationMs === 'number'
+    && Number.isFinite(message.metadata.processingDurationMs)
+    && message.metadata.processingDurationMs >= 0
+      ? Math.round(message.metadata.processingDurationMs)
+      : undefined;
   return {
     messageId: message.id,
     sessionId: message.sessionId,
+    ...(runId ? { runId } : {}),
     role: message.role === 'system_summary' ? 'system' as const : message.role,
     content: message.content,
     status: message.status === 'deleted' || emptyCompletedAssistant
       ? 'interrupted' as const
       : message.status,
     createdAt: message.createdAt,
+    ...(processingDurationMs !== undefined ? { processingDurationMs } : {}),
+    ...(message.reasoning
+      ? {
+          reasoning: {
+            content: message.reasoning.content,
+            status: message.reasoning.status,
+            source: message.reasoning.source,
+            startedAt: message.reasoning.startedAt,
+            ...(message.reasoning.completedAt
+              ? { completedAt: message.reasoning.completedAt }
+              : {}),
+            ...(message.reasoning.durationMs !== undefined
+              ? { durationMs: message.reasoning.durationMs }
+              : {}),
+            ...projectReasoningSegments(message.metadata)
+          }
+        }
+      : {}),
     ...(typeof message.metadata?.agentProposalId === 'string'
       ? { agentProposalId: message.metadata.agentProposalId }
       : {}),
     ...(error ? { error } : {})
   };
+}
+
+function projectReasoningSegments(
+  metadata: Record<string, unknown> | undefined
+): { segments?: Array<{
+  segmentId: string;
+  kind: 'thought' | 'intermediate_response';
+  content: string;
+  occurredAt: string;
+  iteration?: number;
+}> } {
+  const source = metadata?.reasoningSegments;
+  if (!Array.isArray(source)) return {};
+  const segments = source.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return [];
+    const record = candidate as Record<string, unknown>;
+    const segmentId = stringValue(record.segmentId);
+    const content = stringValue(record.content);
+    const occurredAt = stringValue(record.occurredAt);
+    const kind = record.kind;
+    if (
+      !segmentId
+      || !content
+      || !occurredAt
+      || !Number.isFinite(Date.parse(occurredAt))
+      || (kind !== 'thought' && kind !== 'intermediate_response')
+    ) {
+      return [];
+    }
+    const iteration = typeof record.iteration === 'number'
+      && Number.isInteger(record.iteration)
+      && record.iteration >= 0
+      ? record.iteration
+      : undefined;
+    return [{
+      segmentId: segmentId.slice(0, 512),
+      kind: kind as 'thought' | 'intermediate_response',
+      content: content.slice(0, 200_000),
+      occurredAt,
+      ...(iteration !== undefined ? { iteration } : {})
+    }];
+  }).slice(-2_000);
+  return segments.length > 0 ? { segments } : {};
+}
+
+export function isPublicConversationMessage(message: CompanionMessage): boolean {
+  const responseType = message.metadata?.responseType;
+  return responseType !== "agent_proposal"
+    && responseType !== "agent_proposal_delivery_pending";
 }
 
 function projectCompanionMessageError(
@@ -114,6 +193,10 @@ function companionMessageErrorText(code: string): string {
       return '模型只返回了内部推理，没有生成最终回复。Ariadne 已尝试续写但仍未得到内容，请重试。';
     case 'service_restarted':
       return 'Runtime 重启中断了这条回复，请重新发送。';
+    case 'AGENT_PLAN_BUDGET_EXHAUSTED':
+      return '计划生成已暂停，可以从当前检查点追加预算后继续。';
+    case 'AGENT_PLAN_DID_NOT_HANDOFF':
+      return '计划模式没有生成可确认的计划，任务未进入执行阶段。';
     case 'cancelled':
     case 'CANCELLED':
       return '已停止生成。';
@@ -138,17 +221,27 @@ export function projectAgentProposal(proposal: SourceAgentProposal): AgentPropos
   };
 }
 
-export function projectRun(run: RunAggregate): RunSummary {
+export function projectRun(
+  run: RunAggregate,
+  publicSessionId = run.sessionId,
+  timing: RunSummary["timing"] = {
+    activeDurationMs: Math.max(0, Date.parse(run.updatedAt) - Date.parse(run.createdAt)),
+  },
+): RunSummary {
+  const budgetDetails = projectedBudgetDetails(run);
   return {
     runId: run.id,
-    ...(run.sessionId ? { sessionId: run.sessionId } : {}),
+    ...(publicSessionId ? { sessionId: publicSessionId } : {}),
+    ...(run.taskId ? { sourceMessageId: run.taskId } : {}),
     origin: 'agent',
     title: (run.goal?.trim() || `${run.kind} run`).slice(0, 512),
-    status: publicRunStatus(run.status),
-    userFacingLabel: runLabel(run.status),
+    status: publicRunStatus(run.status, run.waitReason),
+    userFacingLabel: runLabel(run.status, run.waitReason),
     aggregateVersion: run.aggregateVersion,
     checkpointStage: run.checkpointStage,
     recoveryStatus: run.recoveryStatus,
+    timing,
+    ...budgetDetails,
     ...(run.error ? { detail: toPublicError(run.error).message } : {}),
     startedAt: run.createdAt,
     ...(isTerminalRunStatus(run.status) ? { completedAt: run.updatedAt } : {})
@@ -167,6 +260,7 @@ export function projectPermissionRequest(
   return {
     requestId: request.id,
     runId: request.runId,
+    ...(request.sessionId ? { sessionId: request.sessionId } : {}),
     ...(workspace ? workspace : {}),
     approvalVersion: request.approvalVersion,
     title: request.title,
@@ -186,24 +280,65 @@ export function projectPermissionRequest(
   };
 }
 
-export function projectPlanHandoff(handoff: PlanHandoffPayload): PlanHandoff {
-  const markdownSteps = handoff.planMarkdown
-    .split(/\r?\n/)
-    .map((line) => line.match(/^\s*(?:[-*]|\d+\.)\s+(?:\[[ xX]\]\s*)?(.+)$/)?.[1]?.trim())
-    .filter((line): line is string => Boolean(line))
-    .slice(0, 512);
-  const steps = (markdownSteps.length > 0 ? markdownSteps : [handoff.message]).map((title, index) => ({
-    stepId: `${handoff.id}:${index + 1}`,
-    title: title.slice(0, 512)
-  }));
+export function projectPlanHandoff(
+  handoff: PlanHandoffPayload,
+  publicSessionId = handoff.sessionId,
+): PlanHandoff {
+  const plan = handoff.plan ?? legacyRejectedPlan(handoff);
+  const steps = plan.steps.length > 0
+    ? plan.steps.map((step) => ({
+        stepId: step.id,
+        title: step.title.slice(0, 512),
+        detail: step.expectedOutcome.slice(0, 8_192)
+      }))
+    : [{
+        stepId: `${handoff.id}:legacy`,
+        title: '旧版计划不可执行',
+        detail: '该记录没有结构化计划契约，请重新生成计划。'
+      }];
   return {
     handoffId: handoff.id,
     runId: handoff.runId,
-    title: '执行计划待确认',
-    summary: handoff.message,
+    ...(publicSessionId ? { sessionId: publicSessionId } : {}),
+    plan,
+    title: plan.title,
+    summary: plan.goal,
     steps,
-    status: handoff.status,
+    status: handoff.plan ? handoff.status : 'rejected',
     createdAt: handoff.createdAt
+  };
+}
+
+function legacyRejectedPlan(handoff: PlanHandoffPayload): PlanHandoff['plan'] {
+  return {
+    schemaVersion: 1,
+    planId: handoff.planId,
+    version: handoff.planVersion ?? 1,
+    sourceRunId: handoff.runId,
+    ...(handoff.sessionId ? { sessionId: handoff.sessionId } : {}),
+    title: '旧版计划需要重新生成',
+    goal: handoff.message,
+    facts: [{
+      id: 'legacy-plan-record',
+      statement: '该计划由旧版 Markdown 交接协议创建。',
+      evidence: '持久化记录中不存在结构化 plan 字段。'
+    }],
+    constraints: [],
+    clarifications: [],
+    steps: [],
+    completionCriteria: [],
+    planState: 'superseded',
+    executionState: 'failed',
+    completeness: 'incomplete',
+    blockingReasons: ['旧版记录缺少可验证的结构化计划契约，不能继续执行。'],
+    qualityIssues: [{
+      code: 'invalid_schema',
+      severity: 'critical',
+      message: '旧版计划必须重新生成后才能批准。',
+      path: 'plan'
+    }],
+    createdAt: handoff.createdAt,
+    updatedAt: handoff.createdAt
   };
 }
 
@@ -211,7 +346,13 @@ export function projectTraceEvent(event: TraceEvent, fallbackId: string): TraceE
   const record = event as Record<string, unknown>;
   const type = String(record.type ?? 'unknown').slice(0, 128);
   const category = stringValue(record.category)?.slice(0, 128) ?? type;
-  const message = firstPublicText(record, ['message', 'summary', 'error', 'reason']) ?? '';
+  const explicitMessage = sanitizePublicTraceMessage(
+    firstPublicText(record, ['message', 'summary', 'error', 'reason'])
+  );
+  const conciseMessage = conciseTraceMessage(type, record);
+  const message = prefersConciseTraceMessage(type)
+    ? conciseMessage || explicitMessage
+    : explicitMessage || conciseMessage;
   const metadata = publicTraceMetadata(record.metadata);
   const time = typeof record.time === 'string' && Number.isFinite(Date.parse(record.time))
     ? record.time
@@ -232,76 +373,78 @@ export function projectTraceEvent(event: TraceEvent, fallbackId: string): TraceE
   };
 }
 
-export function projectRunActivity(event: TraceEvent): RunActivity | null {
-  const record = event as Record<string, unknown>;
-  const type = stringValue(record.type);
-  const runId = stringValue(record.runId)
-    ?? stringValue(record.planRunId)
-    ?? stringValue(record.sourceRunId);
-  if (!type || !runId) return null;
-  const occurredAt = eventTime(record);
-  const eventId = stringValue(record.eventId) ?? `${type}:${runId}:${occurredAt}`;
-  if (type === 'tool_audit' || type === 'agent_tool') {
-    const tool = stringValue(record.tool) ?? '工具';
-    const toolCallId = stringValue(record.toolCallId) ?? eventId;
-    const status = stringValue(record.status);
-    const failed = status === 'execution_error'
-      || status === 'observation_failure'
-      || status === 'failed';
-    const summary = firstPublicText(record, ['userDisplay', 'outputPreview', 'error', 'message']);
-    return {
-      activityId: `tool:${toolCallId}`,
-      runId,
-      kind: 'tool',
-      status: failed ? 'failed' : status === 'start' || !status ? 'running' : 'completed',
-      title: tool,
-      ...(summary ? { summary: summary.slice(0, 8_192) } : {}),
-      occurredAt
-    };
-  }
-  if (type === 'plan_event') {
-    const eventType = stringValue(record.eventType) ?? 'plan';
-    const status = stringValue(record.status);
-    const summary = firstPublicText(record, ['error', 'outputPreview']);
-    return {
-      activityId: `plan:${stringValue(record.stepId) ?? eventId}`,
-      runId,
-      kind: 'plan',
-      status: eventType.includes('failed') || status === 'failed'
-        ? 'failed'
-        : eventType.includes('completed') || status === 'completed'
-          ? 'completed'
-          : 'running',
-      title: eventType,
-      ...(summary ? { summary: summary.slice(0, 8_192) } : {}),
-      occurredAt
-    };
-  }
-  if (type === 'run_start' || type === 'run_resume' || type === 'run_end' || type === 'run_resume_failed') {
-    const status = stringValue(record.status);
-    const failed = type === 'run_resume_failed' || status === 'failed';
-    return {
-      activityId: `run:${eventId}`,
-      runId,
-      kind: failed ? 'warning' : 'status',
-      status: failed ? 'failed' : type === 'run_end' ? 'completed' : 'running',
-      title: type === 'run_start'
-        ? 'Agent 开始执行'
-        : type === 'run_resume'
-          ? 'Agent 恢复执行'
-          : type === 'run_resume_failed'
-            ? 'Agent 恢复失败'
-            : status === 'cancelled'
-              ? 'Agent 已取消'
-              : 'Agent 执行结束',
-      ...(status ? { summary: status.slice(0, 8_192) } : {}),
-      occurredAt
-    };
-  }
-  return null;
+function prefersConciseTraceMessage(type: string): boolean {
+  return type === 'companion.turn.input'
+    || type === 'companion.turn.completed'
+    || type === 'agent_decision'
+    || type === 'path_access_decision'
+    || type === 'agent_model_turn'
+    || type === 'assistant_agent_proposal_created'
+    || type === 'assistant_agent_proposal_settled'
+    || type === 'assistant_agent_proposal_resumed_settled'
+    || type === 'assistant_agent_grant_consumed';
 }
 
-function publicRunStatus(status: RunAggregate['status']): RunSummary['status'] {
+function sanitizePublicTraceMessage(value: string | undefined): string {
+  if (!value) return '';
+  return value
+    .replace(/^(?:Error|INTERNAL_ERROR|UNKNOWN_ERROR|RUNTIME_ERROR):\s*/iu, '')
+    .trim()
+    .slice(0, 1_024);
+}
+
+function conciseTraceMessage(type: string, record: Record<string, unknown>): string {
+  const status = stringValue(record.status);
+  const tool = stringValue(record.tool);
+  switch (type) {
+    case 'run_start': return '任务已开始。';
+    case 'run_resume': return '任务已恢复执行。';
+    case 'run_end': return status ? `任务状态：${publicStatusLabel(status)}。` : '任务已结束。';
+    case 'tool_audit':
+    case 'agent_tool':
+      if (status === 'start') return tool ? `正在执行工具 ${tool}。` : '工具开始执行。';
+      if (status === 'ok') return tool ? `工具 ${tool} 执行完成。` : '工具执行完成。';
+      if (status) return tool
+        ? `工具 ${tool} 状态：${publicStatusLabel(status)}。`
+        : `工具状态：${publicStatusLabel(status)}。`;
+      return tool ? `Agent 调用了工具 ${tool}。` : 'Agent 调用了工具。';
+    case 'agent_decision': return 'Agent 完成了一次执行决策。';
+    case 'path_access_decision': return '工作区访问策略已完成判定。';
+    case 'agent_model_turn': return 'Agent 完成了一次模型推理。';
+    case 'model_call': return '模型调用已完成。';
+    case 'companion.turn.input': return '已提交一轮对话。';
+    case 'companion.turn.completed': return '本轮对话已完成。';
+    case 'assistant_agent_proposal_created': return '已创建 Agent 执行提案，等待确认。';
+    case 'assistant_agent_proposal_settled':
+    case 'assistant_agent_proposal_resumed_settled':
+      return status ? `Agent 提案状态：${publicStatusLabel(status)}。` : 'Agent 提案状态已更新。';
+    case 'assistant_agent_grant_consumed': return '本次 Agent 授权已使用。';
+    case 'browser_capability_registered': return '浏览器能力已就绪。';
+    case 'scheduler_register': return '后台任务已注册。';
+    default: return '';
+  }
+}
+
+function publicStatusLabel(status: string): string {
+  return {
+    completed: '已完成',
+    failed: '失败',
+    paused: '已暂停',
+    waiting_confirmation: '等待确认',
+    waiting_permission: '等待授权',
+    observation_failure: '结果验证未通过',
+    execution_error: '执行失败',
+    cancelled: '已取消',
+    rejected: '已拒绝',
+    ok: '成功',
+    start: '开始'
+  }[status] ?? status.replaceAll('_', ' ');
+}
+
+function publicRunStatus(
+  status: RunAggregate['status'],
+  waitReason?: RunAggregate['waitReason'],
+): RunSummary['status'] {
   switch (status) {
     case 'pending': return 'queued';
     case 'running': return 'running';
@@ -311,12 +454,15 @@ function publicRunStatus(status: RunAggregate['status']): RunSummary['status'] {
     case 'completed': return 'completed';
     case 'failed': return 'failed';
     case 'cancelled': return 'cancelled';
-    case 'paused':
+    case 'paused': return waitReason?.code === 'budget_exhausted' ? 'waiting_budget' : 'paused';
     case 'recovery_required': return 'interrupted';
   }
 }
 
-function runLabel(status: RunAggregate['status']): string {
+function runLabel(
+  status: RunAggregate['status'],
+  waitReason?: RunAggregate['waitReason'],
+): string {
   switch (status) {
     case 'pending': return '等待执行';
     case 'running': return '正在执行';
@@ -326,9 +472,44 @@ function runLabel(status: RunAggregate['status']): string {
     case 'completed': return '已完成';
     case 'failed': return '执行失败';
     case 'cancelled': return '已取消';
-    case 'paused': return '执行已中断';
+    case 'paused': return waitReason?.code === 'budget_exhausted'
+      ? '等待追加执行预算'
+      : '执行已暂停';
     case 'recovery_required': return '需要恢复决策';
   }
+}
+
+function projectedBudgetDetails(run: RunAggregate): Pick<
+  RunSummary,
+  'budgetUsage' | 'suggestedBudget' | 'budgetExhausted'
+> {
+  if (run.waitReason?.code !== 'budget_exhausted') return {};
+  const details = objectValue(run.waitReason.details);
+  const result = objectValue(details.result ?? details);
+  const executionMeta = objectValue(result.executionMeta);
+  const runState = objectValue(result.runState);
+  const usage = objectValue(runState.budgetUsage ?? executionMeta.usage);
+  const suggested = objectValue(runState.suggestedBudget ?? executionMeta.suggestedBudget);
+  const budgetExhausted = typeof runState.budgetExhausted === 'string'
+    ? runState.budgetExhausted
+    : executionMeta.budgetExhausted;
+  return {
+    ...(Object.keys(usage).length > 0
+      ? { budgetUsage: usage as RunSummary['budgetUsage'] }
+      : {}),
+    ...(Object.keys(suggested).length > 0
+      ? { suggestedBudget: suggested as RunSummary['suggestedBudget'] }
+      : {}),
+    ...(typeof budgetExhausted === 'string'
+      ? { budgetExhausted }
+      : {}),
+  };
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
 
 function isTerminalRunStatus(status: RunAggregate['status']): boolean {

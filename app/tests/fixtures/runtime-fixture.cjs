@@ -9,6 +9,9 @@ function sendReady(message) {
     runtimeInstanceId: message.runtimeInstanceId,
     type: 'ready',
     runtimeVersion: process.env.ARIADNE_TEST_RUNTIME_VERSION || message.runtimeVersion,
+    runtimeBuildFingerprint:
+      process.env.ARIADNE_TEST_RUNTIME_BUILD_FINGERPRINT
+      || message.runtimeBuildFingerprint,
     capabilities: [],
     storageSchemas: { fixture: 1 },
     readyAt: new Date().toISOString()
@@ -30,6 +33,9 @@ function sendReady(message) {
         status: {
           availability: 'ready',
           runtimeVersion: process.env.ARIADNE_TEST_RUNTIME_VERSION || message.runtimeVersion,
+          runtimeBuildFingerprint:
+            process.env.ARIADNE_TEST_RUNTIME_BUILD_FINGERPRINT
+            || message.runtimeBuildFingerprint,
           protocolVersion,
           capabilities: [],
           observedAt: new Date().toISOString()

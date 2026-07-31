@@ -26,6 +26,7 @@ describe('ApprovalNotificationService', () => {
     }));
     fixture.click?.();
     expect(fixture.host.activateApplication).toHaveBeenCalledOnce();
+    expect(fixture.host.activateApplication).toHaveBeenCalledWith('session-1');
   });
 
   it('closes a proposal notification after a decision and can notify a later pending request', async () => {
@@ -42,6 +43,15 @@ describe('ApprovalNotificationService', () => {
     const fixture = createFixture(false, false);
     await fixture.service.handleRuntimeEvent(permissionEvent('pending'));
     expect(fixture.host.create).not.toHaveBeenCalled();
+  });
+
+  it('exposes a manual Windows notification preview without requiring a pending run', () => {
+    const fixture = createFixture(true);
+    expect(fixture.service.showTestNotification()).toEqual({ shown: true, supported: true });
+    expect(fixture.host.create).toHaveBeenCalledOnce();
+    expect(fixture.notification.show).toHaveBeenCalledOnce();
+    fixture.click?.();
+    expect(fixture.host.activateApplication).toHaveBeenCalledWith();
   });
 });
 

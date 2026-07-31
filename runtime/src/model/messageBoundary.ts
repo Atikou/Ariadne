@@ -22,12 +22,22 @@ export function collectCompleteToolCallIds(messages: readonly ChatMessage[]): Se
     if (message.role !== "assistant" || !message.toolCalls?.length) continue;
     const expectedIds = new Set(message.toolCalls.map((call) => call.id));
     const observedIds = new Set<string>();
-    for (let resultIndex = index + 1; resultIndex < messages.length; resultIndex += 1) {
+    for (
+      let resultIndex = index + 1;
+      resultIndex < messages.length && observedIds.size < expectedIds.size;
+      resultIndex += 1
+    ) {
       const candidate = messages[resultIndex]!;
-      if (candidate.role === "assistant" || candidate.role === "user") break;
-      if (candidate.role === "tool" && candidate.toolCallId && expectedIds.has(candidate.toolCallId)) {
-        observedIds.add(candidate.toolCallId);
+      if (
+        candidate.role !== "tool"
+        || !candidate.toolCallId
+        || !expectedIds.has(candidate.toolCallId)
+        || observedIds.has(candidate.toolCallId)
+      ) {
+        observedIds.clear();
+        break;
       }
+      observedIds.add(candidate.toolCallId);
     }
     if (![...expectedIds].every((id) => observedIds.has(id))) continue;
     for (const call of message.toolCalls) completeIds.add(call.id);

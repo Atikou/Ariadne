@@ -137,6 +137,7 @@ export class CompanionConversationWorkflow {
     context: CompanionConversationRunContext = {},
   ): Promise<void> {
     const runId = crypto.randomUUID();
+    let runStartedAtMs = Date.now();
     const controller = new AbortController();
     const events = new CompanionStreamEventSequence(emit);
     const abortFromContext = (): void =>
@@ -180,6 +181,7 @@ export class CompanionConversationWorkflow {
     }
 
     try {
+      runStartedAtMs = Date.now();
       const storage = turn.storage.status();
       if (turn.session && turn.userMessage && turn.assistantDraft) {
         events.send({
@@ -210,6 +212,10 @@ export class CompanionConversationWorkflow {
             throwIfModelAborted(controller.signal);
             protocol.push(delta);
           },
+          onReasoningToken: (delta) => {
+            throwIfModelAborted(controller.signal);
+            relay.onReasoningToken(delta);
+          },
         },
         this.routeOptions(input),
       );
@@ -232,7 +238,13 @@ export class CompanionConversationWorkflow {
       const proposalDelivery = await this.deliverProposal(turn, modelTurn, safety, response);
       this.activeRuns.delete(runId);
       context.signal?.removeEventListener("abort", abortFromContext);
-      const result = await this.completeTurn(turn, response, safety, proposalDelivery);
+      const result = await this.completeTurn(
+        turn,
+        response,
+        safety,
+        proposalDelivery,
+        { runId, startedAtMs: runStartedAtMs, emit: (event) => events.send(event) },
+      );
       if (proposalDelivery) {
         events.send({
           type: "agent_proposal",
@@ -284,7 +296,7 @@ export class CompanionConversationWorkflow {
         assistantText: protocol.publicPartial,
         outputMode: turn.outputMode,
       });
-      relay.finish(partialSafety.content);
+      relay.finish(partialSafety.content, "interrupted");
       let interruptedMessage: CompanionMessage | null | undefined;
       if (turn.assistantDraft) {
         interruptedMessage = turn.storage.finalizeStreamingMessage(turn.assistantDraft.id, {
@@ -501,10 +513,47 @@ export class CompanionConversationWorkflow {
     response: ModelResponse,
     safety: ReturnType<typeof applyCompanionSafety>,
     proposalDelivery?: CompanionAgentProposalDelivery,
+    streamActivity?: {
+      runId: string;
+      startedAtMs: number;
+      emit: (event: unknown) => void;
+    },
   ): Promise<CompanionChatResult> {
     const proposal = proposalDelivery?.proposal;
     const publicContent = proposalDelivery?.assistantMessage.content ?? safety.content;
-    const assistantMessage = proposalDelivery?.assistantMessage ?? (turn.session
+    let completedReasoning = turn.assistantDraft
+      ? turn.storage.getMessage(turn.assistantDraft.id)?.reasoning
+      : undefined;
+    if (response.reasoningContent && !completedReasoning) {
+      const completedAt = new Date().toISOString();
+      const durationMs = Math.max(0, Math.round(response.latencyMs));
+      const startedAt = new Date(
+        new Date(completedAt).getTime() - durationMs,
+      ).toISOString();
+      if (turn.assistantDraft) {
+        turn.storage.appendMessageReasoning(
+          turn.assistantDraft.id,
+          response.reasoningContent,
+          "provider",
+          startedAt,
+        );
+        completedReasoning = turn.storage.finishMessageReasoning(
+          turn.assistantDraft.id,
+          "completed",
+          completedAt,
+        )?.reasoning;
+      } else {
+        completedReasoning = {
+          content: response.reasoningContent,
+          status: "completed",
+          source: "provider",
+          startedAt,
+          completedAt,
+          durationMs,
+        };
+      }
+    }
+    let assistantMessage = proposalDelivery?.assistantMessage ?? (turn.session
       ? turn.assistantDraft
         ? turn.storage.finalizeStreamingMessage(turn.assistantDraft.id, {
             content: publicContent,
@@ -516,6 +565,7 @@ export class CompanionConversationWorkflow {
               usage: response.usage,
               safety,
               responseType: proposal ? "agent_proposal" : "message",
+              ...(streamActivity ? { companionRunId: streamActivity.runId } : {}),
               ...(proposal ? { agentProposalId: proposal.id } : {}),
               ...companionModeMetadata(turn.outputMode),
             },
@@ -526,11 +576,13 @@ export class CompanionConversationWorkflow {
             content: publicContent,
             modelName: response.modelName,
             clientName: response.clientName,
+            ...(completedReasoning ? { reasoning: completedReasoning } : {}),
             metadata: {
               latencyMs: response.latencyMs,
               usage: response.usage,
               safety,
               responseType: proposal ? "agent_proposal" : "message",
+              ...(streamActivity ? { companionRunId: streamActivity.runId } : {}),
               ...(proposal ? { agentProposalId: proposal.id } : {}),
               ...companionModeMetadata(turn.outputMode),
             },
@@ -552,11 +604,25 @@ export class CompanionConversationWorkflow {
           sessionId: turn.session.id,
           modelName: response.modelName,
           outputMode: turn.outputMode,
+          ...(streamActivity
+            ? {
+                lifecycle: createCompanionCompressionLifecycle(streamActivity),
+              }
+            : {}),
         })
       : CompanionSummaryStatusSchema.parse({
           generated: false,
           reason: "incognito",
         });
+    if (assistantMessage && streamActivity) {
+      assistantMessage = turn.storage.updateMessage(assistantMessage.id, {
+        metadata: {
+          ...assistantMessage.metadata,
+          companionRunId: streamActivity.runId,
+          processingDurationMs: Math.max(0, Date.now() - streamActivity.startedAtMs),
+        },
+      }) ?? assistantMessage;
+    }
     const common = {
       content: publicContent,
       storage: turn.storage.status(),
@@ -967,6 +1033,67 @@ export class CompanionConversationWorkflow {
   }
 }
 
+function createCompanionCompressionLifecycle(input: {
+  runId: string;
+  emit: (event: unknown) => void;
+}) {
+  const activityId = `compaction_${crypto.randomUUID()}`;
+  let startedAt: string | undefined;
+  return {
+    onStarted(stats: {
+      processedMessages: number;
+      beforeChars: number;
+      summaryType: string;
+    }) {
+      startedAt = new Date().toISOString();
+      input.emit({
+        type: "context_activity",
+        runId: input.runId,
+        activityId,
+        status: "running",
+        title: "正在自动压缩上下文",
+        startedAt,
+        ...stats,
+      });
+    },
+    onCompleted(stats: {
+      processedMessages: number;
+      beforeChars: number;
+      afterChars: number;
+      summaryType: string;
+    }) {
+      if (!startedAt) return;
+      const completedAt = new Date().toISOString();
+      input.emit({
+        type: "context_activity",
+        runId: input.runId,
+        activityId,
+        status: "completed",
+        title: "已自动压缩上下文",
+        startedAt,
+        completedAt,
+        durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
+        ...stats,
+      });
+    },
+    onFailed(error: unknown) {
+      if (!startedAt) return;
+      const completedAt = new Date().toISOString();
+      input.emit({
+        type: "context_activity",
+        runId: input.runId,
+        activityId,
+        status: "failed",
+        title: "自动压缩上下文失败",
+        startedAt,
+        completedAt,
+        durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    },
+  };
+}
+
 function modelTurnContent(turn: CompanionModelTurn): string {
   return turn.kind === "message" ? turn.content : AGENT_PROPOSAL_PUBLIC_CONTENT;
 }
@@ -1042,6 +1169,11 @@ function createCompanionStreamRelay(input: {
   let guardHeld = false;
   let guardNoticeEmitted = false;
   let lastDraftWriteAt = 0;
+  let reasoningContent = "";
+  let reasoningStartedAt: string | undefined;
+  let reasoningFinished = false;
+  let persistedReasoningLength = 0;
+  let lastReasoningWriteAt = 0;
 
   const writeDraft = (content: string, force = false) => {
     if (!input.assistantDraft) return;
@@ -1085,9 +1217,70 @@ function createCompanionStreamRelay(input: {
     });
   };
 
+  const writeReasoning = (force = false) => {
+    if (!input.assistantDraft || !reasoningStartedAt) return;
+    const delta = reasoningContent.slice(persistedReasoningLength);
+    if (!delta) return;
+    const now = Date.now();
+    if (!force && now - lastReasoningWriteAt < STREAMING_DRAFT_WRITE_INTERVAL_MS) return;
+    const persisted = input.storage.appendMessageReasoning(
+      input.assistantDraft.id,
+      delta,
+      "provider",
+      reasoningStartedAt,
+    );
+    if (!persisted) return;
+    persistedReasoningLength = reasoningContent.length;
+    lastReasoningWriteAt = now;
+  };
+
+  const finishReasoning = (status: "completed" | "interrupted") => {
+    if (!reasoningStartedAt || reasoningFinished) return;
+    reasoningFinished = true;
+    writeReasoning(true);
+    const completedAt = new Date().toISOString();
+    const persisted = input.assistantDraft
+      ? input.storage.finishMessageReasoning(
+          input.assistantDraft.id,
+          status,
+          completedAt,
+        )?.reasoning
+      : undefined;
+    input.emit({
+      type: "reasoning_end",
+      runId: input.runId,
+      reasoning: persisted ?? {
+        content: reasoningContent,
+        status,
+        source: "provider",
+        startedAt: reasoningStartedAt,
+        completedAt,
+        durationMs: Math.max(
+          0,
+          new Date(completedAt).getTime() - new Date(reasoningStartedAt).getTime(),
+        ),
+      },
+    });
+  };
+
   return {
+    onReasoningToken(delta: string) {
+      if (!delta || reasoningFinished) return;
+      reasoningStartedAt ??= new Date().toISOString();
+      reasoningContent += delta;
+      writeReasoning();
+      input.emit({
+        type: "reasoning",
+        runId: input.runId,
+        delta,
+        source: "provider",
+        startedAt: reasoningStartedAt,
+      });
+    },
+
     onToken(delta: string) {
       if (!delta) return;
+      finishReasoning("completed");
       raw += delta;
       if (input.outputMode === "unrestricted") {
         emitted += delta;
@@ -1119,7 +1312,11 @@ function createCompanionStreamRelay(input: {
       }
     },
 
-    finish(finalContent: string) {
+    finish(
+      finalContent: string,
+      reasoningStatus: "completed" | "interrupted" = "completed",
+    ) {
+      finishReasoning(reasoningStatus);
       const final = finalContent || "";
       if (final.startsWith(emitted)) {
         const remaining = final.slice(emitted.length);

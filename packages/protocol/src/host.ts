@@ -29,6 +29,14 @@ const envelopeFields = {
   runtimeInstanceId: runtimeInstanceIdSchema
 };
 
+export const runtimeBuildFingerprintSchema = z.string().regex(/^[a-f0-9]{64}$/);
+
+export const runtimeBuildManifestSchema = z.object({
+  schemaVersion: z.literal(1),
+  runtimeVersion: z.string().trim().min(1).max(64),
+  fingerprint: runtimeBuildFingerprintSchema
+}).strict();
+
 export const workspaceBootstrapSchema = z
   .object({
     workspaceId: nonEmptyIdSchema,
@@ -66,6 +74,7 @@ export const runtimeBootstrapSchema = z
     type: z.literal('bootstrap'),
     appVersion: z.string().trim().min(1).max(64),
     runtimeVersion: z.string().trim().min(1).max(64),
+    runtimeBuildFingerprint: runtimeBuildFingerprintSchema,
     installRoot: z.string().trim().min(1).max(32_768),
     dataRoot: z.string().trim().min(1).max(32_768),
     modelRoots: z.array(z.string().trim().min(1).max(32_768)).max(16),
@@ -89,6 +98,7 @@ export const runtimeReadySchema = z
     ...envelopeFields,
     type: z.literal('ready'),
     runtimeVersion: z.string().trim().min(1).max(64),
+    runtimeBuildFingerprint: runtimeBuildFingerprintSchema,
     capabilities: z.array(runtimeCapabilitySchema),
     storageSchemas: z.record(z.string(), z.number().int().nonnegative()),
     readyAt: isoDateTimeSchema
@@ -277,6 +287,7 @@ export const runtimeToHostMessageSchema = z.discriminatedUnion('type', [
 ]);
 
 export type RuntimeBootstrap = z.infer<typeof runtimeBootstrapSchema>;
+export type RuntimeBuildManifest = z.infer<typeof runtimeBuildManifestSchema>;
 export type ModelProviderBootstrap = z.infer<typeof modelProviderBootstrapSchema>;
 export type AgentPermissionsBootstrap = z.infer<typeof agentPermissionsBootstrapSchema>;
 export type RuntimeReady = z.infer<typeof runtimeReadySchema>;

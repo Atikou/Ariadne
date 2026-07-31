@@ -83,16 +83,22 @@ function isTraceLevel(value: unknown): value is TraceLevel {
 
 function inferTraceLevel(type: string, status: unknown): TraceLevel {
   const normalized = type.toLowerCase();
+  const normalizedStatus = typeof status === "string" ? status.toLowerCase() : "";
   if (
     normalized.includes("error")
     || normalized.includes("failed")
-    || status === "failed"
+    || normalizedStatus === "failed"
+    || normalizedStatus.includes("execution_error")
   ) return "error";
   if (
     normalized.includes("warn")
     || normalized.includes("retry")
     || normalized.includes("degraded")
     || normalized.includes("unavailable")
+    || normalizedStatus.includes("failure")
+    || normalizedStatus.includes("denied")
+    || normalizedStatus.includes("rejected")
+    || normalizedStatus.includes("cancelled")
   ) return "warning";
   return "info";
 }
@@ -122,6 +128,8 @@ export interface TraceLoggerOptions {
   index?: TraceIndexStore;
   /** 审计写入失败通知；回调异常同样不会传播到业务调用方。 */
   onWriteError?: (error: unknown) => void;
+  /** 普通事件批量落盘窗口；警告和错误不等待。默认 250ms。 */
+  flushIntervalMs?: number;
 }
 
 export interface TraceWriteHealth {
@@ -159,13 +167,17 @@ export class TraceLogger {
   private lastFailureAt?: string;
   private lastErrorCode?: string;
   private readonly onWriteError?: (error: unknown) => void;
+  private readonly flushIntervalMs: number;
   private readonly listeners = new Set<TraceEventListener>();
+  private readonly pendingEvents: PreparedTraceEvent[] = [];
+  private flushTimer?: NodeJS.Timeout;
 
   constructor(traceFileOrDir: string, options: TraceLoggerOptions = {}) {
     this.redact = options.redact !== false;
     this.index = options.index;
     this.rotation = options.rotation;
     this.onWriteError = options.onWriteError;
+    this.flushIntervalMs = Math.max(0, Math.floor(options.flushIntervalMs ?? 250));
     this.segmented = !!options.tracesDir;
 
     if (options.tracesDir) {
@@ -220,46 +232,83 @@ export class TraceLogger {
   write(event: TraceEvent): void {
     if (this.closed) return;
     try {
-      this.writeEvent(event);
+      const prepared = prepareTraceEvent(event, this.redact);
+      if (
+        prepared.payload.level === "warning"
+        || prepared.payload.level === "error"
+        || this.flushIntervalMs === 0
+      ) {
+        this.flush();
+        this.persistPreparedEvents([prepared]);
+        return;
+      }
+      this.pendingEvents.push(prepared);
+      this.scheduleFlush();
     } catch (error) {
       this.recordWriteFailure(error);
     }
   }
 
-  private writeEvent(event: TraceEvent): void {
+  flush(): void {
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.flushTimer = undefined;
+    if (this.pendingEvents.length === 0) return;
+    const events = this.pendingEvents.splice(0);
+    try {
+      this.persistPreparedEvents(events);
+    } catch (error) {
+      this.recordWriteFailure(error);
+    }
+  }
+
+  private scheduleFlush(): void {
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = undefined;
+      this.flush();
+    }, this.flushIntervalMs);
+    this.flushTimer.unref?.();
+  }
+
+  private persistPreparedEvents(events: readonly PreparedTraceEvent[]): void {
+    if (events.length === 0) return;
     this.maybeRotate();
-    const prepared = prepareTraceEvent(event, this.redact);
+    const content = events.map((event) => event.line).join("");
 
     if (this.segmented && this.fd != null) {
-      appendFileSync(this.fd, prepared.line, "utf-8");
+      appendFileSync(this.fd, content, "utf-8");
     } else if (this.stream) {
-      this.stream.write(prepared.line);
+      this.stream.write(content);
     }
-    this.bytesWritten += prepared.lineBytes;
+    this.bytesWritten += events.reduce((total, event) => total + event.lineBytes, 0);
 
     let indexError: unknown;
     if (this.index && this.layout) {
-      const e = prepared.payload as Record<string, unknown>;
       try {
-        this.index.insert({
-          eventId: prepared.eventId,
-          ts: Date.parse(prepared.time),
-          runId: typeof e.runId === "string" ? e.runId : undefined,
-          sessionId: typeof e.sessionId === "string" ? e.sessionId : undefined,
-          eventType: String(e.type ?? "unknown"),
-          status: typeof e.status === "string" ? e.status : undefined,
-          segmentPath: this.activeRel,
-          redacted: this.redact,
-        });
+        this.index.insertMany(events.map((prepared) => {
+          const event = prepared.payload as Record<string, unknown>;
+          return {
+            eventId: prepared.eventId,
+            ts: Date.parse(prepared.time),
+            runId: typeof event.runId === "string" ? event.runId : undefined,
+            sessionId: typeof event.sessionId === "string" ? event.sessionId : undefined,
+            eventType: String(event.type ?? "unknown"),
+            status: typeof event.status === "string" ? event.status : undefined,
+            segmentPath: this.activeRel,
+            redacted: this.redact,
+          };
+        }));
       } catch (error) {
         indexError = error;
       }
     }
-    this.publish({
-      ...prepared.payload,
-      eventId: prepared.eventId,
-      time: prepared.time,
-    });
+    for (const prepared of events) {
+      this.publish({
+        ...prepared.payload,
+        eventId: prepared.eventId,
+        time: prepared.time,
+      });
+    }
     if (indexError) throw indexError;
   }
 
@@ -296,6 +345,7 @@ export class TraceLogger {
   /** 显式轮转 active 段。 */
   rotate(opts?: { force?: boolean }): { rotated: boolean; segmentPath?: string } {
     if (!this.layout || this.closed) return { rotated: false };
+    this.flush();
     if (!opts?.force && !this.shouldRotate()) return { rotated: false };
     return this.performRotation();
   }
@@ -354,6 +404,7 @@ export class TraceLogger {
 
   close(): Promise<void> {
     if (this.closed) return Promise.resolve();
+    this.flush();
     this.closed = true;
     this.listeners.clear();
 

@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type { ZodError } from "zod";
+import {
+  renderAgentPlanMarkdown,
+  type AgentPlanContract,
+} from "../plan/AgentPlanContract.js";
 
 import {
   PLAN_HANDOFF_SCHEMA_VERSION,
@@ -189,8 +193,18 @@ export class PlanHandoffStore {
     if (!handoff || handoff.status !== "pending") return null;
 
     const respondedAt = new Date().toISOString();
+    const decidedPlan = handoff.plan
+      ? {
+          ...handoff.plan,
+          planState: decision.decision === "approve"
+            ? "approved" as const
+            : "superseded" as const,
+          updatedAt: respondedAt,
+        }
+      : undefined;
     const updated = PlanHandoffPayloadSchema.parse({
       ...handoff,
+      ...(decidedPlan ? { plan: decidedPlan } : {}),
       status: decision.decision === "approve" ? "approved" : "rejected",
       decision: decision.decision,
       respondedAt,
@@ -204,6 +218,37 @@ export class PlanHandoffStore {
            WHERE id=? AND status='pending'`,
         )
         .run(updated.status, JSON.stringify(updated), respondedAt, respondedAt, id);
+      if (Number(result.changes) === 0) return null;
+    } else {
+      this.handoffs.set(id, clonePayload(updated));
+    }
+    return clonePayload(updated);
+  }
+
+  updatePlan(id: string, plan: AgentPlanContract): PlanHandoffPayload | null {
+    const handoff = this.get(id);
+    if (!handoff) return null;
+    if (
+      handoff.planId !== plan.planId
+      || (handoff.planVersion !== undefined && handoff.planVersion !== plan.version)
+    ) {
+      throw new PlanHandoffValidationError(
+        `计划交接 ${id} 与计划 ${plan.planId} v${plan.version} 不一致`,
+      );
+    }
+    const updatedAt = new Date().toISOString();
+    const updated = PlanHandoffPayloadSchema.parse({
+      ...handoff,
+      plan,
+      planVersion: plan.version,
+      planMarkdown: renderAgentPlanMarkdown(plan),
+    });
+    if (this.db) {
+      const result = this.db.prepare(
+        `UPDATE plan_handoffs
+         SET payload_json=?, updated_at=?
+         WHERE id=?`,
+      ).run(JSON.stringify(updated), updatedAt, id);
       if (Number(result.changes) === 0) return null;
     } else {
       this.handoffs.set(id, clonePayload(updated));
@@ -226,14 +271,16 @@ export class PlanHandoffStore {
     return PlanHandoffPayloadSchema.parse({
       schemaVersion: PLAN_HANDOFF_SCHEMA_VERSION,
       id,
-      planId: id,
+      planId: input.plan.planId,
       runId: input.runId,
       sessionId: input.sessionId,
       status: "pending",
       resumeMode: "implement",
       message: input.message,
       planVariant: input.planVariant,
-      planMarkdown: input.planMarkdown,
+      planMarkdown: renderAgentPlanMarkdown(input.plan),
+      plan: input.plan,
+      planVersion: input.plan.version,
       createdAt: new Date().toISOString(),
     });
   }

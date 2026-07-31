@@ -9,10 +9,19 @@ import {
   parseRuntimeToHostMessage,
   runtimeCommandSchema
 } from '../src/index.js';
-import { modelInferenceProfileSchema, permissionRequestSchema, runSummarySchema } from '../src/public.js';
+import {
+  companionMessageSchema,
+  modelInferenceProfileSchema,
+  permissionRequestSchema,
+  planHandoffSchema,
+  runSummarySchema,
+  runtimeEventSchema,
+  runtimeResultSchema
+} from '../src/public.js';
 import { createDefaultRuntimePolicySnapshot } from '../src/settings.js';
 
 const runtimeInstanceId = '744b7985-512d-49ef-bc1e-7cb87674ea3f';
+const runtimeBuildFingerprint = 'a'.repeat(64);
 
 describe('Ariadne Runtime protocol', () => {
   it('accepts a strict private bootstrap without exposing a port or credential', () => {
@@ -23,6 +32,7 @@ describe('Ariadne Runtime protocol', () => {
       type: 'bootstrap',
       appVersion: '0.1.0',
       runtimeVersion: '0.1.0',
+      runtimeBuildFingerprint,
       installRoot: 'E:\\Ariadne\\resources\\runtime',
       dataRoot: 'C:\\Users\\example\\AppData\\Roaming\\Ariadne\\runtime',
       modelRoots: ['D:\\Models'],
@@ -57,6 +67,7 @@ describe('Ariadne Runtime protocol', () => {
       type: 'bootstrap',
       appVersion: '0.1.0',
       runtimeVersion: '0.1.0',
+      runtimeBuildFingerprint,
       installRoot: 'E:\\Runtime',
       dataRoot: 'C:\\Data',
       modelRoots: [],
@@ -119,6 +130,64 @@ describe('Ariadne Runtime protocol', () => {
       kind: 'planHandoffs.resume',
       handoffId: 'handoff-1'
     })).toBeTruthy();
+  });
+
+  it('requires a versioned six-region plan contract in public handoffs', () => {
+    const handoff = {
+      handoffId: 'handoff-1',
+      runId: 'run-1',
+      sessionId: 'session-1',
+      title: 'Todo 页面执行计划',
+      summary: '实现一个可持久化的原生 Todo 页面。',
+      steps: [{ stepId: 'step-1', title: '创建页面结构' }],
+      status: 'pending',
+      createdAt: '2026-07-31T00:00:00.000Z',
+      plan: {
+        schemaVersion: 1,
+        planId: 'plan-1',
+        version: 1,
+        sourceRunId: 'run-1',
+        sessionId: 'session-1',
+        title: 'Todo 页面执行计划',
+        goal: '实现一个可持久化的原生 Todo 页面。',
+        facts: [{
+          id: 'fact-1',
+          statement: '当前工作区为空。',
+          evidence: '只读目录检查结果。',
+        }],
+        constraints: [],
+        clarifications: [],
+        steps: [{
+          id: 'step-1',
+          title: '创建页面结构',
+          dependsOn: [],
+          action: '创建语义化页面控件。',
+          scope: ['index.html'],
+          expectedOutcome: '页面包含输入区和任务列表。',
+          verification: '浏览器打开后使用键盘访问主要控件。',
+          status: 'pending',
+          actualScope: [],
+          evidence: [],
+          deviations: [],
+        }],
+        completionCriteria: [{
+          id: 'done-1',
+          behavior: '刷新后任务仍然存在。',
+          verification: '添加任务后刷新并比较内容。',
+        }],
+        planState: 'ready_for_confirmation',
+        executionState: 'not_started',
+        completeness: 'complete',
+        blockingReasons: [],
+        qualityIssues: [],
+        createdAt: '2026-07-31T00:00:00.000Z',
+        updatedAt: '2026-07-31T00:00:00.000Z',
+      },
+    };
+
+    expect(planHandoffSchema.parse(handoff).plan.version).toBe(1);
+    const { plan: _plan, ...legacyHandoff } = handoff;
+    expect(planHandoffSchema.safeParse(legacyHandoff).success).toBe(false);
   });
 
   it('validates governed memory commands and rejects ambiguous edited lifecycle', () => {
@@ -224,6 +293,39 @@ describe('Ariadne Runtime protocol', () => {
     }).success).toBe(false);
   });
 
+  it('accepts only the public Agent Plan mode on Chat start', () => {
+    expect(runtimeCommandSchema.parse({
+      kind: 'companion.chat.start',
+      clientMessageId: 'ui-message-plan',
+      message: 'Create a plan first',
+      agentMode: 'plan',
+      resources: []
+    })).toMatchObject({ agentMode: 'plan' });
+
+    expect(runtimeCommandSchema.safeParse({
+      kind: 'companion.chat.start',
+      clientMessageId: 'ui-message-invalid-agent-mode',
+      message: 'Implement immediately',
+      agentMode: 'implement',
+      resources: []
+    }).success).toBe(false);
+  });
+
+  it('requires the Runtime to acknowledge the accepted Chat execution mode', () => {
+    expect(runtimeResultSchema.parse({
+      kind: 'companion.chat.accepted',
+      runId: 'run-plan',
+      sessionId: 'session-plan',
+      executionMode: 'agent-plan'
+    })).toMatchObject({ executionMode: 'agent-plan' });
+
+    expect(runtimeResultSchema.safeParse({
+      kind: 'companion.chat.accepted',
+      runId: 'run-without-mode',
+      sessionId: 'session-without-mode'
+    }).success).toBe(false);
+  });
+
   it('carries workspace ownership through session creation and Chat commands', () => {
     expect(runtimeCommandSchema.parse({
       kind: 'companion.sessions.create',
@@ -236,6 +338,26 @@ describe('Ariadne Runtime protocol', () => {
       message: '检查工作区',
       resources: []
     })).toMatchObject({ workspaceId: 'secondary' });
+  });
+
+  it('validates archived workspace purge commands and results', () => {
+    expect(runtimeCommandSchema.parse({
+      kind: 'companion.workspaces.purge',
+      workspaceId: 'secondary'
+    })).toEqual({
+      kind: 'companion.workspaces.purge',
+      workspaceId: 'secondary'
+    });
+    expect(runtimeResultSchema.parse({
+      kind: 'companion.workspace.purged',
+      workspaceId: 'secondary',
+      deletedSessions: 2,
+      deletedAgentContexts: 1
+    })).toMatchObject({
+      workspaceId: 'secondary',
+      deletedSessions: 2,
+      deletedAgentContexts: 1
+    });
   });
 
   it('validates Chat input without changing the user-authored text', () => {
@@ -264,7 +386,8 @@ describe('Ariadne Runtime protocol', () => {
       userFacingLabel: '执行中',
       aggregateVersion: 1,
       checkpointStage: 'running',
-      recoveryStatus: 'none'
+      recoveryStatus: 'none',
+      timing: { activeDurationMs: 0 }
     } as const;
     expect(runSummarySchema.safeParse({
       ...base,
@@ -273,6 +396,36 @@ describe('Ariadne Runtime protocol', () => {
     }).success).toBe(true);
     expect(runSummarySchema.safeParse({ ...base, origin: 'companion' }).success).toBe(true);
     expect(runSummarySchema.safeParse(base).success).toBe(false);
+  });
+
+  it('keeps budget yields distinct from crash recovery and accepts a same-Run resume command', () => {
+    expect(runSummarySchema.safeParse({
+      runId: 'run-budget',
+      origin: 'agent',
+      title: 'Continue implementation',
+      status: 'waiting_budget',
+      userFacingLabel: '等待追加执行预算',
+      aggregateVersion: 3,
+      checkpointStage: 'waiting_budget',
+      recoveryStatus: 'none',
+      timing: { activeDurationMs: 12_000 },
+      budgetExhausted: 'maxModelTurns',
+      budgetUsage: {
+        modelTurns: 8,
+        toolCalls: 4,
+        readCalls: 4,
+        writeCalls: 0,
+        shellCalls: 0,
+        runtimeMs: 12_000
+      }
+    }).success).toBe(true);
+
+    expect(runtimeCommandSchema.safeParse({
+      kind: 'runs.resume',
+      runId: 'run-budget',
+      expectedAggregateVersion: 3,
+      budget: { maxModelTurns: 12 }
+    }).success).toBe(true);
   });
 
   it('rejects contradictory or duplicated model inference profiles', () => {
@@ -318,6 +471,48 @@ describe('Ariadne Runtime protocol', () => {
     expect(response.type).toBe('response');
     if (response.type !== 'response' || !response.outcome.ok) throw new Error('Expected a successful response.');
     expect(response.outcome.result).toMatchObject({ kind: 'companion.messages' });
+  });
+
+  it('keeps reasoning separate from final content in messages and stream events', () => {
+    expect(companionMessageSchema.parse({
+      messageId: 'assistant-1',
+      sessionId: 'session-1',
+      role: 'assistant',
+      content: '最终回答',
+      status: 'completed',
+      createdAt: '2026-07-22T00:00:00.000Z',
+      reasoning: {
+        content: '检查约束',
+        status: 'completed',
+        source: 'provider',
+        startedAt: '2026-07-22T00:00:00.000Z',
+        completedAt: '2026-07-22T00:00:02.000Z',
+        durationMs: 2_000,
+        segments: [{
+          segmentId: 'segment-1',
+          kind: 'thought',
+          content: '检查约束',
+          occurredAt: '2026-07-22T00:00:01.000Z',
+          iteration: 1
+        }]
+      }
+    })).toMatchObject({
+      content: '最终回答',
+      reasoning: {
+        content: '检查约束',
+        segments: [{ segmentId: 'segment-1', kind: 'thought' }]
+      }
+    });
+
+    expect(runtimeEventSchema.safeParse({
+      kind: 'companion.reasoning.delta',
+      runId: 'run-1',
+      sessionId: 'session-1',
+      messageId: 'assistant-1',
+      text: '检查',
+      source: 'provider',
+      startedAt: '2026-07-22T00:00:00.000Z'
+    }).success).toBe(true);
   });
 
   it('validates a correlated response and monotonic event envelope shape', () => {

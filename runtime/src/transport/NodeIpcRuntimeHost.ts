@@ -19,6 +19,7 @@ import { RuntimeFacade, RuntimeFacadeError } from '../application/RuntimeFacade.
 import { createRuntimeContext } from '../application/createRuntimeContext.js';
 import { toPublicError } from '../util/publicError.js';
 import { IpcHostCapabilityBroker } from '../host/HostCapabilityBroker.js';
+import { readOwnRuntimeBuildManifest } from './runtimeBuildManifest.js';
 
 export const ARIADNE_RUNTIME_VERSION = '0.1.0';
 const BOOTSTRAP_TIMEOUT_MS = 15_000;
@@ -88,6 +89,14 @@ export class NodeIpcRuntimeHost {
     this.bootstrapTimer = undefined;
     let phase = 'bootstrap';
     try {
+      const buildManifest = readOwnRuntimeBuildManifest();
+      if (
+        buildManifest.runtimeVersion !== ARIADNE_RUNTIME_VERSION
+        || buildManifest.runtimeVersion !== bootstrap.runtimeVersion
+        || buildManifest.fingerprint !== bootstrap.runtimeBuildFingerprint
+      ) {
+        throw new Error('runtime_build_identity_mismatch');
+      }
       this.bootstrap = bootstrap;
       this.hostCapabilities = new IpcHostCapabilityBroker(
         bootstrap.runtimeInstanceId,
@@ -101,11 +110,13 @@ export class NodeIpcRuntimeHost {
         (event) => this.emitEvent(event),
         ARIADNE_RUNTIME_VERSION,
         {
+          activityDataRoot: bootstrap.dataRoot,
           conversationWorkspaceStateFile: path.join(bootstrap.dataRoot, 'conversation-workspaces.json'),
           workspaces: bootstrap.workspaces,
           ...(bootstrap.agentPermissions ? {
             proposalApproval: bootstrap.agentPermissions.proposalApproval,
-            allowedPermissions: bootstrap.agentPermissions.allowedPermissions
+            allowedPermissions: bootstrap.agentPermissions.allowedPermissions,
+            agentPermissionPolicy: bootstrap.agentPermissions.permissionPolicy
           } : {})
         }
       );
@@ -119,6 +130,7 @@ export class NodeIpcRuntimeHost {
         runtimeInstanceId: bootstrap.runtimeInstanceId,
         type: 'ready',
         runtimeVersion: ARIADNE_RUNTIME_VERSION,
+        runtimeBuildFingerprint: buildManifest.fingerprint,
         capabilities: this.facade.status().capabilities,
         storageSchemas: {
           memory: MEMORY_DB_SCHEMA_VERSION,

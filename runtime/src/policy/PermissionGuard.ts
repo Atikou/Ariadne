@@ -245,7 +245,9 @@ function extractAffectedTargets(
   return {
     files: unique(files),
     commands: command ? [command] : [],
-    networkTargets: unique([url, target].filter((value): value is string => Boolean(value))),
+    networkTargets: input.permission === "network"
+      ? unique([url, target].filter((value): value is string => Boolean(value)))
+      : [],
   };
 }
 

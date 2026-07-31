@@ -27,7 +27,7 @@ export function planToolExecutionBatches(
 
   actions.forEach((action, index) => {
     const contract = registry.get(action.tool);
-    if (!isParallelSafe(contract)) {
+    if (!isParallelObservationTool(contract)) {
       flush();
       batches.push([index]);
       return;
@@ -46,11 +46,30 @@ export function planToolExecutionBatches(
   return batches;
 }
 
-function isParallelSafe(contract: ReturnType<ToolRegistry["get"]>): boolean {
+export function isParallelObservationTool(
+  contract: ReturnType<ToolRegistry["get"]>,
+): boolean {
   return Boolean(
     contract &&
       contract.parallelism === "parallel_safe" &&
+      contract.permissions.every((permission) => permission === "read") &&
       contract.effects.every((effect) => effect === "none" || effect === "workspace_read"),
+  );
+}
+
+/**
+ * Provider tool-call batches must be completed without a permission pause in
+ * the middle. Cross-workspace reads therefore stay serial even though reads
+ * inside the active workspace may run in parallel.
+ */
+export function isImmediatelyParallelObservationAction(
+  action: ToolAction,
+  registry: ToolRegistry,
+  workspaceRoot: string,
+): boolean {
+  if (!isParallelObservationTool(registry.get(action.tool))) return false;
+  return collectPathLikeValues(action.input ?? {}).every(
+    (target) => isInsideWorkspace(workspaceRoot, target),
   );
 }
 
@@ -84,4 +103,40 @@ function resourcesConflict(left: string, right: string): boolean {
   if (left.startsWith("tool:") || right.startsWith("tool:")) return left === right;
   if (!left || !right) return true;
   return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+const PATH_FIELDS = new Set(["path", "file", "root", "dir", "cwd"]);
+const PATH_ARRAY_FIELDS = new Set(["paths", "files"]);
+
+function collectPathLikeValues(
+  value: unknown,
+  parentKey?: string,
+  output: string[] = [],
+): string[] {
+  if (typeof value === "string") {
+    if (parentKey && PATH_FIELDS.has(parentKey) && value.trim()) output.push(value.trim());
+    return output;
+  }
+  if (Array.isArray(value)) {
+    if (parentKey && PATH_ARRAY_FIELDS.has(parentKey)) {
+      for (const item of value) {
+        if (typeof item === "string" && item.trim()) output.push(item.trim());
+      }
+      return output;
+    }
+    for (const item of value) collectPathLikeValues(item, undefined, output);
+    return output;
+  }
+  if (!value || typeof value !== "object") return output;
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    collectPathLikeValues(child, key.toLowerCase(), output);
+  }
+  return output;
+}
+
+function isInsideWorkspace(workspaceRoot: string, target: string): boolean {
+  const root = path.resolve(workspaceRoot);
+  const resolved = path.resolve(root, target);
+  const relative = path.relative(root, resolved);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }

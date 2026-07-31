@@ -104,6 +104,14 @@ export const agentSettingsUpdateSchema = z
   })
   .strict();
 
+export const agentWorkspaceRequestSchema = z.object({
+  workspaceId: z.string().trim().min(1).max(128)
+}).strict();
+
+export const agentWorkspacePinUpdateSchema = agentWorkspaceRequestSchema.extend({
+  pinned: z.boolean()
+}).strict();
+
 export const apiKeyStatusSchema = z.enum(['missing', 'configured', 'unavailable']);
 
 const agentProviderSettingsViewSchema = z.object({
@@ -117,7 +125,11 @@ const agentProviderSettingsViewSchema = z.object({
 const agentWorkspaceSettingsViewSchema = z.object({
   workspaceId: z.string().trim().min(1).max(128),
   rootPath: absolutePathSchema,
-  access: z.enum(['read', 'write'])
+  access: z.enum(['read', 'write']),
+  pinned: z.boolean().optional(),
+  archivedAt: z.string().datetime().optional(),
+  purgeAfter: z.string().datetime().optional(),
+  purgedAt: z.string().datetime().optional()
 }).strict();
 
 export const agentSettingsViewSchema = z.object({

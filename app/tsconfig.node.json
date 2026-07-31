@@ -31,6 +31,8 @@
     "src/renderer/src/app/theme-sync.ts",
     "src/renderer/src/modules/chat/permission-decision-policy.ts",
     "src/renderer/src/modules/chat/MarkdownMessage.tsx",
+    "src/renderer/src/modules/chat/conversation-node.ts",
+    "src/renderer/src/modules/chat/RunProcessingDisclosure.tsx",
     "src/renderer/src/modules/settings/local-model-roots.ts",
     "tests/**/*.ts",
     "vitest.config.ts"

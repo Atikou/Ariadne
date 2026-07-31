@@ -1,19 +1,31 @@
-import type { AriadneApi } from '@shared/contract';
+import type { AgentSettingsView, AriadneApi } from '@shared/contract';
 
 const NAVIGATION_STORAGE_KEY = 'ariadne.conversation-navigation.v1';
+const INTERNAL_DEFAULT_WORKSPACE_ID = 'primary';
 
 export interface ConversationWorkspace {
   workspaceId: string;
   name: string;
   rootPath: string;
+  pinned: boolean;
+  archivedAt?: string;
+  purgeAfter?: string;
+  purgedAt?: string;
 }
 
 export interface ConversationNavigationService {
   listWorkspaces(): Promise<readonly ConversationWorkspace[]>;
+  listArchivedWorkspaces(): Promise<readonly ConversationWorkspace[]>;
   openWorkspace(): Promise<ConversationWorkspace | null>;
   getSelectedWorkspaceId(): string | null;
   onSelectedWorkspaceChanged(listener: (workspaceId: string | null) => void): () => void;
+  onWorkspacesChanged(listener: (workspaces: readonly ConversationWorkspace[]) => void): () => void;
   selectWorkspace(workspaceId: string): Promise<void>;
+  isWorkspaceActive(workspaceId: string): boolean;
+  isAssistantWorkspace(workspaceId: string): boolean;
+  setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
+  archiveWorkspace(workspaceId: string): Promise<void>;
+  restoreWorkspace(workspaceId: string): Promise<void>;
   isSessionPinned(sessionId: string, runtimePinned: boolean): boolean;
   setSessionPinned(sessionId: string, pinned: boolean): void;
 }
@@ -30,6 +42,7 @@ export class ConfiguredConversationNavigationService implements ConversationNavi
   private catalogLoad: Promise<readonly ConversationWorkspace[]> | undefined;
   private state: StoredConversationNavigation;
   private readonly selectedWorkspaceListeners = new Set<(workspaceId: string | null) => void>();
+  private readonly workspaceListeners = new Set<(workspaces: readonly ConversationWorkspace[]) => void>();
 
   constructor(
     private readonly agentSettings: AriadneApi['agentSettings'],
@@ -37,49 +50,77 @@ export class ConfiguredConversationNavigationService implements ConversationNavi
     private readonly storage: Pick<Storage, 'getItem' | 'setItem'>
   ) {
     this.state = readStoredNavigation(storage);
+    if (typeof this.agentSettings.onWorkspacesChanged === 'function') {
+      this.agentSettings.onWorkspacesChanged((settings) => this.applySettings(settings));
+    }
   }
 
   listWorkspaces(): Promise<readonly ConversationWorkspace[]> {
+    return this.loadCatalog().then(() => this.visibleWorkspaces());
+  }
+
+  listArchivedWorkspaces(): Promise<readonly ConversationWorkspace[]> {
+    return this.loadCatalog().then(() => this.workspaces.filter((workspace) => workspace.archivedAt));
+  }
+
+  private loadCatalog(): Promise<readonly ConversationWorkspace[]> {
     if (this.catalogLoad) return this.catalogLoad;
-    const operation = this.loadWorkspaces().finally(() => {
-      if (this.catalogLoad === operation) this.catalogLoad = undefined;
-    });
+    const operation = this.agentSettings.load()
+      .then((settings) => {
+        this.applySettings(settings);
+        return this.workspaces;
+      })
+      .finally(() => {
+        if (this.catalogLoad === operation) this.catalogLoad = undefined;
+      });
     this.catalogLoad = operation;
     return operation;
   }
 
-  private async loadWorkspaces(): Promise<readonly ConversationWorkspace[]> {
+  private applySettings(settings: Pick<AgentSettingsView, 'workspaces'>): void {
     const previousSelectedWorkspaceId = this.getSelectedWorkspaceId();
-    const settings = await this.agentSettings.load();
     this.workspaces = settings.workspaces.map((workspace) => ({
       workspaceId: workspace.workspaceId,
       name: workspaceNameFromPath(workspace.rootPath),
-      rootPath: workspace.rootPath
+      rootPath: workspace.rootPath,
+      pinned: workspace.pinned === true,
+      ...(workspace.archivedAt ? { archivedAt: workspace.archivedAt } : {}),
+      ...(workspace.purgeAfter ? { purgeAfter: workspace.purgeAfter } : {}),
+      ...(workspace.purgedAt ? { purgedAt: workspace.purgedAt } : {})
     }));
     this.catalogLoaded = true;
-    if (!this.state.selectedWorkspaceId
-      || !this.workspaces.some((candidate) => candidate.workspaceId === this.state.selectedWorkspaceId)) {
-      this.state = { ...this.state, selectedWorkspaceId: this.workspaces[0]?.workspaceId ?? null };
+    if (!this.activeWorkspaces().some((candidate) => candidate.workspaceId === this.state.selectedWorkspaceId)) {
+      this.state = {
+        ...this.state,
+        selectedWorkspaceId: this.visibleWorkspaces()[0]?.workspaceId
+          ?? this.activeWorkspaces().find((workspace) => workspace.workspaceId === INTERNAL_DEFAULT_WORKSPACE_ID)?.workspaceId
+          ?? null
+      };
       this.persist();
     }
-    if (previousSelectedWorkspaceId !== this.getSelectedWorkspaceId()) this.notifySelectedWorkspaceChanged();
-    return this.workspaces;
+    if (previousSelectedWorkspaceId !== this.getSelectedWorkspaceId()) {
+      this.notifySelectedWorkspaceChanged();
+    }
+    this.notifyWorkspacesChanged();
   }
 
   async openWorkspace(): Promise<ConversationWorkspace | null> {
     const opened = await this.workspace.openDirectory();
     if (!opened) return null;
-    const workspaces = await this.listWorkspaces();
-    const workspace = workspaces.find((candidate) => candidate.workspaceId === opened.workspaceId)
-      ?? workspaces.find((candidate) => sameWorkspaceRoot(candidate.rootPath, opened.rootPath))
+    await this.loadCatalog();
+    const workspace = this.workspaces.find((candidate) => candidate.workspaceId === opened.workspaceId)
+      ?? this.workspaces.find((candidate) => sameWorkspaceRoot(candidate.rootPath, opened.rootPath))
       ?? null;
+    if (workspace?.archivedAt) {
+      throw new Error('该工作区已归档，请在设置中恢复后再打开。');
+    }
     if (workspace) await this.selectWorkspace(workspace.workspaceId);
     return workspace;
   }
 
   getSelectedWorkspaceId(): string | null {
     if (!this.catalogLoaded) return null;
-    return this.workspaces.some((workspace) => workspace.workspaceId === this.state.selectedWorkspaceId)
+    return this.activeWorkspaces().some((workspace) => workspace.workspaceId === this.state.selectedWorkspaceId)
       ? this.state.selectedWorkspaceId
       : null;
   }
@@ -90,11 +131,37 @@ export class ConfiguredConversationNavigationService implements ConversationNavi
     return () => this.selectedWorkspaceListeners.delete(listener);
   }
 
+  onWorkspacesChanged(listener: (workspaces: readonly ConversationWorkspace[]) => void): () => void {
+    this.workspaceListeners.add(listener);
+    listener(this.visibleWorkspaces());
+    return () => this.workspaceListeners.delete(listener);
+  }
+
   async selectWorkspace(workspaceId: string): Promise<void> {
-    if (!this.workspaces.some((workspace) => workspace.workspaceId === workspaceId)) {
-      throw new Error('工作区不存在或尚未加载。');
+    if (!this.activeWorkspaces().some((workspace) => workspace.workspaceId === workspaceId)) {
+      throw new Error('工作区不存在、尚未加载或已经归档。');
     }
     this.setSelectedWorkspaceId(workspaceId);
+  }
+
+  isWorkspaceActive(workspaceId: string): boolean {
+    return this.activeWorkspaces().some((workspace) => workspace.workspaceId === workspaceId);
+  }
+
+  isAssistantWorkspace(workspaceId: string): boolean {
+    return workspaceId === INTERNAL_DEFAULT_WORKSPACE_ID;
+  }
+
+  async setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void> {
+    this.applySettings(await this.agentSettings.setWorkspacePinned({ workspaceId, pinned }));
+  }
+
+  async archiveWorkspace(workspaceId: string): Promise<void> {
+    this.applySettings(await this.agentSettings.archiveWorkspace({ workspaceId }));
+  }
+
+  async restoreWorkspace(workspaceId: string): Promise<void> {
+    this.applySettings(await this.agentSettings.restoreWorkspace({ workspaceId }));
   }
 
   isSessionPinned(sessionId: string, runtimePinned: boolean): boolean {
@@ -107,6 +174,16 @@ export class ConfiguredConversationNavigationService implements ConversationNavi
       pinOverrides: { ...this.state.pinOverrides, [sessionId]: pinned }
     };
     this.persist();
+  }
+
+  private activeWorkspaces(): readonly ConversationWorkspace[] {
+    return this.workspaces.filter((workspace) => !workspace.archivedAt);
+  }
+
+  private visibleWorkspaces(): readonly ConversationWorkspace[] {
+    return this.activeWorkspaces()
+      .filter((workspace) => workspace.workspaceId !== INTERNAL_DEFAULT_WORKSPACE_ID)
+      .sort((left, right) => Number(right.pinned) - Number(left.pinned));
   }
 
   private persist(): void {
@@ -131,6 +208,17 @@ export class ConfiguredConversationNavigationService implements ConversationNavi
         listener(workspaceId);
       } catch (error) {
         console.error('Workspace selection observer failed.', error);
+      }
+    }
+  }
+
+  private notifyWorkspacesChanged(): void {
+    const workspaces = this.visibleWorkspaces();
+    for (const listener of this.workspaceListeners) {
+      try {
+        listener(workspaces);
+      } catch (error) {
+        console.error('Workspace catalog observer failed.', error);
       }
     }
   }

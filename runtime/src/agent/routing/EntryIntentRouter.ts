@@ -43,6 +43,9 @@ export class EntryIntentRouter {
   }
 
   async resolveAsync(input: EntryIntentRouteInput = {}): Promise<IntentDecision> {
+    if (input.forceRequestedMode && parseRunModeValue(input.requestedMode)) {
+      return this.finalizeDecision(input, null);
+    }
     const sessionId = input.sessionId?.trim();
     const taskContext =
       input.taskContext ?? (sessionId ? this.sessionTasks.getContext(sessionId) : undefined);

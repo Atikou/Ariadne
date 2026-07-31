@@ -21,8 +21,6 @@ export interface AgentRunLifecycleDeps {
   trace?: TraceLogger;
 }
 
-export type ResumeWaitingStatus = "waiting_confirmation" | "waiting_plan_handoff";
-
 /** Owns the durable Run/Task/Trace transition for one Agent execution. */
 export class AgentRunLifecycle {
   constructor(private readonly deps: AgentRunLifecycleDeps) {}
@@ -65,6 +63,8 @@ export class AgentRunLifecycle {
       promptStrategy: result.promptStrategy,
       permissionRequest: result.permissionRequest,
       planHandoff: result.planHandoff,
+      agentPlan: result.agentPlan,
+      agentPlanExecutionReport: result.agentPlanExecutionReport,
       awaitingPermission,
       awaitingPlanHandoff,
       runState: runState
@@ -72,6 +72,10 @@ export class AgentRunLifecycle {
             status: runState.status,
             pendingSteps: runState.pendingSteps,
             completedSteps: runState.completedSteps,
+            budgetUsage: runState.budgetUsage,
+            suggestedBudget: runState.suggestedBudget,
+            budgetExhausted: runState.budgetExhausted,
+            partialSummary: runState.partialSummary,
           }
         : undefined,
       resumed: extra?.resumed,
@@ -86,28 +90,32 @@ export class AgentRunLifecycle {
         });
         break;
       case "waiting_confirmation":
-        this.deps.runs.execute({
-          type: "run.request_confirmation",
-          runId: current.id,
-          expectedAggregateVersion: current.aggregateVersion,
-          reason: {
-            code: "permission_required",
-            message: "The run is waiting for an explicit permission decision.",
-            details: resultPayload,
-          },
-        });
+        if (current.status !== "waiting_confirmation") {
+          this.deps.runs.execute({
+            type: "run.request_confirmation",
+            runId: current.id,
+            expectedAggregateVersion: current.aggregateVersion,
+            reason: {
+              code: "permission_required",
+              message: "The run is waiting for an explicit permission decision.",
+              details: resultPayload,
+            },
+          });
+        }
         break;
       case "waiting_plan_handoff":
-        this.deps.runs.execute({
-          type: "run.request_plan_handoff",
-          runId: current.id,
-          expectedAggregateVersion: current.aggregateVersion,
-          reason: {
-            code: "plan_handoff_required",
-            message: "The run is waiting for an explicit plan handoff decision.",
-            details: resultPayload,
-          },
-        });
+        if (current.status !== "waiting_plan_handoff") {
+          this.deps.runs.execute({
+            type: "run.request_plan_handoff",
+            runId: current.id,
+            expectedAggregateVersion: current.aggregateVersion,
+            reason: {
+              code: "plan_handoff_required",
+              message: "The run is waiting for an explicit plan handoff decision.",
+              details: resultPayload,
+            },
+          });
+        }
         break;
       case "blocked":
         this.deps.runs.execute({
@@ -121,16 +129,34 @@ export class AgentRunLifecycle {
         });
         break;
       case "paused":
-        this.deps.runs.execute({
-          type: "run.pause",
-          runId: current.id,
-          expectedAggregateVersion: current.aggregateVersion,
-          reason: {
-            code: result.executionMeta.stopReason,
-            message: "The run reached its execution budget and can resume from its checkpoint.",
-            details: resultPayload,
-          },
-        });
+        if (result.executionMeta.stopReason === "budget_exhausted") {
+          if (!runState) {
+            throw new Error(
+              `Run ${current.id} exhausted its budget without a resumable checkpoint.`,
+            );
+          }
+          this.deps.runs.execute({
+            type: "run.wait_budget",
+            runId: current.id,
+            expectedAggregateVersion: current.aggregateVersion,
+            reason: {
+              code: "budget_exhausted",
+              message: "The run yielded at its execution budget and can continue from its checkpoint.",
+              details: resultPayload,
+            },
+          });
+        } else {
+          this.deps.runs.execute({
+            type: "run.pause",
+            runId: current.id,
+            expectedAggregateVersion: current.aggregateVersion,
+            reason: {
+              code: result.executionMeta.stopReason,
+              message: result.answer || "The run was paused.",
+              details: resultPayload,
+            },
+          });
+        }
         break;
       case "cancelled":
         this.deps.runs.execute({
@@ -202,8 +228,15 @@ export class AgentRunLifecycle {
   finalizeResumeFailure(
     ctx: AgentRunLifecycleContext,
     error: unknown,
-    waitingStatus: ResumeWaitingStatus,
-  ): { error: string; code: string; runId: string; taskId: string; retryable: true } {
+    options?: { preserveWaitingDecision?: boolean },
+  ): {
+    error: string;
+    code: string;
+    runId: string;
+    taskId: string;
+    retryable: boolean;
+    recoveryStatus: "recoverable" | "decision_required";
+  } {
     const publicError = toPublicError(error);
     this.deps.taskService.applyStateTransition(ctx.task.id, ctx.sessionId, {
       status: "blocked",
@@ -211,42 +244,48 @@ export class AgentRunLifecycle {
       releaseFromSession: false,
     });
     const current = this.deps.runs.get(ctx.run.id);
-    if (current && current.status === "running") {
-      this.deps.runs.execute(
-        waitingStatus === "waiting_confirmation"
-          ? {
-              type: "run.request_confirmation",
-              runId: current.id,
-              expectedAggregateVersion: current.aggregateVersion,
-              reason: {
-                code: publicError.code,
-                message: publicError.message,
-              },
-            }
-          : {
-              type: "run.request_plan_handoff",
-              runId: current.id,
-              expectedAggregateVersion: current.aggregateVersion,
-              reason: {
-                code: publicError.code,
-                message: publicError.message,
-              },
-            },
-      );
+    const uncertainEffect = current?.state.inFlightEffects.some(
+      (effect) => effect.status === "started" && effect.resumable !== true,
+    ) ?? false;
+    const recoverable = !uncertainEffect;
+    if (
+      current
+      && !options?.preserveWaitingDecision
+      && (
+        current.status === "running"
+        || current.status === "waiting_confirmation"
+        || current.status === "waiting_plan_handoff"
+      )
+    ) {
+      this.deps.runs.execute({
+        type: "run.require_recovery",
+        runId: current.id,
+        expectedAggregateVersion: current.aggregateVersion,
+        recoverable,
+        reason: {
+          code: publicError.code,
+          message: publicError.message,
+          details: {
+            source: "agent_resume",
+            uncertainSideEffect: uncertainEffect,
+          },
+        },
+      });
     }
     this.writeTrace({
       type: "run_resume_failed",
       runId: ctx.run.id,
       kind: "agent",
-      status: waitingStatus,
-      retryable: true,
+      status: "recovery_required",
+      retryable: recoverable,
     });
     return {
       error: publicError.message,
       code: publicError.code,
       runId: ctx.run.id,
       taskId: ctx.task.id,
-      retryable: true,
+      retryable: recoverable,
+      recoveryStatus: recoverable ? "recoverable" : "decision_required",
     };
   }
 

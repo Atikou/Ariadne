@@ -74,5 +74,11 @@ function serializeRunState(state: RunState): string {
 }
 
 function deserializeRunState(json: string): RunState {
-  return JSON.parse(json) as RunState;
+  const parsed = JSON.parse(json) as Partial<RunState>;
+  return {
+    ...parsed,
+    checkpointVersion: 1,
+    executionEngineKind: parsed.executionEngineKind ?? "react_loop",
+    readRanges: parsed.readRanges ?? [],
+  } as RunState;
 }

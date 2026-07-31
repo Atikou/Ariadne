@@ -28,6 +28,10 @@ export interface FinalAction {
   answer: string;
   /** 模型对本轮执行状态的结构化声明；最终真实性仍由 ToolLedger 裁决。 */
   completionClaim?: "completed" | "partial" | "blocked" | "historical";
+  /** 仅计划模式使用；由计划质量门解析为版本化执行契约。 */
+  plan?: unknown;
+  /** 执行已批准计划时使用；逐步骤记录实际范围、证据、偏差与阻塞原因。 */
+  planExecution?: unknown;
 }
 
 export type AgentAction = ToolAction | ParallelToolAction | FinalAction;
@@ -67,6 +71,8 @@ const FinalActionSchema = z
     action: z.literal("final"),
     answer: z.string(),
     completionClaim: z.enum(["completed", "partial", "blocked", "historical"]).optional(),
+    plan: z.unknown().optional(),
+    planExecution: z.unknown().optional(),
   })
   .strict();
 

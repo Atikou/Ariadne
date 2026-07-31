@@ -1,7 +1,11 @@
 import type { AgentIntentType, AgentWorkflowType } from "./IntentTypes.js";
 import type { AgentWorkflowTaskState } from "./RunPolicyTypes.js";
 import type { AgentToolStep } from "./toolStep.js";
-import { isSuccessfulToolStep } from "./toolStepOutcome.js";
+import {
+  isObservationFailureStep,
+  isSuccessfulToolStep,
+  observationFailureKind,
+} from "./toolStepOutcome.js";
 
 export type WorkflowPhaseState =
   | "idle"
@@ -91,7 +95,9 @@ export function buildWorkflowState(input: WorkflowStateInput): WorkflowStateSnap
   let failedVerificationAttempts = 0;
 
   for (const [index, step] of input.steps.entries()) {
-    if (isSuccessfulToolStep(step) && READ_WORKFLOW_TOOLS.has(step.tool) && priorWrites === 0) readToolsBeforeWrite += 1;
+    if (isReadContextEvidenceStep(step, input.intent) && priorWrites === 0) {
+      readToolsBeforeWrite += 1;
+    }
     if (isSuccessfulToolStep(step) && WRITE_WORKFLOW_TOOLS.has(step.tool)) {
       priorWrites += 1;
       lastWriteIndex = index;
@@ -155,6 +161,33 @@ export function isWorkflowReadTool(tool: string): boolean {
 
 export function isWorkflowWriteTool(tool: string): boolean {
   return WRITE_WORKFLOW_TOOLS.has(tool);
+}
+
+/**
+ * A write workflow needs evidence that the target was inspected, not proof that
+ * the target already exists. For greenfield generation, a real read/locate call
+ * that observes an absent target is valid evidence; policy, validation and
+ * execution errors never are.
+ */
+export function isReadContextEvidenceStep(
+  step: AgentToolStep,
+  intent: AgentIntentType,
+): boolean {
+  if (!READ_WORKFLOW_TOOLS.has(step.tool)) return false;
+  if (isSuccessfulToolStep(step)) return true;
+  if (
+    intent !== "generate_file"
+    || step.blocked
+    || step.executed === false
+    || !isObservationFailureStep(step)
+  ) {
+    return false;
+  }
+  const kind = observationFailureKind(step);
+  return kind === "not_found"
+    || kind === "no_results"
+    || kind === "empty_result"
+    || kind === "no_project_info";
 }
 
 function isPlanningReady(input: WorkflowStateInput): boolean {

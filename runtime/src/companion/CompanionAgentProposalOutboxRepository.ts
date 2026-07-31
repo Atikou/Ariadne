@@ -224,6 +224,50 @@ export class CompanionAgentProposalOutboxRepository {
     }
   }
 
+  continueAssistantTurn(rawProposal: AgentProposal): CompanionMessage | null {
+    const proposal = AgentProposalSchema.parse(rawProposal);
+    if (!["approved", "executing", "waiting_permission", "waiting_plan_handoff"].includes(
+      proposal.status,
+    )) {
+      return null;
+    }
+    const current = this.findByProposal(proposal.id);
+    if (!current || current.state !== "delivered") return null;
+    const payload = this.parsePayload(current.payload_json);
+    assertProposalBinding(payload, proposal);
+    const message = this.getMessage(current.assistant_message_id);
+    if (
+      !message
+      || message.sessionId !== proposal.companionSessionId
+      || message.role !== "assistant"
+    ) {
+      throw new Error("companion_agent_proposal_outbox_message_mismatch");
+    }
+
+    const at = nowIso();
+    const metadata: Record<string, unknown> = {
+      ...(message.metadata ?? {}),
+      responseType: "agent_proposal",
+      agentProposalId: proposal.id,
+      agentProposalStatus: proposal.status,
+      agentProposalDeliveryState: "delivered",
+      ...(proposal.runId ? { agentRunId: proposal.runId } : {}),
+    };
+    this.db.prepare(
+      `UPDATE companion_messages
+       SET status='streaming', content_envelope_json=?, memory_eligible=0,
+           metadata_json=?, updated_at=?
+       WHERE id=?`,
+    ).run(
+      serializeCompanionMessageEnvelope("assistant", "streaming", message.id),
+      JSON.stringify(metadata),
+      at,
+      message.id,
+    );
+    this.touchSession(message.sessionId, at);
+    return this.getMessage(message.id);
+  }
+
   fail(id: string, errorCode: string): void {
     const current = this.getRow(id);
     if (!current || current.state !== "dispatching") return;
@@ -376,6 +420,12 @@ export class CompanionAgentProposalOutboxRepository {
     ).get(id) as ProposalOutboxRow | undefined;
   }
 
+  private findByProposal(proposalId: string): ProposalOutboxRow | undefined {
+    return this.db.prepare(
+      `SELECT * FROM companion_agent_proposal_outbox WHERE proposal_id=?`,
+    ).get(proposalId) as ProposalOutboxRow | undefined;
+  }
+
   private findBySourceTurn(sourceTurnId: string): ProposalOutboxRow | undefined {
     return this.db.prepare(
       `SELECT id, source_turn_id, assistant_message_id, session_id, payload_json,
@@ -414,7 +464,18 @@ function assertDeliveredProposal(
     proposal.status === "rejected"
     || proposal.status === "approved"
     || proposal.status === "executing"
-    || proposal.sourceTurnId !== payload.sourceTurnId
+  ) {
+    throw new Error("companion_agent_proposal_outbox_delivered_proposal_invalid");
+  }
+  assertProposalBinding(payload, proposal);
+}
+
+function assertProposalBinding(
+  payload: CompanionAgentProposalOutboxPayload,
+  proposal: AgentProposal,
+): void {
+  if (
+    proposal.sourceTurnId !== payload.sourceTurnId
     || proposal.companionSessionId !== payload.companionSessionId
     || proposal.originalRequest !== payload.originalRequest
     || proposal.reason !== payload.draft.reason
@@ -422,7 +483,7 @@ function assertDeliveredProposal(
     || !isSafeCapabilityNormalization(payload, proposal)
     || (payload.workspaceKey !== undefined && proposal.workspaceKey !== payload.workspaceKey)
   ) {
-    throw new Error("companion_agent_proposal_outbox_delivered_proposal_invalid");
+    throw new Error("companion_agent_proposal_outbox_proposal_binding_invalid");
   }
 }
 

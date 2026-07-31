@@ -1,7 +1,14 @@
 import { app, Menu, Notification, shell, Tray } from 'electron';
 import { join } from 'node:path';
 import type { RuntimeCapabilityRequest } from '@ariadne/protocol/host';
-import type { AgentSettingsUpdate, AgentSettingsView, OpenWorkspaceResult } from '@shared/contract';
+import type {
+  AgentSettingsUpdate,
+  AgentSettingsView,
+  AgentWorkspacePinUpdate,
+  AgentWorkspaceRequest,
+  OpenWorkspaceResult
+} from '@shared/contract';
+import { IPC_CHANNELS } from '@shared/ipc';
 import { AgentSettingsRepository } from './persistence/agent-settings-repository';
 import { McpOAuthCredentialVault } from './persistence/mcp-oauth-credential-vault';
 import { ElectronSafeStorageCipher } from './persistence/secret-cipher';
@@ -30,6 +37,7 @@ export class ApplicationController {
   private cleanupPromise: Promise<void> | null = null;
   private startPromise: Promise<void> | null = null;
   private agentSettingsOperationQueue: Promise<void> = Promise.resolve();
+  private workspaceArchiveCleanupTimer: NodeJS.Timeout | null = null;
   private tray: Tray | null = null;
   private removeIpcHandlers: (() => void) | null = null;
   private removeApprovalNotificationEvents: (() => void) | null = null;
@@ -102,7 +110,15 @@ export class ApplicationController {
         close: () => notification.close()
       };
     },
-    activateApplication: () => this.showFromUserActionSafely()
+    activateApplication: (sessionId) => {
+      this.showFromUserActionSafely();
+      if (sessionId) {
+        this.mainWindow.get()?.webContents.send(
+          IPC_CHANNELS.systemApprovalNavigation,
+          { sessionId }
+        );
+      }
+    }
   });
 
   async start(): Promise<void> {
@@ -138,6 +154,8 @@ export class ApplicationController {
         await this.mainWindow.saveWindowStateNow();
         await this.state.flush();
         await this.agentSettings.flush();
+        if (this.workspaceArchiveCleanupTimer) clearTimeout(this.workspaceArchiveCleanupTimer);
+        this.workspaceArchiveCleanupTimer = null;
         this.removeIpcHandlers?.();
         this.removeIpcHandlers = null;
         this.removeApprovalNotificationEvents?.();
@@ -176,6 +194,9 @@ export class ApplicationController {
       getWindow: () => this.mainWindow.get(),
       agentSettings: this.agentSettings,
       updateAgentSettings: (settings) => this.updateAgentSettings(settings),
+      setWorkspacePinned: (request) => this.setWorkspacePinned(request),
+      archiveWorkspace: (request) => this.archiveWorkspace(request),
+      restoreWorkspace: (request) => this.restoreWorkspace(request),
       updatePreferences: (preferences) => this.preferences.update(preferences),
       addWorkspaceRoot: (rootPath) => this.addWorkspaceRoot(rootPath),
       state: this.state,
@@ -183,7 +204,8 @@ export class ApplicationController {
       terminals: this.terminals,
       workspaceFiles: this.workspaceFiles,
       runtime: this.runtime,
-      mainWindow: this.mainWindow
+      mainWindow: this.mainWindow,
+      testApprovalNotification: () => this.approvalNotifications.showTestNotification()
     });
     this.removeApprovalNotificationEvents = this.runtime.onEvent((event) => {
       void this.approvalNotifications.handleRuntimeEvent(event.event).catch((error: unknown) => {
@@ -191,9 +213,12 @@ export class ApplicationController {
       });
     });
     await this.mainWindow.waitUntilRendererLoaded();
-    void this.runtime.start().catch(() => {
-      console.error('Runtime was unavailable during application startup.');
-    });
+    void this.runtime.start()
+      .then(() => this.cleanupDueArchivedWorkspaces())
+      .catch(() => {
+        console.error('Runtime was unavailable during application startup.');
+        this.scheduleArchivedWorkspaceCleanup(60_000);
+      });
     this.tray = await this.createTray();
     window.on('show', () => this.updateTrayMenu());
     window.on('hide', () => this.updateTrayMenu());
@@ -238,12 +263,79 @@ export class ApplicationController {
       if (result.added) {
         try {
           await this.applyAgentSettings(result.settings);
+          this.notifyWorkspaceSettingsChanged(result.settings);
         } catch (error) {
           return this.rollbackAgentSettings(checkpoint, error);
         }
       }
       return { workspaceId: result.workspace.workspaceId, rootPath: result.workspace.rootPath };
     });
+  }
+
+  private async setWorkspacePinned(request: AgentWorkspacePinUpdate): Promise<AgentSettingsView> {
+    return this.runAgentSettingsOperation(async () => {
+      const saved = await this.agentSettings.setWorkspacePinned(request.workspaceId, request.pinned);
+      this.notifyWorkspaceSettingsChanged(saved);
+      return saved;
+    });
+  }
+
+  private async archiveWorkspace(request: AgentWorkspaceRequest): Promise<AgentSettingsView> {
+    return this.runAgentSettingsOperation(async () => {
+      const saved = await this.agentSettings.archiveWorkspace(request.workspaceId);
+      this.notifyWorkspaceSettingsChanged(saved);
+      this.scheduleArchivedWorkspaceCleanup();
+      return saved;
+    });
+  }
+
+  private async restoreWorkspace(request: AgentWorkspaceRequest): Promise<AgentSettingsView> {
+    return this.runAgentSettingsOperation(async () => {
+      const saved = await this.agentSettings.restoreWorkspace(request.workspaceId);
+      this.notifyWorkspaceSettingsChanged(saved);
+      this.scheduleArchivedWorkspaceCleanup();
+      return saved;
+    });
+  }
+
+  private async cleanupDueArchivedWorkspaces(): Promise<void> {
+    await this.runAgentSettingsOperation(async () => {
+      let latestSettings: AgentSettingsView | null = null;
+      for (const workspaceId of this.agentSettings.dueArchivedWorkspaceIds()) {
+        const result = await this.runtime.request({
+          kind: 'companion.workspaces.purge',
+          workspaceId
+        });
+        if (result.kind !== 'companion.workspace.purged' || result.workspaceId !== workspaceId) {
+          throw new Error('Runtime did not confirm archived workspace cleanup.');
+        }
+        latestSettings = await this.agentSettings.markWorkspacePurged(workspaceId);
+      }
+      if (latestSettings) this.notifyWorkspaceSettingsChanged(latestSettings);
+      this.scheduleArchivedWorkspaceCleanup();
+    });
+  }
+
+  private scheduleArchivedWorkspaceCleanup(minimumDelayMs = 0): void {
+    if (this.workspaceArchiveCleanupTimer) clearTimeout(this.workspaceArchiveCleanupTimer);
+    this.workspaceArchiveCleanupTimer = null;
+    const nextPurgeAt = this.agentSettings.nextArchivedWorkspacePurgeAt();
+    if (!nextPurgeAt || this.isQuitting) return;
+    const delay = Math.min(
+      2_147_483_647,
+      Math.max(minimumDelayMs, Date.parse(nextPurgeAt) - Date.now(), 0)
+    );
+    this.workspaceArchiveCleanupTimer = setTimeout(() => {
+      this.workspaceArchiveCleanupTimer = null;
+      void this.cleanupDueArchivedWorkspaces().catch((error: unknown) => {
+        console.error('Archived workspace cleanup failed and will be retried.', error);
+        this.scheduleArchivedWorkspaceCleanup(60_000);
+      });
+    }, delay);
+  }
+
+  private notifyWorkspaceSettingsChanged(settings: AgentSettingsView): void {
+    this.mainWindow.get()?.webContents.send(IPC_CHANNELS.agentWorkspacesChanged, settings);
   }
 
   private async applyAgentSettings(saved: AgentSettingsView): Promise<void> {

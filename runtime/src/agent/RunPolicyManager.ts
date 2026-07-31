@@ -3,6 +3,7 @@ import { BudgetManager } from "./BudgetManager.js";
 import { defaultWorkflowRouter } from "./WorkflowRouter.js";
 import { EntryIntentRouter } from "./routing/EntryIntentRouter.js";
 import { afterPlanForVariant } from "./planExecutionVariant.js";
+import { estimateTaskComplexity } from "./taskComplexity.js";
 import {
   buildRunPolicySystemHint,
   executionStageForIntent,
@@ -52,7 +53,16 @@ export class RunPolicyManager {
 
   private buildPolicy(input: ResolveRunPolicyInput, decision: import("./routing/IntentDecision.js").IntentDecision): RunPolicy {
     const mode = decision.mode;
-    const budget = this.resolveBudget(mode, input.budget);
+    const complexity = estimateTaskComplexity({
+      goal: input.message ?? "",
+      mode,
+      taskType: input.taskType,
+    });
+    const budget = this.resolveBudget(
+      mode,
+      input.budget,
+      input.budget ? undefined : complexity,
+    );
     const suggestedBudget = mergeBudgetMax(MODE_SUGGESTED_BUDGETS[mode], budget);
     const explicitPermissionPolicy = parseUserPermissionPolicyValue(input.requestedPermissionPolicy);
     const permissionPolicy = explicitPermissionPolicy ?? inferRunPermissionPolicy({
@@ -108,6 +118,8 @@ export class RunPolicyManager {
       entryIntent: decision.intent,
       entryWorkflowType: workflowRoute.workflowType,
       effectiveWorkflowType: workflowRoute.workflowType,
+      suggestedToolCalls: complexity.suggestedToolCalls,
+      complexityTier: complexity.tier,
     };
   }
 
@@ -129,8 +141,29 @@ export class RunPolicyManager {
     }).mode;
   }
 
-  resolveBudget(mode: AgentRunMode, override: Partial<RunBudget> | undefined): RunBudget {
-    return mergeRunBudget(MODE_BASE_BUDGETS[mode], override);
+  resolveBudget(
+    mode: AgentRunMode,
+    override: Partial<RunBudget> | undefined,
+    complexity?: ReturnType<typeof estimateTaskComplexity>,
+  ): RunBudget {
+    const base = complexity
+      ? {
+          ...MODE_BASE_BUDGETS[mode],
+          maxModelTurns: Math.max(
+            MODE_BASE_BUDGETS[mode].maxModelTurns,
+            complexity.suggestedModelTurns,
+          ),
+          maxToolCalls: Math.max(
+            MODE_BASE_BUDGETS[mode].maxToolCalls,
+            complexity.suggestedToolCalls,
+          ),
+          maxReadCalls: Math.max(
+            MODE_BASE_BUDGETS[mode].maxReadCalls,
+            complexity.suggestedReadCalls,
+          ),
+        }
+      : MODE_BASE_BUDGETS[mode];
+    return mergeRunBudget(base, override);
   }
 
   createBudgetManager(policy: RunPolicy): BudgetManager {

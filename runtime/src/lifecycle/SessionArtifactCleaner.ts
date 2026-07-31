@@ -1,6 +1,10 @@
 import path from "node:path";
 
 import { ActivityRunStore } from "../agent/timeline/ActivityRunStore.js";
+import {
+  listSessionAgentStorageRoots,
+  sessionAgentStorageRoot,
+} from "../agent/timeline/SessionAgentStorage.js";
 import type { DatabaseManager } from "../context/DatabaseManager.js";
 import { safeDeleteDirectory, walkFiles } from "./fsUtils.js";
 import { writeTombstone } from "./CleanupJournal.js";
@@ -20,7 +24,7 @@ export interface SessionArtifactCleanupResult {
 
 export function cleanupSessionArtifacts(opts: {
   dataDir: string;
-  workspaceRoot: string;
+  workspaceRoot?: string;
   sessionId: string;
   runIds: string[];
   deleteTimeline: boolean;
@@ -31,11 +35,15 @@ export function cleanupSessionArtifacts(opts: {
   let bytesFreed = 0;
 
   if (opts.deleteTimeline) {
+    const storageRoot = sessionAgentStorageRoot(opts.dataDir, opts.sessionId);
     for (const runId of opts.runIds) {
-      const timelineDir = path.join(opts.workspaceRoot, ".agent", "runs", runId);
+      const timelineDir = path.join(storageRoot, ".agent", "runs", runId);
       timelineDirs.push(timelineDir);
       bytesFreed += dirSizeSafe(timelineDir);
-      safeDeleteDirectory(timelineDir);
+    }
+    safeDeleteDirectory(storageRoot);
+    if (opts.workspaceRoot) {
+      new ActivityRunStore(opts.workspaceRoot).deleteRunsForSessions([opts.sessionId]);
     }
   }
 
@@ -71,7 +79,7 @@ export interface RunArtifactCleanupResult {
 /** 删除单个 Run 的 timeline 与 data/runs 落盘。 */
 export function deleteRunArtifacts(opts: {
   dataDir: string;
-  workspaceRoot: string;
+  workspaceRoot?: string;
   runId: string;
   sessionId?: string;
   removeTimeline?: boolean;
@@ -81,10 +89,16 @@ export function deleteRunArtifacts(opts: {
   let dataRunDir: string | undefined;
 
   if (opts.removeTimeline !== false) {
-    const store = new ActivityRunStore(opts.workspaceRoot);
-    timelineDir = path.join(opts.workspaceRoot, ".agent", "runs", opts.runId);
-    if (store.deleteRunDirectory(opts.runId)) {
-      bytesFreed += dirSizeSafe(timelineDir);
+    const storageRoots = opts.sessionId
+      ? [sessionAgentStorageRoot(opts.dataDir, opts.sessionId)]
+      : listSessionAgentStorageRoots(opts.dataDir);
+    if (opts.workspaceRoot) storageRoots.push(opts.workspaceRoot);
+    for (const storageRoot of storageRoots) {
+      const candidate = path.join(storageRoot, ".agent", "runs", opts.runId);
+      const bytes = dirSizeSafe(candidate);
+      if (!new ActivityRunStore(storageRoot).deleteRunDirectory(opts.runId)) continue;
+      timelineDir ??= candidate;
+      bytesFreed += bytes;
     }
   }
 

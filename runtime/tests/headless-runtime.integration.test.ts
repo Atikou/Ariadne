@@ -109,6 +109,7 @@ function hello(
       type: "bootstrap",
       appVersion: "test",
       runtimeVersion: "0.1.0",
+      runtimeBuildFingerprint: "a".repeat(64),
       installRoot: fixture.installRoot,
       dataRoot: fixture.dataRoot,
       modelRoots: [path.join(fixture.dataRoot, "models")],

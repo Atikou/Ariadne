@@ -399,6 +399,8 @@ export interface RunPolicy {
   entryIntent?: import("./IntentTypes.js").AgentIntentType;
   entryWorkflowType?: import("./IntentTypes.js").AgentWorkflowType;
   effectiveWorkflowType?: import("./IntentTypes.js").AgentWorkflowType;
+  suggestedToolCalls?: number;
+  complexityTier?: "low" | "medium" | "high";
 }
 
 export interface ResolveRunPolicyInput {

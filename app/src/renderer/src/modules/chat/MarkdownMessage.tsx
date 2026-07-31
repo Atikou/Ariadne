@@ -15,11 +15,12 @@ const markdownComponents: Components = {
 
 export interface MarkdownMessageProps {
   markdown: string;
+  className?: string;
 }
 
-export function MarkdownMessage({ markdown }: MarkdownMessageProps): React.JSX.Element {
+export function MarkdownMessage({ markdown, className }: MarkdownMessageProps): React.JSX.Element {
   return (
-    <div className="message-content markdown-content">
+    <div className={['message-content', 'markdown-content', className].filter(Boolean).join(' ')}>
       <ReactMarkdown
         components={markdownComponents}
         remarkPlugins={remarkPlugins}

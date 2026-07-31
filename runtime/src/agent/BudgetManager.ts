@@ -154,7 +154,7 @@ export class BudgetManager {
   buildSuggestedBudget(exhausted?: RunBudgetKey): RunBudget {
     const suggested = { ...this.suggestedBudget };
     if (exhausted) {
-      suggested[exhausted] = Math.max(suggested[exhausted], this.budget[exhausted] * 2);
+      suggested[exhausted] = Math.max(suggested[exhausted], this.budget[exhausted]);
     }
     return suggested;
   }

@@ -39,6 +39,11 @@ export interface AgentToolStepPipelineContext {
         "workflowKind" | "readonlyOnly" | "enforceReadOnlyTools" | "sideEffectKind"
       >;
       userConfirmed: boolean;
+      activityBatchId?: string;
+      activityLaneId?: string;
+      activityParentId?: string;
+      activityDependsOnToolCallIds?: string[];
+      verifiesToolCallId?: string;
     },
   ) => Promise<AgentToolStep>;
   onCapabilityReconciled?: (result: ReconcileCapabilityBeforeToolResult) => void;
@@ -52,6 +57,11 @@ export interface ExecuteAgentToolStepInput {
   goal: string;
   messages: ChatMessage[];
   skipJitPause?: boolean;
+  activityBatchId?: string;
+  activityLaneId?: string;
+  activityParentId?: string;
+  activityDependsOnToolCallIds?: string[];
+  verifiesToolCallId?: string;
 }
 
 /**
@@ -84,6 +94,11 @@ export async function executeAgentToolStepPipeline(
     goal: input.goal,
     workflowRoute: reconciledWorkflowRoute,
     userConfirmed: input.skipJitPause === true,
+    activityBatchId: input.activityBatchId,
+    activityLaneId: input.activityLaneId,
+    activityParentId: input.activityParentId,
+    activityDependsOnToolCallIds: input.activityDependsOnToolCallIds,
+    verifiesToolCallId: input.verifiesToolCallId,
   });
 
   if (step.blockedReasonKind === "budget" && step.budgetExhausted) {

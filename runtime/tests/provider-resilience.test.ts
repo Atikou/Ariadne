@@ -50,6 +50,23 @@ describe("Provider resilience policy", () => {
     expect(chat).toHaveBeenCalledTimes(1);
   });
 
+  it("never transparently retries after the first streamed reasoning token", async () => {
+    const chat = vi.fn<ModelClient["chat"]>(async (input) => {
+      input.onReasoningToken?.("reasoning");
+      throw new ProviderRequestError("temporary", "connection reset", 503);
+    });
+    const onReasoningToken = vi.fn();
+    const client = resilient(fakeClient(chat), policy(), {
+      sleep: async () => undefined,
+    });
+
+    await expect(client.chat({ ...request, onReasoningToken })).rejects.toMatchObject({
+      category: "temporary",
+    });
+    expect(onReasoningToken).toHaveBeenCalledWith("reasoning");
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+
   it("opens and later probes a circuit per Provider/model", async () => {
     let now = 1_000;
     const chat = vi.fn<ModelClient["chat"]>()

@@ -5,7 +5,7 @@ import { ensureEvalTables } from "../model-router/eval-set-store.js";
 import { backfillMessageEnvelopes } from "./messageEnvelopeBackfill.js";
 import { addColumnIfMissing, hashRowId, type SqliteMigration } from "../storage/sqliteMigration.js";
 
-export const MEMORY_DB_SCHEMA_VERSION = 41;
+export const MEMORY_DB_SCHEMA_VERSION = 42;
 
 function ensureFts(
   db: DatabaseSync,
@@ -1337,6 +1337,30 @@ export const MEMORY_DB_MIGRATIONS: readonly SqliteMigration[] = [
           ON resources(sha256);
         CREATE INDEX idx_resources_expiry
           ON resources(expires_at);
+      `);
+    },
+  },
+  {
+    version: 42,
+    name: "versioned_agent_plan_contracts",
+    up(db) {
+      db.exec(`
+        CREATE TABLE agent_plan_contracts (
+          plan_id TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          session_id TEXT,
+          run_id TEXT NOT NULL,
+          plan_state TEXT NOT NULL,
+          execution_state TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(plan_id, version)
+        );
+        CREATE INDEX idx_agent_plan_contracts_session
+          ON agent_plan_contracts(session_id, created_at DESC);
+        CREATE INDEX idx_agent_plan_contracts_run
+          ON agent_plan_contracts(run_id, version DESC);
       `);
     },
   },

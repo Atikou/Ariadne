@@ -15,6 +15,7 @@ import type { CapabilityEscalationRecord } from "./CapabilityEscalation.js";
 import type { BudgetLedgerSnapshot } from "./BudgetManager.js";
 import type { CachedToolResult } from "./recovery/RunToolResultCache.js";
 import type { CompletionCriterionInput } from "./completion/TaskCompletionContract.js";
+import type { AgentPlanContract } from "../plan/AgentPlanContract.js";
 import type { ToolPermission } from "../core/permissions.js";
 
 export interface AgentHandoffAuthorizationContext {
@@ -43,6 +44,17 @@ export interface PausedRunRuntimeState {
   toolCacheEntries?: CachedToolResult[];
 }
 
+export interface PendingToolAction {
+  toolCallId?: string;
+  tool: string;
+  input?: Record<string, unknown>;
+}
+
+export interface AgentExecutionCheckpointDescriptor {
+  engineKind: "react_loop" | "graph";
+  schemaVersion: 1;
+}
+
 /**
  * 暂停中的 Agent Run 对话快照。
  *
@@ -51,6 +63,7 @@ export interface PausedRunRuntimeState {
  * 全程复用同一条 `messages` 链，不再合成假的用户续跑消息、也不再用正则去猜权限。
  */
 export interface PausedRunSnapshot {
+  execution: AgentExecutionCheckpointDescriptor;
   runId: string;
   sessionId?: string;
   /** 本轮真实目标（用户原始消息）。 */
@@ -70,7 +83,7 @@ export interface PausedRunSnapshot {
   /** 暂停时已用的模型轮次。 */
   modelTurns: number;
   /** 工具级 JIT 暂停：被阻塞、待批准后执行的工具调用。 */
-  pendingAction?: { tool: string; input?: Record<string, unknown> };
+  pendingAction?: PendingToolAction;
   /** 原始运行模式（工具级续跑沿用）。 */
   mode: AgentRunMode;
   /** 原始权限策略（工具级续跑沿用）。 */
@@ -83,19 +96,53 @@ export interface PausedRunSnapshot {
   handoffAuthorization?: AgentHandoffAuthorizationContext;
   /** 计划→执行交接：恢复后切换到的模式（一般为 implement）。 */
   resumeMode?: AgentRunMode;
+  /** 用户确认前冻结的版本化执行契约；续跑只能执行这一版本。 */
+  approvedPlan?: AgentPlanContract;
   /** 暂停时的运行时状态（escalation / 预算 / 缓存 / 熔断）。 */
   runtimeState?: PausedRunRuntimeState;
   createdAt: string;
 }
 
+type SnapshotStatus = "paused" | "resuming";
+
+interface MemorySnapshotEntry {
+  snapshot: PausedRunSnapshot;
+  status: SnapshotStatus;
+}
+
 /** 暂停 Run 快照存储。传入数据库时持久化到 memory.db；否则使用进程内 Map。 */
 export class PausedRunStore {
-  private readonly snapshots = new Map<string, PausedRunSnapshot>();
+  private readonly snapshots = new Map<string, MemorySnapshotEntry>();
 
   constructor(private readonly db?: DatabaseSync) {}
 
   usesConnection(db: DatabaseSync): boolean {
     return this.db === db;
+  }
+
+  transactionalSave<T>(snapshot: PausedRunSnapshot, createDecision: () => T): T {
+    if (!this.db) {
+      const previous = this.snapshots.get(snapshot.runId);
+      this.save(snapshot);
+      try {
+        return createDecision();
+      } catch (error) {
+        if (previous) this.snapshots.set(snapshot.runId, previous);
+        else this.snapshots.delete(snapshot.runId);
+        throw error;
+      }
+    }
+    const ownsTransaction = !this.db.isTransaction;
+    if (ownsTransaction) this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.save(snapshot);
+      const result = createDecision();
+      if (ownsTransaction) this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      if (ownsTransaction && this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   save(snapshot: PausedRunSnapshot): void {
@@ -121,7 +168,7 @@ export class PausedRunStore {
         );
       return;
     }
-    this.snapshots.set(snapshot.runId, snapshot);
+    this.snapshots.set(snapshot.runId, { snapshot, status: "paused" });
   }
 
   get(runId: string): PausedRunSnapshot | null {
@@ -129,24 +176,117 @@ export class PausedRunStore {
       const row = this.db
         .prepare(
           `SELECT snapshot_json FROM paused_run_snapshots
-           WHERE run_id=? AND status='paused'`,
+           WHERE run_id=? AND status IN ('paused', 'resuming')`,
         )
         .get(runId) as { snapshot_json: string } | undefined;
       return this.parseSnapshot(row);
     }
-    return this.snapshots.get(runId) ?? null;
+    return this.snapshots.get(runId)?.snapshot ?? null;
   }
 
-  /** 取出并移除：恢复开始时调用，避免对同一快照重复续跑。 */
-  take(runId: string): PausedRunSnapshot | null {
+  /**
+   * 原子认领一份暂停快照。恢复期间保留快照本体，避免进程退出或后续异常把
+   * 唯一续跑位置永久删除；同一时刻只有一个调用者能从 paused 进入 resuming。
+   */
+  claim(runId: string): PausedRunSnapshot | null {
     if (this.db) {
-      const snapshot = this.get(runId);
-      if (snapshot) this.delete(runId);
-      return snapshot;
+      const ownsTransaction = !this.db.isTransaction;
+      if (ownsTransaction) this.db.exec("BEGIN IMMEDIATE");
+      try {
+        const row = this.db
+          .prepare(
+            `SELECT snapshot_json FROM paused_run_snapshots
+             WHERE run_id=? AND status='paused'`,
+          )
+          .get(runId) as { snapshot_json: string } | undefined;
+        const snapshot = this.parseSnapshot(row);
+        if (!snapshot) {
+          if (ownsTransaction) this.db.exec("COMMIT");
+          return null;
+        }
+        const update = this.db
+          .prepare(
+            `UPDATE paused_run_snapshots
+             SET status='resuming', updated_at=?
+             WHERE run_id=? AND status='paused' AND snapshot_json=?`,
+          )
+          .run(new Date().toISOString(), runId, row!.snapshot_json);
+        if (Number(update.changes) !== 1) {
+          if (ownsTransaction) this.db.exec("COMMIT");
+          return null;
+        }
+        if (ownsTransaction) this.db.exec("COMMIT");
+        return snapshot;
+      } catch (error) {
+        if (ownsTransaction && this.db.isTransaction) this.db.exec("ROLLBACK");
+        throw error;
+      }
     }
-    const snapshot = this.snapshots.get(runId);
-    if (snapshot) this.snapshots.delete(runId);
-    return snapshot ?? null;
+    const entry = this.snapshots.get(runId);
+    if (!entry || entry.status !== "paused") return null;
+    entry.status = "resuming";
+    return entry.snapshot;
+  }
+
+  /**
+   * 仅释放仍由该快照持有的认领。若 Agent 在恢复途中产生了更新的暂停快照，
+   * save() 已把记录替换为 paused，此处不会覆盖新快照。
+   */
+  releaseClaim(snapshot: PausedRunSnapshot): boolean {
+    if (this.db) {
+      const update = this.db
+        .prepare(
+          `UPDATE paused_run_snapshots
+           SET status='paused', updated_at=?
+           WHERE run_id=? AND status='resuming' AND snapshot_json=?`,
+        )
+        .run(new Date().toISOString(), snapshot.runId, JSON.stringify(snapshot));
+      return Number(update.changes) === 1;
+    }
+    const entry = this.snapshots.get(snapshot.runId);
+    if (!entry || entry.status !== "resuming" || entry.snapshot !== snapshot) return false;
+    entry.status = "paused";
+    return true;
+  }
+
+  /**
+   * 成功完成恢复后消费认领；条件删除保证不会误删恢复途中创建的新权限暂停。
+   */
+  completeClaim(snapshot: PausedRunSnapshot): boolean {
+    if (this.db) {
+      const result = this.db
+        .prepare(
+          `DELETE FROM paused_run_snapshots
+           WHERE run_id=? AND status='resuming' AND snapshot_json=?`,
+        )
+        .run(snapshot.runId, JSON.stringify(snapshot));
+      return Number(result.changes) === 1;
+    }
+    const entry = this.snapshots.get(snapshot.runId);
+    if (!entry || entry.status !== "resuming" || entry.snapshot !== snapshot) return false;
+    this.snapshots.delete(snapshot.runId);
+    return true;
+  }
+
+  /** 启动恢复：上个进程遗留的认领重新变为可恢复暂停。 */
+  recoverInterruptedClaims(): number {
+    if (this.db) {
+      const result = this.db
+        .prepare(
+          `UPDATE paused_run_snapshots
+           SET status='paused', updated_at=?
+           WHERE status='resuming'`,
+        )
+        .run(new Date().toISOString());
+      return Number(result.changes);
+    }
+    let recovered = 0;
+    for (const entry of this.snapshots.values()) {
+      if (entry.status !== "resuming") continue;
+      entry.status = "paused";
+      recovered += 1;
+    }
+    return recovered;
   }
 
   delete(runId: string): void {
@@ -167,15 +307,15 @@ export class PausedRunStore {
       const row = this.db
         .prepare(
           `SELECT run_id FROM paused_run_snapshots
-           WHERE session_id=? AND status='paused'
+           WHERE session_id=? AND status IN ('paused', 'resuming')
            ORDER BY updated_at DESC
            LIMIT 1`,
         )
         .get(sessionId) as { run_id: string } | undefined;
       return row?.run_id ?? null;
     }
-    for (const snapshot of this.snapshots.values()) {
-      if (snapshot.sessionId === sessionId) return snapshot.runId;
+    for (const entry of this.snapshots.values()) {
+      if (entry.snapshot.sessionId === sessionId) return entry.snapshot.runId;
     }
     return null;
   }
@@ -185,7 +325,13 @@ export class PausedRunStore {
     try {
       const parsed = JSON.parse(row.snapshot_json) as PausedRunSnapshot;
       if (!parsed || typeof parsed !== "object" || typeof parsed.runId !== "string") return null;
-      return parsed;
+      return {
+        ...parsed,
+        execution: parsed.execution ?? {
+          engineKind: "react_loop",
+          schemaVersion: 1,
+        },
+      };
     } catch {
       return null;
     }

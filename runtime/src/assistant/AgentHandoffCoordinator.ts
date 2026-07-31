@@ -196,8 +196,16 @@ export class AgentHandoffCoordinator {
     return this.deps.state.getByRunId(runId);
   }
 
+  getActiveByAgentSessionId(agentSessionId: string): AgentProposal | null {
+    return this.deps.state.getActiveByAgentSessionId(agentSessionId);
+  }
+
   getCompanionStorageRoot(proposalId: string): string | undefined {
     return this.deps.state.getCompanionStorageRoot(proposalId);
+  }
+
+  getLinkedAgentSession(companionSessionId: string) {
+    return this.deps.state.getLinkedAgentSession(companionSessionId);
   }
 
   listPending(filter?: AgentProposalListFilter): AgentProposal[] {
@@ -278,15 +286,18 @@ export class AgentHandoffCoordinator {
   recordResumedExecution(runId: string, result: ApiResult): AgentProposal | null {
     const proposal = this.deps.state.getByRunId(runId);
     if (!proposal) return null;
-    const body = asRecord(result.body);
-    if (body.retryable === true && (result.status < 200 || result.status >= 300)) {
-      return proposal;
-    }
     const execution = normalizeExecutionResult(result);
     if (execution.runId !== runId) {
       throw new AgentHandoffConflictError("Agent 恢复结果与提案绑定的 Run 不一致");
     }
-    const settled = this.deps.state.settleResumedRun({
+    if (
+      execution.outcome.status === "waiting_permission"
+      || execution.outcome.status === "waiting_plan_handoff"
+      || (result.status >= 500 && asRecord(result.body).retryable === true)
+    ) {
+      return proposal;
+    }
+    const settled = this.deps.state.settleActiveRun({
       runId,
       status: execution.outcome.status,
       outcome: execution.outcome,
@@ -395,21 +406,32 @@ export class AgentHandoffCoordinator {
     }
 
     const execution = normalizeExecutionResult(apiResult);
-    const settled = this.deps.state.settle({
-      proposalId: proposal.id,
-      status: execution.outcome.status,
-      runId: execution.runId,
-      outcome: execution.outcome,
-    });
+    const active = execution.runId
+      ? this.deps.state.bindExecutionRun(proposal.id, execution.runId)
+      : started.proposal;
+    let current = active;
+    if (
+      execution.outcome.status === "completed"
+      || execution.outcome.status === "failed"
+    ) {
+      current = this.deps.state.settle({
+          proposalId: proposal.id,
+          status: execution.outcome.status,
+          runId: execution.runId,
+          outcome: execution.outcome,
+        });
+    }
+    const terminal = current !== active;
     this.writeTrace({
-      type: "assistant_agent_proposal_settled",
+      type: terminal ? "assistant_agent_proposal_settled" : "assistant_agent_run_bound",
       proposalId: proposal.id,
       grantId: started.grant.id,
       runId: execution.runId,
-      status: execution.outcome.status,
+      status: terminal ? execution.outcome.status : "executing",
+      ...(terminal ? {} : { waitReason: execution.outcome.status }),
     });
     return AgentProposalResponseSchema.parse({
-      proposal: settled,
+      proposal: current,
       grant: started.grant,
       ...(sessionReadGrant ? { sessionReadGrant } : {}),
       ...(execution.runId ? { execution: { runId: execution.runId, outcome: execution.outcome } } : {}),

@@ -17,6 +17,7 @@ import {
   type RuntimeToHostMessage
 } from '@ariadne/protocol/host';
 import type { RuntimePolicySnapshot } from '@ariadne/protocol/settings';
+import { readRuntimeBuildManifest } from './runtime-build-manifest';
 import {
   runtimeCommandSchema,
   type RuntimeCommand,
@@ -40,6 +41,8 @@ export interface RuntimeWorkspaceConfiguration {
 
 export interface RuntimeSupervisorOptions {
   runtimeEntry: string;
+  runtimeBuildManifestPath?: string;
+  runtimeBuildFingerprint?: string;
   installRoot: string;
   dataRoot: string;
   modelRoots: string[];
@@ -101,6 +104,7 @@ export class RuntimeSupervisor {
   private startup: StartupAttempt | null = null;
   private shutdownAttempt: ShutdownAttempt | null = null;
   private readySnapshot: RuntimeReady | null = null;
+  private activeBuildFingerprint: string | null = null;
   private lifecycleQueue: Promise<void> = Promise.resolve();
   private restartTimer: NodeJS.Timeout | null = null;
   private restartStabilityTimer: NodeJS.Timeout | null = null;
@@ -149,29 +153,51 @@ export class RuntimeSupervisor {
     this.lastEventCursor = 0;
     this.lastDiagnostic = null;
     this.readySnapshot = null;
+    this.activeBuildFingerprint = null;
   }
 
   async restart(options: RuntimeSupervisorOptions): Promise<RuntimeReady> {
     assertSupervisorOptions(options);
     return this.runLifecycleOperation(async () => {
-      await this.shutdownNow('restart', false);
-      this.options = options;
-      this.disposed = false;
-      this.stopping = false;
-      this.restartCount = 0;
-      this.clearRestartStabilityTimer();
-      this.lastEventCursor = 0;
-      this.lastDiagnostic = null;
-      this.readySnapshot = null;
-      return this.startNow();
+      return this.restartNow(options, 'restart');
     });
   }
 
   async start(): Promise<RuntimeReady> {
-    return this.runLifecycleOperation(() => this.startNow());
+    return this.runLifecycleOperation(async () => {
+      const buildFingerprint = this.resolveRuntimeBuildFingerprint();
+      if (
+        this.child
+        && this.currentStatus.availability === 'ready'
+        && this.readySnapshot?.runtimeBuildFingerprint !== buildFingerprint
+      ) {
+        return this.restartNow(this.options, 'upgrade', buildFingerprint);
+      }
+      return this.startNow(buildFingerprint);
+    });
   }
 
-  private async startNow(): Promise<RuntimeReady> {
+  private async restartNow(
+    options: RuntimeSupervisorOptions,
+    reason: 'restart' | 'upgrade',
+    buildFingerprint = resolveRuntimeBuildFingerprint(options)
+  ): Promise<RuntimeReady> {
+    await this.shutdownNow(reason, false);
+    this.options = options;
+    this.disposed = false;
+    this.stopping = false;
+    this.restartCount = 0;
+    this.clearRestartStabilityTimer();
+    this.lastEventCursor = 0;
+    this.lastDiagnostic = null;
+    this.readySnapshot = null;
+    this.activeBuildFingerprint = null;
+    return this.startNow(buildFingerprint);
+  }
+
+  private async startNow(
+    buildFingerprint = this.resolveRuntimeBuildFingerprint()
+  ): Promise<RuntimeReady> {
     if (this.disposed) throw new RuntimeRequestError('runtime_stopped', 'Runtime 已停止。', false);
     if (this.startup) return this.startup.promise;
     if (this.child && this.currentStatus.availability === 'ready') {
@@ -179,6 +205,7 @@ export class RuntimeSupervisor {
     }
 
     this.stopping = false;
+    this.activeBuildFingerprint = buildFingerprint;
     this.lastDiagnostic = null;
     this.readySnapshot = null;
     this.setStatus(this.restartCount > 0 ? 'restarting' : 'starting');
@@ -211,7 +238,7 @@ export class RuntimeSupervisor {
       child.on('message', (raw) => this.handleMessage(child, raw));
       child.on('error', (error) => this.handleChildError(child, error));
       child.once('exit', (code, signal) => this.handleExit(child, code, signal));
-      await this.send(child, this.createBootstrap(runtimeInstanceId));
+      await this.send(child, this.createBootstrap(runtimeInstanceId, buildFingerprint));
     } catch (error) {
       const startupError = toError(error, 'Runtime 进程无法启动。');
       const child = this.child;
@@ -284,6 +311,7 @@ export class RuntimeSupervisor {
         this.child = null;
         this.runtimeInstanceId = null;
         this.readySnapshot = null;
+        this.activeBuildFingerprint = null;
       }
       if (child && child.exitCode === null && child.signalCode === null) child.kill();
       this.setStatus('stopped');
@@ -319,6 +347,7 @@ export class RuntimeSupervisor {
         this.child = null;
         this.runtimeInstanceId = null;
         this.readySnapshot = null;
+        this.activeBuildFingerprint = null;
       }
       if (child.exitCode === null && child.signalCode === null) child.kill();
       await Promise.race([exited, delay(2_000)]);
@@ -326,7 +355,10 @@ export class RuntimeSupervisor {
     }
   }
 
-  private createBootstrap(runtimeInstanceId: string): RuntimeBootstrap {
+  private createBootstrap(
+    runtimeInstanceId: string,
+    runtimeBuildFingerprint: string
+  ): RuntimeBootstrap {
     return {
       protocol: ARIADNE_RUNTIME_PROTOCOL,
       protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
@@ -334,6 +366,7 @@ export class RuntimeSupervisor {
       type: 'bootstrap',
       appVersion: this.options.appVersion,
       runtimeVersion: this.options.runtimeVersion,
+      runtimeBuildFingerprint,
       installRoot: this.options.installRoot,
       dataRoot: this.options.dataRoot,
       modelRoots: [...this.options.modelRoots],
@@ -436,6 +469,12 @@ export class RuntimeSupervisor {
       );
       return;
     }
+    if (message.runtimeBuildFingerprint !== this.activeBuildFingerprint) {
+      this.handleProtocolViolation(
+        'Runtime 构建身份不匹配；拒绝连接旧构建。'
+      );
+      return;
+    }
     clearTimeout(this.startup.timer);
     const startup = this.startup;
     this.startup = null;
@@ -470,6 +509,7 @@ export class RuntimeSupervisor {
     this.child = null;
     this.runtimeInstanceId = null;
     this.readySnapshot = null;
+    this.activeBuildFingerprint = null;
     if (this.shutdownAttempt?.child === child) this.shutdownAttempt.resolve();
     this.failStartup(error);
     this.rejectPending(error);
@@ -488,6 +528,7 @@ export class RuntimeSupervisor {
     this.child = null;
     this.runtimeInstanceId = null;
     this.readySnapshot = null;
+    this.activeBuildFingerprint = null;
     if (this.shutdownAttempt?.child === child) this.shutdownAttempt.resolve();
     const unexpected = !this.stopping && !this.disposed;
     const detail = unexpected
@@ -636,6 +677,7 @@ export class RuntimeSupervisor {
       observedAt: new Date().toISOString(),
       ...(availability === 'ready' ? {
         runtimeVersion: this.readySnapshot?.runtimeVersion,
+        runtimeBuildFingerprint: this.readySnapshot?.runtimeBuildFingerprint,
         protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION
       } : {}),
       ...(detail ? { detail } : {})
@@ -657,6 +699,24 @@ export class RuntimeSupervisor {
     );
     return result;
   }
+
+  private resolveRuntimeBuildFingerprint(): string {
+    return resolveRuntimeBuildFingerprint(this.options);
+  }
+}
+
+function resolveRuntimeBuildFingerprint(options: RuntimeSupervisorOptions): string {
+  if (options.runtimeBuildManifestPath) {
+    const manifest = readRuntimeBuildManifest(options.runtimeBuildManifestPath);
+    if (manifest.runtimeVersion !== options.runtimeVersion) {
+      throw new Error(
+        `Runtime 构建清单版本不匹配：期望 ${options.runtimeVersion}，实际 ${manifest.runtimeVersion}。`
+      );
+    }
+    return manifest.fingerprint;
+  }
+  if (options.runtimeBuildFingerprint) return options.runtimeBuildFingerprint;
+  throw new Error('Runtime 构建身份未配置。');
 }
 
 function assertAbsolutePath(label: string, value: string): void {
@@ -665,6 +725,18 @@ function assertAbsolutePath(label: string, value: string): void {
 
 function assertSupervisorOptions(options: RuntimeSupervisorOptions): void {
   assertAbsolutePath('runtimeEntry', options.runtimeEntry);
+  if (options.runtimeBuildManifestPath) {
+    assertAbsolutePath('runtimeBuildManifestPath', options.runtimeBuildManifestPath);
+  }
+  if (!options.runtimeBuildManifestPath && !options.runtimeBuildFingerprint) {
+    throw new Error('Runtime build identity is required.');
+  }
+  if (
+    options.runtimeBuildFingerprint
+    && !/^[a-f0-9]{64}$/.test(options.runtimeBuildFingerprint)
+  ) {
+    throw new Error('runtimeBuildFingerprint must be a SHA-256 value.');
+  }
   assertAbsolutePath('installRoot', options.installRoot);
   assertAbsolutePath('dataRoot', options.dataRoot);
   for (const root of options.modelRoots) assertAbsolutePath('modelRoot', root);

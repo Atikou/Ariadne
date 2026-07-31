@@ -1,4 +1,5 @@
-import type { AgentLoop, LoopChatFn } from "../agent/AgentLoop.js";
+import type { LoopChatFn } from "../agent/AgentLoop.js";
+import type { AgentModelTurnEvent } from "../agent/AgentModelTurn.js";
 import type { AgentRuntimeServices } from "../agent/AgentRuntimeServices.js";
 import {
   defaultPausedRunStore,
@@ -14,8 +15,8 @@ import { parseModelTaskTypeOrError } from "../model/taskType.js";
 import type { PermissionRequestStore } from "../policy/PermissionRequestStore.js";
 import type { PlanHandoffStore } from "../policy/PlanHandoffStore.js";
 import type { ScopedApprovedPermissions } from "../policy/permissionRequestTypes.js";
-import type { AgentLoopFactory } from "./AgentLoopFactory.js";
-import type { AgentRunLifecycle, ResumeWaitingStatus } from "./AgentRunLifecycle.js";
+import type { AgentExecutionEngineRegistry } from "./AgentExecutionEngine.js";
+import type { AgentRunLifecycle } from "./AgentRunLifecycle.js";
 import type { AgentRunRegistry } from "./AgentRunRegistry.js";
 import type { RunAggregateRepository } from "../run/RunAggregateRepository.js";
 import type { RunTerminalEventBus } from "./RunTerminalEventBus.js";
@@ -32,13 +33,18 @@ export interface AgentResumeServiceDeps {
   runs: RunAggregateRepository;
   runStateStore: RunStateStore;
   agentRunRegistry: AgentRunRegistry;
-  agentLoopFactory: AgentLoopFactory;
+  executionEngines: AgentExecutionEngineRegistry;
   agentRunLifecycle: AgentRunLifecycle;
   makeChatFn: (forceClient?: string) => LoopChatFn;
   permissionRequestStore?: PermissionRequestStore;
   planHandoffStore?: PlanHandoffStore;
   pausedRunStore?: PausedRunStore;
   runTerminalEvents?: RunTerminalEventBus;
+}
+
+export interface AgentResumeCallbacks {
+  onModelTurn?: (turn: AgentModelTurnEvent) => void;
+  onRunChanged?: (runId: string) => void;
 }
 
 interface PausedResumeExecution {
@@ -50,14 +56,18 @@ interface PausedResumeExecution {
   makeChat?: LoopChatFn;
   scopedGrants?: ScopedApprovedPermissions;
   resumeKind: "permission" | "plan_handoff";
-  waitingStatus: ResumeWaitingStatus;
+  callbacks?: AgentResumeCallbacks;
 }
 
 /** Owns budget, tool-permission, and plan-handoff Agent resume use cases. */
 export class AgentResumeService {
   constructor(private readonly deps: AgentResumeServiceDeps) {}
 
-  async resumeBudget(body: unknown, makeChat?: LoopChatFn): Promise<ApiResult> {
+  async resumeBudget(
+    body: unknown,
+    makeChat?: LoopChatFn,
+    callbacks?: AgentResumeCallbacks,
+  ): Promise<ApiResult> {
     const payload = (body ?? {}) as {
       runId?: string;
       budget?: Partial<RunBudget>;
@@ -72,6 +82,17 @@ export class AgentResumeService {
     if (!run) return { status: 404, body: { error: "运行记录不存在", runId } };
     if (run.kind !== "agent") {
       return { status: 400, body: { error: "仅 agent 类型 Run 支持续跑", runId, kind: run.kind } };
+    }
+    if (run.status !== "paused" || run.waitReason?.code !== "budget_exhausted") {
+      return {
+        status: 409,
+        body: {
+          error: "Run is not waiting for additional execution budget.",
+          runId,
+          status: run.status,
+          waitReason: run.waitReason?.code,
+        },
+      };
     }
 
     const state = this.deps.runStateStore.get(runId);
@@ -105,19 +126,45 @@ export class AgentResumeService {
       : this.deps.taskService.resolveOrCreateTask(sessionId, state.goal.slice(0, 500));
     if (!task) return { status: 404, body: { error: "关联 task 不存在", taskId: state.taskId } };
 
-    this.deps.runs.execute({
-      type: "run.start",
-      runId,
-      expectedAggregateVersion: run.aggregateVersion,
-    });
-    this.deps.tasks.update(task.id, { status: "running" });
     const ctx = { message, sessionId, task, run: { id: runId } };
     let registered = false;
 
     try {
+      await this.deps.agentRunRegistry.waitUntilIdle(runId);
+      const current = this.deps.runs.get(runId);
+      if (!current) return { status: 404, body: { error: "Run not found.", runId } };
+      if (current.status !== "paused" || current.waitReason?.code !== "budget_exhausted") {
+        return {
+          status: 409,
+          body: {
+            error: "Run is no longer waiting for additional execution budget.",
+            runId,
+            status: current.status,
+          },
+        };
+      }
+      this.deps.runs.execute({
+        type: "run.start",
+        runId,
+        expectedAggregateVersion: current.aggregateVersion,
+      });
+      callbacks?.onRunChanged?.(runId);
+      this.deps.tasks.update(task.id, { status: "running" });
       const abortController = this.deps.agentRunRegistry.register(runId, "agent");
       registered = true;
-      const loop = this.deps.agentLoopFactory.create({
+      const workspaceRoot = this.deps.sessionWorkspace.workspaceForSession(sessionId);
+      if (!sessionId) throw new Error("resumable_run_session_missing");
+      const timeline = new AgentTimelineService({
+        projectRoot: workspaceRoot,
+        storageRoot: this.deps.sessionWorkspace.activityRootForSession(sessionId),
+      });
+      timeline.resumeRun({
+        id: runId,
+        goal: state.goal,
+        sessionId,
+        metadata: { userInput: state.goal, mode: policy.mode, projectRoot: workspaceRoot },
+      });
+      const engine = this.deps.executionEngines.create({
         chat: makeChat ?? this.deps.makeChatFn(),
         autoConfirm: false,
         sensitive: payload.sensitive,
@@ -130,13 +177,15 @@ export class AgentResumeService {
         taskId: task.id,
         resumeState: state,
         signal: abortController.signal,
-      });
+        timeline,
+        onModelTurn: callbacks?.onModelTurn,
+      }, state.executionEngineKind);
       this.deps.agentRunLifecycle.traceResume(ctx, {
         resumeKind: "budget",
         pendingSteps: state.pendingSteps,
         completedSteps: state.completedSteps,
       });
-      const result = await loop.run(message);
+      const result = await engine.run(message);
       const bodyResult = this.deps.agentRunLifecycle.finalizeSuccess(ctx, result, { resumed: true });
       await this.publishTerminal(runId);
       return { status: 200, body: bodyResult };
@@ -149,7 +198,11 @@ export class AgentResumeService {
     }
   }
 
-  async resumePermission(body: unknown, makeChat?: LoopChatFn): Promise<ApiResult> {
+  async resumePermission(
+    body: unknown,
+    makeChat?: LoopChatFn,
+    callbacks?: AgentResumeCallbacks,
+  ): Promise<ApiResult> {
     const payload = (body ?? {}) as {
       runId?: string;
       permissionRequestId?: string;
@@ -181,7 +234,7 @@ export class AgentResumeService {
       };
     }
 
-    const snapshot = this.pausedStore().take(runId);
+    const snapshot = this.pausedStore().claim(runId);
     if (!snapshot) return this.missingSnapshot(runId, "permission");
     if (!snapshot.pendingAction) {
       return this.restoreConflict(
@@ -216,11 +269,15 @@ export class AgentResumeService {
       makeChat,
       scopedGrants: request.approvedPermissions,
       resumeKind: "permission",
-      waitingStatus: "waiting_confirmation",
+      callbacks,
     });
   }
 
-  async resumePlanHandoff(body: unknown, makeChat?: LoopChatFn): Promise<ApiResult> {
+  async resumePlanHandoff(
+    body: unknown,
+    makeChat?: LoopChatFn,
+    callbacks?: AgentResumeCallbacks,
+  ): Promise<ApiResult> {
     const payload = (body ?? {}) as {
       runId?: string;
       planHandoffId?: string;
@@ -252,7 +309,7 @@ export class AgentResumeService {
       };
     }
 
-    const snapshot = this.pausedStore().take(runId);
+    const snapshot = this.pausedStore().claim(runId);
     if (!snapshot) return this.missingSnapshot(runId, "plan_handoff");
     if (snapshot.pendingAction || snapshot.resumeMode !== handoff.resumeMode) {
       return this.restoreConflict(
@@ -286,7 +343,7 @@ export class AgentResumeService {
       policy,
       makeChat,
       resumeKind: "plan_handoff",
-      waitingStatus: "waiting_plan_handoff",
+      callbacks,
     });
   }
 
@@ -297,17 +354,37 @@ export class AgentResumeService {
     let registered = false;
 
     try {
+      await this.deps.agentRunRegistry.waitUntilIdle(runId);
       const current = this.deps.runs.get(runId);
       if (!current) return { status: 404, body: { error: "Run not found.", runId } };
+      const expectedStatus = input.resumeKind === "permission"
+        ? "waiting_confirmation"
+        : "waiting_plan_handoff";
+      if (current.status !== expectedStatus) {
+        return {
+          status: 409,
+          body: {
+            error: "Run is no longer waiting for this approval.",
+            runId,
+            status: current.status,
+            expectedStatus,
+          },
+        };
+      }
       this.deps.runs.execute({
         type: "run.start",
         runId,
         expectedAggregateVersion: current.aggregateVersion,
       });
+      input.callbacks?.onRunChanged?.(runId);
       this.deps.tasks.update(task.id, { status: "running" });
       const workspaceRoot = this.deps.sessionWorkspace.workspaceForSession(sessionId);
-      const timeline = new AgentTimelineService({ workspaceRoot });
-      timeline.createRun({
+      if (!sessionId) throw new Error("resumable_run_session_missing");
+      const timeline = new AgentTimelineService({
+        projectRoot: workspaceRoot,
+        storageRoot: this.deps.sessionWorkspace.activityRootForSession(sessionId),
+      });
+      timeline.resumeRun({
         id: runId,
         goal: snapshot.goal,
         sessionId,
@@ -315,7 +392,7 @@ export class AgentResumeService {
       });
       const abortController = this.deps.agentRunRegistry.register(runId, "agent");
       registered = true;
-      const loop: AgentLoop = this.deps.agentLoopFactory.create({
+      const engine = this.deps.executionEngines.create({
         chat: input.makeChat ?? this.deps.makeChatFn(),
         autoConfirm: false,
         policy: input.policy,
@@ -332,15 +409,19 @@ export class AgentResumeService {
         pauseOnPermissionRequest: true,
         signal: abortController.signal,
         timeline,
-      });
+        onModelTurn: input.callbacks?.onModelTurn,
+      }, snapshot.execution.engineKind);
       this.deps.agentRunLifecycle.traceResume(ctx, { resumeKind: input.resumeKind });
-      const result = await loop.run(snapshot.goal);
+      const result = await engine.run(snapshot.goal);
       const bodyResult = this.deps.agentRunLifecycle.finalizeSuccess(ctx, result, { resumed: true });
+      pausedStore.completeClaim(snapshot);
       await this.publishTerminal(runId);
       return { status: 200, body: bodyResult };
     } catch (error) {
+      let replacementSnapshotExists = false;
       try {
-        pausedStore.save(snapshot);
+        const released = pausedStore.releaseClaim(snapshot);
+        replacementSnapshotExists = !released && pausedStore.get(runId) != null;
       } catch (snapshotError) {
         const bodyResult = this.deps.agentRunLifecycle.finalizeFailure(ctx, snapshotError);
         await this.publishTerminal(runId);
@@ -348,7 +429,9 @@ export class AgentResumeService {
       }
       return {
         status: 502,
-        body: this.deps.agentRunLifecycle.finalizeResumeFailure(ctx, error, input.waitingStatus),
+        body: this.deps.agentRunLifecycle.finalizeResumeFailure(ctx, error, {
+          preserveWaitingDecision: replacementSnapshotExists,
+        }),
       };
     } finally {
       if (registered) this.deps.agentRunRegistry.unregister(runId);
@@ -387,7 +470,7 @@ export class AgentResumeService {
     snapshot: PausedRunSnapshot,
   ): ApiResult {
     try {
-      this.pausedStore().save(snapshot);
+      this.pausedStore().releaseClaim(snapshot);
       return { status: 404, body: { error: "关联 task 不存在", taskId } };
     } catch (error) {
       return this.snapshotRestoreFailure(runId, error);
@@ -396,7 +479,7 @@ export class AgentResumeService {
 
   private restoreConflict(snapshot: PausedRunSnapshot, message: string): ApiResult {
     try {
-      this.pausedStore().save(snapshot);
+      this.pausedStore().releaseClaim(snapshot);
       return { status: 409, body: { error: message, runId: snapshot.runId } };
     } catch (error) {
       return this.snapshotRestoreFailure(snapshot.runId, error);
@@ -405,7 +488,7 @@ export class AgentResumeService {
 
   private restorePreparationFailure(snapshot: PausedRunSnapshot, error: unknown): ApiResult {
     try {
-      this.pausedStore().save(snapshot);
+      this.pausedStore().releaseClaim(snapshot);
     } catch (snapshotError) {
       return this.snapshotRestoreFailure(snapshot.runId, snapshotError);
     }

@@ -32,6 +32,9 @@ export interface DelegatedTaskRunOptions {
   maxCostUsd?: number;
   /** 父 Agent/工具调用取消信号，必须传播到子 Agent 模型和工具。 */
   signal?: AbortSignal;
+  activityTimeline?: import("../agent/timeline/AgentTimelineService.js").AgentTimelineService;
+  activityRunId?: string;
+  activityParentId?: string;
 }
 
 export interface SubAgentRunResult {
@@ -84,6 +87,9 @@ export interface SubAgentBatchOptions {
   /** 整批子任务共享的模型费用上限（USD），由协调器按任务数分配。 */
   maxCostUsd?: number;
   signal?: AbortSignal;
+  activityTimeline?: import("../agent/timeline/AgentTimelineService.js").AgentTimelineService;
+  activityRunId?: string;
+  activityParentId?: string;
 }
 
 export interface SubAgentConflict {

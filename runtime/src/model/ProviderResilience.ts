@@ -69,13 +69,25 @@ export class ResilientModelClient implements ModelClient {
       await this.enforceRateLimit(reservedTokens, request.signal);
       let attempt = 0;
       let firstTokenEmitted = false;
-      const wrappedRequest: ChatRequest = request.onToken
+      const wrappedRequest: ChatRequest = request.onToken || request.onReasoningToken
         ? {
             ...request,
-            onToken: (delta) => {
-              firstTokenEmitted = true;
-              request.onToken!(delta);
-            },
+            ...(request.onToken
+              ? {
+                  onToken: (delta: string) => {
+                    firstTokenEmitted = true;
+                    request.onToken!(delta);
+                  },
+                }
+              : {}),
+            ...(request.onReasoningToken
+              ? {
+                  onReasoningToken: (delta: string) => {
+                    firstTokenEmitted = true;
+                    request.onReasoningToken!(delta);
+                  },
+                }
+              : {}),
           }
         : request;
 

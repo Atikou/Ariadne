@@ -190,14 +190,28 @@ export class AgentToolExecutionCoordinator {
   async continueAfterToolStep(
     input: AgentToolContinuationInput,
   ): Promise<AgentToolContinuationResult> {
-    this.recordCompletedToolStep(input);
-    return await this.continueRecordedToolStep(input);
+    this.recordToolBatchObservations([input]);
+    return await this.continueAfterRecordedToolBatch([input]);
   }
 
   async continueAfterToolBatch(
     inputs: readonly AgentToolContinuationInput[],
   ): Promise<AgentToolContinuationResult> {
-    for (const input of inputs) this.recordCompletedToolStep(input);
+    // OpenAI-compatible providers require every tool result for one assistant
+    // tool_calls message to be contiguous. Workflow/system follow-ups may only
+    // be appended after the whole batch has produced its tool messages.
+    this.recordToolBatchObservations(inputs);
+    return await this.continueAfterRecordedToolBatch(inputs);
+  }
+
+  recordToolBatchObservations(inputs: readonly AgentToolContinuationInput[]): void {
+    for (const input of inputs) this.recordToolStepObservation(input);
+  }
+
+  async continueAfterRecordedToolBatch(
+    inputs: readonly AgentToolContinuationInput[],
+  ): Promise<AgentToolContinuationResult> {
+    for (const input of inputs) this.recordToolStepFollowups(input);
     for (const input of inputs) {
       const result = await this.continueRecordedToolStep(input);
       if (result.kind !== "continue") return result;
@@ -205,10 +219,37 @@ export class AgentToolExecutionCoordinator {
     return { kind: "continue" };
   }
 
-  private recordCompletedToolStep(input: AgentToolContinuationInput): void {
+  private recordToolStepObservation(input: AgentToolContinuationInput): void {
     input.steps.push(input.step);
     this.options.onStep?.(input.step);
-    this.recordToolStepMessages(input);
+    this.appendToolStepObservationMessage(input);
+  }
+
+  private appendToolStepObservationMessage(input: {
+    messages: ChatMessage[];
+    step: AgentToolStep;
+    steps: AgentToolStep[];
+    sessionId?: string;
+  }): void {
+    const toolText = renderAgentToolResultObservation(input.step, input.steps);
+    input.messages.push({
+      role: "tool",
+      name: input.step.tool,
+      toolCallId: input.step.toolCallId,
+      content: toolText,
+    });
+    if (this.options.contextManager && input.sessionId) {
+      this.options.contextManager.saveToolMessage(input.sessionId, toolText, this.options.runId, {
+        outcomeClass: input.step.outcomeClass,
+        outcomeKind: input.step.outcomeKind,
+        toolName: input.step.tool,
+        toolCallId: input.step.toolCallId,
+        ledgerBacked:
+          input.step.outcomeClass === "observation_success"
+          && input.step.outcomeKind !== "not_found"
+          && input.step.outcomeKind !== "no_results",
+      });
+    }
   }
 
   private async continueRecordedToolStep(
@@ -281,7 +322,8 @@ export class AgentToolExecutionCoordinator {
       if (verification) {
         input.steps.push(verification);
         this.options.onStep?.(verification);
-        this.recordToolStepMessages({ ...input, step: verification });
+        this.appendInternalToolObservationMessage({ ...input, step: verification });
+        this.recordToolStepFollowups({ ...input, step: verification });
       }
     }
 
@@ -349,6 +391,11 @@ export class AgentToolExecutionCoordinator {
       userConfirmed: boolean;
       isRecovery?: boolean;
       isPreflight?: boolean;
+      activityBatchId?: string;
+      activityLaneId?: string;
+      activityParentId?: string;
+      activityDependsOnToolCallIds?: string[];
+      verifiesToolCallId?: string;
     },
   ): Promise<AgentToolStep> {
     const result = await runAgentToolAction(this.buildToolActionRunContext(), {
@@ -361,6 +408,11 @@ export class AgentToolExecutionCoordinator {
       userConfirmed: context.userConfirmed,
       isRecovery: context.isRecovery,
       isPreflight: context.isPreflight,
+      activityBatchId: context.activityBatchId,
+      activityLaneId: context.activityLaneId,
+      activityParentId: context.activityParentId,
+      activityDependsOnToolCallIds: context.activityDependsOnToolCallIds,
+      verifiesToolCallId: context.verifiesToolCallId,
     });
     this.options.state.applyWorkflowWrite(result.workflowWrite);
     return result.step;
@@ -427,20 +479,13 @@ export class AgentToolExecutionCoordinator {
     };
   }
 
-  private recordToolStepMessages(input: {
+  private recordToolStepFollowups(input: {
     messages: ChatMessage[];
     step: AgentToolStep;
     steps: AgentToolStep[];
     goal: string;
     sessionId?: string;
   }): void {
-    const toolText = renderAgentToolResultObservation(input.step, input.steps);
-    input.messages.push({
-      role: "tool",
-      name: input.step.tool,
-      toolCallId: input.step.toolCallId,
-      content: toolText,
-    });
     if (input.step.cached) {
       input.messages.push({
         role: "system",
@@ -467,18 +512,6 @@ export class AgentToolExecutionCoordinator {
       followups.workflowCorrectionContext,
     ]) {
       if (extra) input.messages.push({ role: "system", content: extra });
-    }
-    if (this.options.contextManager && input.sessionId) {
-      this.options.contextManager.saveToolMessage(input.sessionId, toolText, this.options.runId, {
-        outcomeClass: input.step.outcomeClass,
-        outcomeKind: input.step.outcomeKind,
-        toolName: input.step.tool,
-        toolCallId: input.step.toolCallId,
-        ledgerBacked:
-          input.step.outcomeClass === "observation_success"
-          && input.step.outcomeKind !== "not_found"
-          && input.step.outcomeKind !== "no_results",
-      });
     }
   }
 
@@ -514,11 +547,16 @@ export class AgentToolExecutionCoordinator {
         ),
         userConfirmed: false,
         isRecovery: true,
+        activityBatchId: `iteration-${input.iteration}-recovery`,
+        activityDependsOnToolCallIds: [input.step.toolCallId].filter(
+          (value): value is string => Boolean(value),
+        ),
       });
       recoveryStep.systemRecovery = true;
       input.steps.push(recoveryStep);
       this.options.onStep?.(recoveryStep);
-      this.recordToolStepMessages({ ...input, step: recoveryStep });
+      this.appendInternalToolObservationMessage({ ...input, step: recoveryStep });
+      this.recordToolStepFollowups({ ...input, step: recoveryStep });
       if (recoveryStep.ok) break;
     }
   }
@@ -579,6 +617,11 @@ export class AgentToolExecutionCoordinator {
       goal,
       workflowRoute,
       userConfirmed: false,
+      activityBatchId: `iteration-${iteration}-verification`,
+      activityDependsOnToolCallIds: [writeStep.toolCallId].filter(
+        (value): value is string => Boolean(value),
+      ),
+      verifiesToolCallId: writeStep.toolCallId,
     });
     return {
       ...verificationStep,
@@ -595,6 +638,28 @@ export class AgentToolExecutionCoordinator {
           .map((criterion) => criterion.id),
       },
     };
+  }
+
+  private appendInternalToolObservationMessage(input: {
+    messages: ChatMessage[];
+    step: AgentToolStep;
+    steps: AgentToolStep[];
+    sessionId?: string;
+  }): void {
+    const toolText = renderAgentToolResultObservation(input.step, input.steps);
+    const content = [
+      `Ariadne internal ${input.step.systemRecovery ? "recovery" : "verification"} observation.`,
+      `Tool: ${input.step.tool}`,
+      toolText,
+    ].join("\n\n");
+    input.messages.push({ role: "system", content });
+    if (this.options.contextManager && input.sessionId) {
+      this.options.contextManager.saveSystemMessage(
+        input.sessionId,
+        content,
+        this.options.runId,
+      );
+    }
   }
 
   private bindCompletionCriteria(step: AgentToolStep, priorSteps: AgentToolStep[]): AgentToolStep {

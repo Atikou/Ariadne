@@ -6,8 +6,12 @@ import type { RuntimeEventEnvelope } from '@ariadne/protocol/public';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { RuntimeFacade } from '../src/application/RuntimeFacade.js';
+import { ActivityRunStore } from '../src/agent/timeline/ActivityRunStore.js';
+import { AgentTimelineService } from '../src/agent/timeline/AgentTimelineService.js';
+import { sessionAgentStorageRoot } from '../src/agent/timeline/SessionAgentStorage.js';
 import type { AppContext } from '../src/app/createAppContext.js';
 import { createCompanionMessageEnvelope } from '../src/companion/CompanionMessagePersistence.js';
+import type { CompanionStreamEvent } from '../src/companion/CompanionStreamContracts.js';
 import { DatabaseManager } from '../src/context/DatabaseManager.js';
 import { TraceLogger } from '../src/trace/TraceLogger.js';
 
@@ -20,6 +24,223 @@ afterEach(() => {
 });
 
 describe('RuntimeFacade Agent lifecycle', () => {
+  it('persists a new Companion run in session-owned storage instead of the selected workspace', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-facade-workspace-activity-'));
+    temporaryRoots.push(root);
+    const secondaryRoot = path.join(root, 'secondary');
+    const app = fakeApp(root, () => sourceProposal('pending'), () => Promise.reject(new Error('unused')));
+    Object.assign(app, {
+      workspaceCatalog: {
+        defaultKey: 'primary',
+        defaultRoot: root,
+        entries: [
+          { id: 'primary', label: 'Primary', root, resolvedRoot: root },
+          { id: 'secondary', label: 'Secondary', root: secondaryRoot, resolvedRoot: secondaryRoot }
+        ],
+        byId: new Map([
+          ['primary', { id: 'primary', label: 'Primary', root, resolvedRoot: root }],
+          ['secondary', {
+            id: 'secondary',
+            label: 'Secondary',
+            root: secondaryRoot,
+            resolvedRoot: secondaryRoot
+          }]
+        ])
+      },
+      allModelConfigs: () => [],
+      companionService: {
+        chatStream: async (
+          _input: unknown,
+          emit: (event: CompanionStreamEvent) => void
+        ) => {
+          emit(storedReasoningRunStartEvent(new Date().toISOString()));
+        }
+      }
+    });
+    const facade = new RuntimeFacade(app, () => {}, 'test', {
+      activityDataRoot: root,
+      workspaces: [
+        { workspaceId: 'primary', access: 'write' },
+        { workspaceId: 'secondary', access: 'write' }
+      ]
+    });
+
+    await expect(facade.handle({
+      kind: 'companion.chat.start',
+      clientMessageId: 'secondary-message',
+      message: '在第二工作区运行',
+      workspaceId: 'secondary',
+      resources: []
+    })).resolves.toMatchObject({
+      kind: 'companion.chat.accepted',
+      executionMode: 'companion',
+      runId: 'companion-reasoning-run'
+    });
+    expect(new ActivityRunStore(
+      sessionAgentStorageRoot(root, 'companion-reasoning-session')
+    ).loadRun('companion-reasoning-run')).not.toBeNull();
+    expect(new ActivityRunStore(secondaryRoot).loadRun('companion-reasoning-run')).toBeNull();
+    expect(new ActivityRunStore(root).loadRun('companion-reasoning-run')).toBeNull();
+  });
+
+  it('projects reasoning deltas independently before final answer deltas', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-facade-reasoning-'));
+    temporaryRoots.push(root);
+    const events: RuntimeEventEnvelope[] = [];
+    const facade = new RuntimeFacade(
+      fakeApp(root, () => sourceProposal('pending'), () => Promise.reject(new Error('unused'))),
+      (event) => events.push(event),
+      'test'
+    );
+    const projector = (facade as unknown as {
+      streamProjector: {
+        handle(event: CompanionStreamEvent): unknown;
+        bindAgentRun(proposalId: string, runId: string): void;
+      };
+    }).streamProjector;
+    const startedAt = '2026-07-22T00:00:00.000Z';
+
+    projector.handle(storedReasoningRunStartEvent(startedAt));
+    projector.handle({
+      type: 'reasoning',
+      runId: 'companion-reasoning-run',
+      delta: '检查约束',
+      source: 'provider',
+      startedAt
+    });
+    await waitFor(() => events.some((event) =>
+      event.event.kind === 'companion.reasoning.delta'));
+    projector.handle({
+      type: 'reasoning_end',
+      runId: 'companion-reasoning-run',
+      reasoning: {
+        content: '检查约束',
+        status: 'completed',
+        source: 'provider',
+        startedAt,
+        completedAt: '2026-07-22T00:00:02.000Z',
+        durationMs: 2_000
+      }
+    });
+    projector.handle({
+      type: 'token',
+      runId: 'companion-reasoning-run',
+      delta: '最终回答',
+      final: true,
+      outputMode: 'unrestricted',
+      streamMode: 'direct',
+      provisional: false
+    });
+    await waitFor(() => events.some((event) =>
+      event.event.kind === 'companion.token.delta'));
+
+    expect(events.map((event) => event.event)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'companion.reasoning.delta',
+        text: '检查约束'
+      }),
+      expect.objectContaining({
+        kind: 'companion.message.changed',
+        message: expect.objectContaining({
+          reasoning: expect.objectContaining({
+            status: 'completed',
+            durationMs: 2_000
+          })
+        })
+      }),
+      expect.objectContaining({
+        kind: 'companion.token.delta',
+        text: '最终回答'
+      })
+    ]));
+  });
+
+  it('keeps the processing message visible while an automatic Agent handoff is running', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-facade-handoff-processing-'));
+    temporaryRoots.push(root);
+    const events: RuntimeEventEnvelope[] = [];
+    let proposal = sourceProposal('pending');
+    const response = new Promise<Record<string, unknown>>(() => undefined);
+    const facade = new RuntimeFacade(
+      fakeApp(root, () => proposal, () => {
+        proposal = sourceProposal('executing');
+        return response;
+      }),
+      (event) => events.push(event),
+      'test',
+      {
+        proposalApproval: 'automatic',
+        workspaces: [{ workspaceId: 'primary', access: 'write' }]
+      }
+    );
+    const projector = (facade as unknown as {
+      streamProjector: {
+        handle(event: CompanionStreamEvent): unknown;
+        bindAgentRun(proposalId: string, runId: string): void;
+      };
+    }).streamProjector;
+    const startedAt = '2026-07-22T00:00:00.000Z';
+
+    projector.handle(storedReasoningRunStartEvent(startedAt));
+    projector.handle({
+      type: 'reasoning_end',
+      runId: 'companion-reasoning-run',
+      reasoning: {
+        content: '检查实现边界',
+        status: 'completed',
+        source: 'provider',
+        startedAt,
+        completedAt: '2026-07-22T00:00:02.000Z',
+        durationMs: 2_000
+      }
+    });
+    projector.handle({
+      type: 'agent_proposal',
+      runId: 'companion-reasoning-run',
+      proposal: sourceProposal('pending') as never
+    });
+    await waitFor(() => events.some((event) =>
+      event.event.kind === 'companion.message.changed'
+      && event.event.message.messageId === 'reasoning-assistant-message'
+      && event.event.message.status === 'streaming'
+      && event.event.message.reasoning?.status === 'completed'
+    ));
+    expect(events.some((event) =>
+      event.event.kind === 'run.changed'
+      && event.event.run.runId === 'companion-reasoning-run'
+      && event.event.run.status === 'completed'
+    )).toBe(false);
+
+    projector.bindAgentRun('proposal-1', 'agent-run-live-1');
+    await waitFor(() => events.some((event) =>
+      event.event.kind === 'companion.message.changed'
+      && event.event.message.messageId === 'reasoning-assistant-message'
+      && event.event.message.runId === 'agent-run-live-1'
+      && event.event.message.status === 'streaming'
+    ));
+    projector.handle({
+      type: 'done',
+      runId: 'companion-reasoning-run',
+      result: { response: { type: 'agent_proposal' } }
+    } as unknown as CompanionStreamEvent);
+
+    expect(events.some((event) => event.event.kind === 'companion.message.removed')).toBe(false);
+    expect(events.map((event) => event.event)).toContainEqual(expect.objectContaining({
+      kind: 'companion.message.changed',
+      message: expect.objectContaining({
+        messageId: 'reasoning-assistant-message',
+        runId: 'agent-run-live-1',
+        status: 'streaming',
+        reasoning: expect.objectContaining({ status: 'completed' })
+      })
+    }));
+    expect(events.some((event) =>
+      event.event.kind === 'run.changed'
+      && event.event.run.runId === 'companion-reasoning-run'
+      && event.event.run.status === 'completed'
+    )).toBe(true);
+  });
+
   it('publishes newly written Trace entries to the Runtime event stream', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-facade-live-trace-'));
     temporaryRoots.push(root);
@@ -106,6 +327,118 @@ describe('RuntimeFacade Agent lifecycle', () => {
       expect.objectContaining({
         kind: 'agent.proposal.changed',
         proposal: expect.objectContaining({ status: 'completed' })
+      })
+    ]));
+  });
+
+  it('publishes a newly created permission request when Agent execution pauses', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-facade-live-permission-'));
+    temporaryRoots.push(root);
+    const events: RuntimeEventEnvelope[] = [];
+    let proposal = sourceProposal('pending');
+    let resolveResponse!: (value: Record<string, unknown>) => void;
+    const response = new Promise<Record<string, unknown>>((resolve) => { resolveResponse = resolve; });
+    const run = waitingRun('run-permission', 'waiting_confirmation');
+    const permission = pendingPermission(run.id);
+    const app = fakeApp(root, () => proposal, () => {
+      proposal = sourceProposal('executing');
+      return response;
+    });
+    Object.assign(app, {
+      runs: { get: (runId: string) => runId === run.id ? run : null },
+      permissionRequestStore: {
+        listPending: (filter?: { runId?: string }) =>
+          !filter?.runId || filter.runId === run.id ? [permission] : []
+      }
+    });
+    const facade = new RuntimeFacade(app, (event) => events.push(event), 'test', {
+      workspaces: [{ workspaceId: 'primary', access: 'write' }]
+    });
+
+    await facade.handle({
+      kind: 'agent.proposals.respond',
+      proposalId: 'proposal-1',
+      decision: 'approve_once',
+      allowedCapabilities: ['file-read'],
+      workspaceId: 'primary'
+    });
+    proposal = {
+      ...sourceProposal('executing'),
+      status: 'waiting_permission',
+      runId: run.id,
+      outcome: {
+        status: 'waiting_permission',
+        permissionRequestId: permission.id
+      }
+    };
+    resolveResponse({ proposal });
+
+    await waitFor(() => events.some((event) => event.event.kind === 'permission.changed'));
+    expect(events.map((event) => event.event)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'permission.changed',
+        request: expect.objectContaining({
+          requestId: permission.id,
+          runId: run.id,
+          sessionId: 'session-1',
+          status: 'pending'
+        })
+      })
+    ]));
+  });
+
+  it('publishes a newly created plan handoff when Agent execution pauses', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-facade-live-plan-'));
+    temporaryRoots.push(root);
+    const events: RuntimeEventEnvelope[] = [];
+    let proposal = sourceProposal('pending');
+    let resolveResponse!: (value: Record<string, unknown>) => void;
+    const response = new Promise<Record<string, unknown>>((resolve) => { resolveResponse = resolve; });
+    const run = waitingRun('run-plan', 'waiting_plan_handoff');
+    const handoff = pendingPlanHandoff(run.id);
+    const app = fakeApp(root, () => proposal, () => {
+      proposal = sourceProposal('executing');
+      return response;
+    });
+    Object.assign(app, {
+      runs: { get: (runId: string) => runId === run.id ? run : null },
+      planHandoffStore: {
+        listPending: (filter?: { runId?: string }) =>
+          !filter?.runId || filter.runId === run.id ? [handoff] : []
+      }
+    });
+    const facade = new RuntimeFacade(app, (event) => events.push(event), 'test', {
+      workspaces: [{ workspaceId: 'primary', access: 'write' }]
+    });
+
+    await facade.handle({
+      kind: 'agent.proposals.respond',
+      proposalId: 'proposal-1',
+      decision: 'approve_once',
+      allowedCapabilities: ['file-read'],
+      workspaceId: 'primary'
+    });
+    proposal = {
+      ...sourceProposal('executing'),
+      status: 'waiting_plan_handoff',
+      runId: run.id,
+      outcome: {
+        status: 'waiting_plan_handoff',
+        planHandoffId: handoff.id
+      }
+    };
+    resolveResponse({ proposal });
+
+    await waitFor(() => events.some((event) => event.event.kind === 'planHandoff.changed'));
+    expect(events.map((event) => event.event)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'planHandoff.changed',
+        handoff: expect.objectContaining({
+          handoffId: handoff.id,
+          runId: run.id,
+          sessionId: 'session-1',
+          status: 'pending'
+        })
       })
     ]));
   });
@@ -362,7 +695,7 @@ describe('RuntimeFacade Agent lifecycle', () => {
     });
   });
 
-  it('lists approved permission and plan decisions only while their paused Runs are retryable', async () => {
+  it('keeps approved recovery records out of the permission approval surface', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-facade-retryable-list-'));
     temporaryRoots.push(root);
     const now = new Date().toISOString();
@@ -392,12 +725,267 @@ describe('RuntimeFacade Agent lifecycle', () => {
 
     await expect(facade.handle({ kind: 'permissions.list' })).resolves.toMatchObject({
       kind: 'permissions',
-      requests: [{ requestId: permission.id, status: 'approved' }]
+      requests: []
     });
     await expect(facade.handle({ kind: 'planHandoffs.list' })).resolves.toMatchObject({
       kind: 'planHandoffs',
-      handoffs: [{ handoffId: handoff.id, status: 'approved' }]
+      handoffs: []
     });
+  });
+
+  it('reconciles an approved interrupted permission resume into Agent recovery state at startup', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-facade-startup-reconcile-'));
+    temporaryRoots.push(root);
+    const now = new Date().toISOString();
+    const permission = approvedPermission(now);
+    let run = {
+      id: permission.runId,
+      kind: 'agent' as const,
+      status: 'waiting_confirmation' as const,
+      aggregateVersion: 4,
+      checkpointStage: 'waiting_confirmation' as const,
+      recoveryStatus: 'none' as const,
+      state: { round: 0, plan: null, childRunIds: [], inFlightEffects: [], verificationEvidence: [] },
+      goal: 'Resume permission',
+      createdAt: now,
+      updatedAt: now
+    };
+    const execute = vi.fn((command: { type: string; expectedAggregateVersion: number }) => {
+      expect(command).toMatchObject({
+        type: 'run.require_recovery',
+        expectedAggregateVersion: 4,
+        recoverable: true
+      });
+      run = {
+        ...run,
+        status: 'recovery_required',
+        aggregateVersion: 5,
+        checkpointStage: 'recovery_required',
+        recoveryStatus: 'recoverable'
+      };
+      return run;
+    });
+    const trace = new TraceLogger(path.join(root, 'trace.jsonl'));
+    const app = fakeApp(root, () => sourceProposal('pending'), () => Promise.reject(new Error('unused')));
+    Object.assign(app, {
+      trace,
+      runs: { list: () => [run], get: () => run, execute },
+      pausedRunStore: { get: () => ({ runId: run.id, pendingAction: { tool: 'write_file' } }) },
+      permissionRequestStore: {
+        listPending: () => [],
+        getApprovedByRunId: () => permission
+      }
+    });
+    const facade = new RuntimeFacade(app, () => {}, 'test');
+
+    try {
+      await facade.start();
+      expect(run).toMatchObject({
+        status: 'recovery_required',
+        recoveryStatus: 'recoverable'
+      });
+      expect(execute).toHaveBeenCalledTimes(1);
+    } finally {
+      await facade.stop();
+      await trace.close();
+    }
+  });
+
+  it('routes Agent recovery through the approved permission continuation, not generic resume', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-facade-recover-route-'));
+    temporaryRoots.push(root);
+    const now = new Date().toISOString();
+    const permission = approvedPermission(now);
+    const run = {
+      id: permission.runId,
+      kind: 'agent' as const,
+      status: 'recovery_required' as const,
+      aggregateVersion: 9,
+      checkpointStage: 'recovery_required' as const,
+      recoveryStatus: 'recoverable' as const,
+      state: { round: 0, plan: null, childRunIds: [], inFlightEffects: [], verificationEvidence: [] },
+      goal: 'Resume permission',
+      createdAt: now,
+      updatedAt: now
+    };
+    const resumeAfterPermission = vi.fn(() => new Promise(() => {}));
+    const resumeAgent = vi.fn(() => new Promise(() => {}));
+    const app = fakeApp(root, () => sourceProposal('pending'), () => Promise.reject(new Error('unused')));
+    Object.assign(app, {
+      runs: { list: () => [run], get: () => run },
+      pausedRunStore: { get: () => ({ runId: run.id, pendingAction: { tool: 'write_file' } }) },
+      permissionRequestStore: {
+        listPending: () => [],
+        getApprovedByRunId: () => permission
+      },
+      orchestrator: {
+        getActivityRun: () => ({ status: 404, body: { error: 'activity_run_not_found' } }),
+        resumeAfterPermission,
+        resumeAgent
+      },
+      makeChatFn: () => vi.fn()
+    });
+    const facade = new RuntimeFacade(app, () => {}, 'test');
+
+    await expect(facade.handle({
+      kind: 'runs.recover',
+      runId: run.id,
+      expectedAggregateVersion: run.aggregateVersion,
+      decision: 'resume'
+    })).resolves.toMatchObject({ kind: 'run', run: { runId: run.id } });
+    await waitFor(() => resumeAfterPermission.mock.calls.length === 1);
+    expect(resumeAfterPermission).toHaveBeenCalledWith(
+      { runId: run.id, permissionRequestId: permission.id },
+      expect.any(Function)
+    );
+    expect(resumeAgent).not.toHaveBeenCalled();
+  });
+
+  it('routes only a budget-paused Run through the budget resume command and rejects duplicates', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-facade-budget-resume-'));
+    temporaryRoots.push(root);
+    const now = new Date().toISOString();
+    const run = {
+      id: 'run-budget',
+      kind: 'agent' as const,
+      status: 'paused' as const,
+      aggregateVersion: 6,
+      checkpointStage: 'waiting_budget' as const,
+      recoveryStatus: 'none' as const,
+      waitReason: {
+        code: 'budget_exhausted',
+        message: 'Yielded at the execution budget'
+      },
+      state: {
+        round: 0,
+        plan: null,
+        childRunIds: [],
+        inFlightEffects: [],
+        verificationEvidence: []
+      },
+      goal: 'Continue from the saved budget checkpoint',
+      createdAt: now,
+      updatedAt: now
+    };
+    const resumeAgent = vi.fn(() => new Promise(() => {}));
+    const makeChatFn = vi.fn(() => vi.fn());
+    const app = fakeApp(root, () => sourceProposal('pending'), () => Promise.reject(new Error('unused')));
+    Object.assign(app, {
+      runs: { list: () => [run], get: () => run },
+      runStateStore: { get: () => ({ status: 'resumable' }) },
+      orchestrator: {
+        getActivityRun: () => ({ status: 404, body: { error: 'activity_run_not_found' } }),
+        resumeAgent
+      },
+      makeChatFn
+    });
+    const facade = new RuntimeFacade(app, () => {}, 'test');
+    const budget = {
+      maxModelTurns: 12,
+      maxToolCalls: 20,
+      maxReadCalls: 12,
+      maxWriteCalls: 4,
+      maxShellCalls: 4,
+      maxRuntimeMs: 180_000,
+      maxPreflightTools: 3,
+      maxRecoveryTurns: 3,
+      maxRepeatedToolFailures: 1
+    };
+
+    await expect(facade.handle({
+      kind: 'runs.resume',
+      runId: run.id,
+      expectedAggregateVersion: run.aggregateVersion,
+      budget
+    })).resolves.toMatchObject({ kind: 'run', run: { status: 'waiting_budget' } });
+    await waitFor(() => resumeAgent.mock.calls.length === 1);
+    expect(resumeAgent).toHaveBeenCalledWith(
+      { runId: run.id, budget },
+      expect.any(Function)
+    );
+    expect(makeChatFn).toHaveBeenCalledTimes(1);
+
+    await expect(facade.handle({
+      kind: 'runs.resume',
+      runId: run.id,
+      expectedAggregateVersion: run.aggregateVersion,
+      budget
+    })).rejects.toMatchObject({ code: 'resume_in_progress', retryable: true });
+
+    await expect(facade.handle({
+      kind: 'runs.recover',
+      runId: run.id,
+      expectedAggregateVersion: run.aggregateVersion,
+      decision: 'resume'
+    })).rejects.toMatchObject({ code: 'run_not_recoverable' });
+  });
+
+  it('normalizes a host-level resume failure to recovery instead of leaving a stale waiting state', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-facade-resume-normalize-'));
+    temporaryRoots.push(root);
+    const now = new Date().toISOString();
+    let run = {
+      id: 'run-normalize',
+      kind: 'agent' as const,
+      status: 'running' as const,
+      aggregateVersion: 7,
+      checkpointStage: 'running' as const,
+      recoveryStatus: 'none' as const,
+      state: { round: 0, plan: null, childRunIds: [], inFlightEffects: [], verificationEvidence: [] },
+      goal: 'Normalize failure',
+      createdAt: now,
+      updatedAt: now
+    };
+    const execute = vi.fn((command: { type: string }) => {
+      expect(command).toMatchObject({
+        type: 'run.require_recovery',
+        recoverable: true
+      });
+      run = {
+        ...run,
+        status: 'recovery_required',
+        aggregateVersion: 8,
+        checkpointStage: 'recovery_required',
+        recoveryStatus: 'recoverable'
+      };
+      return run;
+    });
+    const app = fakeApp(root, () => sourceProposal('pending'), () => Promise.reject(new Error('unused')));
+    Object.assign(app, {
+      runs: { list: () => [run], get: () => run, execute },
+      permissionRequestStore: {
+        listPending: () => [],
+        getPendingByRunId: () => null,
+        getApprovedByRunId: () => null
+      },
+      planHandoffStore: {
+        listPending: () => [],
+        getPendingByRunId: () => null,
+        getApprovedByRunId: () => null
+      },
+      orchestrator: {
+        getActivityRun: () => ({ status: 404, body: { error: 'activity_run_not_found' } }),
+        resumeAfterPermission: async () => ({
+          status: 502,
+          body: { code: 'provider_unavailable', error: 'provider unavailable' }
+        })
+      },
+      makeChatFn: () => vi.fn(),
+      unifiedAssistantHandoffService: {
+        recordResumedExecution: async (_runId: string, result: unknown) => result
+      }
+    });
+    const facade = new RuntimeFacade(app, () => {}, 'test');
+
+    await (facade as unknown as {
+      resumeAfterPermission(runId: string, requestId: string): Promise<void>;
+    }).resumeAfterPermission(run.id, 'permission-normalize');
+
+    expect(run).toMatchObject({
+      status: 'recovery_required',
+      recoveryStatus: 'recoverable'
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 
   it('retries approved paused Runs through explicit commands and rejects concurrent resumes', async () => {
@@ -421,8 +1009,20 @@ describe('RuntimeFacade Agent lifecycle', () => {
       },
       pausedRunStore: { get: (runId: string) => ({ runId }) },
       permissionRequestStore: { get: (id: string) => id === permission.id ? permission : null },
-      planHandoffStore: { get: (id: string) => id === handoff.id ? handoff : null },
+      planHandoffStore: {
+        get: (id: string) => id === handoff.id ? handoff : null,
+        getApprovedByRunId: (runId: string) => runId === handoff.runId ? handoff : null,
+        updatePlan: (_id: string, plan: unknown) => ({ ...handoff, plan })
+      },
+      agentPlanStore: {
+        markExecution: (
+          _planId: string,
+          _version: number,
+          executionState: 'not_started' | 'in_progress' | 'blocked' | 'completed' | 'failed'
+        ) => ({ ...handoff.plan, executionState })
+      },
       orchestrator: {
+        getActivityRun: () => ({ status: 404, body: { error: 'activity_run_not_found' } }),
         resumeAfterPermission: resumePermission,
         resumeAfterPlanHandoff: resumePlanHandoff
       },
@@ -693,7 +1293,15 @@ describe('RuntimeFacade Agent lifecycle', () => {
         deleteCompanionSession: async () => ({ deleted: true, sessionId: 'session-delete' })
       }
     });
+    const sessionStorageRoot = sessionAgentStorageRoot(root, 'session-delete');
+    const timeline = new AgentTimelineService({ projectRoot: root, storageRoot: sessionStorageRoot });
+    timeline.createRun({
+      id: 'deleted-session-run',
+      goal: 'delete me',
+      sessionId: 'session-delete'
+    });
     const facade = new RuntimeFacade(app, () => {}, 'test', {
+      activityDataRoot: root,
       workspaces: [{ workspaceId: 'primary', access: 'write' }]
     });
     const registry = (facade as unknown as {
@@ -707,10 +1315,69 @@ describe('RuntimeFacade Agent lifecycle', () => {
       kind: 'companion.sessions.delete',
       sessionId: 'session-delete'
     })).resolves.toEqual({ kind: 'acknowledged' });
+    expect(new ActivityRunStore(sessionStorageRoot).loadRun('deleted-session-run')).toBeNull();
     expect(traceWrite).toHaveBeenCalledWith(expect.objectContaining({
       type: 'conversation_workspace_cleanup_deferred',
       sessionId: 'session-delete'
     }));
+  });
+
+  it('purges only sessions and orphan Agent contexts owned by the archived workspace', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-facade-workspace-purge-'));
+    temporaryRoots.push(root);
+    const app = fakeApp(root, () => sourceProposal('pending'), () => Promise.reject(new Error('unused')));
+    const deletedCompanionSessions: string[] = [];
+    const deletedAgentSessions: string[] = [];
+    Object.assign(app, {
+      companionService: {
+        listSessions: () => ({
+          sessions: [
+            { id: 'primary-session' },
+            { id: 'archived-session' }
+          ]
+        })
+      },
+      unifiedAssistantHandoffService: {
+        deleteCompanionSession: async ({ sessionId }: { sessionId: string }) => {
+          deletedCompanionSessions.push(sessionId);
+          return { deleted: true, sessionId };
+        }
+      },
+      contextManager: {
+        ...app.contextManager,
+        listSessions: () => [
+          { id: 'orphan-agent-session', workspaceKey: 'secondary' }
+        ],
+        deleteSession: (sessionId: string) => {
+          deletedAgentSessions.push(sessionId);
+          return true;
+        }
+      }
+    });
+    const facade = new RuntimeFacade(app, () => {}, 'test', {
+      activityDataRoot: root,
+      workspaces: [
+        { workspaceId: 'primary', access: 'write' },
+        { workspaceId: 'secondary', access: 'write' }
+      ]
+    });
+    const registry = (facade as unknown as {
+      conversationWorkspaces: { assign(sessionId: string, workspaceId: string): void };
+    }).conversationWorkspaces;
+    registry.assign('primary-session', 'primary');
+    registry.assign('archived-session', 'secondary');
+
+    await expect(facade.handle({
+      kind: 'companion.workspaces.purge',
+      workspaceId: 'secondary'
+    })).resolves.toEqual({
+      kind: 'companion.workspace.purged',
+      workspaceId: 'secondary',
+      deletedSessions: 1,
+      deletedAgentContexts: 1
+    });
+    expect(deletedCompanionSessions).toEqual(['archived-session']);
+    expect(deletedAgentSessions).toEqual(['archived-session', 'orphan-agent-session']);
   });
 
   it('reports both ownership and cleanup failures when session creation cannot be compensated', async () => {
@@ -770,6 +1437,65 @@ function storedRunStartEvent() {
   };
 }
 
+function storedReasoningRunStartEvent(
+  now: string
+): Extract<CompanionStreamEvent, { type: 'run_start'; persistence: 'stored' }> {
+  const storageRoot = 'C:\\runtime\\companion';
+  return {
+    type: 'run_start',
+    runId: 'companion-reasoning-run',
+    persistence: 'stored',
+    outputMode: 'unrestricted',
+    session: {
+      id: 'companion-reasoning-session',
+      personaId: 'default',
+      title: 'Reasoning',
+      storageRoot,
+      incognito: false,
+      createdAt: now,
+      updatedAt: now
+    },
+    userMessage: {
+      id: 'reasoning-user-message',
+      sessionId: 'companion-reasoning-session',
+      role: 'user',
+      content: '请分析',
+      status: 'completed',
+      contentEnvelope: createCompanionMessageEnvelope(
+        'user',
+        'completed',
+        'reasoning-user-message'
+      ),
+      memoryEligible: true,
+      storageRoot,
+      createdAt: now,
+      updatedAt: now
+    },
+    assistantMessage: {
+      id: 'reasoning-assistant-message',
+      sessionId: 'companion-reasoning-session',
+      role: 'assistant',
+      content: '',
+      status: 'streaming',
+      contentEnvelope: createCompanionMessageEnvelope(
+        'assistant',
+        'streaming',
+        'reasoning-assistant-message'
+      ),
+      memoryEligible: false,
+      storageRoot,
+      createdAt: now,
+      updatedAt: now
+    },
+    storage: {
+      storageRoot,
+      dbPath: `${storageRoot}\\companion.db`,
+      schemaVersion: 9,
+      writable: true
+    }
+  };
+}
+
 function sourceRun(
   id: string,
   status: 'waiting_confirmation' | 'waiting_plan_handoff',
@@ -783,6 +1509,66 @@ function sourceRun(
     error: 'Previous resume failed',
     createdAt: now,
     updatedAt: now
+  };
+}
+
+function waitingRun(
+  id: string,
+  status: 'waiting_confirmation' | 'waiting_plan_handoff'
+) {
+  const now = new Date().toISOString();
+  return {
+    id,
+    kind: 'agent' as const,
+    status,
+    aggregateVersion: 2,
+    sessionId: 'agent-session-1',
+    goal: `Waiting ${id}`,
+    checkpointStage: status,
+    recoveryStatus: 'none' as const,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function pendingPermission(runId: string) {
+  return {
+    schemaVersion: 1 as const,
+    id: 'permission-pending',
+    runId,
+    sessionId: 'agent-session-1',
+    status: 'pending' as const,
+    title: '写入项目文件',
+    summary: '需要写入文件才能继续。',
+    requiredPermissions: [{
+      id: 'write-1',
+      type: 'write_file' as const,
+      target: 'workspace-file.txt',
+      reason: '实现用户要求',
+      riskTier: 'medium' as const
+    }],
+    approvalVersion: 'approval-pending',
+    createdAt: new Date().toISOString()
+  };
+}
+
+function pendingPlanHandoff(runId: string) {
+  const createdAt = new Date().toISOString();
+  const plan = structuredPlan(runId, createdAt, 'ready_for_confirmation', 'plan-pending');
+  return {
+    schemaVersion: 1 as const,
+    id: 'plan-pending',
+    planId: 'plan-pending',
+    runId,
+    sessionId: 'agent-session-1',
+    resumeMode: 'implement' as const,
+    message: '确认后执行计划。',
+    planVariant: 'plan_wait_approval' as const,
+    planMarkdown: '- 修改文件\n- 运行测试',
+    plan,
+    planVersion: plan.version,
+    status: 'pending' as const,
+    createdAt
   };
 }
 
@@ -810,6 +1596,7 @@ function approvedPermission(now: string) {
 }
 
 function approvedPlanHandoff(now: string) {
+  const plan = structuredPlan('run-plan', now, 'approved', 'plan-1');
   return {
     schemaVersion: 1 as const,
     id: 'plan-approved',
@@ -819,10 +1606,60 @@ function approvedPlanHandoff(now: string) {
     message: 'Execute the approved plan',
     planVariant: 'plan_wait_approval' as const,
     planMarkdown: '- Apply the change\n- Run tests',
+    plan,
+    planVersion: plan.version,
     status: 'approved' as const,
     createdAt: now,
     respondedAt: now,
     decision: 'approve' as const
+  };
+}
+
+function structuredPlan(
+  runId: string,
+  createdAt: string,
+  planState: 'ready_for_confirmation' | 'approved',
+  planId: string
+) {
+  return {
+    schemaVersion: 1 as const,
+    planId,
+    version: 1,
+    sourceRunId: runId,
+    title: '可验证执行计划',
+    goal: '按批准范围完成修改并验证结果。',
+    facts: [{
+      id: 'fact-1',
+      statement: '目标工作区已经定位。',
+      evidence: '运行创建时绑定了工作区。',
+    }],
+    constraints: [],
+    clarifications: [],
+    steps: [{
+      id: 'step-1',
+      title: '完成范围内修改',
+      dependsOn: [],
+      action: '修改目标模块。',
+      scope: ['target'],
+      expectedOutcome: '目标行为可用。',
+      verification: '运行确定性验证并记录结果。',
+      status: 'pending' as const,
+      actualScope: [],
+      evidence: [],
+      deviations: [],
+    }],
+    completionCriteria: [{
+      id: 'done-1',
+      behavior: '目标行为可以被用户观察。',
+      verification: '重复执行验证场景。',
+    }],
+    planState,
+    executionState: 'not_started' as const,
+    completeness: 'complete' as const,
+    blockingReasons: [],
+    qualityIssues: [],
+    createdAt,
+    updatedAt: createdAt,
   };
 }
 
@@ -835,13 +1672,25 @@ function fakeApp(
   databases.push(database);
   return {
     defaultWorkspaceKey: 'primary',
+    workspaceRoot: root,
+    workspaceCatalog: {
+      defaultKey: 'primary',
+      defaultRoot: root,
+      entries: [{ id: 'primary', label: 'Primary', root, resolvedRoot: root }],
+      byId: new Map([['primary', { id: 'primary', label: 'Primary', root, resolvedRoot: root }]])
+    },
     paths: { traceFile: path.join(root, 'trace.jsonl') },
     traceCatalog: { tracesDir: root },
-    permissionRequestStore: { listPending: () => [] },
-    planHandoffStore: { listPending: () => [] },
+    permissionRequestStore: { listPending: () => [], getApprovedByRunId: () => null },
+    planHandoffStore: { listPending: () => [], getApprovedByRunId: () => null },
+    pausedRunStore: { get: () => null },
     agentHandoffCoordinator: {
       get: (id: string) => id === 'proposal-1' ? getProposal() : null,
-      getByRunId: () => null
+      getLinkedAgentSession: () => null,
+      getByRunId: (runId: string) => {
+        const proposal = getProposal();
+        return proposal.runId === runId ? proposal : null;
+      }
     },
     unifiedAssistantHandoffService: {
       respond: (_proposalId: string, input: Record<string, unknown>) => respond(input)
@@ -849,10 +1698,14 @@ function fakeApp(
     contextManager: {
       db: database,
       getSession: () => ({ workspaceKey: 'primary' }),
+      deleteSession: () => false,
       memoryManager: {}
     },
-    runs: { get: () => null },
+    runs: { get: () => null, list: () => [] },
     registry: { listProviders: () => [] },
+    orchestrator: {
+      getActivityRun: () => ({ status: 404, body: { error: 'activity_run_not_found' } })
+    },
     hooks: {
       dispatch: async (input: {
         authority: { permissions: Array<'read' | 'write' | 'shell' | 'network' | 'dangerous'>; timeoutMs: number };

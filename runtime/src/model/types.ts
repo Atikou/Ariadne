@@ -23,7 +23,7 @@ export interface ChatMessage {
   toolCallId?: string;
   /** role 为 "assistant" 时，模型在该轮发起的结构化工具调用。 */
   toolCalls?: ToolCall[];
-  /** Provider 要求在后续轮次回传的私有推理上下文；不得作为公开回答展示。 */
+  /** Provider 返回的独立推理内容；不得拼接到普通对话正文。 */
   reasoningContent?: string;
   /** 数据来源与外发权限；远程 Provider 前由统一 egress gate 强制执行。 */
   contentEnvelope?: ContentEnvelope;
@@ -60,13 +60,15 @@ export interface ChatRequest {
   maxTokens?: number;
   inference?: ModelInferenceOptions;
   signal?: AbortSignal;
-  /** 流式输出时每收到一段文本回调（由支持 streaming 的 ModelClient 消费）。 */
+  /** 流式输出时每收到一段最终回答文本回调。 */
   onToken?: (delta: string) => void;
+  /** 流式输出时每收到一段 Provider 明确返回的推理文本或推理摘要回调。 */
+  onReasoningToken?: (delta: string) => void;
 }
 
 export interface ModelResponse {
   content: string;
-  /** Provider 返回的私有推理上下文，仅用于兼容后续轮次和工具调用。 */
+  /** Provider 明确返回的独立推理内容；不得自动拼接到后续普通对话上下文。 */
   reasoningContent?: string;
   toolCalls: ToolCall[];
   /** The selected client's declared structured tool-call capability. */

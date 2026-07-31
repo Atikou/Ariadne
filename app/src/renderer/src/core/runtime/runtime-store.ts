@@ -10,6 +10,8 @@ import type {
   PermissionRequest,
   PlanHandoff,
   RunActivity,
+  RunActivityDetail,
+  RunActivityGraph,
   RunSummary,
   RuntimeCommand,
   RuntimeEvent,
@@ -26,11 +28,14 @@ export interface RuntimeSnapshot {
   status: RuntimeStatus;
   sessions: ConversationSession[];
   selectedSessionId: string | null;
+  planModeSessionIds: string[];
   messages: RuntimeMessage[];
   models: ModelSummary[];
   proposals: AgentProposal[];
   runs: RunSummary[];
   activities: RunActivity[];
+  activityGraphs: Record<string, RunActivityGraph>;
+  activityDetails: Record<string, RunActivityDetail>;
   permissions: PermissionRequest[];
   planHandoffs: PlanHandoff[];
   trace: TraceEntry[];
@@ -61,6 +66,8 @@ export interface SendMessageOptions {
   workspaceId?: string;
 }
 
+const NEW_SESSION_PLAN_MODE_KEY = '__new_session__';
+
 export class RuntimeStore {
   private snapshot: RuntimeSnapshot = {
     initialized: false,
@@ -71,11 +78,14 @@ export class RuntimeStore {
     },
     sessions: [],
     selectedSessionId: null,
+    planModeSessionIds: [],
     messages: [],
     models: [],
     proposals: [],
     runs: [],
     activities: [],
+    activityGraphs: {},
+    activityDetails: {},
     permissions: [],
     planHandoffs: [],
     trace: [],
@@ -92,6 +102,7 @@ export class RuntimeStore {
   private lastEventCursor = 0;
   private readonly seenEventIds = new Set<string>();
   private readonly aggregateVersions = new Map<string, number>();
+  private readonly decisionReconciliations = new Set<string>();
   private bufferedEvents: RuntimeEventEnvelope[] = [];
   private sessionSelectionGeneration = 0;
   private pendingChatTurn: PendingChatTurn | null = null;
@@ -174,7 +185,11 @@ export class RuntimeStore {
           throw new Error('Runtime 返回了不符合预期的结果。');
         }
         if (this.snapshot.selectedSessionId === selectedSessionId) {
-          this.update({ messages: result.messages, lastError: null });
+          this.update({
+            messages: result.messages,
+            runs: mergeCompanionRunsFromMessages(this.snapshot.runs, result.messages),
+            lastError: null
+          });
         }
       } catch (error) {
         this.setError(error);
@@ -208,12 +223,36 @@ export class RuntimeStore {
         generation === this.sessionSelectionGeneration
         && this.snapshot.selectedSessionId === sessionId
       ) {
-        this.update({ messages: result.messages, lastError: null });
+        this.update({
+          messages: result.messages,
+          runs: mergeCompanionRunsFromMessages(this.snapshot.runs, result.messages),
+          lastError: null
+        });
       }
     } catch (error) {
       if (generation === this.sessionSelectionGeneration) this.setError(error);
       throw error;
     }
+  }
+
+  clearSessionSelection(): void {
+    this.sessionSelectionGeneration += 1;
+    this.update({ selectedSessionId: null, messages: [], lastError: null });
+  }
+
+  isPlanModeEnabled(sessionId: string | null = this.snapshot.selectedSessionId): boolean {
+    return this.snapshot.planModeSessionIds.includes(planModeKey(sessionId));
+  }
+
+  setPlanModeEnabled(
+    enabled: boolean,
+    sessionId: string | null = this.snapshot.selectedSessionId
+  ): void {
+    const key = planModeKey(sessionId);
+    const next = new Set(this.snapshot.planModeSessionIds);
+    if (enabled) next.add(key);
+    else next.delete(key);
+    this.update({ planModeSessionIds: [...next] });
   }
 
   async createSession(options: CreateSessionOptions = {}): Promise<ConversationSession> {
@@ -224,6 +263,7 @@ export class RuntimeStore {
     };
     const result = await this.command(command);
     if (result.kind !== 'companion.session') throw new Error('Runtime 返回了不符合预期的结果。');
+    this.movePlanMode(NEW_SESSION_PLAN_MODE_KEY, result.session.sessionId);
     await this.selectSession(result.session.sessionId);
     return result.session;
   }
@@ -235,14 +275,20 @@ export class RuntimeStore {
   async deleteSession(sessionId: string): Promise<void> {
     await this.command({ kind: 'companion.sessions.delete', sessionId });
     const sessions = this.snapshot.sessions.filter((session) => session.sessionId !== sessionId);
+    const planModeSessionIds = this.snapshot.planModeSessionIds.filter((id) => id !== sessionId);
     if (this.snapshot.selectedSessionId === sessionId) {
       this.sessionSelectionGeneration += 1;
       const next = sessions[0];
-      this.update({ sessions, selectedSessionId: next?.sessionId ?? null, messages: [] });
+      this.update({
+        sessions,
+        selectedSessionId: next?.sessionId ?? null,
+        messages: [],
+        planModeSessionIds
+      });
       if (next) await this.selectSession(next.sessionId);
       return;
     }
-    this.update({ sessions });
+    this.update({ sessions, planModeSessionIds });
   }
 
   async sendMessage(
@@ -253,6 +299,13 @@ export class RuntimeStore {
       throw new Error('上一条消息仍在提交，请稍候。');
     }
     const selectedSessionId = this.snapshot.selectedSessionId ?? undefined;
+    const planMode = this.isPlanModeEnabled(selectedSessionId ?? null);
+    if (
+      planMode
+      && !this.snapshot.status.capabilities.includes('companion.agent-plan')
+    ) {
+      throw new Error('当前 Runtime 与界面版本不一致，不能启动计划模式。请完整重启 Ariadne。');
+    }
     const selectedWorkspaceId = this.snapshot.sessions.find(
       (session) => session.sessionId === selectedSessionId
     )?.workspaceId;
@@ -301,11 +354,18 @@ export class RuntimeStore {
       ...(workspaceId ? { workspaceId } : {}),
       ...(options.modelId ? { modelId: options.modelId } : {}),
       ...(options.inference ? { inference: options.inference } : {}),
-      ...(options.routingStrategy ? { routingStrategy: options.routingStrategy } : {})
+      ...(options.routingStrategy && !planMode ? { routingStrategy: options.routingStrategy } : {}),
+      ...(planMode ? { agentMode: 'plan' } : {})
     };
     try {
       const result = await this.command(command);
       if (result.kind !== 'companion.chat.accepted') throw new Error('Runtime 返回了不符合预期的结果。');
+      const expectedExecutionMode = planMode ? 'agent-plan' : 'companion';
+      if (result.executionMode !== expectedExecutionMode) {
+        throw new Error(
+          `Runtime 接受的执行模式不一致：期望 ${expectedExecutionMode}，实际 ${result.executionMode}。`
+        );
+      }
       const messages = this.snapshot.messages.map((item) => {
         if (item.messageId !== clientMessageId && item.messageId !== assistantPlaceholderId) return item;
         const acceptedMessage = { ...item };
@@ -317,6 +377,9 @@ export class RuntimeStore {
           ...this.pendingChatTurn,
           actualSessionId: result.sessionId
         };
+      }
+      if (!selectedSessionId && planMode) {
+        this.movePlanMode(NEW_SESSION_PLAN_MODE_KEY, result.sessionId);
       }
       this.update({
         selectedSessionId: result.sessionId,
@@ -344,6 +407,14 @@ export class RuntimeStore {
     }
   }
 
+  private movePlanMode(sourceKey: string, targetKey: string): void {
+    if (!this.snapshot.planModeSessionIds.includes(sourceKey)) return;
+    const next = new Set(this.snapshot.planModeSessionIds);
+    next.delete(sourceKey);
+    next.add(targetKey);
+    this.update({ planModeSessionIds: [...next] });
+  }
+
   private async reconcileAcceptedChat(sessionId: string): Promise<void> {
     const [messagesResult, sessionsResult, runsResult] = await Promise.allSettled([
       this.api.request({ kind: 'companion.messages.list', sessionId, limit: 500 }),
@@ -357,6 +428,10 @@ export class RuntimeStore {
       && this.snapshot.selectedSessionId === sessionId
     ) {
       patch.messages = messagesResult.value.messages;
+      patch.runs = mergeCompanionRunsFromMessages(
+        this.snapshot.runs,
+        messagesResult.value.messages
+      );
     }
     if (
       sessionsResult.status === 'fulfilled'
@@ -365,7 +440,13 @@ export class RuntimeStore {
       patch.sessions = sessionsResult.value.sessions;
     }
     if (runsResult.status === 'fulfilled' && runsResult.value.kind === 'runs') {
-      patch.runs = runsResult.value.runs;
+      patch.runs = messagesResult.status === 'fulfilled'
+        && messagesResult.value.kind === 'companion.messages'
+        ? mergeCompanionRunsFromMessages(
+            runsResult.value.runs,
+            messagesResult.value.messages
+          )
+        : runsResult.value.runs;
     }
     if (Object.keys(patch).length > 0) this.update(patch);
 
@@ -389,6 +470,29 @@ export class RuntimeStore {
       return;
     }
     await this.cancelAgentRun(run.runId);
+  }
+
+  async loadRunActivityGraph(runId: string): Promise<RunActivityGraph> {
+    const result = await this.command({ kind: 'runActivities.get', runId });
+    if (result.kind !== 'runActivityGraph') {
+      throw new Error('Runtime 返回了不符合预期的活动图。');
+    }
+    return result.graph;
+  }
+
+  async loadRunActivityDetail(
+    runId: string,
+    activityId: string
+  ): Promise<RunActivityDetail> {
+    const result = await this.command({
+      kind: 'runActivityDetails.get',
+      runId,
+      activityId
+    });
+    if (result.kind !== 'runActivityDetail') {
+      throw new Error('Runtime 返回了不符合预期的活动详情。');
+    }
+    return result.detail;
   }
 
   async respondToProposal(
@@ -439,6 +543,30 @@ export class RuntimeStore {
 
   async resumePlan(handoffId: string): Promise<void> {
     await this.command({ kind: 'planHandoffs.resume', handoffId });
+  }
+
+  async recoverRun(
+    run: RunSummary,
+    decision: 'resume' | 'cancel' | 'mark_failed'
+  ): Promise<void> {
+    await this.command({
+      kind: 'runs.recover',
+      runId: run.runId,
+      expectedAggregateVersion: run.aggregateVersion,
+      decision
+    });
+  }
+
+  async resumeBudget(
+    run: RunSummary,
+    budget: NonNullable<RunSummary['suggestedBudget']> | undefined = run.suggestedBudget
+  ): Promise<void> {
+    await this.command({
+      kind: 'runs.resume',
+      runId: run.runId,
+      expectedAggregateVersion: run.aggregateVersion,
+      ...(budget ? { budget } : {})
+    });
   }
 
   private async initializeRuntime(generation: number): Promise<void> {
@@ -497,7 +625,10 @@ export class RuntimeStore {
         this.update({ sessions: upsertBy(this.snapshot.sessions, result.session, 'sessionId') });
         return;
       case 'companion.messages':
-        this.update({ messages: result.messages });
+        this.update({
+          messages: result.messages,
+          runs: mergeCompanionRunsFromMessages(this.snapshot.runs, result.messages)
+        });
         return;
       case 'agent.proposals':
         this.update({ proposals: result.proposals });
@@ -506,10 +637,34 @@ export class RuntimeStore {
         this.update({ proposals: upsertBy(this.snapshot.proposals, result.proposal, 'proposalId') });
         return;
       case 'runs':
-        this.update({ runs: result.runs });
+        this.update({
+          runs: [
+            ...result.runs,
+            ...this.snapshot.runs.filter((run) =>
+              run.origin === 'companion'
+              && !result.runs.some((candidate) => candidate.runId === run.runId)
+            )
+          ]
+        });
         return;
       case 'run':
         this.update({ runs: upsertBy(this.snapshot.runs, result.run, 'runId') });
+        return;
+      case 'runActivityGraph':
+        this.update({
+          activityGraphs: {
+            ...this.snapshot.activityGraphs,
+            [result.graph.runId]: result.graph
+          }
+        });
+        return;
+      case 'runActivityDetail':
+        this.update({
+          activityDetails: {
+            ...this.snapshot.activityDetails,
+            [activityDetailKey(result.detail.runId, result.detail.activityId)]: result.detail
+          }
+        });
         return;
       case 'permissions':
         this.update({ permissions: result.requests });
@@ -587,14 +742,29 @@ export class RuntimeStore {
         this.applyCompanionToken(event);
         return;
       }
+      case 'companion.reasoning.delta': {
+        this.applyCompanionReasoning(event);
+        return;
+      }
       case 'companion.message.changed': {
         this.applyCompanionMessage(event.message);
         return;
       }
+      case 'companion.message.removed':
+        this.update({
+          messages: this.snapshot.messages.filter(
+            (message) => message.messageId !== event.messageId
+          )
+        });
+        return;
       case 'agent.proposal.changed':
         this.update({ proposals: upsertBy(this.snapshot.proposals, event.proposal, 'proposalId') });
         return;
       case 'run.changed': {
+        const currentRun = this.snapshot.runs.find((run) => run.runId === event.run.runId)
+          ?? mergeCompanionRunsFromMessages([], this.snapshot.messages)
+            .find((run) => run.runId === event.run.runId);
+        const run = mergeProcessingRun(currentRun, event.run);
         const activityStatus = terminalActivityStatus(event.run.status);
         const activities = activityStatus
           ? this.snapshot.activities.map((activity) => activity.runId === event.run.runId
@@ -602,15 +772,61 @@ export class RuntimeStore {
               ? { ...activity, status: activityStatus }
               : activity)
           : this.snapshot.activities;
+        const currentGraph = this.snapshot.activityGraphs[event.run.runId];
+        const activityGraphs = currentGraph
+          ? {
+              ...this.snapshot.activityGraphs,
+              [event.run.runId]: {
+                ...currentGraph,
+                status: run.status,
+                timing: run.timing,
+                updatedAt: new Date().toISOString()
+              }
+            }
+          : this.snapshot.activityGraphs;
         this.update({
-          runs: upsertBy(this.snapshot.runs, event.run, 'runId'),
-          ...(activities === this.snapshot.activities ? {} : { activities })
+          runs: upsertBy(this.snapshot.runs, run, 'runId'),
+          ...(activities === this.snapshot.activities ? {} : { activities }),
+          ...(activityGraphs === this.snapshot.activityGraphs ? {} : { activityGraphs })
         });
+        this.reconcileMissingRunDecision(event.run);
         return;
       }
-      case 'run.activity':
-        this.update({ activities: upsertBy(this.snapshot.activities, event.activity, 'activityId') });
+      case 'run.activity': {
+        const graph = this.snapshot.activityGraphs[event.activity.runId];
+        const nextGraph = graph
+          ? event.activity.activityType === 'tool'
+            ? {
+                ...graph,
+                nodes: upsertBy(graph.nodes, event.activity, 'activityId'),
+                updatedAt: event.activity.occurredAt
+              }
+            : {
+                ...graph,
+                systemActivities: upsertBy(
+                  graph.systemActivities,
+                  event.activity,
+                  'activityId'
+                ),
+                updatedAt: event.activity.occurredAt
+              }
+          : undefined;
+        this.update({
+          activities: upsertBy(this.snapshot.activities, event.activity, 'activityId'),
+          ...(nextGraph
+            ? {
+                activityGraphs: {
+                  ...this.snapshot.activityGraphs,
+                  [event.activity.runId]: nextGraph
+                }
+              }
+            : {})
+        });
+        if (graph) {
+          void this.loadRunActivityGraph(event.activity.runId).catch(() => undefined);
+        }
         return;
+      }
       case 'permission.changed':
         this.update({ permissions: upsertBy(this.snapshot.permissions, event.request, 'requestId') });
         return;
@@ -637,14 +853,61 @@ export class RuntimeStore {
     );
     const existing = messages.find((message) => message.messageId === event.messageId);
     const message: RuntimeMessage = existing
-      ? { ...existing, content: existing.content + event.text, status: 'streaming' }
+      ? {
+          ...existing,
+          runId: event.runId,
+          content: existing.content + event.text,
+          status: 'streaming'
+        }
       : {
           messageId: event.messageId,
           sessionId: event.sessionId,
+          runId: event.runId,
           role: 'assistant',
           content: event.text,
           status: 'streaming',
           createdAt: new Date().toISOString()
+        };
+    if (pendingTurn && belongsToPendingTurn) {
+      this.pendingChatTurn = {
+        ...pendingTurn,
+        actualAssistantMessageId: event.messageId
+      };
+    }
+    this.update({ messages: upsertBy(messages, message, 'messageId') });
+  }
+
+  private applyCompanionReasoning(
+    event: Extract<RuntimeEvent, { kind: 'companion.reasoning.delta' }>
+  ): void {
+    const pendingTurn = this.pendingChatTurn;
+    const belongsToPendingTurn = pendingTurn?.actualSessionId === event.sessionId
+      || pendingTurn?.provisionalSessionId === event.sessionId;
+    if (event.sessionId !== this.snapshot.selectedSessionId && !belongsToPendingTurn) return;
+
+    const messages = removeAssistantPlaceholder(
+      this.snapshot.messages,
+      event.sessionId,
+      pendingTurn?.assistantPlaceholderId
+    );
+    const existing = messages.find((message) => message.messageId === event.messageId);
+    const reasoning = {
+      content: `${existing?.reasoning?.content ?? ''}${event.text}`,
+      status: 'streaming' as const,
+      source: existing?.reasoning?.source ?? event.source,
+      startedAt: existing?.reasoning?.startedAt ?? event.startedAt
+    };
+    const message: RuntimeMessage = existing
+      ? { ...existing, runId: event.runId, reasoning, status: 'streaming' }
+      : {
+          messageId: event.messageId,
+          sessionId: event.sessionId,
+          runId: event.runId,
+          role: 'assistant',
+          content: '',
+          reasoning,
+          status: 'streaming',
+          createdAt: event.startedAt
         };
     if (pendingTurn && belongsToPendingTurn) {
       this.pendingChatTurn = {
@@ -713,6 +976,36 @@ export class RuntimeStore {
     });
   }
 
+  private reconcileMissingRunDecision(run: RunSummary): void {
+    const command = run.status === 'waiting_permission'
+      && !this.snapshot.permissions.some((request) => request.runId === run.runId)
+      ? { kind: 'permissions.list' as const }
+      : run.status === 'waiting_plan_handoff'
+        && !this.snapshot.planHandoffs.some((handoff) => handoff.runId === run.runId)
+        ? { kind: 'planHandoffs.list' as const }
+        : null;
+    if (!command) return;
+    const key = `${command.kind}:${run.runId}`;
+    if (this.decisionReconciliations.has(key)) return;
+    this.decisionReconciliations.add(key);
+    void this.requestAndApply(command)
+      .then(() => {
+        const decisionPresent = command.kind === 'permissions.list'
+          ? this.snapshot.permissions.some((request) => request.runId === run.runId)
+          : this.snapshot.planHandoffs.some((handoff) => handoff.runId === run.runId);
+        const currentRun = this.snapshot.runs.find((candidate) => candidate.runId === run.runId);
+        if (!decisionPresent && currentRun?.status === run.status) {
+          throw new Error(
+            command.kind === 'permissions.list'
+              ? 'Runtime 状态不一致：等待权限的运行缺少权限申请。'
+              : 'Runtime 状态不一致：等待计划确认的运行缺少计划交接。'
+          );
+        }
+      })
+      .catch((error) => this.setError(error))
+      .finally(() => this.decisionReconciliations.delete(key));
+  }
+
   private applyStatus(status: RuntimeStatus): void {
     this.statusRevision += 1;
     this.update({ status });
@@ -722,6 +1015,10 @@ export class RuntimeStore {
     this.snapshot = { ...this.snapshot, ...patch };
     for (const listener of this.listeners) listener();
   }
+}
+
+function planModeKey(sessionId: string | null): string {
+  return sessionId ?? NEW_SESSION_PLAN_MODE_KEY;
 }
 
 function mergeTraceEntries(
@@ -753,6 +1050,91 @@ export function runtimeRequestErrorMessage(
 
 export function useRuntimeSnapshot(store: RuntimeStore): RuntimeSnapshot {
   return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+}
+
+export function activityDetailKey(runId: string, activityId: string): string {
+  return `${runId}\u0000${activityId}`;
+}
+
+function mergeCompanionRunsFromMessages(
+  current: RunSummary[],
+  messages: readonly CompanionMessage[]
+): RunSummary[] {
+  const runs = [...current];
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]!;
+    if (message.role !== 'assistant' || !message.runId) continue;
+    if (runs.some((run) => run.runId === message.runId)) continue;
+    const source = messages
+      .slice(0, index)
+      .reverse()
+      .find((candidate) =>
+        candidate.role === 'user'
+        && candidate.sessionId === message.sessionId
+      );
+    const status: RunSummary['status'] = message.status === 'streaming'
+      ? 'running'
+      : message.status === 'failed'
+        ? 'failed'
+        : message.status === 'interrupted'
+          ? 'interrupted'
+          : 'completed';
+    const activeDurationMs = message.status === 'streaming'
+      ? 0
+      : message.processingDurationMs
+        ?? message.reasoning?.durationMs
+        ?? 0;
+    const completedAt = status === 'running'
+      ? undefined
+      : new Date(Date.parse(message.createdAt) + activeDurationMs).toISOString();
+    runs.push({
+      runId: message.runId,
+      sessionId: message.sessionId,
+      ...(source ? { sourceMessageId: source.messageId } : {}),
+      origin: 'companion',
+      title: (source?.content || 'Companion 对话').slice(0, 512),
+      status,
+      userFacingLabel: status === 'running' ? '正在回复' : '回复完成',
+      aggregateVersion: status === 'running' ? 1 : 2,
+      checkpointStage: status,
+      recoveryStatus: 'none',
+      timing: {
+        activeDurationMs,
+        ...(status === 'running' ? { activeSince: message.createdAt } : {})
+      },
+      startedAt: message.createdAt,
+      ...(completedAt ? { completedAt } : {})
+    });
+  }
+  return runs;
+}
+
+function mergeProcessingRun(
+  current: RunSummary | undefined,
+  incoming: RunSummary
+): RunSummary {
+  if (!current?.startedAt || !incoming.startedAt) return incoming;
+  const currentStartedAtMs = Date.parse(current.startedAt);
+  const incomingStartedAtMs = Date.parse(incoming.startedAt);
+  if (
+    !Number.isFinite(currentStartedAtMs)
+    || !Number.isFinite(incomingStartedAtMs)
+    || currentStartedAtMs >= incomingStartedAtMs
+  ) {
+    return incoming;
+  }
+  const handoffOffsetMs = incomingStartedAtMs - currentStartedAtMs;
+  return {
+    ...incoming,
+    ...(current.sourceMessageId && !incoming.sourceMessageId
+      ? { sourceMessageId: current.sourceMessageId }
+      : {}),
+    startedAt: current.startedAt,
+    timing: {
+      ...incoming.timing,
+      activeDurationMs: incoming.timing.activeDurationMs + handoffOffsetMs,
+    },
+  };
 }
 
 function terminalActivityStatus(

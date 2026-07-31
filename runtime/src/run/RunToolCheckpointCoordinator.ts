@@ -17,6 +17,10 @@ export interface ToolCheckpointToken {
   runId: string;
 }
 
+export type ToolCheckpointIntent =
+  | { kind: "execute"; token: ToolCheckpointToken }
+  | { kind: "replay"; result: ToolRunResult };
+
 /** 将工具 intent/start/result 严格写入所属 Run 的事务日志。 */
 export class RunToolCheckpointCoordinator {
   constructor(
@@ -24,10 +28,64 @@ export class RunToolCheckpointCoordinator {
     private readonly runId: string,
   ) {}
 
-  intend(input: ToolCheckpointIntentInput): ToolCheckpointToken {
+  intend(input: ToolCheckpointIntentInput): ToolCheckpointIntent {
     const aggregate = this.requireRunning();
     const inputHash = hashCanonicalJson(input.input);
     const idempotencyKey = `${this.runId}:${input.toolCallId}:${input.toolVersion}:${inputHash}`;
+    const existing = this.runs.getToolLedgerEntry(idempotencyKey);
+    if (existing) {
+      if (
+        existing.runId !== this.runId
+        || existing.toolName !== input.toolName
+        || existing.toolVersion !== input.toolVersion
+        || existing.inputHash !== inputHash
+      ) {
+        throw new Error(`tool_idempotency_conflict:${idempotencyKey}`);
+      }
+      if (existing.status === "succeeded" || existing.status === "failed") {
+        const succeeded = existing.status === "succeeded";
+        return {
+          kind: "replay",
+          result: {
+            tool: input.toolName,
+            toolCallId: input.toolCallId,
+            durationMs: 0,
+            executed: true,
+            outcomeClass: succeeded ? "observation_success" : "execution_error",
+            outcomeKind: succeeded ? "idempotent_replay" : "idempotent_replay_failed",
+            message: succeeded
+              ? "已复用该工具调用的持久化成功结果"
+              : "该工具调用此前已执行失败，已复用持久化失败结果",
+            recoverable: !succeeded,
+            output: existing.output,
+            ok: succeeded,
+            ...(succeeded ? {} : { error: "工具调用此前已执行失败" }),
+          },
+        };
+      }
+      if (existing.status === "intended") {
+        return {
+          kind: "execute",
+          token: { idempotencyKey, runId: this.runId },
+        };
+      }
+      if (existing.status === "started" && input.resumable) {
+        const current = this.runs.get(this.runId);
+        if (!current) throw new Error(`run_not_found:${this.runId}`);
+        this.runs.execute({
+          type: "run.tool_retry",
+          runId: this.runId,
+          expectedAggregateVersion: current.aggregateVersion,
+          idempotencyKey,
+          causationId: input.toolCallId,
+        });
+        return {
+          kind: "execute",
+          token: { idempotencyKey, runId: this.runId },
+        };
+      }
+      throw new Error(`tool_checkpoint_recovery_required:${idempotencyKey}:${existing.status}`);
+    }
     this.runs.execute({
       type: "run.tool_intent",
       runId: this.runId,
@@ -40,7 +98,10 @@ export class RunToolCheckpointCoordinator {
       resumable: input.resumable,
       causationId: input.toolCallId,
     });
-    return { idempotencyKey, runId: this.runId };
+    return {
+      kind: "execute",
+      token: { idempotencyKey, runId: this.runId },
+    };
   }
 
   start(token: ToolCheckpointToken): void {

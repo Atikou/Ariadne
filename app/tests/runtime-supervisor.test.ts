@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -149,6 +149,47 @@ describe('RuntimeSupervisor', () => {
     await waitUntil(() => supervisor.getStatus().availability === 'disabled');
   }, 15_000);
 
+  it('rejects a Runtime from a different build even when package versions match', async () => {
+    const supervisor = createSupervisor(
+      path.resolve(process.cwd(), 'tests', 'fixtures', 'runtime-fixture.cjs'),
+      {
+        ...process.env,
+        ARIADNE_TEST_RUNTIME_BUILD_FINGERPRINT: 'b'.repeat(64)
+      },
+      []
+    );
+
+    await expect(supervisor.start()).rejects.toMatchObject({
+      code: 'runtime_protocol_violation'
+    });
+    await waitUntil(() => supervisor.getStatus().availability === 'disabled');
+  }, 15_000);
+
+  it('restarts a ready Runtime before the next request when its build manifest changes', async () => {
+    const runtimeEntry = path.resolve(process.cwd(), 'tests', 'fixtures', 'runtime-fixture.cjs');
+    const options = createSupervisorOptions(runtimeEntry, process.env, []);
+    const manifestPath = path.join(options.dataRoot, 'runtime-build.json');
+    writeBuildManifest(manifestPath, 'a'.repeat(64));
+    delete options.runtimeBuildFingerprint;
+    options.runtimeBuildManifestPath = manifestPath;
+    const supervisor = new RuntimeSupervisor(options);
+    supervisors.push(supervisor);
+    const readyFingerprints: string[] = [];
+    supervisor.onStatus((status) => {
+      if (status.availability === 'ready' && status.runtimeBuildFingerprint) {
+        readyFingerprints.push(status.runtimeBuildFingerprint);
+      }
+    });
+    await supervisor.start();
+
+    writeBuildManifest(manifestPath, 'b'.repeat(64));
+    await expect(supervisor.request({ kind: 'runtime.status.get' }))
+      .resolves.toMatchObject({ kind: 'runtime.status' });
+
+    expect(readyFingerprints).toEqual(['a'.repeat(64), 'b'.repeat(64)]);
+    expect(supervisor.getStatus().runtimeBuildFingerprint).toBe('b'.repeat(64));
+  }, 15_000);
+
   it('preserves the Runtime ready payload for repeated start calls', async () => {
     const supervisor = createSupervisor(
       path.resolve(process.cwd(), 'tests', 'fixtures', 'runtime-fixture.cjs')
@@ -241,6 +282,17 @@ function createSupervisorOptions(
   temporaryRoots.push(dataRoot, workspaceRoot);
   return {
     runtimeEntry,
+    ...(runtimeEntry.includes('runtime-fixture')
+      ? { runtimeBuildFingerprint: 'a'.repeat(64) }
+      : {
+          runtimeBuildManifestPath: path.resolve(
+            process.cwd(),
+            '..',
+            'runtime',
+            'dist',
+            'runtime-build.json'
+          )
+        }),
     installRoot: runtimeEntry.includes('runtime-fixture')
       ? path.resolve(process.cwd())
       : path.resolve(process.cwd(), '..', 'runtime'),
@@ -282,4 +334,12 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error('condition timeout');
+}
+
+function writeBuildManifest(filePath: string, fingerprint: string): void {
+  writeFileSync(filePath, JSON.stringify({
+    schemaVersion: 1,
+    runtimeVersion: '0.1.0',
+    fingerprint
+  }));
 }

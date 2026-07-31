@@ -49,6 +49,20 @@ export interface PlanExecutionServiceDeps {
   trace?: TraceLogger;
 }
 
+export function resolvePlanExecutionMode(
+  plan: Plan,
+  requested?: PlanExecutionMode,
+): PlanExecutionMode {
+  if (requested) return requested;
+  const requiresAdaptiveSideEffects = plan.steps.some((step) =>
+    step.requiredPermissions.some((permission) =>
+      permission === "write"
+      || permission === "shell"
+      || permission === "network"
+      || permission === "dangerous"));
+  return requiresAdaptiveSideEffects ? "agent_loop" : "static";
+}
+
 /** Owns approved-plan execution, persistence, rollback, and fallback as one use case. */
 export class PlanExecutionService {
   constructor(private readonly deps: PlanExecutionServiceDeps) {}
@@ -79,7 +93,7 @@ export class PlanExecutionService {
 
     const plan = toTaskRunnerPlan(internal);
     const planGoal = plan.goal ?? plan.steps[0]?.title ?? "任务";
-    const executionMode: PlanExecutionMode = payload.executionMode ?? "static";
+    const executionMode = resolvePlanExecutionMode(plan, payload.executionMode);
     const stepRowIds = new Map<string, string>();
     let planRun: ReturnType<PlanService["createPlanRun"]> | undefined;
     let sessionId: string | undefined;

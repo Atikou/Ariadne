@@ -15,7 +15,7 @@ describe('Dockview module size constraints', () => {
         return { name: entry.name, source: await readFile(file, 'utf8') };
       }));
 
-    expect(definitions).toHaveLength(9);
+    expect(definitions).toHaveLength(10);
     for (const definition of definitions) {
       const minimumWidth = Number(definition.source.match(/layoutConstraints:\s*\{\s*minimumWidth:\s*(\d+)/)?.[1]);
       expect(minimumWidth, definition.name).toBeGreaterThanOrEqual(200);

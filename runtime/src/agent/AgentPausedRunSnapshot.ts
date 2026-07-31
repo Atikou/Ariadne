@@ -9,6 +9,7 @@ import type { CapabilityEscalationRecord } from "./CapabilityEscalation.js";
 import type { AgentIntentType, AgentWorkflowType } from "./IntentTypes.js";
 import type {
   AgentHandoffAuthorizationContext,
+  PendingToolAction,
   PausedRunRuntimeState,
   PausedRunSnapshot,
 } from "./PausedRunStore.js";
@@ -27,6 +28,7 @@ import type {
 } from "./RunPolicyTypes.js";
 import type { AgentToolStep } from "./toolStep.js";
 import type { CompletionCriterionInput } from "./completion/TaskCompletionContract.js";
+import type { AgentPlanContract } from "../plan/AgentPlanContract.js";
 
 export interface BuildPausedRunRuntimeStateInput {
   entryIntent?: AgentIntentType;
@@ -92,13 +94,14 @@ export interface BuildPausedRunSnapshotInput {
   messages: ChatMessage[];
   steps: AgentToolStep[];
   modelTurns: number;
-  pendingAction?: { tool: string; input?: Record<string, unknown> };
+  pendingAction?: PendingToolAction;
   mode: AgentRunMode;
   permissionPolicy: UserPermissionPolicy;
   permissionCeiling?: ToolPermission[];
   runGrantedPermissions?: ToolPermission[];
   handoffAuthorization?: AgentHandoffAuthorizationContext;
   resumeMode?: AgentRunMode;
+  approvedPlan?: AgentPlanContract;
   runtimeState: PausedRunRuntimeState;
   workflowProposals?: AgentWorkflowProposal[];
   workflowDebugAnalyses?: AgentWorkflowDebugAnalysis[];
@@ -111,6 +114,10 @@ export interface BuildPausedRunSnapshotInput {
 /** 构建可写入 PausedRunStore 的快照（深拷贝 messages / steps / 工作流产物）。 */
 export function buildPausedRunSnapshot(input: BuildPausedRunSnapshotInput): PausedRunSnapshot {
   return {
+    execution: {
+      engineKind: "react_loop",
+      schemaVersion: 1,
+    },
     runId: input.runId,
     sessionId: input.sessionId,
     goal: input.goal,
@@ -138,6 +145,7 @@ export function buildPausedRunSnapshot(input: BuildPausedRunSnapshotInput): Paus
       ? { ...input.handoffAuthorization }
       : undefined,
     resumeMode: input.resumeMode,
+    approvedPlan: input.approvedPlan ? structuredClone(input.approvedPlan) : undefined,
     runtimeState: input.runtimeState,
     createdAt: input.createdAt ?? new Date().toISOString(),
   };

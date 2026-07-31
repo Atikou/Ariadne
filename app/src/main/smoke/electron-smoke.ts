@@ -40,11 +40,50 @@ interface SmokeObservation {
     assistantOverflowX: string;
     codeBlockOverflowX: string;
   } | null;
+  processingDisclosureReady: boolean;
+  processingDisclosureMetrics: {
+    label: string;
+    runningLabel: string;
+    runningCompressionVisible: boolean;
+    formalAnswerHiddenWhileRunning: boolean;
+    completionCollapsed: boolean;
+    completedCompressionVisible: boolean;
+    expandedHistoryAfterClick: boolean;
+    toggleFontSize: string;
+    reasoningFontSize: string;
+    answerFontSize: string;
+    reasoningColor: string;
+    answerColor: string;
+  } | null;
   composerEnabled: boolean;
   composerGuarded: boolean;
+  composerAutoGrowWorks: boolean;
+  composerAutoGrowMetrics: {
+    compactHeight: number;
+    multilineHeight: number;
+    cappedHeight: number;
+    minimumHeight: number;
+    maximumHeight: number;
+    cappedOverflowY: string;
+    restoredHeight: number;
+  } | null;
   composerControlsVisible: boolean;
   composerRoutingNested: boolean;
   composerPermissionModeRightAligned: boolean;
+  composerAddMenuReady: boolean;
+  composerAddMenuMetrics: {
+    triggerBeforeModel: boolean;
+    parentIsBody: boolean;
+    itemCount: number;
+    sectionHeadings: string[];
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    composerLeft: number;
+    composerTop: number;
+    composerRight: number;
+  };
   readyModelCount: number;
   selectMenuViewportFit: boolean;
   selectMenuCompact: boolean;
@@ -68,13 +107,28 @@ interface SmokeObservation {
   sessionCreated: boolean;
   sessionCreatedInCurrentWorkspace: boolean;
   workspaceConversationTreeReady: boolean;
-  workspaceCollapseWorks: boolean;
+  internalDefaultWorkspaceHidden: boolean;
+  workspaceDisclosureAnimationReady: boolean;
+  workspaceDisclosureAnimationMetrics: {
+    reducedMotion: boolean;
+    transitionDuration: string;
+    expandedHeight: number;
+    collapsingHeight: number;
+    collapsedHeight: number;
+    expandingHeight: number;
+    collapsedClassName: string;
+    collapsedMinHeight: string;
+    collapsedMaxHeight: string;
+    collapsedOpacity: string;
+    collapsedTransform: string;
+  };
   compactConversationRows: boolean;
   conversationDetailsPopoverWorks: boolean;
   conversationInlineRenameWorks: boolean;
   conversationPinWorks: boolean;
   settingsUiReady: boolean;
   settingsNoDynamicRuntimeControls: boolean;
+  sessionActivityModuleReady: boolean;
   providerCardCount: number;
   collapsedProviderCardCount: number;
   providerDisclosureWorks: boolean;
@@ -102,6 +156,9 @@ interface PopoutObservation {
 interface LiveTraceObservation {
   eventReceived: boolean;
   panelRendered: boolean;
+  defaultImportantFilterActive: boolean;
+  routineHiddenByDefault: boolean;
+  categoryFilterWorks: boolean;
   category: string | null;
   message: string | null;
   level: string | null;
@@ -123,6 +180,9 @@ export async function runElectronSmokeTest(window: BrowserWindow, outputRoot: st
     });
   }
 
+  window.setSkipTaskbar(true);
+  window.setPosition(-10_000, -10_000, false);
+  window.showInactive();
   const consoleErrors: string[] = [];
   const onConsoleMessage = (
     _details: Electron.Event<Electron.WebContentsConsoleMessageEventParams>,
@@ -135,12 +195,10 @@ export async function runElectronSmokeTest(window: BrowserWindow, outputRoot: st
 
   try {
     const observation = await waitForRendererReady(window);
+    const composerAddMenuScreenshotCaptured = await captureComposerAddMenu(window, outputRoot);
     const liveTraceObservation = await verifyLiveTracePanel(window);
     const popoutObservation = await verifyDockviewPopout(window);
     const settingsTomlCreated = await fileExists(join(app.getPath('userData'), 'settings.toml'));
-    window.setSkipTaskbar(true);
-    window.setPosition(-10_000, -10_000, false);
-    window.showInactive();
     await window.webContents.executeJavaScript('new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))', true);
     const screenshot = await window.webContents.capturePage();
     window.hide();
@@ -157,10 +215,13 @@ export async function runElectronSmokeTest(window: BrowserWindow, outputRoot: st
       && observation.chatConversationRounded
       && observation.chatMessageTextFidelity
       && observation.chatReplyRightBounded
+      && observation.processingDisclosureReady
       && observation.composerGuarded
+      && observation.composerAutoGrowWorks
       && observation.composerControlsVisible
       && observation.composerRoutingNested
       && observation.composerPermissionModeRightAligned
+      && observation.composerAddMenuReady
       && observation.selectMenuViewportFit
       && observation.selectMenuCompact
       && observation.workspaceOpenButtonVisible
@@ -172,20 +233,26 @@ export async function runElectronSmokeTest(window: BrowserWindow, outputRoot: st
       && observation.sessionCreated
       && observation.sessionCreatedInCurrentWorkspace
       && observation.workspaceConversationTreeReady
-      && observation.workspaceCollapseWorks
+      && observation.internalDefaultWorkspaceHidden
+      && observation.workspaceDisclosureAnimationReady
       && observation.compactConversationRows
       && observation.conversationDetailsPopoverWorks
       && observation.conversationInlineRenameWorks
       && observation.conversationPinWorks
       && observation.settingsUiReady
       && observation.settingsNoDynamicRuntimeControls
+      && observation.sessionActivityModuleReady
       && observation.providerCardCount === 4
       && observation.collapsedProviderCardCount === 4
       && observation.providerDisclosureWorks
       && observation.narrowSettingsLayoutFits
       && observation.logsLayoutNoOverlap
+      && composerAddMenuScreenshotCaptured
       && liveTraceObservation.eventReceived
       && liveTraceObservation.panelRendered
+      && liveTraceObservation.defaultImportantFilterActive
+      && liveTraceObservation.routineHiddenByDefault
+      && liveTraceObservation.categoryFilterWorks
       && liveTraceObservation.category === 'companion.turn.input'
       && liveTraceObservation.level === 'info'
       && liveTraceObservation.metadataVisible
@@ -204,6 +271,7 @@ export async function runElectronSmokeTest(window: BrowserWindow, outputRoot: st
     await writeFile(join(outputRoot, 'electron-runtime-smoke.json'), JSON.stringify({
       passed,
       observation,
+      composerAddMenuScreenshotCaptured,
       liveTraceObservation,
       popoutObservation,
       settingsTomlCreated,
@@ -230,6 +298,9 @@ async function verifyLiveTracePanel(window: BrowserWindow): Promise<LiveTraceObs
       return {
         eventReceived: false,
         panelRendered: false,
+        defaultImportantFilterActive: false,
+        routineHiddenByDefault: false,
+        categoryFilterWorks: false,
         category: null,
         message: null,
         level: null,
@@ -277,15 +348,29 @@ async function verifyLiveTracePanel(window: BrowserWindow): Promise<LiveTraceObs
     let row = null;
     let errorRow = null;
     while (Date.now() < deadline) {
-      row = [...document.querySelectorAll('.logs-panel .log-row')].find((candidate) =>
-        candidate.querySelector('code')?.textContent?.trim() === 'companion.turn.input'
-      ) ?? null;
       errorRow = [...document.querySelectorAll('.logs-panel .log-row.is-error')].find((candidate) =>
-        candidate.querySelector('code')?.textContent?.trim() === 'companion.turn.error'
+        candidate.querySelector('code')?.getAttribute('title') === 'companion.turn.error'
       ) ?? null;
-      if (row && errorRow) break;
+      if (errorRow) break;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
+    const importantButton = [...document.querySelectorAll('.logs-view-filters button')].find((candidate) =>
+      candidate.textContent?.trim() === '重要'
+    );
+    const defaultImportantFilterActive = importantButton?.getAttribute('aria-pressed') === 'true';
+    const routineHiddenByDefault = ![...document.querySelectorAll('.logs-panel .log-row code')].some((candidate) =>
+      candidate.getAttribute('title') === 'companion.turn.input'
+    );
+    const agentButton = [...document.querySelectorAll('.logs-view-filters button')].find((candidate) =>
+      candidate.textContent?.trim() === 'Agent'
+    );
+    if (agentButton instanceof HTMLButtonElement) {
+      agentButton.click();
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
+    row = [...document.querySelectorAll('.logs-panel .log-row')].find((candidate) =>
+      candidate.querySelector('code')?.getAttribute('title') === 'companion.turn.input'
+    ) ?? null;
     const message = row?.querySelector('.log-copy > p')?.textContent?.trim() ?? null;
     const details = row?.querySelector('.log-copy details');
     const errorMessage = errorRow?.querySelector('.log-copy > p')?.textContent?.trim() ?? null;
@@ -293,6 +378,9 @@ async function verifyLiveTracePanel(window: BrowserWindow): Promise<LiveTraceObs
     return {
       eventReceived: Boolean(entry),
       panelRendered: Boolean(row && message),
+      defaultImportantFilterActive,
+      routineHiddenByDefault,
+      categoryFilterWorks: Boolean(row),
       category: entry?.category ?? null,
       message,
       level: entry?.level ?? null,
@@ -436,8 +524,56 @@ async function waitForValue<T>(read: () => T | Promise<T>, timeout: number): Pro
   return null;
 }
 
+async function captureComposerAddMenu(window: BrowserWindow, outputRoot: string): Promise<boolean> {
+  const opened = await window.webContents.executeJavaScript(`(async () => {
+    const chatTab = document.querySelector('.module-tab[data-module-id="chat.main"]');
+    if (chatTab instanceof HTMLElement) {
+      const dockviewTab = chatTab.closest('.dv-tab') ?? chatTab;
+      dockviewTab.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 1, pointerType: 'mouse' }));
+      dockviewTab.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 1, pointerType: 'mouse' }));
+      dockviewTab.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0 }));
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      if (!chatTab.closest('.dv-active-tab')) return false;
+    }
+    const trigger = document.querySelector('.composer-add-trigger');
+    if (!(trigger instanceof HTMLButtonElement)) return false;
+    trigger.click();
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    return document.querySelector('body > .composer-add-popover') instanceof HTMLElement;
+  })()`, true) as boolean;
+  if (!opened) return false;
+  const screenshot = await window.webContents.capturePage();
+  await writeFile(join(outputRoot, 'electron-composer-add-menu.png'), screenshot.toPNG());
+  const planModeActivated = await window.webContents.executeJavaScript(`(async () => {
+    const runtimeStatus = await window.ariadne?.runtime?.getStatus?.();
+    if (!runtimeStatus?.capabilities?.includes('companion.agent-plan')) return false;
+    const popover = document.querySelector('body > .composer-add-popover');
+    const planItem = [...(popover?.querySelectorAll('.composer-add-item') ?? [])]
+      .find((item) => item.getAttribute('aria-pressed') === 'false');
+    if (!(planItem instanceof HTMLButtonElement)) return false;
+    planItem.click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return document.querySelector('body > .composer-add-popover') === null
+      && document.querySelector('.composer-plan-mode-chip') instanceof HTMLButtonElement;
+  })()`, true) as boolean;
+  if (!planModeActivated) return false;
+  const planModeScreenshot = await window.webContents.capturePage();
+  await writeFile(join(outputRoot, 'electron-composer-plan-mode.png'), planModeScreenshot.toPNG());
+  const planModeRestored = await window.webContents.executeJavaScript(`(async () => {
+    const chip = document.querySelector('.composer-plan-mode-chip');
+    if (!(chip instanceof HTMLButtonElement)) return false;
+    chip.click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const trigger = document.querySelector('.composer-add-trigger');
+    return document.querySelector('.composer-plan-mode-chip') === null
+      && trigger instanceof HTMLButtonElement
+      && trigger.getAttribute('aria-expanded') === 'false';
+  })()`, true) as boolean;
+  return planModeRestored;
+}
+
 async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObservation> {
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + 45_000;
   let latest: SmokeObservation | null = null;
   while (Date.now() < deadline) {
     latest = await window.webContents.executeJavaScript(`(async () => {
@@ -446,7 +582,11 @@ async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObserva
       const runtimeBridge = typeof window.ariadne?.runtime?.getStatus === 'function'
         && typeof window.ariadne?.runtime?.request === 'function';
       const agentSettingsBridge = typeof window.ariadne?.agentSettings?.load === 'function'
-        && typeof window.ariadne?.agentSettings?.update === 'function';
+        && typeof window.ariadne?.agentSettings?.update === 'function'
+        && typeof window.ariadne?.agentSettings?.setWorkspacePinned === 'function'
+        && typeof window.ariadne?.agentSettings?.archiveWorkspace === 'function'
+        && typeof window.ariadne?.agentSettings?.restoreWorkspace === 'function'
+        && typeof window.ariadne?.agentSettings?.onWorkspacesChanged === 'function';
       const status = runtimeBridge ? await window.ariadne.runtime.getStatus() : null;
       const agentSettings = agentSettingsBridge ? await window.ariadne.agentSettings.load() : null;
       const primaryWorkspaceId = agentSettings?.workspaces
@@ -534,6 +674,8 @@ async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObserva
       let chatMessageTextMetrics = null;
       let chatReplyRightBounded = false;
       let chatReplyBoundaryMetrics = null;
+      let processingDisclosureReady = false;
+      let processingDisclosureMetrics = null;
       const existingMessageList = document.querySelector('.message-list');
       const temporaryMessageList = existingMessageList instanceof HTMLElement
         ? null
@@ -596,6 +738,45 @@ async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObserva
         assistantBlock.className = 'assistant-message-block';
         const assistantMessage = document.createElement('div');
         assistantMessage.className = 'assistant-message';
+        const assistantContent = document.createElement('div');
+        assistantContent.className = 'assistant-message-content';
+        const processing = document.createElement('section');
+        processing.className = 'run-processing-disclosure is-running';
+        const processingHeading = document.createElement('div');
+        processingHeading.className = 'run-processing-heading';
+        const processingOpen = document.createElement('button');
+        processingOpen.type = 'button';
+        processingOpen.className = 'run-processing-open';
+        const processingLabel = document.createElement('span');
+        processingLabel.textContent = '正在处理 5s';
+        processingOpen.append(processingLabel);
+        const processingToggle = document.createElement('button');
+        processingToggle.type = 'button';
+        processingToggle.className = 'run-processing-toggle';
+        processingToggle.setAttribute('aria-expanded', 'true');
+        processingHeading.append(processingOpen, processingToggle);
+        const processingContent = document.createElement('div');
+        processingContent.className = 'run-processing-content';
+        const reasoningMarkdown = document.createElement('div');
+        reasoningMarkdown.className = 'message-content markdown-content reasoning-markdown';
+        const reasoningParagraph = document.createElement('p');
+        reasoningParagraph.textContent = '正在核对实现边界。';
+        reasoningMarkdown.append(reasoningParagraph);
+        const processingEvents = document.createElement('div');
+        processingEvents.className = 'run-processing-events';
+        const compressionEvent = document.createElement('div');
+        compressionEvent.className = 'run-processing-event run-processing-event--running';
+        const compressionLabel = document.createElement('span');
+        compressionLabel.textContent = '正在自动压缩上下文';
+        compressionEvent.append(document.createElement('i'), compressionLabel);
+        processingEvents.append(compressionEvent);
+        processingContent.append(reasoningMarkdown, processingEvents);
+        processing.append(processingHeading, processingContent);
+        processingToggle.addEventListener('click', () => {
+          const expanded = processingToggle.getAttribute('aria-expanded') === 'true';
+          processingToggle.setAttribute('aria-expanded', String(!expanded));
+          processingContent.hidden = expanded;
+        });
         const markdown = document.createElement('div');
         markdown.className = 'message-content markdown-content';
         const paragraph = document.createElement('p');
@@ -603,7 +784,9 @@ async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObserva
         const codeBlock = document.createElement('pre');
         codeBlock.textContent = 'const value = "' + 'long-content-'.repeat(80) + '";';
         markdown.append(paragraph, codeBlock);
-        assistantMessage.append(markdown);
+        markdown.style.visibility = 'hidden';
+        assistantContent.append(processing, markdown);
+        assistantMessage.append(assistantContent);
         assistantBlock.append(assistantMessage);
         assistantNode.append(assistantBlock);
         messageList.append(userNode, assistantNode);
@@ -614,6 +797,27 @@ async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObserva
         const codeBlockBounds = codeBlock.getBoundingClientRect();
         const assistantStyle = getComputedStyle(assistantBlock);
         const codeBlockStyle = getComputedStyle(codeBlock);
+        const processingToggleStyle = getComputedStyle(processingOpen);
+        const reasoningStyle = getComputedStyle(reasoningMarkdown);
+        const answerStyle = getComputedStyle(markdown);
+        const runningLabel = processingLabel.textContent;
+        const runningCompressionVisible = compressionLabel.textContent === '正在自动压缩上下文'
+          && !processingContent.hidden;
+        const formalAnswerHiddenWhileRunning = getComputedStyle(markdown).visibility === 'hidden';
+        processing.classList.remove('is-running');
+        processingLabel.textContent = '已处理 6m 21s';
+        markdown.style.visibility = 'visible';
+        compressionEvent.className = 'run-processing-event run-processing-event--completed';
+        compressionLabel.textContent = '已自动压缩上下文';
+        processingToggle.setAttribute('aria-expanded', 'false');
+        processingContent.hidden = true;
+        const completionCollapsed = processingContent.hidden
+          && processingToggle.getAttribute('aria-expanded') === 'false';
+        processingToggle.click();
+        const expandedHistoryAfterClick = processingToggle.getAttribute('aria-expanded') === 'true'
+          && !processingContent.hidden;
+        const completedCompressionVisible = expandedHistoryAfterClick
+          && compressionLabel.textContent === '已自动压缩上下文';
         chatReplyBoundaryMetrics = {
           userMessageRight: userBounds.right,
           assistantMessageRight: assistantBounds.right,
@@ -622,11 +826,35 @@ async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObserva
           assistantOverflowX: assistantStyle.overflowX,
           codeBlockOverflowX: codeBlockStyle.overflowX
         };
+        processingDisclosureMetrics = {
+          label: processingLabel.textContent,
+          runningLabel,
+          runningCompressionVisible,
+          formalAnswerHiddenWhileRunning,
+          completionCollapsed,
+          completedCompressionVisible,
+          expandedHistoryAfterClick,
+          toggleFontSize: processingToggleStyle.fontSize,
+          reasoningFontSize: reasoningStyle.fontSize,
+          answerFontSize: answerStyle.fontSize,
+          reasoningColor: reasoningStyle.color,
+          answerColor: answerStyle.color
+        };
         chatReplyRightBounded = assistantBounds.right <= userBounds.right + .5
           && markdownBounds.right <= userBounds.right + .5
           && codeBlockBounds.right <= userBounds.right + .5
           && assistantStyle.overflowX === 'clip'
           && (codeBlockStyle.overflowX === 'auto' || codeBlockStyle.overflowX === 'scroll');
+        processingDisclosureReady = processingLabel.textContent === '已处理 6m 21s'
+          && runningLabel === '正在处理 5s'
+          && runningCompressionVisible
+          && formalAnswerHiddenWhileRunning
+          && completionCollapsed
+          && completedCompressionVisible
+          && expandedHistoryAfterClick
+          && Number.parseFloat(processingToggleStyle.fontSize) < Number.parseFloat(answerStyle.fontSize)
+          && Number.parseFloat(reasoningStyle.fontSize) < Number.parseFloat(answerStyle.fontSize)
+          && reasoningStyle.color !== answerStyle.color;
         userNode.remove();
         assistantNode.remove();
         temporaryMessageList?.remove();
@@ -634,6 +862,7 @@ async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObserva
       const composer = document.querySelector('.composer textarea');
       const composerFrame = document.querySelector('.composer');
       const composerToolbar = document.querySelector('.composer-toolbar');
+      const composerAddTrigger = document.querySelector('.composer-add-trigger');
       const modelControl = document.querySelector('.composer-model-menu .select-menu-trigger');
       const routingControl = document.querySelector('.composer-routing-menu .select-menu-trigger');
       const permissionModeControl = document.querySelector('.composer-permission-mode-menu .select-menu-trigger');
@@ -642,6 +871,7 @@ async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObserva
       const permissionModeBounds = permissionModeControl?.getBoundingClientRect();
       const sendButtonBounds = sendButton?.getBoundingClientRect();
       const composerControlsVisible = composerToolbar instanceof HTMLElement
+        && composerAddTrigger instanceof HTMLButtonElement
         && modelControl instanceof HTMLButtonElement
         && routingControl === null
         && permissionModeControl instanceof HTMLButtonElement
@@ -651,7 +881,103 @@ async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObserva
         && permissionModeBounds.left >= composerFrameBounds.left + composerFrameBounds.width * .5
         && permissionModeBounds.right <= sendButtonBounds.left + 1
         && sendButtonBounds.right <= composerFrameBounds.right + 1);
+      let composerAddMenuReady = false;
+      const composerAddMenuMetrics = {
+        triggerBeforeModel: false,
+        parentIsBody: false,
+        itemCount: 0,
+        sectionHeadings: [],
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        composerLeft: composerFrameBounds?.left ?? 0,
+        composerTop: composerFrameBounds?.top ?? 0,
+        composerRight: composerFrameBounds?.right ?? 0
+      };
+      if (composerAddTrigger instanceof HTMLButtonElement
+        && modelControl instanceof HTMLButtonElement
+        && composerFrameBounds) {
+        composerAddTrigger.click();
+        await new Promise((resolve) => setTimeout(resolve, 180));
+        const addPopover = document.querySelector('body > .composer-add-popover');
+        if (addPopover instanceof HTMLElement) {
+          const addPopoverBounds = addPopover.getBoundingClientRect();
+          const items = [...addPopover.querySelectorAll('.composer-add-item')];
+          const sectionHeadings = [...addPopover.querySelectorAll('.composer-add-section h3')]
+            .map((heading) => heading.textContent?.trim() ?? '');
+          const triggerBeforeModel = Boolean(
+            composerAddTrigger.compareDocumentPosition(modelControl) & Node.DOCUMENT_POSITION_FOLLOWING
+          );
+          Object.assign(composerAddMenuMetrics, {
+            triggerBeforeModel,
+            parentIsBody: addPopover.parentElement === document.body,
+            itemCount: items.length,
+            sectionHeadings,
+            left: addPopoverBounds.left,
+            top: addPopoverBounds.top,
+            right: addPopoverBounds.right,
+            bottom: addPopoverBounds.bottom
+          });
+          composerAddMenuReady = triggerBeforeModel
+            && addPopover.parentElement === document.body
+            && items.length === 9
+            && sectionHeadings[0] === '添加'
+            && sectionHeadings[1] === '插件'
+            && addPopoverBounds.bottom <= composerFrameBounds.top - 4
+            && Math.abs(addPopoverBounds.left - composerFrameBounds.left) <= 1
+            && Math.abs(addPopoverBounds.right - composerFrameBounds.right) <= 1
+            && addPopoverBounds.top >= 7;
+        }
+        composerAddTrigger.click();
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        composerAddMenuReady = composerAddMenuReady
+          && document.querySelector('body > .composer-add-popover') === null
+          && composerAddTrigger.getAttribute('aria-expanded') === 'false';
+      }
       const composerEnabled = composer instanceof HTMLTextAreaElement && !composer.disabled;
+      let composerAutoGrowWorks = false;
+      let composerAutoGrowMetrics = null;
+      if (composer instanceof HTMLTextAreaElement) {
+        const originalValue = composer.value;
+        const originalDisabled = composer.disabled;
+        const nativeValueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+        const updateComposerValue = async (value) => {
+          composer.disabled = false;
+          nativeValueSetter?.call(composer, value);
+          composer.dispatchEvent(new Event('input', { bubbles: true }));
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        };
+        await updateComposerValue('单行输入');
+        const compactHeight = composer.getBoundingClientRect().height;
+        const minimumHeight = Number.parseFloat(getComputedStyle(composer).minHeight);
+        await updateComposerValue('第一行\\n第二行\\n第三行\\n第四行');
+        const multilineHeight = composer.getBoundingClientRect().height;
+        await updateComposerValue(Array.from({ length: 30 }, (_, index) => '第 ' + (index + 1) + ' 行').join('\\n'));
+        const cappedHeight = composer.getBoundingClientRect().height;
+        const cappedStyle = getComputedStyle(composer);
+        const maximumHeight = Number.parseFloat(cappedStyle.maxHeight);
+        const cappedOverflowY = cappedStyle.overflowY;
+        await updateComposerValue(originalValue);
+        const restoredHeight = composer.getBoundingClientRect().height;
+        composer.disabled = originalDisabled;
+        composerAutoGrowMetrics = {
+          compactHeight,
+          multilineHeight,
+          cappedHeight,
+          minimumHeight,
+          maximumHeight,
+          cappedOverflowY,
+          restoredHeight
+        };
+        composerAutoGrowWorks = compactHeight >= minimumHeight - 1
+          && compactHeight <= minimumHeight + 1
+          && multilineHeight > compactHeight
+          && cappedHeight >= maximumHeight - 1
+          && cappedHeight <= maximumHeight + 1
+          && cappedOverflowY === 'auto'
+          && restoredHeight <= compactHeight + 1;
+      }
       const catalog = status?.availability === 'ready'
         ? await window.ariadne.runtime.request({ kind: 'models.list' })
         : null;
@@ -744,7 +1070,21 @@ async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObserva
       let sessionCreated = false;
       let sessionCreatedInCurrentWorkspace = false;
       let workspaceConversationTreeReady = false;
-      let workspaceCollapseWorks = false;
+      let internalDefaultWorkspaceHidden = false;
+      let workspaceDisclosureAnimationReady = false;
+      let workspaceDisclosureAnimationMetrics = {
+        reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+        transitionDuration: '',
+        expandedHeight: 0,
+        collapsingHeight: 0,
+        collapsedHeight: 0,
+        expandingHeight: 0,
+        collapsedClassName: '',
+        collapsedMinHeight: '',
+        collapsedMaxHeight: '',
+        collapsedOpacity: '',
+        collapsedTransform: ''
+      };
       let compactConversationRows = false;
       let conversationDetailsPopoverWorks = false;
       let conversationInlineRenameWorks = false;
@@ -763,12 +1103,12 @@ async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObserva
         const displayedSessionIdBeforeCreate = displayedRowBeforeCreate instanceof HTMLElement
           ? displayedRowBeforeCreate.dataset.sessionId
           : undefined;
-        const selectedWorkspaceBeforeCreate = document.querySelector('.conversation-workspace-header.is-selected');
+        const selectedWorkspaceBeforeCreate = document.querySelector('.conversation-workspace-row.is-selected');
         const expectedWorkspaceId = listed?.kind === 'companion.sessions'
           ? listed.sessions.find((session) => session.sessionId === displayedSessionIdBeforeCreate)?.workspaceId
             ?? (selectedWorkspaceBeforeCreate instanceof HTMLElement
               ? selectedWorkspaceBeforeCreate.dataset.workspaceId
-              : undefined)
+              : primaryWorkspaceId)
           : undefined;
         if (newSessionButton instanceof HTMLButtonElement && !newSessionButton.disabled) {
           newSessionButton.click();
@@ -780,7 +1120,7 @@ async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObserva
           }
         }
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        const workspaceHeader = document.querySelector('.conversation-workspace-header');
+        const workspaceRows = [...document.querySelectorAll('.conversation-workspace-row')];
         let conversationRow = document.querySelector('.conversation-row');
         const createdSession = listed?.kind === 'companion.sessions'
           ? listed.sessions.find((session) => !existingIds.has(session.sessionId))
@@ -796,24 +1136,87 @@ async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObserva
           && createdSession.sessionId === activeSessionId
           && createdSession.workspaceId === expectedWorkspaceId
         );
-        workspaceConversationTreeReady = workspaceHeader instanceof HTMLButtonElement
-          && conversationRow instanceof HTMLElement
-          && document.querySelector('.workspace-conversation-list') instanceof HTMLElement
-          && document.querySelector('.conversation-meta') === null;
-        if (workspaceHeader instanceof HTMLButtonElement && conversationRow instanceof HTMLElement) {
-          workspaceHeader.click();
-          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-          const collapsed = workspaceHeader.getAttribute('aria-expanded') === 'false'
-            && document.querySelector('.workspace-conversation-list') === null
-            && document.querySelector('.conversation-row') === null;
-          workspaceHeader.click();
-          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-          workspaceCollapseWorks = collapsed
-            && workspaceHeader.getAttribute('aria-expanded') === 'true'
-            && document.querySelector('.workspace-conversation-list') instanceof HTMLElement
-            && document.querySelector('.conversation-row') instanceof HTMLElement;
-          conversationRow = document.querySelector('.conversation-row');
+        const conversationGroups = document.querySelector('.conversation-groups');
+        const assistantSessionList = document.querySelector('.conversation-assistant-sessions');
+        const workspaceGroups = [...document.querySelectorAll('.conversation-workspace-group')];
+        const topLevelGroups = conversationGroups ? [...conversationGroups.children] : [];
+        const assistantGroupIndex = assistantSessionList ? topLevelGroups.indexOf(assistantSessionList) : -1;
+        const firstWorkspaceGroupIndex = workspaceGroups.length > 0 ? topLevelGroups.indexOf(workspaceGroups[0]) : -1;
+        const assistantSessionsAreTopLevel = !assistantSessionList || (
+          assistantSessionList.parentElement === conversationGroups
+          && [...assistantSessionList.children].every(
+            (row) => row.classList.contains('conversation-row') && !row.classList.contains('is-workspace-child')
+          )
+          && (firstWorkspaceGroupIndex < 0 || assistantGroupIndex < firstWorkspaceGroupIndex)
+        );
+        const workspacesOwnTheirSessions = workspaceGroups.every((group) => {
+          const workspaceRow = group.querySelector(':scope > .conversation-workspace-row');
+          const sessionList = group.querySelector(':scope > .conversation-workspace-sessions');
+          return workspaceRow instanceof HTMLElement
+            && (!sessionList || [...sessionList.children].every(
+              (row) => row.classList.contains('conversation-row') && row.classList.contains('is-workspace-child')
+            ));
+        });
+        workspaceConversationTreeReady = conversationRow instanceof HTMLElement
+          && assistantSessionsAreTopLevel
+          && workspacesOwnTheirSessions
+          && document.querySelector('.conversation-workspace-count') === null;
+        internalDefaultWorkspaceHidden = !workspaceRows.some(
+          (row) => row instanceof HTMLElement && row.dataset.workspaceId === 'primary'
+        );
+        const disclosureProbe = document.createElement('div');
+        disclosureProbe.style.cssText = 'position:fixed;left:-1000px;top:0;width:220px;';
+        disclosureProbe.innerHTML = '<button class="conversation-workspace-main" aria-expanded="true"></button>'
+          + '<div class="conversation-row"><div class="conversation-row-main">动画探针</div></div>';
+        document.body.appendChild(disclosureProbe);
+        const probeRow = disclosureProbe.querySelector('.conversation-row');
+        if (probeRow instanceof HTMLElement) {
+          const expandedHeight = probeRow.getBoundingClientRect().height;
+          const transitionDuration = getComputedStyle(probeRow).transitionDuration;
+          probeRow.classList.add('is-workspace-collapsed');
+          probeRow.style.height = '0px';
+          probeRow.style.borderWidth = '0px';
+          probeRow.style.opacity = '0';
+          probeRow.style.transform = 'translateY(-5px) scaleY(.92)';
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          const collapsingHeight = probeRow.getBoundingClientRect().height;
+          await new Promise((resolve) => setTimeout(resolve, 260));
+          const collapsedHeight = probeRow.getBoundingClientRect().height;
+          const collapsedStyle = getComputedStyle(probeRow);
+          const collapsedClassName = probeRow.className;
+          const collapsedMinHeight = collapsedStyle.minHeight;
+          const collapsedMaxHeight = collapsedStyle.maxHeight;
+          const collapsedOpacity = collapsedStyle.opacity;
+          const collapsedTransform = collapsedStyle.transform;
+          probeRow.classList.remove('is-workspace-collapsed');
+          probeRow.style.removeProperty('height');
+          probeRow.style.removeProperty('border-width');
+          probeRow.style.removeProperty('opacity');
+          probeRow.style.removeProperty('transform');
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          const expandingHeight = probeRow.getBoundingClientRect().height;
+          workspaceDisclosureAnimationMetrics = {
+            reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+            transitionDuration,
+            expandedHeight,
+            collapsingHeight,
+            collapsedHeight,
+            expandingHeight,
+            collapsedClassName,
+            collapsedMinHeight,
+            collapsedMaxHeight,
+            collapsedOpacity,
+            collapsedTransform
+          };
+          workspaceDisclosureAnimationReady = transitionDuration.includes('0.18s')
+            && expandedHeight >= 29
+            && collapsingHeight > 0
+            && collapsingHeight < expandedHeight
+            && collapsedHeight === 0
+            && expandingHeight > 0
+            && expandingHeight < expandedHeight;
         }
+        disclosureProbe.remove();
         compactConversationRows = conversationRow instanceof HTMLElement
           && conversationRow.getBoundingClientRect().height <= 34;
 
@@ -916,6 +1319,22 @@ async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObserva
         .map((label) => label.textContent?.trim());
       const settingsNoDynamicRuntimeControls = !settingsFieldLabels.includes('工作区访问')
         && !settingsFieldLabels.includes('路由策略');
+      let sessionActivityModuleReady = false;
+      const moduleMenuButton = document.querySelector('.module-menu > .toolbar-button');
+      if (moduleMenuButton instanceof HTMLButtonElement) {
+        moduleMenuButton.click();
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const activityOption = [...document.querySelectorAll('.module-option')]
+          .find((option) => option.querySelector('strong')?.textContent?.trim() === '会话活动');
+        if (activityOption instanceof HTMLButtonElement) {
+          activityOption.click();
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          sessionActivityModuleReady = document.querySelector(
+            '.module-tab[data-module-id="session.activity"]'
+          ) instanceof HTMLElement
+            && document.querySelector('.session-activity-panel') instanceof HTMLElement;
+        }
+      }
       return {
         documentTitle: document.title,
         rootWidth: Math.round(bounds?.width ?? 0),
@@ -932,11 +1351,17 @@ async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObserva
         chatMessageTextMetrics,
         chatReplyRightBounded,
         chatReplyBoundaryMetrics,
+        processingDisclosureReady,
+        processingDisclosureMetrics,
         composerEnabled,
         composerGuarded,
+        composerAutoGrowWorks,
+        composerAutoGrowMetrics,
         composerControlsVisible,
         composerRoutingNested,
         composerPermissionModeRightAligned,
+        composerAddMenuReady,
+        composerAddMenuMetrics,
         readyModelCount,
         selectMenuViewportFit,
         selectMenuCompact,
@@ -950,13 +1375,16 @@ async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObserva
         sessionCreated,
         sessionCreatedInCurrentWorkspace,
         workspaceConversationTreeReady,
-        workspaceCollapseWorks,
+        internalDefaultWorkspaceHidden,
+        workspaceDisclosureAnimationReady,
+        workspaceDisclosureAnimationMetrics,
         compactConversationRows,
         conversationDetailsPopoverWorks,
         conversationInlineRenameWorks,
         conversationPinWorks,
         settingsUiReady,
         settingsNoDynamicRuntimeControls,
+        sessionActivityModuleReady,
         providerCardCount,
         collapsedProviderCardCount,
         providerDisclosureWorks,
@@ -971,10 +1399,13 @@ async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObserva
       && latest.chatConversationRounded
       && latest.chatMessageTextFidelity
       && latest.chatReplyRightBounded
+      && latest.processingDisclosureReady
       && latest.composerGuarded
+      && latest.composerAutoGrowWorks
       && latest.composerControlsVisible
       && latest.composerRoutingNested
       && latest.composerPermissionModeRightAligned
+      && latest.composerAddMenuReady
       && latest.selectMenuViewportFit
       && latest.selectMenuCompact
       && latest.workspaceOpenButtonVisible
@@ -986,13 +1417,15 @@ async function waitForRendererReady(window: BrowserWindow): Promise<SmokeObserva
       && latest.sessionCreated
       && latest.sessionCreatedInCurrentWorkspace
       && latest.workspaceConversationTreeReady
-      && latest.workspaceCollapseWorks
+      && latest.internalDefaultWorkspaceHidden
+      && latest.workspaceDisclosureAnimationReady
       && latest.compactConversationRows
       && latest.conversationDetailsPopoverWorks
       && latest.conversationInlineRenameWorks
       && latest.conversationPinWorks
       && latest.settingsUiReady
       && latest.settingsNoDynamicRuntimeControls
+      && latest.sessionActivityModuleReady
       && latest.logsLayoutNoOverlap) return latest;
     if (latest.runtimeStatus === 'disabled') return latest;
     await delay(100);

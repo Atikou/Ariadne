@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { ArrowDown, Check, CircleStop, Copy, Hand, Send, Settings2, ShieldAlert, ShieldCheck, Sparkles } from 'lucide-react';
+import { ArrowDown, Check, Copy, Hand, Send, Settings2, ShieldAlert, ShieldCheck, Sparkles } from 'lucide-react';
 import type {
   ChatRoutingStrategy,
   ModelInferenceOptions,
@@ -17,10 +17,15 @@ import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import { SelectMenu, type SelectMenuOption } from '@renderer/shared/ui/SelectMenu';
 import { StatusPill } from '@renderer/shared/ui/StatusPill';
 import { getCenteredScrollDelta, isScrollNearBottom } from '@shared/scroll-geometry';
+import { calculateComposerTextareaLayout } from '@shared/composer-textarea-layout';
 import { ConversationOverviewRuler } from './ConversationOverviewRuler';
 import { ConversationSidebar } from './ConversationSidebar';
-import type { ConversationNode } from './conversation-node';
+import { shouldShowFormalAnswer, type ConversationNode } from './conversation-node';
 import { MarkdownMessage } from './MarkdownMessage';
+import { RunProcessingDisclosure } from './RunProcessingDisclosure';
+import { MODULE_IDS } from '@renderer/core/modules/module-ids';
+import { ConversationApprovalCards } from '@renderer/app/ApprovalCenter';
+import { ComposerAddMenu } from './ComposerAddMenu';
 
 const AUTO_MODEL_ID = '__auto__';
 const AUTO_ROUTING_PREFIX = `${AUTO_MODEL_ID}:`;
@@ -51,41 +56,56 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   const [isAtLatest, setIsAtLatest] = useState(true);
   const viewportRef = useRef<HTMLDivElement>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const followLatestRef = useRef(true);
   const defaultsLoadedRef = useRef(false);
   const selectedSession = runtime.sessions.find((session) => session.sessionId === runtime.selectedSessionId);
   const availableModels = runtime.models.filter((model) => model.availability === 'ready');
-  const eligibleModels = routingStrategy === 'privacy-first'
-    ? availableModels.filter((model) => model.location === 'local')
+  const planModeAvailable = runtime.status.availability === 'ready'
+    && runtime.status.capabilities.includes('companion.agent-plan');
+  const planModeEnabled = services.runtime.isPlanModeEnabled(runtime.selectedSessionId);
+  const modeEligibleModels = planModeEnabled
+    ? availableModels.filter((model) => model.supportsAgent)
     : availableModels;
+  const eligibleModels = routingStrategy === 'privacy-first'
+    ? modeEligibleModels.filter((model) => model.location === 'local')
+    : modeEligibleModels;
   const selectedModel = eligibleModels.find((model) => model.id === selectedModelId);
   const selectedInference = selectedModel
     ? inferenceByModel[selectedModel.id] ?? defaultInference(selectedModel)
     : undefined;
   const reasoning = selectedModel?.inference?.reasoning;
-  const canChat = runtime.status.availability === 'ready' && eligibleModels.length > 0;
+  const canChat = runtime.status.availability === 'ready'
+    && eligibleModels.length > 0
+    && (!planModeEnabled || planModeAvailable);
   const modelOptions = useMemo<readonly SelectMenuOption<string>[]>(() => [
     {
       value: AUTO_MODEL_ID,
       label: '自动选择模型',
-      description: '按路由策略选择',
-      children: routingOptions.map((option) => ({
-        ...option,
-        value: routingSelectionValue(option.value)
-      }))
+      description: planModeEnabled ? '按 Agent 能力选择' : '按路由策略选择',
+      ...(planModeEnabled
+        ? {}
+        : {
+            children: routingOptions.map((option) => ({
+              ...option,
+              value: routingSelectionValue(option.value)
+            }))
+          })
     },
     ...eligibleModels.map((model) => ({
       value: model.id,
       label: model.label,
       description: model.location === 'local' ? '本地模型' : '远程模型'
     }))
-  ], [eligibleModels]);
+  ], [eligibleModels, planModeEnabled]);
   const modelSelectionValue = selectedModelId === AUTO_MODEL_ID
-    ? routingSelectionValue(routingStrategy)
+    ? planModeEnabled
+      ? AUTO_MODEL_ID
+      : routingSelectionValue(routingStrategy)
     : selectedModelId;
   const nodes = useMemo(() => runtime.messages.map(toConversationNode), [runtime.messages]);
   const activeRun = runtime.runs.find((run) => run.sessionId === runtime.selectedSessionId && [
-    'queued', 'running', 'waiting_permission', 'waiting_plan_handoff'
+    'queued', 'running', 'waiting_permission', 'waiting_plan_handoff', 'waiting_budget'
   ].includes(run.status));
   const running = Boolean(activeRun);
   const sending = runtime.messages.some((message) => message.deliveryState === 'pending');
@@ -99,6 +119,10 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
       setSettingsSnapshot(settings);
     }).catch(() => undefined);
   }, [services.agentSettings]);
+
+  useEffect(() => services.system.onApprovalNavigation(({ sessionId }) => {
+    void services.runtime.selectSession(sessionId).catch(() => undefined);
+  }), [services.runtime, services.system]);
 
   const changePermissionMode = async (nextPermissionMode: AgentPermissionMode): Promise<void> => {
     if (savingPermissionMode || nextPermissionMode === permissionMode) return;
@@ -166,6 +190,32 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
       : nodes[0]?.id ?? null);
   }, [nodes]);
 
+  useLayoutEffect(() => {
+    if (composerInputRef.current) syncComposerTextareaHeight(composerInputRef.current);
+  }, [draft]);
+
+  useEffect(() => {
+    const input = composerInputRef.current;
+    const composer = input?.closest<HTMLElement>('.composer');
+    if (!input || !composer) return;
+    let previousWidth = composer.getBoundingClientRect().width;
+    let frame: number | null = null;
+    const observer = new ResizeObserver(([entry]) => {
+      if (!entry || Math.abs(entry.contentRect.width - previousWidth) < 0.5) return;
+      previousWidth = entry.contentRect.width;
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        syncComposerTextareaHeight(input);
+      });
+    });
+    observer.observe(composer);
+    return () => {
+      observer.disconnect();
+      if (frame !== null) window.cancelAnimationFrame(frame);
+    };
+  }, []);
+
   const setFollowingLatest = useCallback((value: boolean): void => {
     followLatestRef.current = value;
     setIsAtLatest((current) => current === value ? current : value);
@@ -200,7 +250,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
 
   const send = async (): Promise<void> => {
     const message = draft;
-    if (!message.trim() || running || sending || !canChat) return;
+    if (!message.trim() || running || sending || !canChat || (planModeEnabled && !planModeAvailable)) return;
     setDraft('');
     setFollowingLatest(true);
     try {
@@ -210,7 +260,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
       await services.runtime.sendMessage(message, {
         ...(selectedModelId !== AUTO_MODEL_ID ? { modelId: selectedModelId } : {}),
         ...(selectedInference ? { inference: selectedInference } : {}),
-        routingStrategy,
+        ...(planModeEnabled ? {} : { routingStrategy }),
         ...(workspaceId ? { workspaceId } : {})
       });
     } catch {
@@ -287,18 +337,34 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
 
         <div className="message-stage">
           <div className="message-viewport" ref={viewportRef} onScroll={handleViewportScroll}>
-            {nodes.length === 0 ? <EmptyConversation hasModel={availableModels.length > 0} /> : (
-              <div className="message-list" ref={messageListRef}>
-                {nodes.map((node) => (
+            <div className="message-list" ref={messageListRef}>
+              {nodes.length === 0
+                ? <EmptyConversation hasModel={availableModels.length > 0} />
+                : nodes.map((node) => (
                   <div id={`chat-node-${node.id}`} data-conversation-node key={node.id} className={`conversation-node conversation-node--${node.kind}`}>
                     <ConversationMessage
                       node={node}
+                      run={runtime.runs.find((run) => run.runId === node.runId)}
+                      activities={node.runId
+                        ? runtime.activities.filter((activity) => activity.runId === node.runId)
+                        : []}
+                      onOpenActivity={node.runId
+                        ? () => {
+                            services.events.emitRetained('session-activity:select-run', {
+                              runId: node.runId!
+                            });
+                            services.events.emit('module:open', MODULE_IDS.sessionActivity);
+                          }
+                        : undefined}
                       onCopy={(text) => services.clipboard.writeText({ text })}
                     />
                   </div>
                 ))}
-              </div>
-            )}
+              <ConversationApprovalCards
+                services={services}
+                sessionId={runtime.selectedSessionId}
+              />
+            </div>
           </div>
           <ConversationOverviewRuler nodes={nodes} activeId={activeId} selectedId={selectedId} onSelect={jumpToNode} />
           {!isAtLatest && nodes.length > 0 && (
@@ -311,13 +377,20 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
         <div className="composer-wrap">
           <div className="composer">
             <textarea
+              ref={composerInputRef}
               value={draft}
               rows={1}
               placeholder={runtime.status.availability !== 'ready'
                 ? 'Runtime 当前不可用'
-                : availableModels.length === 0
-                  ? '请先在设置中配置 API Key 或本地模型目录'
-                  : '向 Ariadne 发送消息；按 Shift + Enter 换行'}
+                : planModeEnabled && !planModeAvailable
+                  ? '当前 Runtime 构建不支持计划模式，请完整重启 Ariadne'
+                : eligibleModels.length === 0
+                  ? planModeEnabled
+                    ? '请先配置支持 Agent 协议的可用模型'
+                    : '请先在设置中配置 API Key 或本地模型目录'
+                  : planModeEnabled
+                    ? '描述需要规划的任务；计划模式只读分析'
+                    : '向 Ariadne 发送消息；按 Shift + Enter 换行'}
               aria-label="消息输入框"
               disabled={!canChat}
               onChange={(event) => setDraft(event.target.value)}
@@ -325,6 +398,14 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
             />
             <div className="composer-toolbar">
               <div className="composer-model-controls">
+                <ComposerAddMenu
+                  planModeAvailable={planModeAvailable}
+                  planModeEnabled={planModeEnabled}
+                  onPlanModeChange={(enabled) => services.runtime.setPlanModeEnabled(
+                    enabled,
+                    runtime.selectedSessionId
+                  )}
+                />
                 <SelectMenu<string>
                   className="composer-model-menu"
                   ariaLabel="选择模型"
@@ -390,7 +471,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                     : void send()}
                   aria-label={running ? activeRun?.origin === 'agent' ? '取消 Agent 任务' : '停止生成' : '发送消息'}
                 >
-                  {running ? <CircleStop size={17} /> : <Send size={16} />}
+                  {running ? <span className="send-stop-glyph" aria-hidden="true" /> : <Send size={16} />}
                 </button>
               </div>
             </div>
@@ -403,6 +484,18 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
 
 function routingSelectionValue(strategy: ChatRoutingStrategy): string {
   return `${AUTO_ROUTING_PREFIX}${strategy}`;
+}
+
+function syncComposerTextareaHeight(input: HTMLTextAreaElement): void {
+  input.style.height = 'auto';
+  const style = getComputedStyle(input);
+  const layout = calculateComposerTextareaLayout(
+    input.scrollHeight,
+    Number.parseFloat(style.minHeight),
+    Number.parseFloat(style.maxHeight)
+  );
+  input.style.height = `${layout.height}px`;
+  input.style.overflowY = layout.overflowY;
 }
 
 function parseRoutingSelectionValue(value: string): ChatRoutingStrategy | null {
@@ -444,7 +537,10 @@ function EmptyConversation({ hasModel }: { hasModel: boolean }): React.JSX.Eleme
 }
 
 function toConversationNode(message: RuntimeMessage): ConversationNode {
-  const content = message.content || (message.status === 'streaming' ? '正在思考…' : '');
+  const content = message.content;
+  const summary = content
+    || message.reasoning?.content
+    || (message.status === 'streaming' ? '正在处理…' : '');
   const kind = message.role === 'user'
     ? 'user'
     : message.status === 'streaming'
@@ -457,20 +553,55 @@ function toConversationNode(message: RuntimeMessage): ConversationNode {
     kind,
     sender: message.role === 'user' ? '你' : 'Ariadne',
     time: new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    summary: content.slice(0, 160),
+    summary: summary.slice(0, 160),
     content,
     status: message.status,
+    ...(message.runId ? { runId: message.runId } : {}),
+    ...(message.processingDurationMs !== undefined
+      ? { processingDurationMs: message.processingDurationMs }
+      : {}),
+    ...(message.reasoning ? { reasoning: message.reasoning } : {}),
     ...(message.deliveryState ? { deliveryState: message.deliveryState } : {}),
     ...(message.error ? { error: message.error } : {})
   };
 }
 
-function ConversationMessage({ node, onCopy }: { node: ConversationNode; onCopy(text: string): Promise<void> }): React.JSX.Element {
+function ConversationMessage({
+  node,
+  run,
+  activities,
+  onOpenActivity,
+  onCopy
+}: {
+  node: ConversationNode;
+  run?: import('@ariadne/protocol/public').RunSummary | undefined;
+  activities: import('@ariadne/protocol/public').RunActivity[];
+  onOpenActivity?: (() => void) | undefined;
+  onCopy(text: string): Promise<void>;
+}): React.JSX.Element {
   const text = node.content ?? node.summary;
   const isUser = node.kind === 'user';
+  const formalAnswerVisible = shouldShowFormalAnswer(node, run);
+  const visibleText = formalAnswerVisible ? text : '';
   return <div className={isUser ? 'user-message-block' : 'assistant-message-block'}>
     <div className={isUser ? 'user-message' : 'assistant-message'}>
-      {isUser ? <p className="message-content">{text}</p> : <MarkdownMessage markdown={text} />}
+      {isUser
+        ? <p className="message-content">{visibleText}</p>
+        : <div className="assistant-message-content">
+            <RunProcessingDisclosure
+              reasoning={node.reasoning}
+              run={run}
+              activities={activities}
+              messageStatus={node.status}
+              fallbackDurationMs={node.processingDurationMs}
+              onOpenActivity={onOpenActivity}
+            />
+            {visibleText
+              ? <MarkdownMessage markdown={visibleText} />
+              : !node.reasoning && !run && node.status === 'streaming'
+                ? <p className="assistant-processing-placeholder">正在处理…</p>
+                : null}
+          </div>}
     </div>
     {!isUser && (node.status === 'interrupted' || node.status === 'failed') && (
       <div className="message-status-notice" role="status">
@@ -486,7 +617,7 @@ function ConversationMessage({ node, onCopy }: { node: ConversationNode; onCopy(
         : node.deliveryState === 'failed'
           ? '发送失败'
           : node.time}</time>
-      <MessageCopyButton text={text} subject={isUser ? '消息' : '回答'} onCopy={onCopy} />
+      {visibleText && <MessageCopyButton text={visibleText} subject={isUser ? '消息' : '回答'} onCopy={onCopy} />}
     </div>
   </div>;
 }

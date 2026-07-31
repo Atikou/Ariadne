@@ -1,6 +1,7 @@
 import { agentPlanModule } from '@renderer/modules/agent-plan';
 import { agentStatusModule } from '@renderer/modules/agent-status';
 import { chatModule } from '@renderer/modules/chat';
+import { sessionActivityModule } from '@renderer/modules/session-activity';
 import { fileExplorerModule } from '@renderer/modules/file-explorer';
 import { logsModule } from '@renderer/modules/logs';
 import { permissionsModule } from '@renderer/modules/permissions';
@@ -11,6 +12,7 @@ import { ModuleRegistry } from './module-registry';
 
 export const builtinModuleRegistry = new ModuleRegistry([
   chatModule,
+  sessionActivityModule,
   agentStatusModule,
   agentPlanModule,
   toolOutputModule,

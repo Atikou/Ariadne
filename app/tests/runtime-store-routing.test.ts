@@ -115,12 +115,20 @@ describe('RuntimeStore command routing', () => {
     emit(runtimeEnvelope({
       kind: 'run.activity',
       activity: {
+        activityType: 'tool',
         activityId: 'tool-1',
         runId: 'agent-run',
-        kind: 'tool',
+        toolCallId: 'call-1',
+        toolName: 'read_file',
         status: 'running',
         title: 'read_file',
-        occurredAt: new Date().toISOString()
+        occurredAt: new Date().toISOString(),
+        iteration: 1,
+        batchId: 'batch-1',
+        laneId: 'main',
+        dependsOnActivityIds: [],
+        detailAvailable: false,
+        changedFileCount: 0
       }
     }, 1));
     emit(runtimeEnvelope({
@@ -133,7 +141,8 @@ describe('RuntimeStore command routing', () => {
         userFacingLabel: '已取消',
         aggregateVersion: 2,
         checkpointStage: 'cancelled',
-        recoveryStatus: 'none'
+        recoveryStatus: 'none',
+        timing: { activeDurationMs: 1_000 }
       }
     }, 2));
 

@@ -1,7 +1,7 @@
 import type { SqliteMigration } from "../storage/sqliteMigration.js";
 import { DEFAULT_PERSONA } from "./PersonaRuntime.js";
 
-export const COMPANION_DB_SCHEMA_VERSION = 8;
+export const COMPANION_DB_SCHEMA_VERSION = 9;
 
 export const COMPANION_DB_MIGRATIONS: readonly SqliteMigration[] = [
   {
@@ -349,6 +349,20 @@ export const COMPANION_DB_MIGRATIONS: readonly SqliteMigration[] = [
           'externalContent', json(CASE WHEN role = 'user' THEN 'false' ELSE 'true' END),
           'egressAllowed', json_array('model')
         );
+      `);
+    },
+  },
+  {
+    version: 9,
+    name: "persisted_companion_reasoning",
+    up(db) {
+      db.exec(`
+        ALTER TABLE companion_messages ADD COLUMN reasoning_content TEXT;
+        ALTER TABLE companion_messages ADD COLUMN reasoning_status TEXT;
+        ALTER TABLE companion_messages ADD COLUMN reasoning_source TEXT;
+        ALTER TABLE companion_messages ADD COLUMN reasoning_started_at TEXT;
+        ALTER TABLE companion_messages ADD COLUMN reasoning_completed_at TEXT;
+        ALTER TABLE companion_messages ADD COLUMN reasoning_duration_ms INTEGER;
       `);
     },
   },

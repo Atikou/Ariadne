@@ -6,6 +6,7 @@ import type {
   AgentWorkflowInternalPlan,
   AgentWorkflowSwitch,
   AgentWorkflowTaskState,
+  RunBudget,
   RunBudgetKey,
   RunBudgetUsage,
   UserPermissionPolicy,
@@ -24,6 +25,7 @@ import {
   type RunStateLocationContext,
   type RunStateSearchPlan,
 } from "./runStateLocation.js";
+import type { AgentExecutionEngineKind } from "./AgentExecutionEngine.js";
 
 export type { PlanWorkflowStepId } from "./planWorkflowConstants.js";
 export { PLAN_WORKFLOW_STEP_IDS } from "./planWorkflowConstants.js";
@@ -38,7 +40,19 @@ export interface RunStateToolRef {
   toolCallId?: string;
 }
 
+export interface RunStateReadRange {
+  path: string;
+  sha256?: string;
+  startLine?: number;
+  endLine?: number;
+  byteOffset?: number;
+  bytesRead?: number;
+  eof?: boolean;
+}
+
 export interface RunState {
+  checkpointVersion: 1;
+  executionEngineKind: AgentExecutionEngineKind;
   runId: string;
   mode: AgentRunMode;
   goal: string;
@@ -50,11 +64,14 @@ export interface RunState {
   pendingSteps: WorkflowToolName[];
   scannedPaths: string[];
   readFiles: string[];
+  readRanges: RunStateReadRange[];
   toolResultRefs: RunStateToolRef[];
   completedToolSteps: AgentToolStep[];
   budgetUsage: RunBudgetUsage;
   stopReason: AgentStopReason;
   budgetExhausted?: RunBudgetKey;
+  suggestedBudget?: RunBudget;
+  partialSummary?: string;
   updatedAt: string;
   /** 定位进度：searchPlan / visitedFiles / candidateFiles 等，续跑时注入 locate。 */
   location?: RunStateLocationContext;
@@ -137,6 +154,36 @@ export function collectReadFiles(steps: AgentToolStep[]): string[] {
   return [...files].slice(0, 50);
 }
 
+export function collectReadRanges(steps: AgentToolStep[]): RunStateReadRange[] {
+  const ranges = new Map<string, RunStateReadRange>();
+  for (const step of steps) {
+    if (!step.ok || step.tool !== "read_file") continue;
+    const output = step.output && typeof step.output === "object"
+      ? step.output as Record<string, unknown>
+      : undefined;
+    const input = step.input && typeof step.input === "object"
+      ? step.input as Record<string, unknown>
+      : undefined;
+    const filePath = typeof output?.path === "string"
+      ? output.path
+      : typeof input?.path === "string"
+        ? input.path
+        : undefined;
+    if (!filePath || output?.found === false) continue;
+    const range: RunStateReadRange = {
+      path: filePath,
+      ...(typeof output?.sha256 === "string" ? { sha256: output.sha256 } : {}),
+      ...(typeof output?.startLine === "number" ? { startLine: output.startLine } : {}),
+      ...(typeof output?.endLine === "number" ? { endLine: output.endLine } : {}),
+      ...(typeof output?.byteOffset === "number" ? { byteOffset: output.byteOffset } : {}),
+      ...(typeof output?.bytesRead === "number" ? { bytesRead: output.bytesRead } : {}),
+      ...(typeof output?.eof === "boolean" ? { eof: output.eof } : {}),
+    };
+    ranges.set(JSON.stringify(range), range);
+  }
+  return [...ranges.values()].slice(0, 200);
+}
+
 export function buildToolResultRefs(steps: AgentToolStep[]): RunStateToolRef[] {
   return steps.map((step) => ({
     tool: step.tool,
@@ -148,12 +195,14 @@ export function buildToolResultRefs(steps: AgentToolStep[]): RunStateToolRef[] {
 /** 预算耗尽且仍有 PlanWorkflow 待执行步骤时生成可续跑状态。 */
 export function buildRunStateFromAgentRun(input: {
   runId: string;
+  executionEngineKind?: AgentExecutionEngineKind;
   goal: string;
   mode: AgentRunMode;
   sessionId?: string;
   taskId?: string;
   steps: AgentToolStep[];
   executionMeta: AgentExecutionMeta;
+  priorState?: RunState;
   projectIndexStats?: { fileCount: number; symbolCount: number };
 }): RunState | null {
   if (input.executionMeta.stopReason !== "budget_exhausted") return null;
@@ -162,11 +211,12 @@ export function buildRunStateFromAgentRun(input: {
     input.mode,
     input.executionMeta.intent,
   );
-  if (!workflow) return null;
-
-  const completedSteps = extractCompletedWorkflowSteps(input.steps, workflow.steps);
-  const pendingSteps = buildPendingWorkflowSteps(completedSteps, workflow.steps);
-  if (pendingSteps.length === 0) return null;
+  const completedSteps = workflow
+    ? extractCompletedWorkflowSteps(input.steps, workflow.steps)
+    : [];
+  const pendingSteps = workflow
+    ? buildPendingWorkflowSteps(completedSteps, workflow.steps)
+    : [];
 
   const now = new Date().toISOString();
   const location = extractLocationContextFromSteps(input.steps, {
@@ -174,22 +224,30 @@ export function buildRunStateFromAgentRun(input: {
     projectIndexSymbolCount: input.projectIndexStats?.symbolCount,
   });
   return {
+    checkpointVersion: 1,
+    executionEngineKind: input.executionEngineKind ?? "react_loop",
     runId: input.runId,
     mode: input.mode,
     goal: input.goal,
     sessionId: input.sessionId,
     taskId: input.taskId,
     status: "resumable",
-    workflowId: workflow.id,
+    workflowId: workflow?.id,
     completedSteps,
     pendingSteps,
     scannedPaths: collectScannedPaths(input.steps),
     readFiles: collectReadFiles(input.steps),
+    readRanges: collectReadRanges(input.steps),
     toolResultRefs: buildToolResultRefs(input.steps),
     completedToolSteps: input.steps,
-    budgetUsage: input.executionMeta.usage,
+    budgetUsage: cumulativeBudgetUsage(
+      input.executionMeta.usage,
+      input.priorState?.budgetUsage,
+    ),
     stopReason: input.executionMeta.stopReason,
     budgetExhausted: input.executionMeta.budgetExhausted,
+    suggestedBudget: input.executionMeta.suggestedBudget,
+    partialSummary: input.executionMeta.partialSummary,
     updatedAt: now,
     location,
     intent: input.executionMeta.intent,
@@ -212,5 +270,22 @@ export function buildRunStateFromAgentRun(input: {
         afterLastWrite: requirement.afterLastWrite,
         required: true,
       })),
+  };
+}
+
+function cumulativeBudgetUsage(
+  current: RunBudgetUsage,
+  prior?: RunBudgetUsage,
+): RunBudgetUsage {
+  if (!prior) return current;
+  return {
+    ...current,
+    modelTurns: prior.modelTurns + current.modelTurns,
+    mainModelTurns: (prior.mainModelTurns ?? prior.modelTurns)
+      + (current.mainModelTurns ?? current.modelTurns),
+    runtimeMs: prior.runtimeMs + current.runtimeMs,
+    preflightTools: (prior.preflightTools ?? 0) + (current.preflightTools ?? 0),
+    recoveryTurns: (prior.recoveryTurns ?? 0) + (current.recoveryTurns ?? 0),
+    cachedToolHits: (prior.cachedToolHits ?? 0) + (current.cachedToolHits ?? 0),
   };
 }

@@ -5,8 +5,8 @@
  * 同时依赖，避免 context/ 反向 import agent/（消除层序倒置）。
  */
 
-export const DEFAULT_LARGE_TOOL_CHARS = 4000;
-export const MODEL_TOOL_RESULT_MAX_CHARS = 4000;
+export const DEFAULT_LARGE_TOOL_CHARS = 6000;
+export const MODEL_TOOL_RESULT_MAX_CHARS = 6000;
 
 /** JSON.stringify(undefined) 返回 undefined，不能直接读 .length。 */
 export function jsonSerializedLength(value: unknown): number {
@@ -43,7 +43,8 @@ export function compactToolOutputForModel(
       _truncated: true,
       tool,
       preview: `${json.slice(0, 800)}…`,
-      note: "完整输出已截断；如需全文请用 read_file 重新读取对应路径。",
+      note:
+        "完整输出保留在审计层；模型侧不要重复相同调用。先用搜索结果中的行号，再通过 read_file(startLine,lineCount) 获取缺失范围。",
       originalLength: json.length,
     },
     truncated: true,

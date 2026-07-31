@@ -1,6 +1,13 @@
 /** Agent Activity Timeline 类型（公开执行摘要，非模型 CoT）。 */
 
-export type ActivityRunStatus = "pending" | "running" | "success" | "partial" | "failed" | "cancelled";
+export type ActivityRunStatus =
+  | "pending"
+  | "running"
+  | "waiting"
+  | "success"
+  | "partial"
+  | "failed"
+  | "cancelled";
 
 export type ActivityStepStatus = "pending" | "running" | "success" | "warning" | "failed" | "skipped";
 
@@ -23,6 +30,9 @@ export type ActivityStepType =
 
 export interface ActivityRunMetadata {
   userInput?: string;
+  sessionId?: string;
+  sourceMessageId?: string;
+  origin?: "agent" | "companion";
   projectRoot?: string;
   model?: string;
   mode?: string;
@@ -32,11 +42,19 @@ export interface ActivityRunMetadata {
 
 export interface ActivityStepMetadata {
   toolName?: string;
+  toolCallId?: string;
+  iteration?: number;
+  batchId?: string;
+  laneId?: string;
+  parentActivityId?: string;
+  dependsOnActivityIds?: string[];
+  verifiesToolCallId?: string;
   args?: Record<string, unknown>;
   resultSummary?: string;
   filePath?: string;
   changedFiles?: string[];
   command?: string;
+  cwd?: string;
   exitCode?: number;
   stdoutPreview?: string;
   stderrPreview?: string;
@@ -53,11 +71,15 @@ export interface ActivityStepMetadata {
 }
 
 export interface ActivityAgentRun {
+  schemaVersion?: 1 | 2;
   id: string;
   title: string;
   goal: string;
   status: ActivityRunStatus;
   steps: ActivityAgentStep[];
+  systemActivities?: ActivitySystemEvent[];
+  activeDurationMs?: number;
+  activeSince?: number;
   createdAt: number;
   updatedAt: number;
   startedAt?: number;
@@ -77,8 +99,25 @@ export interface ActivityAgentStep {
   metadata?: ActivityStepMetadata;
 }
 
+export interface ActivitySystemEvent {
+  id: string;
+  runId: string;
+  kind: "context_compaction" | "working_context_compaction";
+  status: ActivityStepStatus;
+  title: string;
+  summary?: string;
+  startedAt: number;
+  endedAt?: number;
+  processedMessages?: number;
+  beforeChars?: number;
+  afterChars?: number;
+  summaryType?: string;
+}
+
 export type AgentActivityEvent =
   | { type: "run_started"; run: ActivityAgentRun }
+  | { type: "run_resumed"; runId: string; resumedAt: number }
+  | { type: "run_paused"; runId: string; reason: string }
   | { type: "step_started"; step: ActivityAgentStep }
   | { type: "step_delta"; runId: string; stepId: string; contentDelta: string }
   | {
@@ -96,6 +135,7 @@ export type AgentActivityEvent =
       metadata?: Partial<ActivityStepMetadata>;
     }
   | { type: "step_skipped"; runId: string; stepId: string; reason?: string }
+  | { type: "system_activity_changed"; activity: ActivitySystemEvent }
   | { type: "run_completed"; runId: string; summary: string }
   | { type: "run_failed"; runId: string; error: string }
   | { type: "run_cancelled"; runId: string; reason?: string };

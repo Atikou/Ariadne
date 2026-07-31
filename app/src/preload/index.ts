@@ -6,7 +6,11 @@ import { IPC_CHANNELS } from '@shared/ipc';
 const api: AriadneApi = {
   agentSettings: {
     load: () => ipcRenderer.invoke(IPC_CHANNELS.agentSettingsLoad),
-    update: (settings) => ipcRenderer.invoke(IPC_CHANNELS.agentSettingsUpdate, settings)
+    update: (settings) => ipcRenderer.invoke(IPC_CHANNELS.agentSettingsUpdate, settings),
+    setWorkspacePinned: (request) => ipcRenderer.invoke(IPC_CHANNELS.agentWorkspacePinUpdate, request),
+    archiveWorkspace: (request) => ipcRenderer.invoke(IPC_CHANNELS.agentWorkspaceArchive, request),
+    restoreWorkspace: (request) => ipcRenderer.invoke(IPC_CHANNELS.agentWorkspaceRestore, request),
+    onWorkspacesChanged: (listener) => subscribe(IPC_CHANNELS.agentWorkspacesChanged, listener)
   },
   clipboard: {
     writeText: (request) => ipcRenderer.invoke(IPC_CHANNELS.clipboardWrite, request)
@@ -26,7 +30,10 @@ const api: AriadneApi = {
   },
   system: {
     getCapabilityStatuses: () => ipcRenderer.invoke(IPC_CHANNELS.systemCapabilityStatuses),
-    getGameActivity: () => ipcRenderer.invoke(IPC_CHANNELS.systemGameActivity)
+    getGameActivity: () => ipcRenderer.invoke(IPC_CHANNELS.systemGameActivity),
+    testApprovalNotification: () => ipcRenderer.invoke(IPC_CHANNELS.systemApprovalNotificationTest),
+    onApprovalNavigation: (listener) =>
+      subscribe(IPC_CHANNELS.systemApprovalNavigation, listener)
   },
   terminal: {
     create: (request) => ipcRenderer.invoke(IPC_CHANNELS.terminalCreate, request),

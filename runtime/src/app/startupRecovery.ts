@@ -1,6 +1,7 @@
 import type { PausedRunStore } from "../agent/PausedRunStore.js";
 import type { NotificationQueue } from "../background/NotificationQueue.js";
 import type { PlanHandoffStore } from "../policy/PlanHandoffStore.js";
+import type { PermissionRequestStore } from "../policy/PermissionRequestStore.js";
 import type { RunAggregateRepository } from "../run/RunAggregateRepository.js";
 import type { SubAgentWorkspaceRecoverySummary } from "../subagent/SubAgentWorkspaceLease.js";
 import type { TraceLogger } from "../trace/TraceLogger.js";
@@ -24,6 +25,7 @@ export function recoverOnStartup(deps: {
   notificationQueue: NotificationQueue;
   trace?: TraceLogger;
   pausedRunStore?: PausedRunStore;
+  permissionRequestStore?: PermissionRequestStore;
   planHandoffStore?: PlanHandoffStore;
   subAgentWorkspaceRecovery?: SubAgentWorkspaceRecoverySummary;
 }): StartupRecoverySummary {
@@ -33,6 +35,7 @@ export function recoverOnStartup(deps: {
 
   for (const run of interrupted) {
     const paused = deps.pausedRunStore?.get(run.id);
+    const pendingPermission = deps.permissionRequestStore?.getPendingByRunId(run.id);
     const pendingHandoff = deps.planHandoffStore?.getPendingByRunId(run.id);
     const ledger = deps.runs
       .listToolLedger(run.id)
@@ -43,6 +46,54 @@ export function recoverOnStartup(deps: {
     const uncertainSideEffects = ledger.filter(
       (entry) => entry.status === "started" && resumability.get(entry.idempotencyKey) !== true,
     );
+    if (
+      ledger.every((entry) => entry.status !== "started")
+      && paused?.pendingAction
+      && pendingPermission
+    ) {
+      deps.runs.execute({
+        type: "run.request_confirmation",
+        runId: run.id,
+        expectedAggregateVersion: run.aggregateVersion,
+        reason: {
+          code: "permission_pause_interrupted",
+          message: "The permission request and paused checkpoint were restored after interruption.",
+        },
+      });
+      recoverablePausedRuns += 1;
+      deps.trace?.write({
+        type: "startup_recovery_run",
+        runId: run.id,
+        kind: run.kind,
+        previousStatus: "running",
+        recoveredStatus: "waiting_confirmation",
+      });
+      continue;
+    }
+    if (
+      ledger.every((entry) => entry.status !== "started")
+      && paused?.resumeMode
+      && pendingHandoff
+    ) {
+      deps.runs.execute({
+        type: "run.request_plan_handoff",
+        runId: run.id,
+        expectedAggregateVersion: run.aggregateVersion,
+        reason: {
+          code: "plan_handoff_pause_interrupted",
+          message: "The plan handoff and paused checkpoint were restored after interruption.",
+        },
+      });
+      recoverablePausedRuns += 1;
+      deps.trace?.write({
+        type: "startup_recovery_run",
+        runId: run.id,
+        kind: run.kind,
+        previousStatus: "running",
+        recoveredStatus: "waiting_plan_handoff",
+      });
+      continue;
+    }
     const recoverable = uncertainSideEffects.length === 0;
 
     deps.runs.execute({

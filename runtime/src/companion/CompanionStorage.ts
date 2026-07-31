@@ -52,6 +52,7 @@ import {
 } from "./CompanionSessionContracts.js";
 import type {
   CompanionMessage,
+  CompanionMessageReasoning,
   CompanionMessageRole,
   CompanionMessageStatus,
   CompanionPersona,
@@ -313,6 +314,7 @@ export class CompanionStorage {
     memoryEligible?: boolean;
     modelName?: string;
     clientName?: string;
+    reasoning?: CompanionMessageReasoning;
     metadata?: Record<string, unknown>;
   }): CompanionMessage {
     const id = input.id ?? crypto.randomUUID();
@@ -321,8 +323,11 @@ export class CompanionStorage {
     this.db
       .prepare(
         `INSERT INTO companion_messages
-          (id, session_id, role, content, status, content_envelope_json, memory_eligible, model_name, client_name, storage_root, created_at, updated_at, metadata_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, session_id, role, content, status, content_envelope_json, memory_eligible,
+           model_name, client_name, storage_root, created_at, updated_at, metadata_json,
+           reasoning_content, reasoning_status, reasoning_source, reasoning_started_at,
+           reasoning_completed_at, reasoning_duration_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -338,6 +343,12 @@ export class CompanionStorage {
         at,
         at,
         input.metadata ? JSON.stringify(input.metadata) : null,
+        input.reasoning?.content ?? null,
+        input.reasoning?.status ?? null,
+        input.reasoning?.source ?? null,
+        input.reasoning?.startedAt ?? null,
+        input.reasoning?.completedAt ?? null,
+        input.reasoning?.durationMs ?? null,
       );
     this.touchSession(input.sessionId);
     return this.getMessage(id)!;
@@ -348,6 +359,55 @@ export class CompanionStorage {
       .prepare(`SELECT * FROM companion_messages WHERE id=?`)
       .get(id) as CompanionMessageRow | undefined;
     return row ? mapCompanionMessageRow(row) : null;
+  }
+
+  appendMessageReasoning(
+    id: string,
+    delta: string,
+    source: CompanionMessageReasoning["source"] = "provider",
+    startedAt = nowIso(),
+  ): CompanionMessage | null {
+    if (!delta) return this.getMessage(id);
+    const current = this.getMessage(id);
+    if (!current || current.status !== "streaming") return null;
+    const reasoning = current.reasoning;
+    const at = nowIso();
+    this.db.prepare(
+      `UPDATE companion_messages
+       SET reasoning_content=?, reasoning_status='streaming', reasoning_source=?,
+           reasoning_started_at=?, reasoning_completed_at=NULL, reasoning_duration_ms=NULL,
+           updated_at=?
+       WHERE id=? AND status='streaming'`,
+    ).run(
+      `${reasoning?.content ?? ""}${delta}`,
+      reasoning?.source ?? source,
+      reasoning?.startedAt ?? startedAt,
+      at,
+      id,
+    );
+    this.touchSession(current.sessionId);
+    return this.getMessage(id);
+  }
+
+  finishMessageReasoning(
+    id: string,
+    status: "completed" | "interrupted",
+    completedAt = nowIso(),
+  ): CompanionMessage | null {
+    const current = this.getMessage(id);
+    if (!current?.reasoning) return current;
+    if (current.reasoning.status !== "streaming") return current;
+    const durationMs = Math.max(
+      0,
+      new Date(completedAt).getTime() - new Date(current.reasoning.startedAt).getTime(),
+    );
+    this.db.prepare(
+      `UPDATE companion_messages
+       SET reasoning_status=?, reasoning_completed_at=?, reasoning_duration_ms=?, updated_at=?
+       WHERE id=?`,
+    ).run(status, completedAt, durationMs, completedAt, id);
+    this.touchSession(current.sessionId);
+    return this.getMessage(id);
   }
 
   updateMessage(
@@ -427,7 +487,14 @@ export class CompanionStorage {
     if (rows.length === 0) return;
     const update = this.db.prepare(
        `UPDATE companion_messages SET status='interrupted', updated_at=?, metadata_json=?,
-          content_envelope_json=?
+          content_envelope_json=?,
+          reasoning_status=CASE WHEN reasoning_status='streaming' THEN 'interrupted' ELSE reasoning_status END,
+          reasoning_completed_at=CASE WHEN reasoning_status='streaming' THEN ? ELSE reasoning_completed_at END,
+          reasoning_duration_ms=CASE
+            WHEN reasoning_status='streaming' AND reasoning_started_at IS NOT NULL
+              THEN MAX(0, CAST((julianday(?) - julianday(reasoning_started_at)) * 86400000 AS INTEGER))
+            ELSE reasoning_duration_ms
+          END
         WHERE id=? AND status='streaming'`,
     );
     const at = nowIso();
@@ -438,7 +505,11 @@ export class CompanionStorage {
           ...(parseJsonObject(row.metadata_json) ?? {}),
           interruptionCode: "service_restarted",
           recoveredAt: at,
-        }), serializeCompanionMessageEnvelope("assistant", "interrupted", row.id), row.id);
+        }),
+        serializeCompanionMessageEnvelope("assistant", "interrupted", row.id),
+        at,
+        at,
+        row.id);
       }
       this.db.exec("COMMIT");
     } catch (error) {
@@ -476,6 +547,10 @@ export class CompanionStorage {
     proposal: AgentProposal,
   ): { proposal: AgentProposal; assistantMessage: CompanionMessage } {
     return this.agentProposalOutbox.complete(id, proposal);
+  }
+
+  continueAgentProposalTurn(proposal: AgentProposal): CompanionMessage | null {
+    return this.agentProposalOutbox.continueAssistantTurn(proposal);
   }
 
   failAgentProposalOutbox(id: string, errorCode: string): void {

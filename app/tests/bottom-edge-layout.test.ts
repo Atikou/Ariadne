@@ -72,7 +72,7 @@ describe('bottom edge workspace layout', () => {
 
   it('uses a consistent active-tab silhouette', async () => {
     const styles = await readFile(join(rendererRoot, 'app', 'styles.css'), 'utf8');
-    expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-tab\.dv-active-tab \{[^}]*border-radius:\s*12px\s+12px\s+0\s+0;/);
+    expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-tab\.dv-active-tab \{[^}]*border-radius:\s*var\(--radius-lg\)\s+var\(--radius-lg\)\s+0\s+0;/);
     expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-tab \{[^}]*transition:\s*border-radius 120ms ease;/);
     expect(styles).not.toMatch(/\.ariadne-dockview-theme \.dv-tab \{[^}]*transition:[^}]*(?:background-color|\bcolor\b)/);
     expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-tab\.dv-active-tab \{[^}]*background:\s*var\(--module-tab-surface\) !important;/);

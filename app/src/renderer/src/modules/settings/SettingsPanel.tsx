@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
-import { AlertTriangle, CheckCircle2, ChevronRight, Database, KeyRound, Laptop, Moon, Plus, Save, Sun, X } from 'lucide-react';
+import { AlertTriangle, ArchiveRestore, BellRing, CheckCircle2, ChevronRight, Database, FolderArchive, KeyRound, Laptop, Moon, Plus, Save, Sun, X } from 'lucide-react';
 import type {
   AgentProviderId,
   AgentProviderSettingsView,
@@ -12,6 +12,7 @@ import { AGENT_PROVIDER_CATALOG, AGENT_PROVIDER_IDS } from '@shared/contract';
 import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
 import { formatRuntimeAvailability } from '@renderer/core/runtime/runtime-labels';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
+import { workspaceNameFromPath } from '@renderer/core/conversations/conversation-navigation-service';
 import { createEditableLocalModelRoots, moveLocalModelRoot, normalizeLocalModelRoots } from './local-model-roots';
 
 const themeOptions: Array<{ value: ThemePreference; label: string; icon: typeof Sun }> = [
@@ -40,6 +41,9 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
   const [preferenceError, setPreferenceError] = useState<string | null>(null);
+  const [notificationTestResult, setNotificationTestResult] = useState<string | null>(null);
+  const [restoringWorkspaceId, setRestoringWorkspaceId] = useState<string | null>(null);
+  const [workspaceLifecycleError, setWorkspaceLifecycleError] = useState<string | null>(null);
 
   useEffect(() => {
     void Promise.all([services.preferences.load(), services.agentSettings.load()]).then(([loadedPreferences, loadedAgentSettings]) => {
@@ -48,6 +52,12 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
       setLocalModelRoots(createEditableLocalModelRoots(loadedAgentSettings.localModelRoots));
     }).catch((error) => {
       setSaveResult({ tone: 'error', message: errorMessage(error) });
+    });
+    if (typeof services.agentSettings.onWorkspacesChanged !== 'function') return undefined;
+    return services.agentSettings.onWorkspacesChanged((settings) => {
+      setAgentSettings((current) => current
+        ? { ...current, workspaces: settings.workspaces }
+        : settings);
     });
   }, [services]);
 
@@ -192,6 +202,23 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
     }
   };
 
+  const restoreWorkspace = async (workspaceId: string): Promise<void> => {
+    if (restoringWorkspaceId) return;
+    setRestoringWorkspaceId(workspaceId);
+    setWorkspaceLifecycleError(null);
+    try {
+      await services.conversationNavigation.restoreWorkspace(workspaceId);
+    } catch (error) {
+      setWorkspaceLifecycleError(errorMessage(error, '恢复工作区失败。'));
+    } finally {
+      setRestoringWorkspaceId(null);
+    }
+  };
+
+  const archivedWorkspaces = agentSettings?.workspaces.filter(
+    (workspace) => workspace.workspaceId !== 'primary' && workspace.archivedAt
+  ) ?? [];
+
   return (
     <section className="simple-module-panel settings-panel" aria-labelledby={`${moduleId}-title`}>
       <header className="module-content-header"><div><span>设置</span><h1 id={`${moduleId}-title`}>Ariadne 配置</h1></div></header>
@@ -325,12 +352,56 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
         ) : <p className="module-empty-state">正在读取 Agent 设置…</p>}
       </section>
 
+      <section className="settings-section archived-workspaces-section" aria-labelledby={`${moduleId}-archived-workspaces`}>
+        <div className="settings-section-heading">
+          <div className="settings-section-title">
+            <span className="settings-section-icon"><FolderArchive size={16} /></span>
+            <div className="settings-section-copy">
+              <h2 id={`${moduleId}-archived-workspaces`}>已归档工作区</h2>
+              <p>归档后保留 7 天；到期会永久清理关联会话、上下文和活动记录。</p>
+            </div>
+          </div>
+        </div>
+        {workspaceLifecycleError && <p className="is-danger" role="alert">{workspaceLifecycleError}</p>}
+        {archivedWorkspaces.length === 0 ? (
+          <p className="archived-workspaces-empty">暂无已归档工作区。</p>
+        ) : (
+          <div className="archived-workspaces-list">
+            {archivedWorkspaces.map((workspace) => (
+              <article className="archived-workspace-card" key={workspace.workspaceId}>
+                <div>
+                  <strong>{workspaceNameFromPath(workspace.rootPath)}</strong>
+                  <code>{workspace.rootPath}</code>
+                  <small>{workspace.purgedAt
+                    ? `关联记录已于 ${formatWorkspaceLifecycleTime(workspace.purgedAt)} 永久清理；恢复后将作为空工作区使用。`
+                    : `关联记录将在 ${formatWorkspaceLifecycleTime(workspace.purgeAfter ?? workspace.archivedAt!)} 永久清理。`}</small>
+                </div>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={restoringWorkspaceId !== null}
+                  onClick={() => void restoreWorkspace(workspace.workspaceId)}
+                ><ArchiveRestore size={14} />{restoringWorkspaceId === workspace.workspaceId ? '正在恢复…' : '恢复'}</button>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
       <section className="settings-section" aria-labelledby={`${moduleId}-desktop-settings`}>
         <div className="settings-section-heading"><div className="settings-section-title"><span className="settings-section-icon"><Laptop size={16} /></span><div className="settings-section-copy"><h2 id={`${moduleId}-desktop-settings`}>外观与桌面行为</h2><p>这些设置不会触发 Runtime 重启。</p></div></div></div>
         {preferenceError && <p className="is-danger" role="alert">{preferenceError}</p>}
         <div className="setting-block"><div><strong>主题</strong><p>默认跟随系统，也可以单独覆盖 Ariadne 外观。</p></div><div className="theme-options">{themeOptions.map(({ value, label, icon: Icon }) => <button type="button" key={value} className={preferences?.theme === value ? 'is-active' : ''} onClick={() => preferences && savePreferences({ ...preferences, theme: value })}><Icon size={17} />{label}</button>)}</div></div>
         <div className="setting-block"><div><strong>后台常驻</strong><p>关闭主窗口时保留托盘中的桌面应用。</p></div><label className="switch"><input type="checkbox" checked={preferences?.runInBackground ?? true} onChange={(event) => preferences && savePreferences({ ...preferences, runInBackground: event.target.checked })} /><span /></label></div>
         <div className="setting-block"><div><strong>启动时运行</strong><p>登录系统后自动启动桌面应用。</p></div><label className="switch"><input type="checkbox" checked={preferences?.startAtLogin ?? false} onChange={(event) => preferences && savePreferences({ ...preferences, startAtLogin: event.target.checked })} /><span /></label></div>
+        <div className="setting-block"><div><strong>Windows 权限通知</strong><p>应用在后台时显示；点击通知会返回对应会话。</p>{notificationTestResult && <small>{notificationTestResult}</small>}</div><button type="button" className="secondary-button" onClick={() => {
+          setNotificationTestResult(null);
+          void services.system.testApprovalNotification()
+            .then((result) => setNotificationTestResult(result.shown
+              ? '测试通知已发送。'
+              : '当前系统不支持 Electron Windows 通知。'))
+            .catch((error) => setNotificationTestResult(`测试失败：${errorMessage(error)}`));
+        }}><BellRing size={14} />测试 Windows 通知</button></div>
         <div className="setting-block"><div><strong>安全边界</strong><p>Renderer 保持沙箱与上下文隔离，只通过固定 Preload API 使用桌面能力。</p></div></div>
       </section>
     </section>
@@ -368,4 +439,14 @@ function errorMessage(error: unknown, fallback = '保存 Agent 设置失败。')
     .replace(/^Error invoking remote method '[^']+':\s*/i, '')
     .replace(/^Error:\s*/i, '')
     .trim() || fallback;
+}
+
+function formatWorkspaceLifecycleTime(value: string): string {
+  return new Date(value).toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
 }

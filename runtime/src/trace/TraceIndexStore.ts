@@ -42,6 +42,27 @@ export class TraceIndexStore {
   }
 
   insert(row: TraceIndexInsert): void {
+    this.insertRow(row);
+  }
+
+  insertMany(rows: readonly TraceIndexInsert[]): void {
+    if (rows.length === 0) return;
+    if (rows.length === 1) {
+      this.insertRow(rows[0]!);
+      return;
+    }
+    const ownsTransaction = !this.db.isTransaction;
+    if (ownsTransaction) this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const row of rows) this.insertRow(row);
+      if (ownsTransaction) this.db.exec("COMMIT");
+    } catch (error) {
+      if (ownsTransaction && this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private insertRow(row: TraceIndexInsert): void {
     this.db
       .prepare(
         `INSERT OR REPLACE INTO trace_index

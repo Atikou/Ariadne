@@ -124,7 +124,7 @@ export class CompanionAgentResultPresentationRepository {
         throw new Error("companion_agent_result_projection_not_generating");
       }
 
-      const message = this.insertMessage(input);
+      const message = this.completeAssistantTurn(input);
       const changed = this.db.prepare(
         `UPDATE companion_agent_result_presentations
          SET state='completed', presentation_source=?, message_id=?,
@@ -148,6 +148,52 @@ export class CompanionAgentResultPresentationRepository {
        SET state='failed', last_error_code=?, updated_at=?
        WHERE projection_key=? AND state='generating'`,
     ).run(errorCode.slice(0, 200), nowIso(), projectionKey);
+  }
+
+  private completeAssistantTurn(
+    input: CompanionAgentResultPresentationCompletion,
+  ): CompanionMessage {
+    const bridgedMessageId = this.findProposalAssistantMessage(input.identity);
+    if (bridgedMessageId) {
+      const existing = this.getMessage(bridgedMessageId);
+      if (
+        !existing
+        || existing.sessionId !== input.identity.sessionId
+        || existing.role !== "assistant"
+      ) {
+        throw new Error("companion_agent_result_bridge_message_mismatch");
+      }
+      const at = nowIso();
+      const startedAtMs = Date.parse(existing.createdAt);
+      const processingDurationMs = Number.isFinite(startedAtMs)
+        ? Math.max(0, Date.parse(at) - startedAtMs)
+        : undefined;
+      const metadata = {
+        ...(existing.metadata ?? {}),
+        ...input.metadata,
+        ...(processingDurationMs !== undefined ? { processingDurationMs } : {}),
+      };
+      this.db.prepare(
+        `UPDATE companion_messages
+         SET content=?, status='completed', content_envelope_json=?, memory_eligible=1,
+             model_name=?, client_name=?, metadata_json=?, updated_at=?
+         WHERE id=?`,
+      ).run(
+        input.content,
+        serializeCompanionMessageEnvelope("assistant", "completed", existing.id),
+        input.modelName ?? existing.modelName ?? null,
+        input.clientName ?? existing.clientName ?? null,
+        JSON.stringify(metadata),
+        at,
+        existing.id,
+      );
+      this.db.prepare(`UPDATE companion_sessions SET updated_at=? WHERE id=?`)
+        .run(at, input.identity.sessionId);
+      const updated = this.getMessage(existing.id);
+      if (!updated) throw new Error("companion_agent_result_projection_message_missing");
+      return updated;
+    }
+    return this.insertMessage(input);
   }
 
   private insertMessage(input: CompanionAgentResultPresentationCompletion): CompanionMessage {
@@ -175,6 +221,21 @@ export class CompanionAgentResultPresentationRepository {
     const message = this.getMessage(id);
     if (!message) throw new Error("companion_agent_result_projection_message_missing");
     return message;
+  }
+
+  private findProposalAssistantMessage(
+    input: CompanionAgentResultProjectionIdentity,
+  ): string | undefined {
+    const row = this.db.prepare(
+      `SELECT assistant_message_id
+       FROM companion_agent_proposal_outbox
+       WHERE proposal_id=? AND source_turn_id=? AND session_id=? AND state='delivered'`,
+    ).get(
+      input.proposalId,
+      input.sourceTurnId,
+      input.sessionId,
+    ) as { assistant_message_id: string } | undefined;
+    return row?.assistant_message_id;
   }
 
   private getMessage(id: string): CompanionMessage | null {

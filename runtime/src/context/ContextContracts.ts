@@ -327,7 +327,6 @@ const ContextTrustReasonSchema = z.enum([
   "user_input",
   "verified_final",
   "verified_tool_result",
-  "protocol_tool_action",
   "guard_notice",
   "filtered_raw_model_final",
   "filtered_tool_action",

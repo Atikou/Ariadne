@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentPlanContractSchema } from "../plan/AgentPlanContract.js";
 
 /** 计划→执行交接协议（与工具级 permissionRequest 分离）。 */
 export const PLAN_HANDOFF_SCHEMA_VERSION = 1 as const;
@@ -36,6 +37,8 @@ const planHandoffCommonFields = {
   message: nonBlankText,
   planVariant: PlanHandoffVariantSchema,
   planMarkdown: nonBlankText,
+  plan: AgentPlanContractSchema.optional(),
+  planVersion: z.number().int().positive().optional(),
   createdAt: timestamp,
 };
 
@@ -75,7 +78,7 @@ export const PlanHandoffCreateInputSchema = z
   .object({
     runId: nonEmptyString,
     sessionId: nonEmptyString.optional(),
-    planMarkdown: nonBlankText,
+    plan: AgentPlanContractSchema,
     planVariant: PlanHandoffVariantSchema,
     message: nonBlankText,
   })

@@ -13,6 +13,8 @@ import { runtimeCommandSchema, runtimeEventEnvelopeSchema } from '@ariadne/proto
 import { IPC_CHANNELS } from '@shared/ipc';
 import {
   agentSettingsUpdateSchema,
+  agentWorkspacePinUpdateSchema,
+  agentWorkspaceRequestSchema,
   clipboardWriteRequestSchema,
   closeTerminalRequestSchema,
   createTerminalSessionRequestSchema,
@@ -24,7 +26,14 @@ import {
   workspaceDirectoryRequestSchema,
   writeTerminalRequestSchema
 } from '@shared/schemas';
-import type { AgentSettingsUpdate, AgentSettingsView, OpenWorkspaceResult, UserPreferences } from '@shared/contract';
+import type {
+  AgentSettingsUpdate,
+  AgentSettingsView,
+  AgentWorkspacePinUpdate,
+  AgentWorkspaceRequest,
+  OpenWorkspaceResult,
+  UserPreferences
+} from '@shared/contract';
 import type { AgentSettingsRepository } from '../persistence/agent-settings-repository';
 import type { StateRepository } from '../persistence/state-repository';
 import type { SystemCapabilityCatalog } from '../services/system-capabilities';
@@ -39,6 +48,9 @@ interface IpcDependencies {
   getWindow(): BrowserWindow | null;
   agentSettings: AgentSettingsRepository;
   updateAgentSettings(settings: AgentSettingsUpdate): Promise<AgentSettingsView>;
+  setWorkspacePinned(request: AgentWorkspacePinUpdate): Promise<AgentSettingsView>;
+  archiveWorkspace(request: AgentWorkspaceRequest): Promise<AgentSettingsView>;
+  restoreWorkspace(request: AgentWorkspaceRequest): Promise<AgentSettingsView>;
   updatePreferences(preferences: UserPreferences): Promise<UserPreferences>;
   addWorkspaceRoot(rootPath: string): Promise<OpenWorkspaceResult>;
   state: StateRepository;
@@ -47,6 +59,7 @@ interface IpcDependencies {
   mainWindow: MainWindowController;
   runtime: RuntimeSupervisor;
   workspaceFiles: WorkspaceFileService;
+  testApprovalNotification(): { shown: boolean; supported: boolean };
 }
 
 export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
@@ -79,6 +92,26 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
   ipcMain.handle(IPC_CHANNELS.agentSettingsUpdate, async (event, input: unknown) => {
     trusted(event);
     return dependencies.updateAgentSettings(agentSettingsUpdateSchema.parse(input));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.agentWorkspacePinUpdate, async (event, input: unknown) => {
+    trusted(event);
+    return dependencies.setWorkspacePinned(agentWorkspacePinUpdateSchema.parse(input));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.agentWorkspaceArchive, async (event, input: unknown) => {
+    trusted(event);
+    return dependencies.archiveWorkspace(agentWorkspaceRequestSchema.parse(input));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.agentWorkspaceRestore, async (event, input: unknown) => {
+    trusted(event);
+    return dependencies.restoreWorkspace(agentWorkspaceRequestSchema.parse(input));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.systemApprovalNotificationTest, (event) => {
+    trusted(event);
+    return dependencies.testApprovalNotification();
   });
 
   ipcMain.handle(IPC_CHANNELS.clipboardWrite, (event, input: unknown) => {

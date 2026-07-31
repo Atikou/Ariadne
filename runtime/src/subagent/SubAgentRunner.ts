@@ -3,6 +3,8 @@ import { realpath } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 
 import { AgentLoop, type LoopChatFn } from "../agent/AgentLoop.js";
+import { AgentToolActivityTracker } from "../agent/AgentToolActivityTracker.js";
+import type { AgentToolStep } from "../agent/toolStep.js";
 import { resolveAgentRunOutcome } from "../agent/AgentRunOutcome.js";
 import type { ToolPermission } from "../core/permissions.js";
 import type { RunBudget } from "../agent/RunPolicyTypes.js";
@@ -150,6 +152,9 @@ export class SubAgentRunner {
         maxCostUsd: options.maxCostUsd,
         workspaceRoot: workspaceSession?.workspaceRoot ?? workspaceRoot,
         processSandbox: workspaceSession?.processSandbox,
+        activityTimeline: options.activityTimeline,
+        activityRunId: options.activityRunId,
+        activityParentId: options.activityParentId,
       });
       if (workspaceSession) {
         result.workspaceIsolation = await workspaceSession.collect();
@@ -180,8 +185,11 @@ export class SubAgentRunner {
     maxCostUsd?: number;
     workspaceRoot: string;
     processSandbox?: ProcessSandbox;
+    activityTimeline?: import("../agent/timeline/AgentTimelineService.js").AgentTimelineService;
+    activityRunId?: string;
+    activityParentId?: string;
   }): Promise<SubAgentRunResult> {
-    const { id, task, granted, allowedToolNames, timeoutMs, budget, parentTaskId, sensitive, parentIntent, parentWorkflowType, dispatchDepth, signal, start, executionRoute, maxCostUsd, workspaceRoot, processSandbox } =
+    const { id, task, granted, allowedToolNames, timeoutMs, budget, parentTaskId, sensitive, parentIntent, parentWorkflowType, dispatchDepth, signal, start, executionRoute, maxCostUsd, workspaceRoot, processSandbox, activityTimeline, activityRunId, activityParentId } =
       input;
 
     const chatCapture: SubAgentChatCapture = { modelTurns: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 };
@@ -290,6 +298,14 @@ export class SubAgentRunner {
     const roleAllowed: ToolPermission[] = ["read"];
     if (task.toolPolicy?.writeAllowed) roleAllowed.push("write");
     if (task.toolPolicy?.shellAllowed) roleAllowed.push("shell");
+    const activityRecorder = activityTimeline && activityRunId
+      ? createSubagentActivityRecorder({
+          timeline: activityTimeline,
+          runId: activityRunId,
+          parentActivityId: activityParentId,
+          subagentId: id,
+        })
+      : undefined;
 
     const loop = new AgentLoop({
       chat,
@@ -315,6 +331,7 @@ export class SubAgentRunner {
       maxSubAgentDispatchDepth: this.deps.maxSubAgentDispatchDepth ?? 1,
       maxCostUsdPerRun: maxCostUsd,
       signal,
+      onStep: (step) => activityRecorder?.record(step),
     });
 
     let status: SubAgentStatus = "completed";
@@ -404,7 +421,6 @@ export class SubAgentRunner {
         capture.inputTokens += response.usage?.inputTokens ?? 0;
         capture.outputTokens += response.usage?.outputTokens ?? 0;
         capture.costUsd = sumModelTurnCost([capture.costUsd, response.costUsd]);
-        assertWithinCostBudget(capture.costUsd, ctx.maxCostUsd);
       }
       if (capture && !capture.routingMeta && response.routingMeta) {
         const decision = response.routingMeta.routerDecision;
@@ -591,6 +607,68 @@ export function aggregateSubAgentResultsStructured(results: SubAgentRunResult[])
     conflicts,
     writeConflicts,
     mergedAnswer: sections.join("\n\n"),
+  };
+}
+
+function createSubagentActivityRecorder(input: {
+  timeline: import("../agent/timeline/AgentTimelineService.js").AgentTimelineService;
+  runId: string;
+  parentActivityId?: string;
+  subagentId: string;
+}) {
+  const toolCallIdsByIteration = new Map<number, string[]>();
+  return {
+    record(step: AgentToolStep): void {
+      const originalToolCallId = step.toolCallId
+        ?? `iteration-${step.iteration}-${step.tool}`;
+      const toolCallId = `${input.subagentId}:${originalToolCallId}`;
+      const priorIteration = [...toolCallIdsByIteration.keys()]
+        .filter((iteration) => iteration < step.iteration)
+        .sort((left, right) => right - left)[0];
+      const dependsOnToolCallIds = priorIteration === undefined
+        ? []
+        : toolCallIdsByIteration.get(priorIteration) ?? [];
+      const tracker = new AgentToolActivityTracker(input.timeline, input.runId);
+      const toolInput = step.input && typeof step.input === "object" && !Array.isArray(step.input)
+        ? step.input as Record<string, unknown>
+        : {};
+      tracker.startTool({
+        tool: step.tool,
+        toolInput,
+        iteration: step.iteration,
+        toolCallId,
+        batchId: `subagent-${input.subagentId}-iteration-${step.iteration}`,
+        laneId: `subagent:${input.subagentId}`,
+        parentActivityId: input.parentActivityId,
+        dependsOnToolCallIds,
+        verifiesToolCallId: step.verification?.verifiesToolCallId
+          ? `${input.subagentId}:${step.verification.verifiesToolCallId}`
+          : undefined,
+      });
+      const currentCalls = toolCallIdsByIteration.get(step.iteration) ?? [];
+      currentCalls.push(toolCallId);
+      toolCallIdsByIteration.set(step.iteration, currentCalls);
+      const summary = step.resultLayers?.userDisplay.summary
+        ?? step.outcomeMessage
+        ?? step.error
+        ?? (step.ok ? "工具调用完成" : "工具调用失败");
+      const extra = {
+        durationMs: step.durationMs,
+        outcomeKind: step.outcomeKind,
+        exitCode: step.outcomeExitCode,
+        command: step.outcomeCommand,
+        changedFiles: step.outcomePath ? [step.outcomePath] : undefined,
+        output: step.resultLayers?.raw ?? step.output,
+        workspaceAccess: step.workspaceAccess,
+      };
+      if (step.outcomeClass === "observation_failure") {
+        tracker.observe(summary, extra);
+      } else if (!step.ok) {
+        tracker.fail(summary, { ...extra, error: step.error });
+      } else {
+        tracker.ok(summary, extra);
+      }
+    },
   };
 }
 

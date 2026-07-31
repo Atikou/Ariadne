@@ -122,6 +122,9 @@ export const dispatchSubagentTool: ToolContract<typeof dispatchSubagentInputSche
       writeFilePickStrategy: input.writeFilePickStrategy,
       signal: context.signal,
       maxCostUsd: context.subAgentCostBudgetUsd,
+      activityTimeline: context.activityTimeline,
+      activityRunId: context.activityRunId,
+      activityParentId: context.activityParentId,
     };
 
     const dispatch = workflow.submit(runOpts);

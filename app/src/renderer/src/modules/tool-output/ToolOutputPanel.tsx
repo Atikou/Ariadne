@@ -2,13 +2,25 @@ import { Check, ChevronRight, Clock3, TerminalSquare, Wrench, X } from 'lucide-r
 import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
 import { formatActivityKind } from '@renderer/core/runtime/runtime-labels';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
+import type { RunActivity } from '@ariadne/protocol/public';
 
 export function ToolOutputPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
   const runtime = useRuntimeSnapshot(services.runtime);
-  const activities = runtime.activities.filter((activity) => activity.kind === 'tool').slice(-50).reverse();
+  const sessionRunIds = new Set(
+    runtime.runs
+      .filter((run) => run.sessionId === runtime.selectedSessionId)
+      .map((run) => run.runId)
+  );
+  const activities = runtime.activities
+    .filter((activity): activity is Extract<RunActivity, { activityType: 'tool' }> =>
+      activity.activityType === 'tool'
+      && sessionRunIds.has(activity.runId)
+    )
+    .slice(-50)
+    .reverse();
   return <section className="bottom-module-panel" aria-labelledby={`${moduleId}-title`}><header><h1 id={`${moduleId}-title`}>工具输出</h1><span>最近 {activities.length} 次调用</span></header><div className="tool-call-table">
     {activities.map((activity) => <div className={`tool-call-row${activity.status === 'failed' ? ' is-failed' : ''}`} key={activity.activityId}>
-      {activity.status === 'failed' ? <X size={14} /> : <Check size={14} />}<Wrench size={14} /><strong>{activity.title}</strong><code>{activity.summary ?? formatActivityKind(activity.kind)}</code><span><Clock3 size={11} /> {new Date(activity.occurredAt).toLocaleTimeString()}</span><ChevronRight size={13} />
+      {activity.status === 'failed' ? <X size={14} /> : <Check size={14} />}<Wrench size={14} /><strong>{activity.toolName}</strong><code>{activity.summary ?? formatActivityKind(activity)}</code><span><Clock3 size={11} /> {new Date(activity.occurredAt).toLocaleTimeString()}</span><ChevronRight size={13} />
     </div>)}
     {activities.length === 0 && <div className="tool-call-row"><TerminalSquare size={14} /><TerminalSquare size={14} /><strong>暂无工具调用</strong><code>Agent 活动将在这里显示。</code></div>}
   </div></section>;

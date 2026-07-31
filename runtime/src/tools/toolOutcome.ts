@@ -13,6 +13,7 @@ export type ToolObservationFailureKind =
   | "not_a_file"
   | "no_results"
   | "empty_result"
+  | "range_required"
   | "no_project_info"
   | "command_failed"
   | "command_not_found";

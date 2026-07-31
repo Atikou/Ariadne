@@ -130,13 +130,18 @@ export class OpenAICompatibleClient implements ModelClient {
           tools: toCompatibleTools(request.tools),
           temperature,
           ...outputTokenLimit,
-          stream: Boolean(request.onToken),
+          stream: Boolean(request.onToken || request.onReasoningToken),
           ...providerInference,
         }),
       });
       if (!response.ok) throw await responseError(response);
-      return request.onToken
-        ? this.readStream(response, request.onToken, startedAt)
+      return request.onToken || request.onReasoningToken
+        ? this.readStream(
+            response,
+            request.onToken,
+            request.onReasoningToken,
+            startedAt,
+          )
         : this.readJson(response, startedAt);
     } catch (error) {
       if (didTimeout()) {
@@ -180,7 +185,8 @@ export class OpenAICompatibleClient implements ModelClient {
 
   private async readStream(
     response: Response,
-    onToken: (delta: string) => void,
+    onToken: ((delta: string) => void) | undefined,
+    onReasoningToken: ((delta: string) => void) | undefined,
     startedAt: number,
   ): Promise<ModelResponse> {
     if (!response.body) throw new Error("OpenAI-compatible Provider 未返回流式响应体");
@@ -208,10 +214,13 @@ export class OpenAICompatibleClient implements ModelClient {
       const choices = Array.isArray(payload.choices) ? payload.choices : [];
       const firstChoice = asOptionalRecord(choices[0]);
       const delta = asOptionalRecord(firstChoice?.delta);
-      if (typeof delta?.reasoning_content === "string") reasoningContent += delta.reasoning_content;
+      if (typeof delta?.reasoning_content === "string" && delta.reasoning_content) {
+        reasoningContent += delta.reasoning_content;
+        onReasoningToken?.(delta.reasoning_content);
+      }
       if (typeof delta?.content === "string" && delta.content) {
         content += delta.content;
-        onToken(delta.content);
+        onToken?.(delta.content);
       }
       collectStreamedToolCalls(delta?.tool_calls, toolCalls);
       return false;
@@ -333,9 +342,6 @@ export function toCompatibleMessages(
           : {
               role: "assistant",
               content: message.content,
-              ...(includeReasoningContent && message.reasoningContent
-                ? { reasoning_content: message.reasoningContent }
-                : {}),
             };
       case "system":
         return { role: "system", content: message.content };

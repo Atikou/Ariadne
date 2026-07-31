@@ -86,6 +86,7 @@ describe('configured Provider Chat', () => {
       });
       expect(accepted.kind).toBe('companion.chat.accepted');
       if (accepted.kind !== 'companion.chat.accepted') throw new Error('unexpected Chat result');
+      expect(accepted.executionMode).toBe('companion');
 
       await waitFor(() => events.some((event) =>
         event.event.kind === 'run.changed'
@@ -202,6 +203,7 @@ describe('configured Provider Chat', () => {
       });
       expect(accepted.kind).toBe('companion.chat.accepted');
       if (accepted.kind !== 'companion.chat.accepted') throw new Error('unexpected Chat result');
+      expect(accepted.executionMode).toBe('companion');
 
       await waitFor(() => events.some((event) =>
         event.event.kind === 'run.changed'
@@ -245,13 +247,12 @@ describe('configured Provider Chat', () => {
       });
       expect(messages).toMatchObject({
         kind: 'companion.messages',
-        messages: expect.arrayContaining([
+        messages: [
           expect.objectContaining({
-            role: 'assistant',
-            content: '我已开始处理；需要额外权限时，系统会向你确认具体操作。',
+            role: 'user',
             status: 'completed'
           })
-        ])
+        ]
       });
     } finally {
       await app.shutdown();
@@ -273,6 +274,7 @@ function createBootstrap(): RuntimeBootstrap {
     type: 'bootstrap',
     appVersion: '0.1.0',
     runtimeVersion: '0.1.0',
+    runtimeBuildFingerprint: 'a'.repeat(64),
     installRoot: packageRoot,
     dataRoot,
     modelRoots: [],

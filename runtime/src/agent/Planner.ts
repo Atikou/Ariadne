@@ -50,7 +50,9 @@ const EXECUTABLE_PLAN_SYSTEM_PROMPT = `${PLAN_SYSTEM_PROMPT}
 额外强制要求（可执行编译）：
 - 每个 steps[] 项必须包含 "tool" 与 "toolInput"（非空对象），对应注册表中的真实工具名。
 - tool 必须从 availableTools 中选择；只读步骤用 read_file/search_text/list_files，写入用 apply_patch/write_file，命令用 shell_run。
-- toolInput 必须符合该工具参数 schema（如 read_file 需要 path）。
+- toolInput 必须符合该工具参数 schema；read_file 必须给出 path、startLine、lineCount。
+- apply_patch 修改已有文件时，执行 Agent 会先 read_file 获取 expectedSha256；不得用空 search 或伪造补丁。
+- 不得猜测 shell 命令、写入内容或补丁内容；信息不足时应先生成只读定位步骤。
 - 禁止输出无 tool 的纯说明步骤；每步须可被 TaskExecutor 直接调用。`;
 
 /**

@@ -16,7 +16,10 @@ import { MemoryRetriever } from "./MemoryRetriever.js";
 import { PromptBuilder } from "./PromptBuilder.js";
 import { RunFactsLookup } from "./runFactsLookup.js";
 import { SemanticRetriever } from "./SemanticRetriever.js";
-import { SummaryManager } from "./SummaryManager.js";
+import {
+  SummaryManager,
+  type CompressionSnapshot,
+} from "./SummaryManager.js";
 import { SystemSectionBuilder } from "./SystemSectionBuilder.js";
 import type { MessageAppendMeta } from "./MessageStore.js";
 import { createContentEnvelope } from "./messageEnvelope.js";
@@ -57,6 +60,16 @@ export interface ContextManagerOptions {
   useLanceDb?: boolean;
   largeToolOutputChars?: number;
   memoryExtractor?: IMemoryExtractor;
+}
+
+export interface ContextCompressionLifecycle {
+  onStarted?: (snapshot: CompressionSnapshot) => void;
+  onCompleted?: (result: {
+    before: CompressionSnapshot;
+    after: CompressionSnapshot;
+    summary: SummaryRecord;
+  }) => void;
+  onFailed?: (error: unknown, snapshot: CompressionSnapshot) => void;
 }
 
 /**
@@ -131,8 +144,13 @@ export class ContextManager {
     this.largeToolChars = options.largeToolOutputChars ?? 4000;
   }
 
-  createSession(title?: string, projectId?: string, workspaceKey?: string): SessionRecord {
-    return this.sessions.create(title, projectId, workspaceKey);
+  createSession(
+    title?: string,
+    projectId?: string,
+    workspaceKey?: string,
+    preferredId?: string,
+  ): SessionRecord {
+    return this.sessions.create(title, projectId, workspaceKey, preferredId);
   }
 
   createProject(name: string, rootPath?: string, description?: string) {
@@ -497,13 +515,37 @@ export class ContextManager {
     return { phase: options.phase, contextPackage, renderedPrompt };
   }
 
-  async finalizeTurn(sessionId: string, query?: string): Promise<{
+  async finalizeTurn(
+    sessionId: string,
+    query?: string,
+    compressionLifecycle?: ContextCompressionLifecycle,
+  ): Promise<{
     compressed: SummaryRecord | null;
     postCall: ContextDebugSnapshot;
+    compression?: {
+      before: CompressionSnapshot;
+      after: CompressionSnapshot;
+    };
   }> {
     await this.extractAndUpsertMemories(sessionId);
 
-    const compressed = await this.summaryManager.compressIfNeeded(sessionId);
+    const compressionBefore = this.summaryManager.compressionSnapshot(sessionId);
+    if (compressionBefore.needed) compressionLifecycle?.onStarted?.(compressionBefore);
+    let compressed: SummaryRecord | null;
+    try {
+      compressed = await this.summaryManager.compressIfNeeded(sessionId);
+    } catch (error) {
+      if (compressionBefore.needed) compressionLifecycle?.onFailed?.(error, compressionBefore);
+      throw error;
+    }
+    const compressionAfter = this.summaryManager.compressionSnapshot(sessionId);
+    if (compressed && compressionBefore.needed) {
+      compressionLifecycle?.onCompleted?.({
+        before: compressionBefore,
+        after: compressionAfter,
+        summary: compressed,
+      });
+    }
     if (compressed) {
       const json = JSON.stringify(compressed.content);
       await this.retriever.indexSummary(
@@ -543,7 +585,13 @@ export class ContextManager {
       phase: "post_call",
       userInput: query,
     });
-    return { compressed, postCall };
+    return {
+      compressed,
+      postCall,
+      ...(compressed
+        ? { compression: { before: compressionBefore, after: compressionAfter } }
+        : {}),
+    };
   }
 
   /** 从近期 user 消息与摘要抽取并写入长期记忆（主数据落 SQLite/LanceDB）。 */

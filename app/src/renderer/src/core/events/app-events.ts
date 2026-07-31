@@ -11,5 +11,7 @@ export interface AgentActivityRecorded {
 export interface AppEventMap {
   'agent:activity-recorded': AgentActivityRecorded;
   'chat:workspace-access-changed': WorkspaceAccessMode;
+  'module:open': string;
+  'session-activity:select-run': { runId: string; activityId?: string };
   'preferences:changed': UserPreferences;
 }

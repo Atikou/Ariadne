@@ -12,6 +12,7 @@ import {
 } from "./AgentPausedRunSnapshot.js";
 import type {
   AgentHandoffAuthorizationContext,
+  PendingToolAction,
   PausedRunRuntimeState,
   PausedRunStore,
 } from "./PausedRunStore.js";
@@ -29,12 +30,23 @@ import type {
 } from "./RunPolicyTypes.js";
 import type { AgentIntentType } from "./IntentTypes.js";
 import type { AgentToolStep } from "./toolStep.js";
+import {
+  defaultAgentPlanStore,
+  type AgentPlanStore,
+} from "../plan/AgentPlanStore.js";
+import type {
+  AgentPlanContract,
+  AgentPlanModelDraft,
+} from "../plan/AgentPlanContract.js";
 import type { CompletionCriterionInput } from "./completion/TaskCompletionContract.js";
+import type { RunAggregateRepository } from "../run/RunAggregateRepository.js";
 
 export interface AgentPauseCoordinatorDeps {
   permissionRequestStore: PermissionRequestStore;
   planHandoffStore: PlanHandoffStore;
+  agentPlanStore?: AgentPlanStore;
   pausedRunStore: PausedRunStore;
+  runRepository?: RunAggregateRepository;
   runId?: string;
   sessionId?: string;
   projectId?: string;
@@ -75,9 +87,13 @@ export interface ToolPermissionPauseInput extends AgentPauseConversationSnapshot
 }
 
 export interface PlanHandoffPauseInput extends AgentPauseConversationSnapshot {
-  planMarkdown: string;
+  planDraft: AgentPlanModelDraft;
   runtime: AgentPauseRuntimeSnapshot;
 }
+
+export type AgentPlanFinalization =
+  | { kind: "clarification"; plan: AgentPlanContract }
+  | { kind: "handoff"; plan: AgentPlanContract; handoff: PlanHandoffPayload };
 
 /** Owns permission/plan pause records and their matching resumable snapshot. */
 export class AgentPauseCoordinator {
@@ -90,10 +106,14 @@ export class AgentPauseCoordinator {
   createToolPermissionPause(input: ToolPermissionPauseInput): PermissionRequestPayload {
     const runId = this.runId();
     const snapshot = this.buildSnapshot(input, input.runtime, {
-      pendingAction: { tool: input.action.tool, input: input.action.input },
+      pendingAction: {
+        toolCallId: input.step.toolCallId ?? input.action.id,
+        tool: input.action.tool,
+        input: input.action.input,
+      },
       steps: input.steps.slice(0, -1),
     });
-    return this.persistSnapshotThenCreate(snapshot, () => {
+    return this.persistPause(snapshot, "permission", () => {
       const request = createJitPermissionRequestFromStep({
         permissionRequestStore: this.deps.permissionRequestStore,
         step: input.step,
@@ -115,29 +135,44 @@ export class AgentPauseCoordinator {
     });
   }
 
-  createPlanHandoff(input: PlanHandoffPauseInput): PlanHandoffPayload | null {
+  createPlanFinalization(input: PlanHandoffPauseInput): AgentPlanFinalization | null {
     if (this.deps.skipPlanHandoff) return null;
     if (this.deps.mode !== "plan" || this.deps.intent !== "plan") return null;
 
     const runId = this.runId();
-    const planVariant = this.deps.planVariant ?? "plan_only";
-    const snapshot = this.buildSnapshot(input, input.runtime, { resumeMode: "implement" });
-    return this.persistSnapshotThenCreate(snapshot, () => {
-      const handoff = this.deps.planHandoffStore.create({
-        runId,
-        sessionId: input.sessionId ?? this.deps.sessionId,
-        planMarkdown: input.planMarkdown,
-        planVariant,
-        message: planHandoffMessageForVariant(planVariant),
-      });
-      if (
-        handoff.runId !== runId
-        || handoff.planMarkdown !== input.planMarkdown
-        || handoff.planVariant !== planVariant
-      ) {
-        throw new Error("当前 Run 已有不匹配的待批准计划交接");
+    const planStore = this.deps.agentPlanStore ?? defaultAgentPlanStore;
+    return planStore.transactionalCreateFromModel({
+      draft: input.planDraft,
+      runId,
+      sessionId: input.sessionId ?? this.deps.sessionId,
+    }, (plan) => {
+      if (plan.planState === "needs_clarification") {
+        return { kind: "clarification", plan };
       }
-      return handoff;
+      const planVariant = this.deps.planVariant ?? "plan_only";
+      const snapshot = this.buildSnapshot(input, input.runtime, {
+        resumeMode: "implement",
+        approvedPlan: plan,
+      });
+      const handoff = this.persistPause(snapshot, "plan", () => {
+        const created = this.deps.planHandoffStore.create({
+          runId,
+          sessionId: input.sessionId ?? this.deps.sessionId,
+          plan,
+          planVariant,
+          message: planHandoffMessageForVariant(planVariant),
+        });
+        if (
+          created.runId !== runId
+          || created.planId !== plan.planId
+          || created.planVersion !== plan.version
+          || created.planVariant !== planVariant
+        ) {
+          throw new Error("当前 Run 已有不匹配的待批准计划交接");
+        }
+        return created;
+      });
+      return { kind: "handoff", plan, handoff };
     });
   }
 
@@ -146,8 +181,9 @@ export class AgentPauseCoordinator {
     runtime: AgentPauseRuntimeSnapshot,
     overrides: {
       steps?: AgentToolStep[];
-      pendingAction?: { tool: string; input?: Record<string, unknown> };
+      pendingAction?: PendingToolAction;
       resumeMode?: AgentRunMode;
+      approvedPlan?: AgentPlanContract;
     },
   ) {
     return buildPausedRunSnapshot({
@@ -165,6 +201,7 @@ export class AgentPauseCoordinator {
       runGrantedPermissions: this.deps.runGrantedPermissions,
       handoffAuthorization: this.deps.handoffAuthorization,
       resumeMode: overrides.resumeMode,
+      approvedPlan: overrides.approvedPlan,
       runtimeState: runtime.runtimeState,
       workflowProposals: runtime.workflowProposals,
       workflowDebugAnalyses: runtime.workflowDebugAnalyses,
@@ -174,20 +211,37 @@ export class AgentPauseCoordinator {
     });
   }
 
-  private persistSnapshotThenCreate<T>(snapshot: ReturnType<typeof buildPausedRunSnapshot>, create: () => T): T {
-    const previous = this.deps.pausedRunStore.get(snapshot.runId);
-    this.deps.pausedRunStore.save(snapshot);
-    try {
-      return create();
-    } catch (error) {
-      try {
-        if (previous) this.deps.pausedRunStore.save(previous);
-        else this.deps.pausedRunStore.delete(snapshot.runId);
-      } catch (cleanupError) {
-        throw new AggregateError([error, cleanupError], "暂停记录创建失败，且快照回滚失败");
+  private persistPause<T>(
+    snapshot: ReturnType<typeof buildPausedRunSnapshot>,
+    decision: "permission" | "plan",
+    create: () => T,
+  ): T {
+    return this.deps.pausedRunStore.transactionalSave(snapshot, () => {
+      const result = create();
+      const run = this.deps.runRepository?.get(snapshot.runId);
+      if (run) {
+        this.deps.runRepository!.execute(decision === "permission"
+          ? {
+              type: "run.request_confirmation",
+              runId: run.id,
+              expectedAggregateVersion: run.aggregateVersion,
+              reason: {
+                code: "permission_required",
+                message: "The run is waiting for an explicit permission decision.",
+              },
+            }
+          : {
+              type: "run.request_plan_handoff",
+              runId: run.id,
+              expectedAggregateVersion: run.aggregateVersion,
+              reason: {
+                code: "plan_handoff_required",
+                message: "The run is waiting for an explicit plan handoff decision.",
+              },
+            });
       }
-      throw error;
-    }
+      return result;
+    });
   }
 
   private runId(): string {

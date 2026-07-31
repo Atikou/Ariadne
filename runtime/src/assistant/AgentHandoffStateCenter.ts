@@ -252,6 +252,19 @@ export class AgentHandoffStateCenter {
     return this.parseProposal(row);
   }
 
+  getActiveByAgentSessionId(agentSessionId: string): AgentProposal | null {
+    const normalized = agentSessionId.trim();
+    if (!normalized) return null;
+    const row = this.db.prepare(
+      `${PROPOSAL_SELECT}
+       WHERE agent_session_id=?
+         AND status IN ('approved', 'executing', 'waiting_permission', 'waiting_plan_handoff')
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+    ).get(normalized) as ProposalRow | undefined;
+    return this.parseProposal(row);
+  }
+
   getCompanionStorageRoot(proposalId: string): string | undefined {
     const normalized = proposalId.trim();
     if (!normalized) return undefined;
@@ -709,9 +722,35 @@ export class AgentHandoffStateCenter {
     return { proposal: clone(executing), grant: clone(consumed) };
   }
 
+  bindExecutionRun(proposalId: string, runId: string): AgentProposal {
+    const proposal = this.get(proposalId);
+    if (!proposal || proposal.status !== "executing") {
+      throw new AgentHandoffConflictError("只有 executing 提案可以绑定 Agent Run");
+    }
+    if (proposal.runId && proposal.runId !== runId) {
+      throw new AgentHandoffConflictError("Agent 提案已经绑定到其他 Run");
+    }
+    if (proposal.runId === runId) return proposal;
+    const now = new Date().toISOString();
+    const bound = AgentProposalSchema.parse({
+      ...proposal,
+      runId,
+      updatedAt: now,
+    });
+    const changed = this.db.prepare(
+      `UPDATE assistant_agent_proposals
+       SET run_id=?, payload_json=?, updated_at=?
+       WHERE id=? AND status='executing' AND run_id IS NULL`,
+    ).run(runId, JSON.stringify(bound), now, proposal.id);
+    if (Number(changed.changes) !== 1) {
+      throw new AgentHandoffConflictError("Agent 提案绑定 Run 时发生竞争");
+    }
+    return clone(bound);
+  }
+
   settle(input: {
     proposalId: string;
-    status: "waiting_permission" | "waiting_plan_handoff" | "completed" | "failed";
+    status: "completed" | "failed";
     runId?: string;
     outcome: AgentExecutionOutcome;
   }): AgentProposal {
@@ -722,15 +761,19 @@ export class AgentHandoffStateCenter {
     return this.writeOutcomeTransition(proposal, input, ["executing"]);
   }
 
-  settleResumedRun(input: {
+  settleActiveRun(input: {
     runId: string;
-    status: "waiting_permission" | "waiting_plan_handoff" | "completed" | "failed";
+    status: "completed" | "failed";
     outcome: AgentExecutionOutcome;
   }): AgentProposal | null {
     const proposal = this.getByRunId(input.runId);
     if (!proposal) return null;
-    if (proposal.status !== "waiting_permission" && proposal.status !== "waiting_plan_handoff") {
-      throw new AgentHandoffConflictError("只有等待用户响应的 Agent 提案可以接收恢复结果");
+    if (
+      proposal.status !== "executing"
+      && proposal.status !== "waiting_permission"
+      && proposal.status !== "waiting_plan_handoff"
+    ) {
+      throw new AgentHandoffConflictError("只有活动中的 Agent 提案可以接收终态结果");
     }
     return this.writeOutcomeTransition(
       proposal,
@@ -742,7 +785,7 @@ export class AgentHandoffStateCenter {
   private writeOutcomeTransition(
     proposal: AgentProposal,
     input: {
-      status: "waiting_permission" | "waiting_plan_handoff" | "completed" | "failed";
+      status: "completed" | "failed";
       runId?: string;
       outcome: AgentExecutionOutcome;
     },

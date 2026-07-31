@@ -28,6 +28,7 @@ import type { ApiResult } from "../core/apiResult.js";
 import type { ToolPermission } from "../core/permissions.js";
 
 import type { PlanService } from "../plan/PlanService.js";
+import type { AgentPlanStore } from "../plan/AgentPlanStore.js";
 import { PlanAgentStepBindingStore } from "../plan/PlanAgentStepBindingStore.js";
 
 import type { PlanHandoffStore } from "../policy/PlanHandoffStore.js";
@@ -44,6 +45,7 @@ import { RunStateStore } from "./RunStateStore.js";
 import { AgentRunRegistry } from "./AgentRunRegistry.js";
 import { AgentRunLifecycle } from "./AgentRunLifecycle.js";
 import { AgentLoopFactory } from "./AgentLoopFactory.js";
+import { AgentExecutionEngineRegistry } from "./AgentExecutionEngine.js";
 import { AgentRequestService } from "./AgentRequestService.js";
 import type { AgentRequestExecutionOptions } from "./AgentRequestService.js";
 import {
@@ -51,7 +53,10 @@ import {
   formatAgentRequestValidationError,
 } from "./AgentRequestSchemas.js";
 import { AgentEntryService } from "./AgentEntryService.js";
-import { AgentResumeService } from "./AgentResumeService.js";
+import {
+  AgentResumeService,
+  type AgentResumeCallbacks,
+} from "./AgentResumeService.js";
 import { PlanExecutionService } from "./PlanExecutionService.js";
 import { PlanExecutionFinalizer } from "./PlanExecutionFinalizer.js";
 import { PlanAgentTaskWorkflow } from "./PlanAgentTaskWorkflow.js";
@@ -72,6 +77,7 @@ import type { HookManager } from "../hooks/HookManager.js";
 export interface OrchestratorDeps {
 
   workspaceRoot: string;
+  activityDataRoot: string;
 
   /** 按会话 workspaceKey 解析工具沙箱根路径；省略时回退 workspaceRoot。 */
   resolveWorkspaceRoot?: (sessionId?: string) => string;
@@ -121,6 +127,7 @@ export interface OrchestratorDeps {
 
   permissionRequestStore?: PermissionRequestStore;
   planHandoffStore?: PlanHandoffStore;
+  agentPlanStore?: AgentPlanStore;
   sessionPermissionGrants?: SessionPermissionGrants;
   workspaceGrantStore?: WorkspaceGrantStore;
   pausedRunStore?: PausedRunStore;
@@ -149,7 +156,7 @@ export class Orchestrator {
 
   private readonly agentRunLifecycle: AgentRunLifecycle;
 
-  private readonly agentLoopFactory: AgentLoopFactory;
+  private readonly executionEngines: AgentExecutionEngineRegistry;
 
   private readonly agentRuntime: AgentRuntimeServices;
 
@@ -175,10 +182,11 @@ export class Orchestrator {
     });
     this.sessionWorkspace = new SessionWorkspaceResolver({
       workspaceRoot: deps.workspaceRoot,
+      activityDataRoot: deps.activityDataRoot,
       resolveWorkspaceRoot: deps.resolveWorkspaceRoot,
       contextManager: deps.contextManager,
     });
-    this.agentLoopFactory = new AgentLoopFactory({
+    const loopFactory = new AgentLoopFactory({
       workspaceRoot: deps.workspaceRoot,
       resolveWorkspaceRoot: deps.resolveWorkspaceRoot,
       resolveWorkspaceConfigScopes: deps.resolveWorkspaceConfigScopes,
@@ -195,6 +203,7 @@ export class Orchestrator {
       maxSubAgentDispatchDepth: deps.maxSubAgentDispatchDepth,
       permissionRequestStore: deps.permissionRequestStore,
       planHandoffStore: deps.planHandoffStore,
+      agentPlanStore: deps.agentPlanStore,
       sessionPermissionGrants: deps.sessionPermissionGrants,
       workspaceGrantStore: deps.workspaceGrantStore,
       pausedRunStore: deps.pausedRunStore,
@@ -202,6 +211,7 @@ export class Orchestrator {
       networkPolicy: deps.networkPolicy,
       resolveInstructions: deps.resolveInstructions,
     });
+    this.executionEngines = new AgentExecutionEngineRegistry([loopFactory], "react_loop");
     this.taskService = new TaskService({
       sessionWorkspace: this.sessionWorkspace,
       contextManager: deps.contextManager,
@@ -219,7 +229,7 @@ export class Orchestrator {
       taskService: this.taskService,
       runs: deps.runs,
       agentRunRegistry: deps.agentRunRegistry,
-      agentLoopFactory: this.agentLoopFactory,
+      executionEngines: this.executionEngines,
       agentRunLifecycle: this.agentRunLifecycle,
       makeChatFn: deps.makeChatFn,
       planHandoffStore: deps.planHandoffStore,
@@ -259,7 +269,7 @@ export class Orchestrator {
       runs: deps.runs,
       runStateStore: deps.runStateStore,
       agentRunRegistry: deps.agentRunRegistry,
-      agentLoopFactory: this.agentLoopFactory,
+      executionEngines: this.executionEngines,
       agentRunLifecycle: this.agentRunLifecycle,
       makeChatFn: deps.makeChatFn,
       permissionRequestStore: deps.permissionRequestStore,
@@ -302,6 +312,10 @@ export class Orchestrator {
     });
   }
 
+  isRunWorkerActive(runId: string): boolean {
+    return this.deps.agentRunRegistry.isRunning(runId);
+  }
+
   async publishRunTerminal(
     runId: string,
     source: RunTerminalEvent["source"],
@@ -330,13 +344,6 @@ export class Orchestrator {
   ensureSession(sessionId: string | undefined, title: string, workspaceKey?: string, projectId?: string): string {
     return this.sessionWorkspace.ensureSession(sessionId, title, workspaceKey, projectId);
   }
-
-  private workspaceForRun(runId: string): string {
-    const run = this.deps.runs.get(runId);
-    return this.sessionWorkspace.workspaceForSession(run?.sessionId);
-  }
-
-
 
   listRuns(limit?: number) {
 
@@ -372,8 +379,12 @@ export class Orchestrator {
   }
 
   /** 从 RunStateStore 恢复预算耗尽的可续跑 Agent Run（PlanWorkflow pendingSteps）。 */
-  async resumeAgent(body: unknown, makeChat?: LoopChatFn): Promise<ApiResult> {
-    return this.agentResumeService.resumeBudget(body, makeChat);
+  async resumeAgent(
+    body: unknown,
+    makeChat?: LoopChatFn,
+    callbacks?: AgentResumeCallbacks,
+  ): Promise<ApiResult> {
+    return this.agentResumeService.resumeBudget(body, makeChat, callbacks);
   }
 
   getRunState(runId: string): RunState | null {
@@ -388,16 +399,24 @@ export class Orchestrator {
    * - 计划→执行交接：恢复后切到 implement，按对话历史中的计划继续执行；具体工具仍由
    *   服务端 Run grant / UI 批准的 permissionRequest grant 与 PermissionGuard 共同裁决。
    */
-  async resumeAfterPermission(body: unknown, makeChat?: LoopChatFn): Promise<ApiResult> {
-    return this.agentResumeService.resumePermission(body, makeChat);
+  async resumeAfterPermission(
+    body: unknown,
+    makeChat?: LoopChatFn,
+    callbacks?: AgentResumeCallbacks,
+  ): Promise<ApiResult> {
+    return this.agentResumeService.resumePermission(body, makeChat, callbacks);
   }
 
   /**
    * 计划交接批准后续跑：用暂停快照在 implement 模式下忠实执行计划。
    * 与 resumeAfterPermission（工具级 JIT）分离。
    */
-  async resumeAfterPlanHandoff(body: unknown, makeChat?: LoopChatFn): Promise<ApiResult> {
-    return this.agentResumeService.resumePlanHandoff(body, makeChat);
+  async resumeAfterPlanHandoff(
+    body: unknown,
+    makeChat?: LoopChatFn,
+    callbacks?: AgentResumeCallbacks,
+  ): Promise<ApiResult> {
+    return this.agentResumeService.resumePlanHandoff(body, makeChat, callbacks);
   }
 
   listRunningAgentRuns() {
@@ -413,10 +432,35 @@ export class Orchestrator {
   }
 
   getActivityRun(runId: string): ApiResult {
-    const store = new ActivityRunStore(this.workspaceForRun(runId));
+    const aggregate = this.deps.runs.get(runId);
+    if (!aggregate?.sessionId) return { status: 404, body: { error: "Activity Run 不存在", runId } };
+    const store = new ActivityRunStore(
+      this.sessionWorkspace.activityRootForSession(aggregate.sessionId),
+    );
     const run = store.loadRun(runId);
     if (!run) return { status: 404, body: { error: "Activity Run 不存在", runId } };
-    return { status: 200, body: { run } };
+    return { status: 200, body: { run, manifest: store.loadManifest(runId) } };
+  }
+
+  getActivityDetail(runId: string, activityId: string): ApiResult {
+    const aggregate = this.deps.runs.get(runId);
+    if (!aggregate?.sessionId) {
+      return {
+        status: 404,
+        body: { error: "Activity detail does not exist", runId, activityId },
+      };
+    }
+    const store = new ActivityRunStore(
+      this.sessionWorkspace.activityRootForSession(aggregate.sessionId),
+    );
+    const detail = store.loadActivityDetail(runId, activityId);
+    if (!detail) {
+      return {
+        status: 404,
+        body: { error: "Activity detail does not exist", runId, activityId },
+      };
+    }
+    return { status: 200, body: { detail } };
   }
 
   subscribeActivityEvents(
@@ -424,8 +468,11 @@ export class Orchestrator {
     emit: (event: AgentActivityEvent) => void,
     opts?: { replay?: boolean },
   ): () => void {
-    const store = new ActivityRunStore(this.workspaceForRun(runId));
-    if (opts?.replay !== false) {
+    const aggregate = this.deps.runs.get(runId);
+    const store = aggregate?.sessionId
+      ? new ActivityRunStore(this.sessionWorkspace.activityRootForSession(aggregate.sessionId))
+      : null;
+    if (store && opts?.replay !== false) {
       for (const event of store.listEvents(runId)) {
         emit(event);
       }
@@ -495,7 +542,7 @@ export class Orchestrator {
     let result: AgentRunResult;
     try {
       this.agentRunLifecycle.traceStart(ctx);
-      result = await ctx.loop.run(ctx.message, ctx.system);
+      result = await ctx.engine.run(ctx.message, ctx.system);
     } catch (error) {
       const body = this.agentRunLifecycle.finalizeFailure(ctx, error);
       try {
@@ -606,7 +653,7 @@ export class Orchestrator {
     );
     hookTimeout.unref?.();
 
-    const loop = this.agentLoopFactory.create({
+    const loop = this.executionEngines.create({
       chat: this.deps.makeChatFn(),
       autoConfirm: false,
       persistContext: false,

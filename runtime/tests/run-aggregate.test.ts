@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { DatabaseManager } from "../src/context/DatabaseManager.js";
+import { projectRun } from "../src/application/publicProjection.js";
 import {
   ConcurrentRunModificationError,
   IllegalRunTransitionError,
@@ -145,10 +146,51 @@ describe("RunAggregateRepository", () => {
       expectedAggregateVersion: 1,
     });
     repository.execute({
-      type: "run.pause",
+      type: "run.wait_budget",
       runId: "run-1",
       expectedAggregateVersion: 2,
-      reason: { code: "budget_exhausted", message: "Token budget exhausted" },
+      reason: {
+        code: "budget_exhausted",
+        message: "Token budget exhausted",
+        details: {
+          executionMeta: {
+            usage: {
+              modelTurns: 4,
+              toolCalls: 2,
+              readCalls: 2,
+              writeCalls: 0,
+              shellCalls: 0,
+              runtimeMs: 500,
+            },
+            suggestedBudget: { maxModelTurns: 4 },
+            budgetExhausted: "maxModelTurns",
+          },
+          runState: {
+            budgetUsage: {
+              modelTurns: 12,
+              toolCalls: 5,
+              readCalls: 5,
+              writeCalls: 0,
+              shellCalls: 0,
+              runtimeMs: 1_500,
+            },
+            suggestedBudget: { maxModelTurns: 8 },
+            budgetExhausted: "maxModelTurns",
+          },
+        },
+      },
+    });
+    expect(repository.get("run-1")).toMatchObject({
+      status: "paused",
+      checkpointStage: "waiting_budget",
+      recoveryStatus: "none",
+    });
+    expect(projectRun(repository.get("run-1")!)).toMatchObject({
+      status: "waiting_budget",
+      budgetUsage: { modelTurns: 12, toolCalls: 5 },
+      suggestedBudget: { maxModelTurns: 8 },
+      budgetExhausted: "maxModelTurns",
+      userFacingLabel: "等待追加执行预算",
     });
 
     const firstPage = repository.replayEvents({ afterCursor: 0, limit: 2 });

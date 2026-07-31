@@ -11,6 +11,7 @@ import {
 } from "./CompanionChatContracts.js";
 import { CompanionOutputModeSchema } from "./CompanionMemoryContracts.js";
 import {
+  CompanionMessageReasoningSchema,
   CompanionMessageSchema,
   CompanionSessionSchema,
   CompanionStorageStatusSchema,
@@ -96,6 +97,22 @@ export const CompanionStreamTokenEventSchema = z.union([
   CompanionGuardedStreamTokenEventSchema,
 ]);
 
+export const CompanionStreamReasoningEventSchema = z.object({
+  type: z.literal("reasoning"),
+  runId: streamRunId,
+  delta: z.string().min(1),
+  source: z.enum(["provider", "summary"]),
+  startedAt: z.string().datetime(),
+}).strict();
+
+export const CompanionStreamReasoningEndEventSchema = z.object({
+  type: z.literal("reasoning_end"),
+  runId: streamRunId,
+  reasoning: CompanionMessageReasoningSchema.extend({
+    status: z.enum(["completed", "interrupted"]),
+  }),
+}).strict();
+
 export const CompanionStreamReplaceEventSchema = z.object({
   type: z.literal("replace"),
   runId: streamRunId,
@@ -110,6 +127,22 @@ export const CompanionStreamGuardEventSchema = z.object({
   status: z.literal("held"),
   reason: z.literal("hard_boundary_risk"),
   outputMode: z.literal("bounded"),
+}).strict();
+
+export const CompanionStreamContextActivityEventSchema = z.object({
+  type: z.literal("context_activity"),
+  runId: streamRunId,
+  activityId: z.string().min(1).max(512),
+  status: z.enum(["running", "completed", "failed"]),
+  title: z.string().min(1).max(512),
+  startedAt: z.string().datetime(),
+  completedAt: z.string().datetime().optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+  processedMessages: z.number().int().nonnegative().optional(),
+  beforeChars: z.number().int().nonnegative().optional(),
+  afterChars: z.number().int().nonnegative().optional(),
+  summaryType: z.string().min(1).max(128).optional(),
+  error: z.string().max(8_192).optional(),
 }).strict();
 
 export const CompanionStreamAgentProposalEventSchema = z.object({
@@ -172,8 +205,11 @@ export const CompanionStreamEventSchema = z.union([
   CompanionIncognitoStreamStartEventSchema,
   CompanionDirectStreamTokenEventSchema,
   CompanionGuardedStreamTokenEventSchema,
+  CompanionStreamReasoningEventSchema,
+  CompanionStreamReasoningEndEventSchema,
   CompanionStreamReplaceEventSchema,
   CompanionStreamGuardEventSchema,
+  CompanionStreamContextActivityEventSchema,
   CompanionStreamAgentProposalEventSchema,
   CompanionStreamDoneEventSchema,
   CompanionStoredStreamCancelledEventSchema,

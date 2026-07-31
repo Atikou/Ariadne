@@ -69,7 +69,6 @@ export function resolveSuggestedToolCalls(input: {
   if (input.budgetExhausted === "maxToolCalls") {
     suggested = Math.max(
       suggested,
-      input.currentBudget.maxToolCalls * 2,
       input.usedToolCalls + 4,
     );
   }

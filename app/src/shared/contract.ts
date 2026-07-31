@@ -183,6 +183,20 @@ export interface AgentWorkspaceSettingsView {
   workspaceId: string;
   rootPath: string;
   access: 'read' | 'write';
+  pinned?: true | undefined;
+  archivedAt?: string | undefined;
+  purgeAfter?: string | undefined;
+  purgedAt?: string | undefined;
+}
+
+export const WORKSPACE_ARCHIVE_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+
+export interface AgentWorkspaceRequest {
+  workspaceId: string;
+}
+
+export interface AgentWorkspacePinUpdate extends AgentWorkspaceRequest {
+  pinned: boolean;
 }
 
 export interface AgentProviderSettingsUpdate {
@@ -290,10 +304,23 @@ export interface OpenWorkspaceResult {
   rootPath: string;
 }
 
+export interface ApprovalNotificationTestResult {
+  shown: boolean;
+  supported: boolean;
+}
+
+export interface ApprovalNavigationRequest {
+  sessionId: string;
+}
+
 export interface AriadneApi {
   agentSettings: {
     load(): Promise<AgentSettingsView>;
     update(settings: AgentSettingsUpdate): Promise<AgentSettingsView>;
+    setWorkspacePinned(request: AgentWorkspacePinUpdate): Promise<AgentSettingsView>;
+    archiveWorkspace(request: AgentWorkspaceRequest): Promise<AgentSettingsView>;
+    restoreWorkspace(request: AgentWorkspaceRequest): Promise<AgentSettingsView>;
+    onWorkspacesChanged(listener: (settings: AgentSettingsView) => void): () => void;
   };
   clipboard: {
     writeText(request: ClipboardWriteRequest): Promise<void>;
@@ -314,6 +341,8 @@ export interface AriadneApi {
   system: {
     getCapabilityStatuses(): Promise<CapabilityStatus[]>;
     getGameActivity(): Promise<GameActivitySnapshot>;
+    testApprovalNotification(): Promise<ApprovalNotificationTestResult>;
+    onApprovalNavigation(listener: (request: ApprovalNavigationRequest) => void): () => void;
   };
   terminal: {
     create(request: CreateTerminalSessionRequest): Promise<TerminalSession>;

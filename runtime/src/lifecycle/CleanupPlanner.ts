@@ -10,6 +10,7 @@ import {
   estimateDbRowBytes,
 } from "./dbRowCleanup.js";
 import { ActivityRunStore } from "../agent/timeline/ActivityRunStore.js";
+import { listSessionAgentStorageRoots } from "../agent/timeline/SessionAgentStorage.js";
 import { fileAgeDays, walkFiles } from "./fsUtils.js";
 import type { LifecyclePolicy } from "./types.js";
 import type {
@@ -92,13 +93,6 @@ export class CleanupPlanner {
     for (const runId of activeRuns) {
       if (targetPath.includes(runId)) {
         return `active run ${runId}`;
-      }
-    }
-    const agentRuns = path.join(this.deps.workspaceRoot, ".agent", "runs");
-    if (targetPath.startsWith(agentRuns)) {
-      const seg = targetPath.slice(agentRuns.length + 1).split(path.sep)[0];
-      if (seg && activeRuns.has(seg)) {
-        return `active timeline run ${seg}`;
       }
     }
     return undefined;
@@ -379,37 +373,43 @@ export class CleanupPlanner {
     now: number,
     activeRuns: Set<string>,
   ): void {
-    const store = new ActivityRunStore(this.deps.workspaceRoot);
-    for (const runId of store.listRunIds()) {
-      if (activeRuns.has(runId)) continue;
-      const manifest = store.loadManifest(runId);
-      if (!manifest) continue;
-      if (manifest.pinned) continue;
-      if (manifest.status === "running" || manifest.status === "pending") continue;
+    const storageRoots = [
+      ...listSessionAgentStorageRoots(this.deps.dataDir),
+      this.deps.workspaceRoot,
+    ];
+    for (const storageRoot of new Set(storageRoots)) {
+      const store = new ActivityRunStore(storageRoot);
+      for (const runId of store.listRunIds()) {
+        if (activeRuns.has(runId)) continue;
+        const manifest = store.loadManifest(runId);
+        if (!manifest) continue;
+        if (manifest.pinned) continue;
+        if (manifest.status === "running" || manifest.status === "pending") continue;
 
-      const runDir = path.join(this.deps.workspaceRoot, ".agent", "runs", runId);
-      const summaryFile = path.join(runDir, "summary.md");
-      if (!existsSync(summaryFile)) continue;
+        const runDir = path.join(storageRoot, ".agent", "runs", runId);
+        const summaryFile = path.join(runDir, "summary.md");
+        if (!existsSync(summaryFile)) continue;
 
-      const ageAnchor = manifest.completedAt ?? manifest.createdAt;
-      const ttl =
-        manifest.status === "failed" || manifest.status === "cancelled"
-          ? this.policy.retentionDays.runRawEventsFailed
-          : this.policy.retentionDays.runRawEventsSuccess;
-      if (fileAgeDays(ageAnchor, now) < ttl) continue;
+        const ageAnchor = manifest.completedAt ?? manifest.createdAt;
+        const ttl =
+          manifest.status === "failed" || manifest.status === "cancelled"
+            ? this.policy.retentionDays.runRawEventsFailed
+            : this.policy.retentionDays.runRawEventsSuccess;
+        if (fileAgeDays(ageAnchor, now) < ttl) continue;
 
-      for (const name of ["events.jsonl", "raw-tool-calls.jsonl"]) {
-        const file = path.join(runDir, name);
-        if (!existsSync(file)) continue;
-        const bytes = statSync(file).size;
-        push({
-          type: "delete_file",
-          path: file,
-          reason: `timeline raw ${name} older than ${ttl} day(s); summary retained`,
-          bytes,
-          risk: "medium",
-          category: "timeline",
-        });
+        for (const name of ["events.jsonl", "raw-tool-calls.jsonl"]) {
+          const file = path.join(runDir, name);
+          if (!existsSync(file)) continue;
+          const bytes = statSync(file).size;
+          push({
+            type: "delete_file",
+            path: file,
+            reason: `timeline raw ${name} older than ${ttl} day(s); summary retained`,
+            bytes,
+            risk: "medium",
+            category: "timeline",
+          });
+        }
       }
     }
   }

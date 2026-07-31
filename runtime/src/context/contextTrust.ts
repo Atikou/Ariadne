@@ -9,7 +9,6 @@ export type ContextTrustDecisionReason =
   | "user_input"
   | "verified_final"
   | "verified_tool_result"
-  | "protocol_tool_action"
   | "guard_notice"
   | "filtered_raw_model_final"
   | "filtered_tool_action"
@@ -78,13 +77,6 @@ export function evaluateContextMessageTrust(
   }
 
   if (envelope.messageKind === "tool_action") {
-    if (message.toolCalls && message.toolCalls.length > 0) {
-      return {
-        include: true,
-        reason: "protocol_tool_action",
-        envelope,
-      };
-    }
     return {
       include: false,
       reason: "filtered_tool_action",

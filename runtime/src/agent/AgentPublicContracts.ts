@@ -374,6 +374,8 @@ const RunStateLocationSchema = z
 
 export const AgentRunStateSchema = z
   .object({
+    checkpointVersion: z.literal(1),
+    executionEngineKind: z.enum(["react_loop", "graph"]),
     runId: identifier,
     mode: AgentRunModeSchema,
     goal: text,
@@ -385,6 +387,17 @@ export const AgentRunStateSchema = z
     pendingSteps: z.array(text),
     scannedPaths: z.array(text),
     readFiles: z.array(text),
+    readRanges: z.array(
+      z.object({
+        path: text,
+        sha256: text.optional(),
+        startLine: z.number().int().positive().optional(),
+        endLine: z.number().int().positive().optional(),
+        byteOffset: nonNegativeInteger.optional(),
+        bytesRead: nonNegativeInteger.optional(),
+        eof: z.boolean().optional(),
+      }).strict(),
+    ),
     toolResultRefs: z.array(
       z
         .object({ tool: text, iteration: nonNegativeInteger, toolCallId: identifier.optional() })
@@ -394,6 +407,8 @@ export const AgentRunStateSchema = z
     budgetUsage: AgentRunBudgetUsageSchema,
     stopReason: AgentStopReasonSchema,
     budgetExhausted: AgentExecutionMetaSchema.shape.budgetExhausted,
+    suggestedBudget: AgentRunBudgetSchema.optional(),
+    partialSummary: text.optional(),
     updatedAt: z.string().datetime({ offset: true }),
     location: RunStateLocationSchema.optional(),
     intent: AgentIntentSchema.optional(),
@@ -467,6 +482,7 @@ export const AgentModelTurnEventSchema = z
 export const ActivityRunStatusSchema = z.enum([
   "pending",
   "running",
+  "waiting",
   "success",
   "partial",
   "failed",
@@ -566,6 +582,12 @@ export const ActivityAgentRunSchema = z
 
 export const AgentActivityEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run_started"), run: ActivityAgentRunSchema }).strict(),
+  z
+    .object({ type: z.literal("run_resumed"), runId: identifier, resumedAt: nonNegativeInteger })
+    .strict(),
+  z
+    .object({ type: z.literal("run_paused"), runId: identifier, reason: text })
+    .strict(),
   z.object({ type: z.literal("step_started"), step: ActivityAgentStepSchema }).strict(),
   z
     .object({ type: z.literal("step_delta"), runId: identifier, stepId: identifier, contentDelta: text })

@@ -16,7 +16,7 @@ export interface ApprovalNotificationHost {
   isWindowFocused(): boolean;
   canNotify(): Promise<boolean>;
   create(content: ApprovalNotificationContent): ApprovalNotificationHandle;
-  activateApplication(): void;
+  activateApplication(sessionId?: string): void;
 }
 
 export class ApprovalNotificationService {
@@ -53,7 +53,7 @@ export class ApprovalNotificationService {
         title: 'Ariadne 需要你的确认',
         body: `${truncate(approval.title, 96)}\n打开 Ariadne 查看授权详情。`
       });
-      notification.onClick(() => this.host.activateApplication());
+      notification.onClick(() => this.host.activateApplication(approval.sessionId));
       notification.show();
       this.notifiedIds.add(approval.id);
       this.visible.set(approval.id, notification);
@@ -62,6 +62,18 @@ export class ApprovalNotificationService {
     } finally {
       this.checkingIds.delete(approval.id);
     }
+  }
+
+  showTestNotification(): { shown: boolean; supported: boolean } {
+    const supported = this.host.isSupported();
+    if (!supported) return { shown: false, supported };
+    const notification = this.host.create({
+      title: 'Ariadne 权限通知测试',
+      body: '这是后台权限申请的 Windows 通知预览。点击可返回 Ariadne。'
+    });
+    notification.onClick(() => this.host.activateApplication());
+    notification.show();
+    return { shown: true, supported };
   }
 
   dispose(): void {
@@ -73,19 +85,31 @@ export class ApprovalNotificationService {
   }
 }
 
-function toApprovalEvent(event: RuntimeEvent): { id: string; title: string; pending: boolean } | null {
+function toApprovalEvent(
+  event: RuntimeEvent,
+): { id: string; title: string; pending: boolean; sessionId?: string } | null {
   if (event.kind === 'agent.proposal.changed') {
     return {
       id: `proposal:${event.proposal.proposalId}`,
       title: event.proposal.title,
-      pending: event.proposal.status === 'pending'
+      pending: event.proposal.status === 'pending',
+      ...(event.proposal.sessionId ? { sessionId: event.proposal.sessionId } : {})
     };
   }
   if (event.kind === 'permission.changed') {
     return {
       id: `permission:${event.request.requestId}`,
       title: event.request.title,
-      pending: event.request.status === 'pending'
+      pending: event.request.status === 'pending',
+      ...(event.request.sessionId ? { sessionId: event.request.sessionId } : {})
+    };
+  }
+  if (event.kind === 'planHandoff.changed') {
+    return {
+      id: `plan:${event.handoff.handoffId}`,
+      title: event.handoff.title,
+      pending: event.handoff.status === 'pending',
+      ...(event.handoff.sessionId ? { sessionId: event.handoff.sessionId } : {})
     };
   }
   return null;
