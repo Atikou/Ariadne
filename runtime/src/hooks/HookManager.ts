@@ -16,6 +16,14 @@ export const HOOK_EVENTS = [
   "subagent.pre",
   "subagent.post",
   "stop",
+  "run.admission.pre",
+  "inference.dispatch.pre",
+  "inference.dispatch.post",
+  "tool.dispatch.pre",
+  "tool.dispatch.post",
+  "turn.commit.post",
+  "run.terminal.post",
+  "runtime.stop",
 ] as const;
 export type HookEvent = (typeof HOOK_EVENTS)[number];
 export type HookFailurePolicy = "fail-open" | "fail-closed";

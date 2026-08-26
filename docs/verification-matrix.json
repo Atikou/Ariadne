@@ -141,17 +141,21 @@
       "notes": "Adapters and capability restrictions are automated. Real navigation, download, OAuth, STDIO server and signed sandbox-helper acceptance are pending."
     },
     {
-      "module": "skills-and-run-pre-hook",
+      "module": "skills-hooks-observability",
       "source": [
         "runtime/src/adapters/instructions/ProductionInstructionRegistry.ts",
-        "runtime/src/composition/ConfiguredAgentAdmissionHookPolicy.ts"
+        "runtime/src/composition/ConfiguredAgentLifecycleHooks.ts",
+        "runtime/src/composition/ProductionAgentLifecycleBridge.ts",
+        "runtime/src/composition/runtime-capabilities/ProductionSkillCatalog.ts",
+        "runtime/src/adapters/observability/PublicAgentObservability.ts",
+        "runtime/src/adapters/observability/ProductionTelemetryService.ts"
       ],
       "unit": "verified",
       "integration": "verified",
       "realModel": "not_accepted",
       "realWindow": "not_accepted",
       "realMachine": "not_accepted",
-      "notes": "Admission instruction assembly and run.pre policy are connected. Progressive Skill loading and other Hook lifecycle events are not connected to v3."
+      "notes": "Skill metadata/revision admission, exact skill.load, typed lifecycle Hooks, durable redacted diagnostics, and optional allowlisted OTLP are connected. Real-model Skill selection and a live OTLP collector remain acceptance work."
     },
     {
       "module": "runtime-capability-manifest",

@@ -58,6 +58,7 @@ function createManifest(started: readonly StartedProvider[]): RuntimeCapabilityM
   const publicCapabilities: RuntimeCapability[] = [];
   const tools: TrustedAgentToolRegistrationV1[] = [];
   const publicOwners = new Map<RuntimeCapability, string>();
+  const services = new Map<string, unknown>();
   for (const item of started) {
     for (const capability of item.handle.publicCapabilities) {
       runtimeCapabilitySchema.parse(capability);
@@ -72,6 +73,15 @@ function createManifest(started: readonly StartedProvider[]): RuntimeCapabilityM
       publicCapabilities.push(capability);
     }
     tools.push(...(item.handle.tools ?? []));
+    for (const [serviceId, service] of Object.entries(item.handle.services ?? {})) {
+      if (!item.definition.provides.includes(serviceId)) {
+        throw new Error(`runtime_capability_service_not_declared:${item.definition.id}:${serviceId}`);
+      }
+      if (service === undefined || services.has(serviceId)) {
+        throw new Error(`runtime_capability_service_duplicate:${serviceId}`);
+      }
+      services.set(serviceId, service);
+    }
   }
   const catalog = compileTrustedAgentToolCatalog({
     catalogId: FIRST_PARTY_AGENT_TOOL_CATALOG_ID,
@@ -102,6 +112,7 @@ function createManifest(started: readonly StartedProvider[]): RuntimeCapabilityM
       )
     ).sort(compareCodeUnits)),
     agentToolCatalogSnapshots: Object.freeze([catalog]),
+    service: <T>(serviceId: string): T | undefined => services.get(serviceId) as T | undefined,
     diagnosticSnapshot: () => diagnostics,
     prepareShutdown: async (context) => {
       if (prepared || closed) {
@@ -205,6 +216,14 @@ function validateHandle(id: string, handle: RuntimeCapabilityHandle): void {
   if (handle === null || typeof handle !== 'object' || !Array.isArray(handle.publicCapabilities)) {
     throw new Error(`runtime_capability_handle_invalid:${id}`);
   }
+  if (
+    handle.services !== undefined
+    && (
+      handle.services === null
+      || typeof handle.services !== 'object'
+      || Array.isArray(handle.services)
+    )
+  ) throw new Error(`runtime_capability_services_invalid:${id}`);
 }
 
 async function invokeReverse(

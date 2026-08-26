@@ -92,6 +92,9 @@ import {
 import {
   AgentControlPublicCommandRouter
 } from './AgentControlPublicCommandRouter.js';
+import type { ProductionSkillCatalog } from './runtime-capabilities/ProductionSkillCatalog.js';
+import { PublicAgentObservability } from '../adapters/observability/PublicAgentObservability.js';
+import type { TelemetryService } from '../adapters/observability/ProductionTelemetryService.js';
 
 const DEFAULT_PUBLIC_PROJECTION_INTERVAL_MS = 50;
 const EMPTY_MODEL_CATALOG: ModelCatalogProjectionSource = Object.freeze({
@@ -143,7 +146,8 @@ implements AgentControlRuntimeLifecycle {
     private readonly executionPipeline?: AgentControlExecutionPipeline,
     modelCatalog: ModelCatalogProjectionSource = EMPTY_MODEL_CATALOG,
     projectionWakeEventSink?: RuntimePublicEventSink,
-    authorizedWorkspaceIds: readonly string[] = []
+    authorizedWorkspaceIds: readonly string[] = [],
+    private readonly observability?: PublicAgentObservability
   ) {
     this.publishIntervalMs = options.publishIntervalMs
       ?? DEFAULT_PUBLIC_PROJECTION_INTERVAL_MS;
@@ -368,6 +372,7 @@ implements AgentControlRuntimeLifecycle {
   ): Promise<void> {
     const failures: unknown[] = [];
     if (this.executionPipeline !== undefined) {
+      this.executionPipeline.observeRuntimeStop?.(new Date().toISOString());
       // Stop both I/O schedulers before awaiting either one. This prevents a
       // long join in one producer from leaving the other producer live.
       const schedulerStops: Promise<void>[] = [];
@@ -400,6 +405,8 @@ implements AgentControlRuntimeLifecycle {
       }
     }
     try {
+      context.throwIfExpired();
+      await this.observability?.drain();
       context.throwIfExpired();
       if (this.activeDrain !== null) await this.activeDrain;
       context.throwIfExpired();
@@ -514,6 +521,7 @@ implements AgentControlRuntimeFactory {
       let unitOfWork: SqliteAgentRunUnitOfWork | undefined;
       let conversation: SqliteConversationRunHandoffUnitOfWork | undefined;
       let publicProjection: SqlitePublicProjectionStore | undefined;
+      let observability: PublicAgentObservability | undefined;
       try {
         unitOfWork = new SqliteAgentRunUnitOfWork(
           input.dataRoot,
@@ -521,6 +529,7 @@ implements AgentControlRuntimeFactory {
         );
         conversation = new SqliteConversationRunHandoffUnitOfWork(input.dataRoot);
         publicProjection = new SqlitePublicProjectionStore(input.dataRoot);
+        observability = await createPublicAgentObservability(input, publicProjection);
         const executionPipeline = await executionPipelineFactory?.create({
           unitOfWork,
           conversation,
@@ -529,6 +538,8 @@ implements AgentControlRuntimeFactory {
           ...(input.installRoot === undefined ? {} : { installRoot: input.installRoot }),
           ...(input.workspaces === undefined ? {} : { workspaces: input.workspaces }),
           ...(input.runtimePolicy === undefined ? {} : { runtimePolicy: input.runtimePolicy }),
+          ...skillCatalogInput(input),
+          hookDeliverySink: observability,
           ...(input.modelInferenceGateway === undefined
             ? {}
             : { modelInferenceGateway: input.modelInferenceGateway })
@@ -542,7 +553,8 @@ implements AgentControlRuntimeFactory {
           executionPipeline ?? undefined,
           input.modelCatalog,
           input.publicEventSink,
-          input.workspaces?.map((workspace) => workspace.workspaceId) ?? []
+          input.workspaces?.map((workspace) => workspace.workspaceId) ?? [],
+          observability
         );
       } catch (error) {
         const cleanupContext = createShutdownContext(Date.now() + 5_000);
@@ -586,6 +598,7 @@ implements AgentControlRuntimeFactory {
     let unitOfWork: SqliteAgentRunUnitOfWork | undefined;
     let conversation: SqliteConversationRunHandoffUnitOfWork | undefined;
     let publicProjection: SqlitePublicProjectionStore | undefined;
+    let observability: PublicAgentObservability | undefined;
     try {
       codec = new AesGcmAgentPersistencePayloadCodec(
         keyRing.activeKeyId,
@@ -600,6 +613,7 @@ implements AgentControlRuntimeFactory {
       });
       conversation = new SqliteConversationRunHandoffUnitOfWork(input.dataRoot);
       publicProjection = new SqlitePublicProjectionStore(input.dataRoot);
+      observability = await createPublicAgentObservability(input, publicProjection);
       const executionPipeline = await executionPipelineFactory?.create({
         unitOfWork,
         conversation,
@@ -608,6 +622,8 @@ implements AgentControlRuntimeFactory {
         ...(input.installRoot === undefined ? {} : { installRoot: input.installRoot }),
         ...(input.workspaces === undefined ? {} : { workspaces: input.workspaces }),
         ...(input.runtimePolicy === undefined ? {} : { runtimePolicy: input.runtimePolicy }),
+        ...skillCatalogInput(input),
+        hookDeliverySink: observability,
         ...(input.modelInferenceGateway === undefined
           ? {}
           : { modelInferenceGateway: input.modelInferenceGateway })
@@ -621,7 +637,8 @@ implements AgentControlRuntimeFactory {
         executionPipeline ?? undefined,
         input.modelCatalog,
         input.publicEventSink,
-        input.workspaces?.map((workspace) => workspace.workspaceId) ?? []
+        input.workspaces?.map((workspace) => workspace.workspaceId) ?? [],
+        observability
       );
     } catch (error) {
       const cleanupContext = createShutdownContext(Date.now() + 5_000);
@@ -640,12 +657,36 @@ implements AgentControlRuntimeFactory {
   }
 }
 
+function skillCatalogInput(
+  input: AgentControlRuntimeFactoryInput
+): { readonly skillCatalog?: ProductionSkillCatalog } {
+  const skillCatalog = input.capabilityManifest?.service<ProductionSkillCatalog>(
+    'agent.skills.catalog'
+  );
+  return skillCatalog === undefined ? {} : { skillCatalog };
+}
+
+async function createPublicAgentObservability(
+  input: AgentControlRuntimeFactoryInput,
+  publicProjection: SqlitePublicProjectionStore
+): Promise<PublicAgentObservability> {
+  const telemetry = input.capabilityManifest?.service<TelemetryService>('agent.telemetry');
+  const observability = new PublicAgentObservability(
+    publicProjection,
+    new PublicProjectionWakeCommitSink(publicProjection, input.publicEventSink),
+    telemetry
+  );
+  await observability.start();
+  return observability;
+}
+
 function createProductionExecutionPipelineFactory(
   input: AgentControlRuntimeFactoryInput
 ): AgentControlExecutionPipelineFactory | undefined {
   if (input.workspaces === undefined || input.credentialEnvironment === undefined) {
     return undefined;
   }
+  if (input.capabilityManifest === undefined) return undefined;
   return new ProductionAgentControlExecutionPipelineFactory({
     toolCatalogSnapshots: input.capabilityManifest.agentToolCatalogSnapshots,
     credentialEnvironment: input.credentialEnvironment,

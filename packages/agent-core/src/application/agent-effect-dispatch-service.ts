@@ -20,6 +20,10 @@ import type {
 } from './recovery-persistence.js';
 import type { AgentRunUnitOfWork } from './unit-of-work.js';
 import { deriveStableAgentId } from './stable-id.js';
+import {
+  observeAgentDispatchLifecycle,
+  type AgentDispatchLifecycleObserver
+} from './agent-dispatch-lifecycle-observer.js';
 
 export interface AgentEffectExecutionInput {
   readonly runId: string;
@@ -146,7 +150,8 @@ export class AgentEffectDispatchService {
     private readonly inputReader: AgentEffectExecutionInputReader,
     private readonly executor: AgentEffectExecutor,
     private readonly checkpoints: AgentEffectDispatchCheckpointFactory,
-    private readonly clock: AgentEffectDispatchClock = SYSTEM_CLOCK
+    private readonly clock: AgentEffectDispatchClock = SYSTEM_CLOCK,
+    private readonly lifecycleObserver?: AgentDispatchLifecycleObserver
   ) {
     this.commands = new AgentRunCommandService(unitOfWork);
   }
@@ -305,6 +310,14 @@ export class AgentEffectDispatchService {
       result
     }, artifacts);
     const recordedEffect = requireEffect(recorded.run, request.effectId);
+    observeAgentDispatchLifecycle(this.lifecycleObserver, {
+      event: 'tool.dispatch.post',
+      eventId: recordedEffect.toolCallId,
+      runId: recorded.run.runId,
+      occurredAt: finishedAt,
+      outcome: recordedEffect.state.status,
+      terminal: isTerminalRunState(recorded.run.state.status)
+    });
     return {
       run: recorded.run,
       effect: recordedEffect,
@@ -321,6 +334,10 @@ export class AgentEffectDispatchService {
     if (run === null) throw new AgentRunNotFoundError(runId);
     return run;
   }
+}
+
+function isTerminalRunState(status: AgentRun['state']['status']): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
 }
 
 function checkpointArtifacts(

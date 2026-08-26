@@ -46,14 +46,15 @@ export const runtimeCapabilitySchema = z.enum([
   'models.remote',
   'workspace.read',
   'workspace.write',
-  'trace.read',
+  'observability.diagnostics',
+  'telemetry.export',
   'background.tasks',
   'scheduler',
   'resources',
   'memory.manage',
   'mcp.tools',
-  'skills.instructions',
-  'hooks.run-pre',
+  'skills.catalog',
+  'hooks.lifecycle',
   'browser.web'
 ]);
 export type RuntimeCapability = z.infer<typeof runtimeCapabilitySchema>;

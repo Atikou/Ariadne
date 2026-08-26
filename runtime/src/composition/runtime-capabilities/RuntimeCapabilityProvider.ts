@@ -18,6 +18,8 @@ export interface RuntimeCapabilityStartContext {
 export interface RuntimeCapabilityHandle {
   readonly publicCapabilities: readonly RuntimeCapability[];
   readonly tools?: readonly TrustedAgentToolRegistrationV1[];
+  /** Provider-owned services. Keys must be declared in definition.provides. */
+  readonly services?: Readonly<Record<string, unknown>>;
   prepareShutdown?(context: ShutdownContext): void | Promise<void>;
   close?(context: ShutdownContext): void | Promise<void>;
 }

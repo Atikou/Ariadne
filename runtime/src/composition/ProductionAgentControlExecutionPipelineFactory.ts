@@ -111,16 +111,20 @@ import {
 import {
   ProductionAgentRunAdmissionSnapshotReader
 } from './ProductionAgentRunAdmissionSnapshotReader.js';
-import { ConfiguredAgentAdmissionHookPolicy } from './ConfiguredAgentAdmissionHookPolicy.js';
+import { ConfiguredAgentLifecycleHooks } from './ConfiguredAgentLifecycleHooks.js';
 import {
-  AgentInstructionResolver,
-  SkillRegistry,
   WorkspaceInstructionLoader,
   renderInstructionBlocks
 } from '../adapters/instructions/ProductionInstructionRegistry.js';
+import type { ProductionSkillCatalog } from './runtime-capabilities/ProductionSkillCatalog.js';
+import type { AgentLifecycleHookDeliverySink } from '../control/ports/AgentLifecycleObservability.js';
 import {
   ProductionAgentRunWorkAuthorityVerifier
 } from './ProductionAgentRunWorkAuthorityVerifier.js';
+import {
+  LifecycleHookedAgentEngine,
+  ProductionAgentLifecycleBridge
+} from './ProductionAgentLifecycleBridge.js';
 
 const PREFLIGHT_DIGEST = `sha256:${'0'.repeat(64)}`;
 
@@ -130,6 +134,7 @@ export interface AgentControlExecutionPipeline {
   readonly runWorkScheduler: AgentRunWorkScheduler;
   /** Synchronous, pre-write gate for one new Conversation objective. */
   assertConversationMessageAdmission(workspaceId: string): void;
+  observeRuntimeStop(occurredAt: string): void;
 }
 
 export interface AgentControlExecutionPipelineFactoryInput {
@@ -141,6 +146,8 @@ export interface AgentControlExecutionPipelineFactoryInput {
   readonly installRoot?: string;
   readonly workspaces?: RuntimeBootstrap['workspaces'];
   readonly runtimePolicy?: RuntimeBootstrap['runtimePolicy'];
+  readonly skillCatalog?: ProductionSkillCatalog;
+  readonly hookDeliverySink?: AgentLifecycleHookDeliverySink;
 }
 
 export interface AgentControlExecutionPipelineFactory {
@@ -235,8 +242,14 @@ implements AgentControlExecutionPipelineFactory {
     );
     if (source.status === 'disabled') return null;
 
+    const lifecycleHooks = new ConfiguredAgentLifecycleHooks(
+      input.runtimePolicy?.hooks.definitions ?? [],
+      input.hookDeliverySink
+    );
+    const lifecycle = new ProductionAgentLifecycleBridge(lifecycleHooks);
     const catalogs = new ImmutableAgentToolCatalogRegistry(
-      this.options.toolCatalogSnapshots
+      this.options.toolCatalogSnapshots,
+      lifecycleHooks
     );
     await assertCatalogAuthorities(source, catalogs);
 
@@ -260,10 +273,13 @@ implements AgentControlExecutionPipelineFactory {
       createInstructionSource(input),
       input.runtimePolicy === undefined
         ? undefined
-        : new ConfiguredAgentAdmissionHookPolicy(input.runtimePolicy.hooks.definitions)
+        : lifecycleHooks
     );
     const admissions = new AgentRunAdmissionController(input.unitOfWork, snapshots);
-    const engine = new ProductionAgentEngineAdapter(models, catalogs);
+    const engine = new LifecycleHookedAgentEngine(
+      new ProductionAgentEngineAdapter(models, catalogs),
+      lifecycleHooks
+    );
     const inputReader = new ProductionAgentInferenceExecutionInputReader(
       input.unitOfWork,
       input.unitOfWork
@@ -279,7 +295,8 @@ implements AgentControlExecutionPipelineFactory {
       directivePlanner,
       new V3AgentInferenceDispatchCheckpointFactory(),
       undefined,
-      new AgentSubagentDelegationService(input.unitOfWork)
+      new AgentSubagentDelegationService(input.unitOfWork),
+      lifecycle
     );
     const dispatcher = new AgentRunExecutionDispatchController(
       input.unitOfWork,
@@ -292,7 +309,9 @@ implements AgentControlExecutionPipelineFactory {
       input.unitOfWork,
       effectInputReader,
       catalogs,
-      new V3AgentEffectDispatchCheckpointFactory()
+      new V3AgentEffectDispatchCheckpointFactory(),
+      undefined,
+      lifecycle
     );
     const continuations = new AgentEffectContinuationController(
       input.unitOfWork,
@@ -405,7 +424,8 @@ implements AgentControlExecutionPipelineFactory {
             'model_binding_unavailable'
           );
         }
-      }
+      },
+      observeRuntimeStop: (occurredAt: string): void => lifecycle.observeRuntimeStop(occurredAt)
     });
   }
 }
@@ -426,16 +446,11 @@ function createInstructionSource(
     resolve: (workspaceId) => {
       const workspaceRoot = roots.get(workspaceId);
       if (workspaceRoot === undefined) throw new Error('instruction_workspace_unknown');
-      const resolver = new AgentInstructionResolver(
-        new SkillRegistry({
-          builtIn: path.join(input.installRoot!, 'skills'),
-          user: input.runtimePolicy!.skills.userDirectory,
-          workspace: workspaceRoot
-        }),
-        new WorkspaceInstructionLoader(),
-        input.runtimePolicy!.skills.enabled
+      const workspaceInstructions = renderInstructionBlocks(
+        new WorkspaceInstructionLoader().resolve(workspaceRoot)
       );
-      const rendered = renderInstructionBlocks(resolver.resolve(workspaceRoot));
+      const skillCatalog = input.skillCatalog?.renderAdmissionCatalog(workspaceId) ?? '';
+      const rendered = [workspaceInstructions, skillCatalog].filter(Boolean).join('\n\n');
       if (Buffer.byteLength(rendered, 'utf8') > 512 * 1024) {
         throw new Error('combined_instructions_too_large');
       }
@@ -523,4 +538,3 @@ function preflightBinding(
     }
   };
 }
-import path from 'node:path';

@@ -405,13 +405,21 @@ const HookEventSchema = z.enum([
   "subagent.pre",
   "subagent.post",
   "stop",
+  "run.admission.pre",
+  "inference.dispatch.pre",
+  "inference.dispatch.post",
+  "tool.dispatch.pre",
+  "tool.dispatch.post",
+  "turn.commit.post",
+  "run.terminal.post",
+  "runtime.stop",
 ]);
 
 export const HookConfigSchema = z.object({
   definitions: z.array(z.object({
     id: z.string().regex(/^[a-z][a-z0-9_-]*$/u),
     version: z.string().trim().min(1).max(64),
-    events: z.array(HookEventSchema).min(1).max(11),
+    events: z.array(HookEventSchema).min(1).max(19),
     timeoutMs: z.number().int().min(1).max(60_000).default(5_000),
     failurePolicy: z.enum(["fail-open", "fail-closed"]).default("fail-closed"),
     decision: z.enum(["allow", "reject"]).default("allow"),

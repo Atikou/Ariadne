@@ -30,6 +30,7 @@ export interface BuildAgentAdmissionAuthoritySourceInput {
   readonly modelProviders: readonly MainAdmissionModelProviderConfiguration[];
   readonly localModelRoots?: readonly string[];
   readonly mcpEnabled?: boolean;
+  readonly skillNames?: readonly string[];
   readonly now?: Date;
 }
 
@@ -78,6 +79,7 @@ export function buildAgentAdmissionAuthoritySource(
     permissionMode: input.permissionMode,
     allowedPermissions: input.allowedPermissions,
     mcpEnabled: input.mcpEnabled === true,
+    skillsEnabled: (input.skillNames?.length ?? 0) > 0,
     deadlineAt
   }));
   const parsed = agentAdmissionAuthoritySourceSchema.safeParse({
@@ -98,6 +100,7 @@ function createManifest(input: {
   readonly permissionMode: BuildAgentAdmissionAuthoritySourceInput['permissionMode'];
   readonly allowedPermissions: BuildAgentAdmissionAuthoritySourceInput['allowedPermissions'];
   readonly mcpEnabled: boolean;
+  readonly skillsEnabled: boolean;
   readonly deadlineAt: string;
 }): AgentAdmissionAuthoritySourceManifest {
   const { workspace, model, settingsRevision } = input;
@@ -106,6 +109,7 @@ function createManifest(input: {
   const capabilityIds = [
     ...(permissionSet.has('network') ? ['browser.use'] : []),
     ...(input.mcpEnabled && permissionSet.has('network') ? ['mcp.use'] : []),
+    ...(input.skillsEnabled ? ['skills.read'] : []),
     'workspace.read',
     ...(workspace.access === 'write' && permissionSet.has('shell')
       ? ['workspace.shell']
@@ -118,6 +122,7 @@ function createManifest(input: {
   const allowedToolNames = FIRST_PARTY_AGENT_TOOL_NAMES.filter((toolName) => (
     toolName === 'workspace.list_files'
     || toolName === 'workspace.read_file'
+    || (toolName === 'skill.load' && capabilitySet.has('skills.read'))
     || (toolName === 'workspace.run_command' && capabilitySet.has('workspace.shell'))
     || (toolName === 'workspace.write_file' && capabilitySet.has('workspace.write'))
     || (toolName.startsWith('mcp.') && capabilitySet.has('mcp.use'))

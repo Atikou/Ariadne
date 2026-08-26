@@ -119,6 +119,7 @@ export function createDesktopRuntimeConfiguration(
     workspaces: input.agentSettings.workspaces,
     modelProviders,
     localModelRoots: modelRoots,
+    skillNames: input.agentSettings.runtimePolicy.skills.enabled,
     mcpEnabled: input.agentSettings.runtimePolicy.mcp.servers.some((server) => {
       if (!server.enabled) return false;
       const permissions = new Set(input.agentSettings.permissions.allowedPermissions);

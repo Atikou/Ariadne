@@ -18,7 +18,10 @@ import type {
   AgentInferenceToolContractReader,
   ReadAgentInferenceToolContractsRequest
 } from '../../control/ports/AgentInferenceToolContracts.js';
-import { ImmutableAgentToolCatalog } from './ImmutableAgentToolCatalog.js';
+import {
+  ImmutableAgentToolCatalog,
+  type AgentToolLifecycleHook
+} from './ImmutableAgentToolCatalog.js';
 import {
   assertTrustedAgentToolCatalogSnapshot,
   type TrustedAgentToolCatalogSnapshot
@@ -43,7 +46,10 @@ AgentEffectExecutor {
   private readonly records: ReadonlyMap<string, CatalogRecord>;
   private readonly executorsByTool: ReadonlyMap<string, ImmutableAgentToolCatalog>;
 
-  public constructor(snapshots: readonly TrustedAgentToolCatalogSnapshot[] = []) {
+  public constructor(
+    snapshots: readonly TrustedAgentToolCatalogSnapshot[] = [],
+    lifecycleHook?: AgentToolLifecycleHook
+  ) {
     assertDenseArray(snapshots, 'toolCatalogRegistry.snapshots');
     const records = new Map<string, CatalogRecord>();
     const executorsByTool = new Map<string, ImmutableAgentToolCatalog>();
@@ -59,7 +65,7 @@ AgentEffectExecutor {
       if (records.has(key)) {
         throw invariant('Tool Catalog registry cannot contain duplicate identities.');
       }
-      const catalog = new ImmutableAgentToolCatalog(snapshot);
+      const catalog = new ImmutableAgentToolCatalog(snapshot, lifecycleHook);
       records.set(key, Object.freeze({
         identity,
         catalog

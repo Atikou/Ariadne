@@ -1,0 +1,56 @@
+import type {
+  AgentDispatchLifecycleObservation,
+  AgentDispatchLifecycleObserver,
+  AgentEngine,
+  AgentTurnInput,
+  PreparedAgentDecision
+} from '@ariadne/agent-core';
+
+import { ConfiguredAgentLifecycleHooks } from './ConfiguredAgentLifecycleHooks.js';
+
+/** Connects typed v3 dispatch boundaries to configured Hooks without payload access. */
+export class ProductionAgentLifecycleBridge
+implements AgentDispatchLifecycleObserver {
+  public constructor(private readonly hooks: ConfiguredAgentLifecycleHooks) {}
+
+  public observe(observation: AgentDispatchLifecycleObservation): void {
+    this.hooks.observe(
+      observation.event,
+      observation.eventId,
+      observation.occurredAt
+    );
+    if (observation.terminal) {
+      this.hooks.observe(
+        'run.terminal.post',
+        observation.runId,
+        observation.occurredAt
+      );
+    }
+  }
+
+  public observeRuntimeStop(occurredAt: string): void {
+    this.hooks.observe('runtime.stop', 'runtime', occurredAt);
+  }
+}
+
+/** Applies inference.dispatch.pre before Provider preparation or durable I/O. */
+export class LifecycleHookedAgentEngine implements AgentEngine {
+  public constructor(
+    private readonly inner: AgentEngine,
+    private readonly hooks: ConfiguredAgentLifecycleHooks
+  ) {}
+
+  public prepare(input: AgentTurnInput, signal: AbortSignal): Promise<PreparedAgentDecision> {
+    const turn = input.run.turns.at(-1);
+    const attempt = turn?.attempts.at(-1);
+    if (turn === undefined || attempt === undefined) {
+      return Promise.reject(new Error('agent_inference_hook_identity_unavailable'));
+    }
+    this.hooks.enforce(
+      'inference.dispatch.pre',
+      attempt.attemptId,
+      new Date().toISOString()
+    );
+    return this.inner.prepare(input, signal);
+  }
+}

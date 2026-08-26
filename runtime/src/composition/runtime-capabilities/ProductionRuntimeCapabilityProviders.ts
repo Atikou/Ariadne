@@ -3,6 +3,7 @@ import { createBrowserAgentToolRegistrations } from '../first-party-tools/Browse
 import { createMcpAgentToolRegistrations } from '../first-party-tools/McpAgentTools.js';
 import { createWorkspaceAgentToolRegistrations } from '../first-party-tools/WorkspaceAgentTools.js';
 import { defineRuntimeCapabilityProvider, type RuntimeCapabilityProvider } from './RuntimeCapabilityProvider.js';
+import { agentExtensionCapabilityProviders } from './AgentExtensionCapabilityProviders.js';
 
 export function productionRuntimeCapabilityProviders(): readonly RuntimeCapabilityProvider[] {
   return Object.freeze([
@@ -70,21 +71,6 @@ export function productionRuntimeCapabilityProviders(): readonly RuntimeCapabili
           ? ['agent.subagents'] : []
       })
     ),
-    defineRuntimeCapabilityProvider(
-      'skills.instructions', ['agent.control'], ['agent.instructions.skills'],
-      ['skills.instructions'],
-      (context) => ({
-        publicCapabilities: context.bootstrap.runtimePolicy.skills.enabled.length > 0
-          ? ['skills.instructions'] : []
-      })
-    ),
-    defineRuntimeCapabilityProvider(
-      'hooks.run-pre', ['agent.control'], ['agent.hooks.run-pre'], ['hooks.run-pre'],
-      (context) => ({
-        publicCapabilities: context.bootstrap.runtimePolicy.hooks.definitions.some(
-          (hook) => hook.events.includes('run.pre')
-        ) ? ['hooks.run-pre'] : []
-      })
-    )
+    ...agentExtensionCapabilityProviders()
   ]);
 }

@@ -49,7 +49,7 @@ export interface AgentAdmissionInstructionSource {
 }
 
 export interface AgentAdmissionHookPolicy {
-  apply(binding: AgentRunBinding, occurredAt: string): AgentRunBinding;
+  applyAdmission(binding: AgentRunBinding, occurredAt: string): Promise<AgentRunBinding>;
 }
 
 export class ProductionAgentRunAdmissionSnapshotError extends Error {
@@ -129,11 +129,11 @@ implements AgentRunAdmissionSnapshotReader {
 
     let binding = bindingFromAuthority(bundle);
     try {
-      binding = this.hooks?.apply(binding, request.occurredAt) ?? binding;
+      binding = await this.hooks?.applyAdmission(binding, request.occurredAt) ?? binding;
     } catch (cause) {
       throw error(
         'AGENT_ADMISSION_HOOK_REJECTED',
-        'A configured run.pre hook rejected or invalidated Agent admission.',
+        'A configured run.admission.pre Hook rejected or invalidated Agent admission.',
         cause
       );
     }

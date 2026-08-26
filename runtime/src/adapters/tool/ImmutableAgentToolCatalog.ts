@@ -62,6 +62,14 @@ interface ExecutionSnapshot {
   readonly input: AgentToolJsonValue;
 }
 
+export interface AgentToolLifecycleHook {
+  enforce(
+    event: 'tool.dispatch.pre',
+    eventId: string,
+    occurredAt: string
+  ): void;
+}
+
 /**
  * Process-local executable view of one immutable, already-pinned Tool Catalog.
  * It has no name-based refresh or provider replacement path: a new catalog
@@ -81,7 +89,10 @@ AgentInferenceToolContractReader {
     readonly digest: string;
   };
 
-  public constructor(snapshot: TrustedAgentToolCatalogSnapshot) {
+  public constructor(
+    snapshot: TrustedAgentToolCatalogSnapshot,
+    private readonly lifecycleHook?: AgentToolLifecycleHook
+  ) {
     assertTrustedAgentToolCatalogSnapshot(snapshot);
     this.identity = Object.freeze({
       catalogId: snapshot.catalogId,
@@ -242,6 +253,15 @@ AgentInferenceToolContractReader {
     request: AgentToolAdmissionRequest
   ): Promise<AgentToolAdmissionDecision> {
     const snapshot = snapshotAdmissionRequest(request);
+    try {
+      this.lifecycleHook?.enforce(
+        'tool.dispatch.pre',
+        request.invocation.toolCallId,
+        new Date().toISOString()
+      );
+    } catch {
+      return { status: 'deny', reason: 'policy_denied' };
+    }
     const entry = this.entriesByName.get(snapshot.invocation.tool.toolName);
     if (entry === undefined) return { status: 'deny', reason: 'tool_not_available' };
     if (

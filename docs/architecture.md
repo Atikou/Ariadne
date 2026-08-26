@@ -95,7 +95,7 @@ Renderer 冷启动读取 `projection.snapshot.get`，随后通过 `projection.co
 - Agent Run/Decision/Activity；
 - Model Catalog。
 
-Diagnostics DTO 和 Store 虽然存在，但当前没有生产 Diagnostics publisher；日志面板不能被描述为完整、持久、可重放的 Runtime 日志产品。
+Agent lifecycle diagnostics 由独立 observability publisher 脱敏后写入同一 Projection，支持 cursor/digest 重放、稳定 delivery 去重和 512 条 retention。它不是完整 Prompt/Tool 日志，也不拥有恢复权威。
 
 Renderer 的写操作只使用 v3 Session/Message、Decision 和 Cancel 命令。它不再使用旧 `runtime.snapshot.get`、`events.replay`、Proposal/Permission/Plan 分散命令，也不从多个 legacy Store 修补领域状态。
 
@@ -105,13 +105,14 @@ Renderer 的写操作只使用 v3 Session/Message、Decision 和 Cancel 命令�
 |---|---|
 | Conversation、Agent Run、Decision、Cancel、Projection | 已进入 v3 生产路径 |
 | Workspace、first-party Tools、Browser、经授权 MCP | 已进入 Tool Catalog；真实端到端验收仍不完整 |
-| Skills | 完整正文在 admission 时注入；尚未渐进披露 |
-| Hooks | v3 只消费 `run.pre` |
+| Skills | bootstrap 固定 catalog metadata/revision；正文只经 `skill.load` 按需进入 protected continuation |
+| Hooks | 8 个 typed lifecycle extension point 已进入 v3；pre 可拒绝，post observer-only |
 | Context | Conversation 历史、压力压缩、Tool result pruning、overflow recovery 已进入 v3；spill 与精确 tokenizer 未完成 |
 | Memory/Embedding | 有旧实现和测试，但没有完整 v3 生产 consumer |
 | SubAgent | one-shot ordinary Child Run 已形成 v3 产品闭环；外部/continuable Provider 未接入 |
 | Background/Scheduler | 有旧模块基础，没有 v3 产品闭环 |
-| Diagnostics/Telemetry/Provider Resilience | 有 schema/实现片段，v3 生命周期或 consumer 不完整 |
+| Diagnostics/Telemetry | lifecycle diagnostics 已持久、脱敏、可重放；Telemetry 只在 exporter 启动成功后宣告 |
+| Provider Resilience | 有 schema/实现片段，v3 Provider consumer 尚未完成 |
 
 Runtime status 只读取 bootstrap 冻结 Manifest 中已成功启动 Provider 的输出，不再自行读取配置拼接清单。协议枚举但没有 Provider owner 的条目进入 `unwiredPublicCapabilities` 审计结果，不能出现在 status。详见 [Runtime Capability Manifest](capability-manifest.md)。
 

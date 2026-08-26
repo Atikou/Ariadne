@@ -13,6 +13,7 @@ const PLAN_TOOL_NAMES = new Set([
   'browser.accessibility_snapshot',
   'browser.navigate',
   'browser.wait',
+  'skill.load',
   'workspace.list_files',
   'workspace.read_file'
 ]);
@@ -50,6 +51,7 @@ export function compileEffectiveAgentExecutionAuthority(
   if (allowedToolNames.some((name) => name.startsWith('browser.'))) {
     requiredCapabilities.add('browser.use');
   }
+  if (allowedToolNames.includes('skill.load')) requiredCapabilities.add('skills.read');
   const capabilities = manifest.capabilityGrant.capabilities
     .filter((grant) => requiredCapabilities.has(grant.capabilityId))
     .map((grant) => ({
@@ -62,6 +64,7 @@ export function compileEffectiveAgentExecutionAuthority(
   const capabilityCompleteTools = allowedToolNames.filter((name) => (
     (!name.startsWith('workspace.') || grantedCapabilities.has('workspace.read'))
     && (!name.startsWith('browser.') || grantedCapabilities.has('browser.use'))
+    && (name !== 'skill.load' || grantedCapabilities.has('skills.read'))
   ));
   if (capabilities.length === 0 || capabilityCompleteTools.length === 0) {
     return null;

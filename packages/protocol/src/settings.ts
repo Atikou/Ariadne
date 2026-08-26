@@ -54,24 +54,21 @@ export const runtimeSkillsPolicySchema = z.object({
 }).strict();
 
 const hookEventSchema = z.enum([
-  'session.pre',
-  'session.post',
-  'run.pre',
-  'run.post',
-  'model.pre',
-  'model.post',
-  'tool.pre',
-  'tool.post',
-  'subagent.pre',
-  'subagent.post',
-  'stop'
+  'run.admission.pre',
+  'inference.dispatch.pre',
+  'inference.dispatch.post',
+  'tool.dispatch.pre',
+  'tool.dispatch.post',
+  'turn.commit.post',
+  'run.terminal.post',
+  'runtime.stop'
 ]);
 
 export const runtimeHooksPolicySchema = z.object({
   definitions: z.array(z.object({
     id: z.string().regex(/^[a-z][a-z0-9_-]*$/u),
     version: z.string().trim().min(1).max(64),
-    events: z.array(hookEventSchema).min(1).max(11),
+    events: z.array(hookEventSchema).min(1).max(8),
     timeoutMs: z.number().int().min(1).max(60_000),
     failurePolicy: z.enum(['fail-open', 'fail-closed']),
     decision: z.enum(['allow', 'reject']),
@@ -96,6 +93,16 @@ export const runtimeHooksPolicySchema = z.object({
         code: 'custom',
         path: ['definitions', index, 'decision'],
         message: 'Reject is only valid for pre hooks.'
+      });
+    }
+    if (
+      hook.constraints !== undefined
+      && hook.events.some((event) => event !== 'run.admission.pre')
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['definitions', index, 'constraints'],
+        message: 'Authority constraints are valid only for run.admission.pre.'
       });
     }
   }

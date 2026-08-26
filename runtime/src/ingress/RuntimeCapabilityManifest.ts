@@ -27,6 +27,8 @@ export interface RuntimeCapabilityManifest {
   readonly publicCapabilities: readonly RuntimeCapability[];
   readonly unwiredPublicCapabilities: readonly RuntimeCapability[];
   readonly agentToolCatalogSnapshots: readonly AgentToolCatalogSnapshot[];
+  /** Resolves only bootstrap-frozen services declared by started Providers. */
+  service<T>(serviceId: string): T | undefined;
   diagnosticSnapshot(): readonly RuntimeCapabilityProviderSnapshot[];
   prepareShutdown(context: ShutdownContext): Promise<void>;
   close(context: ShutdownContext): Promise<void>;

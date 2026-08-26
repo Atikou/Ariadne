@@ -33,4 +33,5 @@ export * from './application/agent-effect-dispatch-service.js';
 export * from './application/agent-effect-continuation-planner.js';
 export * from './application/agent-inbox-continuation-planner.js';
 export * from './application/agent-inference-dispatch-service.js';
+export * from './application/agent-dispatch-lifecycle-observer.js';
 export * from './application/plan-budget-child-run-service.js';

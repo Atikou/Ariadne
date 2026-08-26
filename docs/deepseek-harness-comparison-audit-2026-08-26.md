@@ -153,10 +153,10 @@ Ariadne 当前使用编译验证过的 immutable Tool Catalog，并将工具身�
 | 部分修复 | 无生产 Context Compaction/Spill | Conversation 历史、确定性压缩、Tool result pruning、精确容量和 overflow recovery 已进入 v3 | 剩余：spill 引用恢复与精确 tokenizer |
 | 部分修复 | SubAgent 产品闭环 | one-shot ordinary Child 已接通 Directive、原子创建、调度、结果回灌和父子投影 | 剩余：continuable/external Provider、Child 专用控制和真实窗口场景 |
 | 已修复 | 能力装配硬编码 | 单一 bootstrap Manifest 驱动 Provider 图、Catalog、status、诊断与生命周期 | 保持静态、冻结、可审计；不引入任意磁盘动态加载 |
-| P2 | Skills 全量注入 | 启用 Skill 的完整正文在 admission 时一次性进入指令 | Catalog 渐进披露，按需加载完整 Skill |
-| P2 | Hooks 仅有 `run.pre` | 其他 hook schema 存在但 v3 不消费 | typed、可审计、可去重的生命周期扩展点 |
+| 已修复 | Skills 全量注入 | bootstrap 固定 metadata/revision，正文只经 `skill.load` 进入受保护 continuation | 保持按需加载、版本核验和无脚本执行 |
+| 已修复 | Hooks 仅有 `run.pre` | 8 个 typed v3 生命周期边界已接入，pre 可拒绝、post 只观察 | 保持稳定 delivery identity、去重和敏感数据零载荷 |
 | P2 | 后台任务与终端缺失 | 一次性命令为主，无持久 PTY/Job 控制 | owner-scoped terminal、background job list/read/stop |
-| P2 | Diagnostics/Telemetry 未闭环 | diagnostics DTO/store 存在，生产 publisher/telemetry 不完整 | 脱敏、持久、可重放诊断与明确的遥测生命周期 |
+| 已修复 | Diagnostics/Telemetry 未闭环 | 生命周期诊断已脱敏、持久、可重放且有 512 条 retention；Telemetry 由启动成功的 Provider 宣告 | 扩展事件种类时继续保持 observer 与 authority 分离 |
 | P2 | Provider Resilience 设置未落地 | schema 可配置，v3 Gateway 不消费 | Adapter 层统一 retry/rate-limit/circuit-breaker |
 
 ## 6. 差距详解
@@ -427,9 +427,9 @@ interface CapabilityHandle {
 
 实现与删除规则见 [Runtime Capability Manifest](capability-manifest.md)。
 
-### 6.8 P2：Skills 应改为渐进披露
+### 6.8 已修复：Skills 渐进披露
 
-当前 `AgentInstructionResolver` 会读取所有启用 Skill 的完整正文，并在 admission 时一次性加入指令块。
+生产 `skills.catalog` Provider 现在只在 admission 提供启用 Skill 的名称、描述与 SHA-256 revision。完整正文只能通过 immutable Tool Catalog 中的 `skill.load` 按 exact revision 加载，并经 durable Effect result 进入后续受保护 Turn。
 
 相比之下，deepseek-harness 将 Skill 分为：
 
@@ -438,7 +438,7 @@ interface CapabilityHandle {
 - invocation 时加载完整 Skill body；
 - scoped prompt/tool contributions。
 
-建议 Ariadne 改为：
+当前约束为：
 
 1. Admission 只固定 Skill id、revision、description 和 authority；
 2. 模型通过 `skill.load` 请求完整正文；
@@ -447,11 +447,9 @@ interface CapabilityHandle {
 5. Skill 删除、更新和版本不一致必须 fail closed；
 6. 当前 Run 始终使用 admission 时 pin 的版本。
 
-### 6.9 P2：Hooks、Diagnostics、Telemetry 和 Provider Resilience
+### 6.9 已修复：Hooks、Diagnostics、Telemetry；Provider Resilience 待办
 
-当前 `runtimePolicy` 可以表达更多配置，但 v3 真实消费主要只有 `run.pre`。
-
-后续不要直接复活旧 HookManager。应逐个建立 typed extension point：
+v3 已消费下列固定 extension point；旧 HookManager 不再是生产回退路径：
 
 ```text
 run.admission.pre
@@ -462,7 +460,7 @@ run.terminal.post
 runtime.stop
 ```
 
-每个 Hook 必须声明：
+当前每个 Hook 的规则为：
 
 - 是否能修改权威输入；
 - 是否允许拒绝；
@@ -475,14 +473,16 @@ runtime.stop
 
 Provider Resilience 必须留在 Provider Adapter 层，不能由 AgentLoop、Scheduler 和 UI 各自重试。
 
-Diagnostics/Telemetry 必须：
+Diagnostics/Telemetry 当前满足：
 
 - 与 Agent Control 权威分离；
 - 默认脱敏；
 - 不能驱动业务恢复；
-- 具有明确 retention；
+- diagnostics 最多保留 512 条；
 - exporter 缺失或失败不能导致核心文本 Agent 不可用；
-- Runtime status 不应在 exporter 未启动时宣称 telemetry 可用。
+- Runtime status 只在 allowlisted exporter 成功构造后宣称 `telemetry.export`。
+
+实现与删除规则见 [Skills、Hooks 与可观测性生产边界](skills-hooks-observability.md)。
 
 ### 6.10 P2：后台 Job、持久终端和代码搜索工具
 

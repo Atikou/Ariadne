@@ -38,6 +38,10 @@ import {
 } from './turn-input-digest.js';
 import type { AgentRunUnitOfWork } from './unit-of-work.js';
 import { deriveStableAgentId } from './stable-id.js';
+import {
+  observeAgentDispatchLifecycle,
+  type AgentDispatchLifecycleObserver
+} from './agent-dispatch-lifecycle-observer.js';
 import { canonicalizeAgentControlData } from './control-command-digest.js';
 import type {
   AgentInferenceDirectivePlanner,
@@ -192,7 +196,8 @@ export class AgentInferenceDispatchService {
     private readonly directivePlanner: AgentInferenceDirectivePlanner,
     private readonly checkpoints: AgentInferenceDispatchCheckpointFactory,
     private readonly clock: AgentInferenceDispatchClock = SYSTEM_CLOCK,
-    private readonly subagentDelegations?: AgentSubagentDelegationCommitter
+    private readonly subagentDelegations?: AgentSubagentDelegationCommitter,
+    private readonly lifecycleObserver?: AgentDispatchLifecycleObserver
   ) {
     this.commands = new AgentRunCommandService(unitOfWork);
   }
@@ -448,6 +453,22 @@ export class AgentInferenceDispatchService {
         });
     const recordedTurn = requireTurn(recorded.run, request.turnId);
     const recordedAttempt = requireAttempt(recordedTurn, request.attemptId);
+    observeAgentDispatchLifecycle(this.lifecycleObserver, {
+      event: 'inference.dispatch.post',
+      eventId: request.attemptId,
+      runId: recorded.run.runId,
+      occurredAt: finishedAt,
+      outcome: recordedAttempt.state.status,
+      terminal: isTerminalRunState(recorded.run.state.status)
+    });
+    observeAgentDispatchLifecycle(this.lifecycleObserver, {
+      event: 'turn.commit.post',
+      eventId: recordedTurn.turnId,
+      runId: recorded.run.runId,
+      occurredAt: finishedAt,
+      outcome: recordedAttempt.state.status,
+      terminal: isTerminalRunState(recorded.run.state.status)
+    });
     return {
       run: recorded.run,
       turn: recordedTurn,
@@ -482,6 +503,10 @@ export class AgentInferenceDispatchService {
     if (run === null) throw new AgentRunNotFoundError(runId);
     return run;
   }
+}
+
+function isTerminalRunState(status: AgentRun['state']['status']): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
 }
 
 function requireSucceededDelegationResult(

@@ -119,6 +119,19 @@ describe('Main Agent admission authority source builder', () => {
     ]);
   });
 
+  it('pins skill.load only when the settings snapshot enables Skills', () => {
+    const source = buildAgentAdmissionAuthoritySource({
+      ...base,
+      skillNames: ['review']
+    });
+    expect(source.status).toBe('enabled');
+    if (source.status !== 'enabled') return;
+    expect(source.manifests[0]!.capabilityGrant.capabilities).toContainEqual({
+      capabilityId: 'skills.read', scopeIds: ['workspace-1']
+    });
+    expect(source.manifests[0]!.toolCatalog.allowedToolNames).toContain('skill.load');
+  });
+
   it('excludes archived Workspaces and narrows read-only grants', () => {
     const source = buildAgentAdmissionAuthoritySource({
       ...base,

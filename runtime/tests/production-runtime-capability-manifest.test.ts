@@ -45,11 +45,10 @@ describe('production Runtime Capability Manifest', () => {
       sandboxMode: 'workspace-write',
       allowedPermissions: ['read', 'write', 'shell', 'network']
     };
-    bootstrap.runtimePolicy.skills.enabled = ['review'];
     bootstrap.runtimePolicy.hooks.definitions = [{
       id: 'policy',
       version: '1',
-      events: ['run.pre'],
+      events: ['run.admission.pre'],
       timeoutMs: 1_000,
       failurePolicy: 'fail-closed',
       decision: 'allow'
@@ -73,11 +72,11 @@ describe('production Runtime Capability Manifest', () => {
       'companion.agent-plan',
       'companion.chat',
       'companion.sessions',
-      'hooks.run-pre',
+      'hooks.lifecycle',
       'mcp.tools',
       'models.local',
       'models.remote',
-      'skills.instructions',
+      'observability.diagnostics',
       'workspace.read',
       'workspace.write'
     ]);
@@ -96,24 +95,26 @@ describe('production Runtime Capability Manifest', () => {
       'background.tasks',
       'memory.manage',
       'resources',
-      'scheduler',
-      'trace.read'
+      'scheduler'
     ]);
   });
 
   it('does not advertise a configured feature after its Provider is removed', async () => {
     const bootstrap = createBootstrap();
-    bootstrap.runtimePolicy.skills.enabled = ['review'];
+    bootstrap.runtimePolicy.hooks.definitions = [{
+      id: 'audit', version: '1', events: ['runtime.stop'], timeoutMs: 1_000,
+      failurePolicy: 'fail-open', decision: 'allow'
+    }];
     const context = createProductionRuntimeCapabilityStartContext({ bootstrap });
     const providers = productionRuntimeCapabilityProviders().filter(
-      (provider) => provider.definition.id !== 'skills.instructions'
+      (provider) => provider.definition.id !== 'hooks.lifecycle'
     );
 
     const manifest = await compileRuntimeCapabilityManifest(context, providers);
 
-    expect(manifest.publicCapabilities).not.toContain('skills.instructions');
+    expect(manifest.publicCapabilities).not.toContain('hooks.lifecycle');
     expect(manifest.diagnosticSnapshot().map((item) => item.definition.id))
-      .not.toContain('skills.instructions');
+      .not.toContain('hooks.lifecycle');
   });
 
   it('fails closed on undeclared public output and rolls back started Providers', async () => {
@@ -138,9 +139,9 @@ describe('production Runtime Capability Manifest', () => {
         contractVersion: '1.0',
         requires: ['workspace.tools'],
         provides: ['invalid.public-output'],
-        publicCapabilities: ['trace.read']
+        publicCapabilities: ['background.tasks']
       },
-      start: () => ({ publicCapabilities: ['workspace.read'] })
+      start: () => ({ publicCapabilities: ['scheduler'] })
     };
 
     await expect(compileRuntimeCapabilityManifest(context, [...providers, invalidOutput]))
