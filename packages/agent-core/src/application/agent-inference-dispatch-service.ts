@@ -16,7 +16,11 @@ import {
   assertPositiveInteger,
   assertTimestamp
 } from '../domain/values.js';
-import type { AgentEngine, AgentTurnInput } from './agent-engine.js';
+import type {
+  AgentEngine,
+  AgentTurnInput,
+  PreparedAgentDecision
+} from './agent-engine.js';
 import {
   AgentRunCommandService,
   type AgentRunCommandResult
@@ -72,6 +76,7 @@ export type AgentInferenceDispatchCheckpointRequest =
       readonly checkpointVersion: number;
       readonly phase: 'inference_started';
       readonly occurredAt: string;
+      readonly modelContext: import('../domain/json-value.js').AgentJsonValue;
     }
   | {
     readonly run: AgentRun;
@@ -251,6 +256,42 @@ export class AgentInferenceDispatchService {
     await assertExactExecutionInput(payload, current, currentTurn, currentAttempt);
     signal.throwIfAborted();
 
+    // Preparation is a read-only, replay-safe boundary. It derives the exact
+    // bounded request and its public-safe context lifecycle evidence, but may
+    // not contact the Provider. Provider I/O remains after the durable start.
+    let prepared: PreparedAgentDecision;
+    try {
+      prepared = await this.engine.prepare(payload.input, signal);
+    } catch (error) {
+      if (!(error instanceof AgentInferenceDeterministicFailureError)) throw error;
+      prepared = {
+        modelContext: {
+          format: 'ariadne.model-context',
+          schemaVersion: 1,
+          lifecycle: 'preparation_failed',
+          errorCode: error.providerErrorCode
+        },
+        decide: async () => { throw error; }
+      };
+    }
+    signal.throwIfAborted();
+
+    // Preparation deliberately happens before the durable Provider boundary,
+    // while the Run is already public and may accept inbox input. Rebase the
+    // start checkpoint onto that exact authority only when inbox state is the
+    // sole concurrent mutation. The prepared request remains the current
+    // Turn's immutable input; newly queued inbox input belongs to a later Turn.
+    const startAuthority = await this.loadRun(current.runId);
+    const startTurn = requireTurn(startAuthority, request.turnId);
+    const startAttempt = requireAttempt(startTurn, request.attemptId);
+    assertInboxOnlyPreparationMutation(
+      current,
+      startAuthority,
+      startTurn,
+      startAttempt
+    );
+    signal.throwIfAborted();
+
     const startCommandId = await deriveStableAgentId(
       'inference-start',
       request.commandId,
@@ -261,18 +302,19 @@ export class AgentInferenceDispatchService {
     const started = await this.commands.execute({
       kind: 'run.start_inference_attempt',
       commandId: startCommandId,
-      runId: current.runId,
-      expectedVersion: current.version,
+      runId: startAuthority.runId,
+      expectedVersion: startAuthority.version,
       occurredAt: request.occurredAt,
-      turnId: currentTurn.turnId,
-      attemptId: currentAttempt.attemptId
+      turnId: startTurn.turnId,
+      attemptId: startAttempt.attemptId
     }, checkpointArtifacts(this.checkpoints.create({
-      run: current,
-      turn: currentTurn,
-      attempt: currentAttempt,
-      checkpointVersion: current.state.checkpointVersion + 1,
+      run: startAuthority,
+      turn: startTurn,
+      attempt: startAttempt,
+      checkpointVersion: startAuthority.state.checkpointVersion + 1,
       phase: 'inference_started',
-      occurredAt: request.occurredAt
+      occurredAt: request.occurredAt,
+      modelContext: prepared.modelContext
     })));
     if (started.replayed) throw recoveryRequired(request);
 
@@ -284,7 +326,7 @@ export class AgentInferenceDispatchService {
     let directivePayloads: readonly AgentDirectivePayloadCommit[] = [];
     let planVersions: readonly AgentPlanVersionCommit[] = [];
     try {
-      directive = await this.engine.decide(payload.input, signal);
+      directive = await prepared.decide(signal);
     } catch (error) {
       if (error instanceof AgentInferenceDeterministicFailureError) {
         result = {
@@ -395,6 +437,34 @@ export class AgentInferenceDispatchService {
     );
     if (run === null) throw new AgentRunNotFoundError(runId);
     return run;
+  }
+}
+
+function assertInboxOnlyPreparationMutation(
+  preparedFrom: AgentRun,
+  current: AgentRun,
+  turn: AgentTurn,
+  attempt: AgentInferenceAttempt
+): void {
+  if (
+    current.runId !== preparedFrom.runId
+    || current.version < preparedFrom.version
+    || current.state.status !== 'running'
+    || attempt.state.status !== 'intended'
+    || turn.turnId
+      !== preparedFrom.turns.find((candidate) => candidate.turnId === turn.turnId)?.turnId
+    || canonicalizeAgentControlData(current.binding)
+      !== canonicalizeAgentControlData(preparedFrom.binding)
+    || canonicalizeAgentControlData(current.turns)
+      !== canonicalizeAgentControlData(preparedFrom.turns)
+    || canonicalizeAgentControlData(current.effects)
+      !== canonicalizeAgentControlData(preparedFrom.effects)
+    || canonicalizeAgentControlData(current.state)
+      !== canonicalizeAgentControlData(preparedFrom.state)
+  ) {
+    throw new AgentRunTransitionError(
+      'Inference preparation authority changed outside the durable Agent inbox boundary.'
+    );
   }
 }
 

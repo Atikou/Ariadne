@@ -132,8 +132,13 @@ export const modelProviderBootstrapSchema = z.object({
     'Runtime model providers require HTTPS.'
   ),
   model: z.string().trim().min(1).max(256),
+  contextWindowTokens: z.number().int().min(8_192).max(10_000_000),
+  maxOutputTokens: z.number().int().min(256).max(1_000_000),
   inference: modelInferenceProfileSchema
-}).strict();
+}).strict().refine(
+  (provider) => provider.maxOutputTokens < provider.contextWindowTokens,
+  'Model output reserve must be smaller than the context window.'
+);
 
 export const runtimeBootstrapSchema = z
   .object({

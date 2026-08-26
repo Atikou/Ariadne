@@ -199,6 +199,12 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
         if (provider.enabled !== previous.enabled) patch.enabled = provider.enabled;
         if (provider.baseUrl !== previous.baseUrl) patch.baseUrl = provider.baseUrl;
         if (provider.model !== previous.model) patch.model = provider.model;
+        if (provider.contextWindowTokens !== previous.contextWindowTokens) {
+          patch.contextWindowTokens = provider.contextWindowTokens;
+        }
+        if (provider.maxOutputTokens !== previous.maxOutputTokens) {
+          patch.maxOutputTokens = provider.maxOutputTokens;
+        }
         if (!sameJsonValue(provider.inference, previous.inference)) patch.inference = provider.inference;
         const apiKey = apiKeys[id].trim();
         if (clearRequests[id]) patch.clearApiKey = true;
@@ -360,11 +366,19 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
                         const model = event.target.value;
                         updateProvider(id, {
                           model,
+                          ...(model === AGENT_PROVIDER_CATALOG[id].defaultModel
+                            ? {
+                                contextWindowTokens: AGENT_PROVIDER_CATALOG[id].defaultContextWindowTokens,
+                                maxOutputTokens: AGENT_PROVIDER_CATALOG[id].defaultMaxOutputTokens
+                              }
+                            : {}),
                           inference: model === AGENT_PROVIDER_CATALOG[id].defaultModel
                             ? structuredClone(AGENT_PROVIDER_CATALOG[id].defaultInference)
                             : {}
                         });
                       }} /><small>{inferenceDescription(provider.inference)}</small></label>
+                      <label className="settings-field"><span>上下文窗口（tokens）</span><input type="number" min={8192} max={10000000} step={1024} value={provider.contextWindowTokens} onChange={(event) => updateProvider(id, { contextWindowTokens: Number(event.target.value) })} /><small>必须填写精确模型容量；用于 v3 压力压缩。</small></label>
+                      <label className="settings-field"><span>最大输出（tokens）</span><input type="number" min={256} max={1000000} step={256} value={provider.maxOutputTokens} onChange={(event) => updateProvider(id, { maxOutputTokens: Number(event.target.value) })} /><small>在输入预算之前预留。</small></label>
                       <label className="settings-field settings-field--wide"><span>API 地址</span><input type="url" value={provider.baseUrl} onChange={(event) => updateProvider(id, { baseUrl: event.target.value })} /></label>
                       <label className="settings-field settings-field--wide"><span>{apiKeyLabel}</span><div className="api-key-input"><input type="password" autoComplete="off" value={apiKeys[id]} onChange={(event) => {
                         setApiKeys((current) => ({ ...current, [id]: event.target.value }));

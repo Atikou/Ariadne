@@ -17,6 +17,7 @@ import {
   type AgentJsonValue,
   type AgentPinnedToolIdentity,
   type AgentPlanStepImpact,
+  type PreparedAgentDecision,
   type AgentRunBinding,
   type AgentTurn,
   type AgentToolJsonValue,
@@ -24,9 +25,14 @@ import {
 } from '@ariadne/agent-core';
 
 import type {
-  ExactAgentModelInferenceGateway,
+  ExactAgentModelInferenceRuntime,
   ExactAgentModelInferenceMessage
 } from '../../control/ports/AgentModelInference.js';
+import {
+  planV3LongContext,
+  type V3LongContextPlan,
+  type V3ModelContextGroup
+} from './V3LongContextLifecycle.js';
 import type {
   AgentInferenceToolContractDescriptorV1,
   AgentInferenceToolContractReader
@@ -43,6 +49,7 @@ const EFFECT_RESULTS_PROTOCOL = 'ariadne.agent-effect-results.v3';
 const MODEL_BINDING_ERROR = 'agent_model_binding_unavailable';
 const TOOL_CONTRACT_ERROR = 'agent_tool_contract_unavailable';
 const MODEL_DIRECTIVE_ERROR = 'agent_model_directive_invalid';
+const MODEL_CONTEXT_ERROR = 'agent_model_context_exhausted';
 const MAX_PROTOCOL_PROMPT_BYTES = 1_048_576;
 const MAX_EFFECT_RESULTS_PROTOCOL_BYTES = 1_048_576;
 const MAX_MODEL_REQUEST_MESSAGES = 1_024;
@@ -69,14 +76,14 @@ interface PreparedToolContract {
  */
 export class ProductionAgentEngineAdapter implements AgentEngine {
   public constructor(
-    private readonly models: ExactAgentModelInferenceGateway,
+    private readonly models: ExactAgentModelInferenceRuntime,
     private readonly toolContracts: AgentInferenceToolContractReader
   ) {}
 
-  public async decide(
+  public async prepare(
     input: AgentTurnInput,
     signal: AbortSignal
-  ): Promise<AgentDirective> {
+  ): Promise<PreparedAgentDecision> {
     validateBoundInput(input);
     const modelHistory = prepareBoundModelHistory(input);
     signal.throwIfAborted();
@@ -96,20 +103,90 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
       tools,
       agentRunExecutionMode(input.run.binding)
     );
-    const messages = [
-      { role: 'system' as const, content: protocolPrompt },
-      ...modelHistory
-    ];
-    if (messages.length > MAX_MODEL_REQUEST_MESSAGES) {
-      throw invalidBoundModelHistory();
+    const capacity = this.models.describeContextCapacity(input.run.binding.model);
+    if (capacity === null) {
+      return {
+        modelContext: {
+          format: 'ariadne.model-context',
+          schemaVersion: 1,
+          lifecycle: 'binding_unavailable'
+        },
+        decide: async () => {
+          throw deterministicFailure(
+            MODEL_BINDING_ERROR,
+            'No exact model-context capacity matches the Agent Run binding.'
+          );
+        }
+      };
     }
-    assertBoundedModelRequest(input.run.binding.model.modelId, messages);
+    let context: V3LongContextPlan;
+    try {
+      const grouped = groupModelHistory(modelHistory);
+      context = planV3LongContext({
+        pinnedMessages: [
+          { role: 'system', content: protocolPrompt },
+          ...grouped.pinned
+        ],
+        groups: grouped.groups,
+        capacity
+      });
+      assertPreparedModelRequest(input.run.binding.model.modelId, context.primaryMessages);
+      if (context.overflowRecoveryMessages !== null) {
+        assertPreparedModelRequest(
+          input.run.binding.model.modelId,
+          context.overflowRecoveryMessages
+        );
+      }
+    } catch {
+      throw deterministicFailure(
+        MODEL_CONTEXT_ERROR,
+        'Protected v3 context cannot be projected within the exact model capacity.'
+      );
+    }
+    signal.throwIfAborted();
+    return {
+      modelContext: context.modelContext,
+      decide: (decisionSignal) => this.decidePrepared(
+        input.run.binding.model,
+        context,
+        tools,
+        decisionSignal
+      )
+    };
+  }
 
-    const response = await this.models.inferExact({
-      binding: { ...input.run.binding.model },
-      messages,
+  private async decidePrepared(
+    binding: AgentRunBinding['model'],
+    context: V3LongContextPlan,
+    tools: readonly PreparedToolContract[],
+    signal: AbortSignal
+  ): Promise<AgentDirective> {
+    let response = await this.models.inferExact({
+      binding: { ...binding },
+      messages: context.primaryMessages,
       signal
     });
+    if (response.status === 'context_overflow') {
+      if (context.overflowRecoveryMessages === null) {
+        throw deterministicFailure(
+          MODEL_CONTEXT_ERROR,
+          'The exact Provider rejected context size and no smaller prepared projection exists.'
+        );
+      }
+      signal.throwIfAborted();
+      response = await this.models.inferExact({
+        binding: { ...binding },
+        messages: context.overflowRecoveryMessages,
+        signal
+      });
+    }
+    if (response.status === 'context_overflow') {
+      throw deterministicFailure(
+        MODEL_CONTEXT_ERROR,
+        'The exact Provider rejected both bounded v3 context projections.'
+      );
+    }
+
     if (response.status === 'binding_unavailable') {
       throw deterministicFailure(
         MODEL_BINDING_ERROR,
@@ -137,6 +214,41 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
       );
     }
   }
+}
+
+function groupModelHistory(messages: readonly ExactAgentModelInferenceMessage[]): {
+  readonly pinned: readonly ExactAgentModelInferenceMessage[];
+  readonly groups: readonly V3ModelContextGroup[];
+} {
+  const pinned = messages.filter((message) => message.role === 'system');
+  const causal = messages.filter((message) => message.role !== 'system');
+  const groups: V3ModelContextGroup[] = [];
+  for (let index = 0; index < causal.length; index += 1) {
+    const current = causal[index]!;
+    const next = causal[index + 1];
+    if (
+      current.role === 'assistant'
+      && current.content.includes(`\"protocol\":\"${DIRECTIVE_PROTOCOL}\"`)
+      && next?.role === 'user'
+      && next.content.includes(`\"protocol\":\"${EFFECT_RESULTS_PROTOCOL}\"`)
+    ) {
+      groups.push({ kind: 'tool_exchange', messages: [current, next] });
+      index += 1;
+      continue;
+    }
+    if (
+      current.role === 'user'
+      && next?.role === 'assistant'
+      && !next.content.includes(`\"protocol\":\"${DIRECTIVE_PROTOCOL}\"`)
+    ) {
+      groups.push({ kind: 'conversation', messages: [current, next] });
+      index += 1;
+      continue;
+    }
+    groups.push({ kind: 'conversation', messages: [current] });
+  }
+  if (groups.length === 0) throw invalidBoundModelHistory();
+  return { pinned, groups };
 }
 
 function prepareBoundModelHistory(
@@ -420,7 +532,7 @@ function assertBoundedEffectResultsProtocol(content: string): void {
   }
 }
 
-function assertBoundedModelRequest(
+function assertPreparedModelRequest(
   modelId: string,
   messages: readonly ExactAgentModelInferenceMessage[]
 ): void {
@@ -439,6 +551,7 @@ function assertBoundedModelRequest(
   if (new TextEncoder().encode(conservativeEnvelope).byteLength > MAX_MODEL_REQUEST_BYTES) {
     throw invalidBoundModelHistory();
   }
+  if (messages.length > MAX_MODEL_REQUEST_MESSAGES) throw invalidBoundModelHistory();
 }
 
 function canonicalJson(value: AgentJsonValue): string {

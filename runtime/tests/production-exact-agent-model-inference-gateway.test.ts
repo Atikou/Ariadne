@@ -33,6 +33,29 @@ describe('ProductionExactAgentModelInferenceGateway', () => {
       modelId: 'model-exact',
       settingsRevision: 8
     })).toBe(false);
+    expect(gateway.describeContextCapacity({
+      providerId: 'provider-exact',
+      modelId: 'model-exact',
+      settingsRevision: 7
+    })).toEqual({ contextWindowTokens: 32_768, maxOutputTokens: 4_096 });
+  });
+
+  it('normalizes bounded Provider context-overflow evidence without leaking its body', async () => {
+    const gateway = gatewayFixture({
+      fetch: async () => new Response(JSON.stringify({
+        error: {
+          code: 'context_length_exceeded',
+          message: `maximum context length ${SECRET}`
+        }
+      }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' }
+      })
+    });
+
+    const result = await gateway.inferExact(request());
+    expect(result).toEqual({ status: 'context_overflow' });
+    expect(JSON.stringify(result)).not.toContain(SECRET);
   });
 
   it('dispatches only the exact OpenAI-compatible binding and parses text plus native calls', async () => {
@@ -63,6 +86,7 @@ describe('ProductionExactAgentModelInferenceGateway', () => {
     expect(JSON.parse(String(init?.body))).toEqual({
       model: 'model-exact',
       messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 4096,
       stream: false
     });
   });
@@ -294,6 +318,8 @@ function provider(
     enabled: true,
     baseUrl: 'https://provider.example/v1',
     model: 'model-exact',
+    contextWindowTokens: 32_768,
+    maxOutputTokens: 4_096,
     inference: {},
     ...overrides
   };

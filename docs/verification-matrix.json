@@ -154,8 +154,10 @@
       "notes": "Admission instruction assembly and run.pre policy are connected. Progressive Skill loading and other Hook lifecycle events are not connected to v3."
     },
     {
-      "module": "context-memory-and-embedding",
+      "module": "context-lifecycle-memory-and-embedding",
       "source": [
+        "runtime/src/adapters/model/V3LongContextLifecycle.ts",
+        "runtime/src/composition/ProductionAgentRunAdmissionSnapshotReader.ts",
         "runtime/src/context",
         "runtime/config/embedding-models.json"
       ],
@@ -164,7 +166,7 @@
       "realModel": "not_accepted",
       "realWindow": "not_accepted",
       "realMachine": "not_accepted",
-      "notes": "Token, summary, memory, repo-map and embedding components have isolated evidence, but no complete v3 admission/inference consumer or actual model asset acceptance exists."
+      "notes": "Conversation history, deterministic pressure compaction, Tool-result pruning, exact configured capacity and bounded overflow recovery are connected to v3 admission/inference with unit and production-pipeline integration evidence. Spill, exact Provider tokenizers, Memory/Embedding consumers, live models and real-window long-context scenarios remain unaccepted."
     },
     {
       "module": "subagent-background-and-scheduler",

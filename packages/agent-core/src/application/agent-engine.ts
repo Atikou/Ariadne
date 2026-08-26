@@ -29,9 +29,23 @@ export interface AgentTurnInputModelData {
 }
 
 /**
+ * A fully prepared, process-local Provider decision. Preparation is allowed to
+ * read immutable contracts and derive a bounded model-context projection, but
+ * it must not perform Provider I/O. Core persists `modelContext` with the
+ * inference-start checkpoint before invoking `decide`.
+ */
+export interface PreparedAgentDecision {
+  readonly modelContext: AgentJsonValue;
+  decide(signal: AbortSignal): Promise<AgentDirective>;
+}
+
+/**
  * A pure decision boundary. Implementations may call a model, but they never
  * execute tools, write state, emit UI events, or know about the host process.
  */
 export interface AgentEngine {
-  decide(input: AgentTurnInput, signal: AbortSignal): Promise<AgentDirective>;
+  prepare(
+    input: AgentTurnInput,
+    signal: AbortSignal
+  ): Promise<PreparedAgentDecision>;
 }

@@ -8,6 +8,7 @@ import {
 import type {
   AgentModelSelectionPreference,
   DispatchExactAgentModelInferenceRequest,
+  ExactAgentModelContextCapacity,
   ExactAgentModelInferenceRuntime,
   ExactAgentModelInferenceMessage,
   ExactAgentModelInferenceResult
@@ -17,7 +18,6 @@ const MAX_REQUEST_MESSAGES = 1_024;
 const MAX_REQUEST_BYTES = 4 * 1_048_576;
 const MAX_RESPONSE_BYTES = 1_048_576;
 const ANTHROPIC_API_VERSION = '2023-06-01';
-const ANTHROPIC_MAX_TOKENS = 4_096;
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 
 type ModelProviderBootstrap = NonNullable<RuntimeBootstrap['modelProviders']>[number];
@@ -39,6 +39,8 @@ interface ExactTransportBinding {
   readonly protocol: ModelProviderBootstrap['protocol'];
   readonly endpoint: string;
   readonly credential: string;
+  readonly contextWindowTokens: number;
+  readonly maxOutputTokens: number;
 }
 
 /**
@@ -89,6 +91,20 @@ implements ExactAgentModelInferenceRuntime {
     return selected === undefined ? null : publicBinding(selected);
   }
 
+  public describeContextCapacity(
+    binding: DispatchExactAgentModelInferenceRequest['binding']
+  ): ExactAgentModelContextCapacity | null {
+    const exact = this.bindings.get(bindingKey(
+      binding.providerId,
+      binding.modelId,
+      binding.settingsRevision
+    ));
+    return exact === undefined ? null : {
+      contextWindowTokens: exact.contextWindowTokens,
+      maxOutputTokens: exact.maxOutputTokens
+    };
+  }
+
   public async inferExact(
     request: DispatchExactAgentModelInferenceRequest
   ): Promise<ExactAgentModelInferenceResult> {
@@ -119,6 +135,9 @@ implements ExactAgentModelInferenceRuntime {
     }
     request.signal.throwIfAborted();
     if (!response.ok) {
+      if (await isContextOverflowResponse(response, request.signal)) {
+        return { status: 'context_overflow' };
+      }
       throw new ExactAgentModelInferenceTransportError(
         'agent_model_provider_http_error',
         response.status
@@ -194,7 +213,9 @@ function compileExactBindings(
         settingsRevision: authorized.settingsRevision,
         protocol: provider.protocol,
         endpoint,
-        credential
+        credential,
+        contextWindowTokens: provider.contextWindowTokens,
+        maxOutputTokens: provider.maxOutputTokens
       });
       const key = bindingKey(exact.providerId, exact.modelId, exact.settingsRevision);
       const existing = bindings.get(key);
@@ -252,6 +273,9 @@ function openAiRequest(
       role: message.role,
       content: message.content
     })),
+    ...(binding.providerId === 'openai'
+      ? { max_completion_tokens: binding.maxOutputTokens }
+      : { max_tokens: binding.maxOutputTokens }),
     ...openAiInference(binding.providerId, binding.modelId, inference),
     stream: false
   }, {
@@ -276,7 +300,7 @@ function anthropicRequest(
   if (conversation.length === 0) throw invalidRequest();
   return jsonRequest({
     model: binding.modelId,
-    max_tokens: ANTHROPIC_MAX_TOKENS,
+    max_tokens: binding.maxOutputTokens,
     ...(system.length > 0 ? { system } : {}),
     messages: conversation,
     stream: false
@@ -351,6 +375,47 @@ function jsonRequest(
     body,
     signal
   };
+}
+
+async function isContextOverflowResponse(
+  response: Response,
+  signal: AbortSignal
+): Promise<boolean> {
+  if (![400, 413, 422].includes(response.status) || response.body === null) return false;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      const next = await reader.read();
+      if (next.done) break;
+      size += next.value.byteLength;
+      if (size > 64 * 1_024) {
+        await reader.cancel();
+        return false;
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const evidence = new TextDecoder().decode(bytes).toLowerCase();
+  return [
+    'context_length_exceeded',
+    'context window exceeded',
+    'maximum context length',
+    'prompt is too long',
+    'input is too long',
+    'too many input tokens',
+    'request too large for model'
+  ].some((marker) => evidence.includes(marker));
 }
 
 function validateMessages(
@@ -499,7 +564,9 @@ function bindingKey(providerId: string, modelId: string, settingsRevision: numbe
 function sameTransport(left: ExactTransportBinding, right: ExactTransportBinding): boolean {
   return left.protocol === right.protocol
     && left.endpoint === right.endpoint
-    && left.credential === right.credential;
+    && left.credential === right.credential
+    && left.contextWindowTokens === right.contextWindowTokens
+    && left.maxOutputTokens === right.maxOutputTokens;
 }
 
 function invalidRequest(): ExactAgentModelInferenceTransportError {

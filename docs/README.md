@@ -22,6 +22,7 @@
 | [项目结构](project-structure.md) | 当前目录、依赖方向和数据目录 |
 | [验证说明](verification.md) | 当前门禁、Electron smoke 的准确边界和发布验收 |
 | [Agent inbox 与运行中交互](agent-inbox.md) | 同一 Run 的 next-turn/next-step、持久领取、投影和恢复语义 |
+| [v3 长上下文生命周期](long-context-v3.md) | Conversation 历史、精确容量、压力压缩、Tool result pruning 与溢出恢复边界 |
 | [机器可读验收矩阵](verification-matrix.json) | 发布脚本消费的逐模块证据状态 |
 | [Renderer UI 架构](ui-architecture.md) | Feature Store、Public Projection 和桌面能力边界 |
 | [Provider 与模型配置](Provider协议与模型推理配置.md) | 稳定 Provider/Protocol/Profile 规则 |

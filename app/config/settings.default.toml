@@ -13,6 +13,8 @@ allowedPermissions = ["read", "write", "shell", "network", "dangerous"]
 enabled = true
 baseUrl = "https://api.openai.com/v1"
 model = "gpt-4o-mini"
+contextWindowTokens = 128000
+maxOutputTokens = 16384
 
 [providers.openai.inference]
 
@@ -20,6 +22,8 @@ model = "gpt-4o-mini"
 enabled = true
 baseUrl = "https://api.deepseek.com"
 model = "deepseek-v4-flash"
+contextWindowTokens = 128000
+maxOutputTokens = 8192
 
 [providers.deepseek.inference.reasoning]
 modes = ["off", "on"]
@@ -31,6 +35,8 @@ defaultEffort = "high"
 enabled = true
 baseUrl = "https://api.moonshot.ai/v1"
 model = "kimi-k3"
+contextWindowTokens = 256000
+maxOutputTokens = 32768
 
 [providers.kimi.inference.reasoning]
 modes = ["on"]
@@ -42,5 +48,7 @@ defaultEffort = "max"
 enabled = true
 baseUrl = "https://api.anthropic.com"
 model = "claude-sonnet-4-6"
+contextWindowTokens = 200000
+maxOutputTokens = 16384
 
 [providers.anthropic.inference]

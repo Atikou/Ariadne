@@ -58,7 +58,7 @@ npm.cmd run verify:release
 
 - 持久化 UoW、Composition Factory 和 First-party Tool Catalog 仍是大型热点；
 - Agent inbox 与运行中 steer/follow-up 已接入；仍缺少可恢复 token/reasoning 流和独立 context injection；
-- v3 尚未接入系统性的 Context compaction、Tool result pruning 与 spill；
+- v3 已接入 Conversation 历史、确定性 Context compaction、Tool result pruning 和有界 Provider overflow recovery；spill 与精确 tokenizer 尚未接入；
 - Child Run 有领域基础，但 SubAgent 没有形成生产闭环；
 - 能力装配仍集中在工厂和静态目录，缺少冻结的 Capability Manifest；
 - Diagnostics、Telemetry、Provider Resilience 和完整 Hooks 尚未形成 v3 生命周期。
@@ -75,6 +75,7 @@ npm.cmd run verify:release
 - [机器可读验收矩阵](docs/verification-matrix.json)
 - [Renderer UI 架构](docs/ui-architecture.md)
 - [Provider 与模型推理配置](docs/Provider协议与模型推理配置.md)
+- [v3 长上下文生命周期](docs/long-context-v3.md)
 - [Runtime 独立性审计](docs/Runtime独立性审计.md)
 - [Companion 能力请求协议](docs/agent-proposal-protocol.md)
 

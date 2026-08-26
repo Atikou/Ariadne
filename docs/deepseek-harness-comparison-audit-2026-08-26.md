@@ -150,7 +150,7 @@ Ariadne 当前使用编译验证过的 immutable Tool Catalog，并将工具身�
 | 已修复 | 巨型热点迁移 | 命令路由、Tool family、outbox、execution intent、Conversation row/projection 已形成独立边界 | 由 Hotspot Boundary Gate 阻止职责和规模重新汇聚 |
 | 已修复 | 统一运行中 Agent inbox | 同一 Run 已支持 durable next-turn/next-step、replace/remove、原子 claim 和 Public Projection | 后续独立建设不唤醒模型的 context injection |
 | P1 | 无 v3 token/reasoning 流 | 公共 Projection 主要发布已提交最终状态 | Chunk 有稳定 attempt/sequence，并可重放或明确声明仅临时 |
-| P1 | 无生产 Context Compaction/Spill | 长上下文、超大 Tool 结果缺少系统性处理 | 自动压缩、Tool Result pruning、spill 引用与恢复 |
+| 部分修复 | 无生产 Context Compaction/Spill | Conversation 历史、确定性压缩、Tool result pruning、精确容量和 overflow recovery 已进入 v3 | 剩余：spill 引用恢复与精确 tokenizer |
 | P1 | SubAgent 未形成产品闭环 | Child Run 领域规则存在，Provider/Directive/Control/UI 未接通 | v3 Delegation 从模型到 Child Run、结果和控制完整闭环 |
 | P1 | 能力装配硬编码 | Factory、Catalog、status 枚举集中修改 | 启动期冻结的 Capability Manifest 与窄 Provider seam |
 | P2 | Skills 全量注入 | 启用 Skill 的完整正文在 admission 时一次性进入指令 | Catalog 渐进披露，按需加载完整 Skill |

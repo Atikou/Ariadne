@@ -73,6 +73,8 @@ export interface AgentProviderDefinition {
   apiKeyLabel: string;
   defaultBaseUrl: string;
   defaultModel: string;
+  defaultContextWindowTokens: number;
+  defaultMaxOutputTokens: number;
   defaultInference: ModelInferenceProfile;
 }
 
@@ -90,6 +92,8 @@ export const AGENT_PROVIDER_CATALOG = {
     apiKeyLabel: 'OpenAI API Key',
     defaultBaseUrl: 'https://api.openai.com/v1',
     defaultModel: 'gpt-4o-mini',
+    defaultContextWindowTokens: 128_000,
+    defaultMaxOutputTokens: 16_384,
     defaultInference: {}
   },
   deepseek: {
@@ -101,6 +105,8 @@ export const AGENT_PROVIDER_CATALOG = {
     apiKeyLabel: 'DeepSeek API Key',
     defaultBaseUrl: 'https://api.deepseek.com',
     defaultModel: 'deepseek-v4-flash',
+    defaultContextWindowTokens: 128_000,
+    defaultMaxOutputTokens: 8_192,
     defaultInference: {
       reasoning: {
         modes: ['off', 'on'],
@@ -119,6 +125,8 @@ export const AGENT_PROVIDER_CATALOG = {
     apiKeyLabel: 'Kimi API Key',
     defaultBaseUrl: 'https://api.moonshot.ai/v1',
     defaultModel: 'kimi-k3',
+    defaultContextWindowTokens: 256_000,
+    defaultMaxOutputTokens: 32_768,
     defaultInference: {
       reasoning: {
         modes: ['on'],
@@ -137,6 +145,8 @@ export const AGENT_PROVIDER_CATALOG = {
     apiKeyLabel: 'Anthropic API Key',
     defaultBaseUrl: 'https://api.anthropic.com',
     defaultModel: 'claude-sonnet-4-6',
+    defaultContextWindowTokens: 200_000,
+    defaultMaxOutputTokens: 16_384,
     defaultInference: {}
   }
 } as const satisfies Record<AgentProviderId, AgentProviderDefinition>;
@@ -162,6 +172,8 @@ export interface AgentProviderSettingsView {
   enabled: boolean;
   baseUrl: string;
   model: string;
+  contextWindowTokens: number;
+  maxOutputTokens: number;
   inference: ModelInferenceProfile;
   apiKeyStatus: ApiKeyStatus;
 }
@@ -201,6 +213,8 @@ export interface AgentProviderSettingsPatch {
   enabled?: boolean | undefined;
   baseUrl?: string | undefined;
   model?: string | undefined;
+  contextWindowTokens?: number | undefined;
+  maxOutputTokens?: number | undefined;
   inference?: ModelInferenceProfile | undefined;
   apiKey?: string | undefined;
   clearApiKey?: true | undefined;

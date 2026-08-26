@@ -87,7 +87,14 @@ export function createDesktopRuntimeConfiguration(
 
   const modelProviders = AGENT_PROVIDER_IDS.map((providerId) => {
     const definition = AGENT_PROVIDER_CATALOG[providerId];
-    const { enabled, baseUrl, model, inference } = input.agentSettings.providers[providerId];
+    const {
+      enabled,
+      baseUrl,
+      model,
+      contextWindowTokens,
+      maxOutputTokens,
+      inference
+    } = input.agentSettings.providers[providerId];
     return {
       providerId,
       name: definition.runtimeModelId,
@@ -96,6 +103,8 @@ export function createDesktopRuntimeConfiguration(
       enabled,
       baseUrl,
       model,
+      contextWindowTokens,
+      maxOutputTokens,
       inference
     };
   });

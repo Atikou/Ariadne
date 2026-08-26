@@ -43,6 +43,7 @@ Ariadne/
 │  ├─ src/security/             # Content/egress/policy boundaries
 │  ├─ src/sandbox/              # Process sandbox integration
 │  ├─ src/context/              # Context/Memory/Embedding/Repo Map implementations
+│  ├─ src/adapters/model/       # v3 exact inference 与生产长上下文生命周期
 │  ├─ src/subagent/             # 尚未形成 v3 产品闭环
 │  ├─ src/background/           # 尚未形成 v3 产品闭环
 │  ├─ src/scheduler/            # 尚未形成 v3 产品闭环

@@ -161,6 +161,8 @@ describe('RuntimeSupervisor', () => {
         enabled: true,
         baseUrl: 'https://api.openai.com/v1',
         model: 'gpt-test',
+        contextWindowTokens: 32_768,
+        maxOutputTokens: 4_096,
         inference: {}
       }]
     });

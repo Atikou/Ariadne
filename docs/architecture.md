@@ -71,7 +71,10 @@ dataRoot/data/
 Message accepted
   -> Conversation Handoff outbox
   -> admission authority snapshot
+  -> protected Conversation history through objective
   -> durable execution intent
+  -> deterministic exact-capacity context preparation
+  -> inference-start checkpoint with context request digests
   -> exact model inference
   -> respond | request decision | invoke tool
   -> authorized effect dispatch
@@ -103,7 +106,8 @@ Renderer 的写操作只使用 v3 Session/Message、Decision 和 Cancel 命令�
 | Workspace、first-party Tools、Browser、经授权 MCP | 已进入 Tool Catalog；真实端到端验收仍不完整 |
 | Skills | 完整正文在 admission 时注入；尚未渐进披露 |
 | Hooks | v3 只消费 `run.pre` |
-| Context/Memory/Embedding | 有实现和测试，但没有完整 v3 生产 consumer |
+| Context | Conversation 历史、压力压缩、Tool result pruning、overflow recovery 已进入 v3；spill 与精确 tokenizer 未完成 |
+| Memory/Embedding | 有旧实现和测试，但没有完整 v3 生产 consumer |
 | SubAgent/Background/Scheduler | 有领域或旧模块基础，没有 v3 产品闭环 |
 | Diagnostics/Telemetry/Provider Resilience | 有 schema/实现片段，v3 生命周期或 consumer 不完整 |
 

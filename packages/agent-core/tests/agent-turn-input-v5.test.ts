@@ -49,14 +49,14 @@ describe('schema-v5 Turn input safety boundary', () => {
     })).toThrow();
   });
 
-  it('reserves the 1024th exact-model request slot for the Engine protocol prompt', () => {
+  it('allows bounded protected history beyond one Provider request for v3 compaction', () => {
     const message = { kind: 'text', role: 'user', content: '' } as const;
     expect(() => canonicalizeAgentTurnInput({
-      messages: Array.from({ length: 1_023 }, () => ({ ...message })),
+      messages: Array.from({ length: 2_047 }, () => ({ ...message })),
       availableTools: []
     })).not.toThrow();
     expect(() => canonicalizeAgentTurnInput({
-      messages: Array.from({ length: 1_024 }, () => ({ ...message })),
+      messages: Array.from({ length: 2_048 }, () => ({ ...message })),
       availableTools: []
     })).toThrow(/collection bounds/);
   });

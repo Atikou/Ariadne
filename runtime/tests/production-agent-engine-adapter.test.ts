@@ -16,7 +16,7 @@ import {
 } from '../src/adapters/model/ProductionAgentEngineAdapter.js';
 import type {
   DispatchExactAgentModelInferenceRequest,
-  ExactAgentModelInferenceGateway,
+  ExactAgentModelInferenceRuntime,
   ExactAgentModelInferenceResult
 } from '../src/control/ports/AgentModelInference.js';
 
@@ -35,7 +35,7 @@ describe('ProductionAgentEngineAdapter', () => {
     const adapter = new ProductionAgentEngineAdapter(gateway, contracts);
     const controller = new AbortController();
 
-    await expect(adapter.decide(fixture.input, controller.signal)).resolves.toEqual({
+    await expect(decide(adapter, fixture.input, controller.signal)).resolves.toEqual({
       kind: 'respond',
       content: 'completed from v3'
     });
@@ -63,6 +63,105 @@ describe('ProductionAgentEngineAdapter', () => {
     });
   });
 
+  it('derives a deterministic pressure compaction while retaining the latest objective', async () => {
+    const fixture = createFixture();
+    const inference = vi.fn(async () => inferenceResponse({
+      protocol: PROTOCOL,
+      directive: { kind: 'respond', content: 'compacted safely' }
+    }));
+    const adapter = new ProductionAgentEngineAdapter(
+      exactInferenceGateway(inference, {
+        contextWindowTokens: 32_768,
+        maxOutputTokens: 4_096
+      }),
+      exactContracts(fixture.available)
+    );
+    const input: AgentTurnInput = {
+      ...fixture.input,
+      messages: [
+        ...Array.from({ length: 1_100 }, (_, index) => ({
+          kind: 'text' as const,
+          role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
+          content: `bounded historical message ${String(index)}`
+        })),
+        { kind: 'text', role: 'user', content: 'LATEST_OBJECTIVE_MUST_SURVIVE' }
+      ]
+    };
+    const signal = new AbortController().signal;
+    const prepared = await adapter.prepare(input, signal);
+
+    expect(prepared.modelContext).toMatchObject({
+      format: 'ariadne.model-context',
+      schemaVersion: 1,
+      lifecycle: 'compacted',
+      overflowRecoveryPrepared: true
+    });
+    await expect(prepared.decide(signal)).resolves.toEqual({
+      kind: 'respond',
+      content: 'compacted safely'
+    });
+    const sent = inference.mock.calls[0]![0].messages;
+    expect(sent.some((message) => message.content.includes('ariadne.context-compaction.v1')))
+      .toBe(true);
+    expect(sent.at(-1)).toEqual({
+      role: 'user',
+      content: 'LATEST_OBJECTIVE_MUST_SURVIVE'
+    });
+  });
+
+  it('uses the separately prepared projection once after canonical Provider overflow', async () => {
+    const fixture = createFixture();
+    const inference = vi.fn()
+      .mockResolvedValueOnce({ status: 'context_overflow' } as const)
+      .mockResolvedValueOnce(inferenceResponse({
+        protocol: PROTOCOL,
+        directive: { kind: 'respond', content: 'recovered from overflow' }
+      }));
+    const adapter = new ProductionAgentEngineAdapter(
+      exactInferenceGateway(inference),
+      exactContracts(fixture.available)
+    );
+    const signal = new AbortController().signal;
+    const prepared = await adapter.prepare(fixture.input, signal);
+
+    expect(prepared.modelContext).toMatchObject({ overflowRecoveryPrepared: true });
+    await expect(prepared.decide(signal)).resolves.toEqual({
+      kind: 'respond',
+      content: 'recovered from overflow'
+    });
+    expect(inference).toHaveBeenCalledTimes(2);
+    expect(inference.mock.calls[0]![0].messages)
+      .not.toEqual(inference.mock.calls[1]![0].messages);
+  });
+
+  it('prunes one oversized latest Tool result without separating its committed Directive', async () => {
+    const fixture = createContinuationFixture([[
+      { status: 'succeeded', result: { content: 'z'.repeat(100_000) } }
+    ]]);
+    const inference = vi.fn(async () => inferenceResponse({
+      protocol: PROTOCOL,
+      directive: { kind: 'respond', content: 'used pruned result reference' }
+    }));
+    const adapter = new ProductionAgentEngineAdapter(
+      exactInferenceGateway(inference, {
+        contextWindowTokens: 32_768,
+        maxOutputTokens: 4_096
+      }),
+      exactContracts(fixture.available)
+    );
+    const signal = new AbortController().signal;
+    const prepared = await adapter.prepare(fixture.input, signal);
+
+    expect(prepared.modelContext).toMatchObject({
+      lifecycle: 'compacted',
+      prunedToolResults: 1
+    });
+    await prepared.decide(signal);
+    const sent = inference.mock.calls[0]![0].messages;
+    expect(sent.at(-2)?.content).toContain('ariadne.agent-directive.v3');
+    expect(sent.at(-1)?.content).toContain('ariadne.tool-result-pruning.v1');
+  });
+
   it('exposes only bounded plan directives and parses plan content without model-owned IDs', async () => {
     const fixture = createPlanFixture();
     const inference = vi.fn(async () => inferenceResponse({
@@ -85,7 +184,7 @@ describe('ProductionAgentEngineAdapter', () => {
       exactContracts(fixture.available)
     );
 
-    await expect(adapter.decide(
+    await expect(decide(adapter,
       fixture.input,
       new AbortController().signal
     )).resolves.toMatchObject({
@@ -118,7 +217,7 @@ describe('ProductionAgentEngineAdapter', () => {
       exactContracts(fixture.available)
     );
 
-    await expect(adapter.decide(
+    await expect(decide(adapter,
       fixture.input,
       new AbortController().signal
     )).resolves.toEqual({ kind: 'respond', content: 'continued exactly' });
@@ -171,7 +270,7 @@ describe('ProductionAgentEngineAdapter', () => {
       exactContracts(fixture.available)
     );
 
-    await expect(adapter.decide(
+    await expect(decide(adapter,
       fixture.input,
       new AbortController().signal
     )).resolves.toEqual({ kind: 'respond', content: 'continued after steering' });
@@ -194,7 +293,7 @@ describe('ProductionAgentEngineAdapter', () => {
       contracts
     );
 
-    await expect(adapter.decide({
+    await expect(decide(adapter, {
       ...fixture.input,
       messages: [{
         kind: 'effect_result',
@@ -275,7 +374,7 @@ describe('ProductionAgentEngineAdapter', () => {
       exactContracts(fixture.available)
     );
 
-    await expect(adapter.decide(
+    await expect(decide(adapter,
       mutate(fixture),
       new AbortController().signal
     )).rejects.toMatchObject({
@@ -298,7 +397,7 @@ describe('ProductionAgentEngineAdapter', () => {
       exactContracts(fixture.available)
     );
 
-    await expect(adapter.decide({
+    await expect(decide(adapter, {
       ...fixture.input,
       messages: [
         fixture.input.messages[0]!,
@@ -359,7 +458,7 @@ describe('ProductionAgentEngineAdapter', () => {
         exactContracts(fixture.available)
       );
 
-      await expect(adapter.decide({ ...fixture.input, run }, new AbortController().signal))
+      await expect(decide(adapter, { ...fixture.input, run }, new AbortController().signal))
         .rejects.toMatchObject({ providerErrorCode: 'agent_model_binding_unavailable' });
       expect(inference).not.toHaveBeenCalled();
     }
@@ -384,7 +483,7 @@ describe('ProductionAgentEngineAdapter', () => {
       exactContracts(fixture.available)
     );
 
-    await expect(adapter.decide(
+    await expect(decide(adapter,
       fixture.input,
       new AbortController().signal
     )).resolves.toEqual({
@@ -430,7 +529,7 @@ describe('ProductionAgentEngineAdapter', () => {
       exactContracts(fixture.available)
     );
 
-    await expect(adapter.decide(
+    await expect(decide(adapter,
       fixture.input,
       new AbortController().signal
     )).rejects.toMatchObject({
@@ -450,7 +549,7 @@ describe('ProductionAgentEngineAdapter', () => {
       contracts
     );
 
-    await expect(adapter.decide(
+    await expect(decide(adapter,
       fixture.input,
       new AbortController().signal
     )).rejects.toMatchObject({
@@ -479,7 +578,7 @@ describe('ProductionAgentEngineAdapter', () => {
       contracts
     );
 
-    await expect(adapter.decide(
+    await expect(decide(adapter,
       fixture.input,
       new AbortController().signal
     )).rejects.toMatchObject({
@@ -499,7 +598,7 @@ describe('ProductionAgentEngineAdapter', () => {
       exactContracts(fixture.available)
     );
 
-    await expect(adapter.decide(
+    await expect(decide(adapter,
       fixture.input,
       new AbortController().signal
     )).rejects.toBe(providerFailure);
@@ -525,7 +624,7 @@ describe('ProductionAgentEngineAdapter', () => {
       exactContracts(fixture.available)
     );
 
-    await expect(adapter.decide(
+    await expect(decide(adapter,
       fixture.input,
       new AbortController().signal
     )).rejects.toMatchObject({
@@ -935,13 +1034,26 @@ function createInboxContinuationFixture(): ReturnType<typeof createFixture> {
 function exactInferenceGateway(
   infer: (
     request: DispatchExactAgentModelInferenceRequest
-  ) => Promise<ExactAgentModelInferenceResult>
-): ExactAgentModelInferenceGateway & {
+  ) => Promise<ExactAgentModelInferenceResult>,
+  capacity = { contextWindowTokens: 128_000, maxOutputTokens: 4_096 }
+): ExactAgentModelInferenceRuntime & {
   inferExact: ReturnType<typeof vi.fn>;
 } {
   return {
-    inferExact: vi.fn(infer)
+    inferExact: vi.fn(infer),
+    hasExactBinding: () => true,
+    resolveBinding: () => null,
+    describeContextCapacity: () => ({ ...capacity })
   };
+}
+
+async function decide(
+  adapter: ProductionAgentEngineAdapter,
+  input: AgentTurnInput,
+  signal: AbortSignal
+): Promise<import('@ariadne/agent-core').AgentDirective> {
+  const prepared = await adapter.prepare(input, signal);
+  return prepared.decide(signal);
 }
 
 function exactContracts(

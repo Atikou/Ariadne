@@ -71,6 +71,10 @@ describe('AgentSettingsRepository', () => {
       telemetry: { enabled: false }
     });
     expect(defaults.providers.openai.apiKeyStatus).toBe('missing');
+    expect(defaults.providers.openai).toMatchObject({
+      contextWindowTokens: 128_000,
+      maxOutputTokens: 16_384
+    });
     expect(parseToml(await readFile(file, 'utf8'))).toMatchObject({
       permissionMode: 'request',
       workspaceRoot: directory,
@@ -83,7 +87,11 @@ describe('AgentSettingsRepository', () => {
       operations: [{
         kind: 'provider.update',
         providerId: 'openai',
-        patch: { apiKey: 'sk-test-not-a-real-secret' }
+        patch: {
+          apiKey: 'sk-test-not-a-real-secret',
+          contextWindowTokens: 64_000,
+          maxOutputTokens: 8_000
+        }
       }]
     }));
     const serialized = await readFile(file, 'utf8');
@@ -91,6 +99,10 @@ describe('AgentSettingsRepository', () => {
     expect(serialized).toContain('cipher:');
     expect(repository.getView().providers.openai.apiKeyStatus).toBe('configured');
     expect(repository.getRuntimeSettings().providers.openai.apiKey).toBe('sk-test-not-a-real-secret');
+    expect(repository.getRuntimeSettings().providers.openai).toMatchObject({
+      contextWindowTokens: 64_000,
+      maxOutputTokens: 8_000
+    });
 
     const openedWorkspace = join(directory, 'opened-workspace');
     const opened = await repository.addWorkspaceRoot(openedWorkspace);
@@ -139,6 +151,10 @@ describe('AgentSettingsRepository', () => {
     const reloaded = new AgentSettingsRepository(file, cipher, directory);
     await reloaded.initialize();
     expect(reloaded.getView().providers.openai.apiKeyStatus).toBe('configured');
+    expect(reloaded.getView().providers.openai).toMatchObject({
+      contextWindowTokens: 64_000,
+      maxOutputTokens: 8_000
+    });
     expect(reloaded.getView()).toMatchObject({
       workspaceRoot: join(directory, 'chosen-workspace'),
       workspaceAccess: 'read',

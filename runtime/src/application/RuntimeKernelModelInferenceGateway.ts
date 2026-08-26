@@ -1,6 +1,7 @@
 import type {
   AgentModelSelectionPreference,
   DispatchExactAgentModelInferenceRequest,
+  ExactAgentModelContextCapacity,
   ExactAgentModelInferenceRuntime,
   ExactAgentModelInferenceResult
 } from '../control/ports/AgentModelInference.js';
@@ -65,6 +66,27 @@ implements ExactAgentModelInferenceRuntime {
     return this.localModels.clients().some(
       (candidate) => candidate.name === binding.modelId
     );
+  }
+
+  public describeContextCapacity(
+    binding: DispatchExactAgentModelInferenceRequest['binding']
+  ): ExactAgentModelContextCapacity | null {
+    if (binding.providerId !== LOCAL_AGENT_MODEL_PROVIDER_ID) {
+      return this.remote.describeContextCapacity(binding);
+    }
+    const client = this.localModels.clients().find(
+      (candidate) => candidate.name === binding.modelId
+    );
+    const contextWindowTokens = client?.contextWindowTokens;
+    if (
+      contextWindowTokens === undefined
+      || !Number.isSafeInteger(contextWindowTokens)
+      || contextWindowTokens < 8_192
+    ) return null;
+    return {
+      contextWindowTokens,
+      maxOutputTokens: Math.min(4_096, Math.floor(contextWindowTokens / 4))
+    };
   }
 
   public async inferExact(

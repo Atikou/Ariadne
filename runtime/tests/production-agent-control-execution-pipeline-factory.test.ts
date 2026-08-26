@@ -917,6 +917,8 @@ function provider(): NonNullable<RuntimeBootstrap['modelProviders']>[number] {
     enabled: true,
     baseUrl: 'https://provider.example/v1',
     model: 'model-v3',
+    contextWindowTokens: 32_768,
+    maxOutputTokens: 4_096,
     inference: {}
   };
 }

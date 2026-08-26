@@ -241,6 +241,8 @@ function createBootstrap(): RuntimeBootstrap {
       enabled: true,
       baseUrl: 'https://127.0.0.1:1/v1',
       model: 'runtime-process-test-model',
+      contextWindowTokens: 32_768,
+      maxOutputTokens: 4_096,
       inference: {}
     }],
     agentAdmissionAuthoritySource: {

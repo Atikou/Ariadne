@@ -20,7 +20,7 @@ Agent inbox 是同一 `AgentRun` 上唯一的运行中输入权威。它不取�
 - `remove`：只允许移除 `queued` 项，并比较 `expectedInputVersion`；
 - `claim`：只能由 `run.register_turn` 原子执行，领取后不可再编辑或移除。
 
-Run 已终止、模型 Turn 预算已耗尽或 deadline 已到时，拒绝新输入。Provider inference 运行期间允许 inbox 增删改；结果提交会重新读取最新 Run，只允许 inbox 和 Run 元数据发生并发变化，Turn、Attempt、Effect、Binding 或执行状态漂移时仍 fail closed。
+Run 已终止、模型 Turn 预算已耗尽或 deadline 已到时，拒绝新输入。只读模型请求准备和 Provider inference 运行期间都允许 inbox 增删改；准备后的 `inference_started` 与结果提交都会重新读取最新 Run，只在 inbox 是唯一并发变更时重基，Turn、Attempt、Effect、Binding 或执行状态漂移时仍 fail closed。
 
 如果输入在 deadline 前已被接受，但当前 Provider 响应到达时 deadline 或模型 Turn 上限已经耗尽，调度器不会尝试非法 continuation，也不会进入不健康状态；它在该响应边界以稳定 `run.fail` command 和 `inbox_inputs_terminalized` checkpoint 确定性收敛，保留未领取输入作为审计事实。
 
@@ -78,7 +78,7 @@ Ariadne 没有复制进程内 Agent handle。这里的权威仍是 `AgentRun`、
 
 - token/reasoning streaming 及 chunk replay；
 - 不唤醒模型的独立 context injection；
-- Context compaction、Tool-result pruning 与 spill；
+- spill 与可按引用恢复的完整大 Tool result；Context compaction 和有界 Tool-result pruning 已进入 v3；
 - Child Run/外部 Agent 的跨 Run inbox。
 
 这些能力不得因为 inbox 已接通而标记为完成。

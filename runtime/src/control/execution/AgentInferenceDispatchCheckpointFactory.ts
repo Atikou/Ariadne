@@ -33,7 +33,9 @@ implements AgentInferenceDispatchCheckpointFactory {
         format: 'ariadne.agent-checkpoint',
         schemaVersion: 1,
         engineContinuation: continuation,
-        modelContext: null
+        modelContext: input.phase === 'inference_started'
+          ? input.modelContext
+          : null
       }
     };
   }

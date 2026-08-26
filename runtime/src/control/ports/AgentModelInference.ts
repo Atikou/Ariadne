@@ -11,6 +11,13 @@ export interface DispatchExactAgentModelInferenceRequest {
   readonly signal: AbortSignal;
 }
 
+export interface ExactAgentModelContextCapacity {
+  /** Exact configured capacity for this provider/model/settings tuple. */
+  readonly contextWindowTokens: number;
+  /** Output space reserved before any input is admitted. */
+  readonly maxOutputTokens: number;
+}
+
 export type ExactAgentModelInferenceResult =
   | {
       readonly status: 'completed';
@@ -20,6 +27,10 @@ export type ExactAgentModelInferenceResult =
     }
   | {
       readonly status: 'binding_unavailable';
+    }
+  | {
+      /** Canonical, sanitized proof that the exact Provider rejected context size. */
+      readonly status: 'context_overflow';
     };
 
 /**
@@ -41,6 +52,10 @@ extends ExactAgentModelInferenceGateway {
     settingsRevision: number,
     preference?: AgentModelSelectionPreference
   ): AgentRunBinding['model'] | null;
+
+  describeContextCapacity(
+    binding: AgentRunBinding['model']
+  ): ExactAgentModelContextCapacity | null;
 }
 
 export interface AgentModelSelectionPreference {

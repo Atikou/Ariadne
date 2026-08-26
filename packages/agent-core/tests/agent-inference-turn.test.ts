@@ -442,7 +442,7 @@ describe('durable Agent Turn and inference attempts', () => {
         ATTEMPT_ID,
         'run-concurrent'
       ),
-      engine,
+      preparedEngine(engine),
       directivePlanner(),
       checkpointFactory(),
       { now: () => at(4) }
@@ -466,6 +466,51 @@ describe('durable Agent Turn and inference attempts', () => {
     expect(engine.decide).toHaveBeenCalledTimes(1);
   });
 
+  it('crosses the durable start boundary with prepared model-context evidence', async () => {
+    const setup = await createIntendedAttempt('run-context-checkpoint');
+    const marker = {
+      format: 'ariadne.model-context',
+      schemaVersion: 1,
+      lifecycle: 'compacted',
+      primaryRequestDigest: `sha256:${'a'.repeat(64)}`
+    } as const;
+    const observed: unknown[] = [];
+    const baseFactory = checkpointFactory();
+    const dispatcher = new AgentInferenceDispatchService(
+      setup.unit,
+      executionInputReader(
+        setup.unit,
+        setup.inputDigest,
+        ATTEMPT_ID,
+        'run-context-checkpoint'
+      ),
+      {
+        prepare: async () => ({
+          modelContext: marker,
+          decide: async () => ({ kind: 'respond', content: 'checkpointed' } as const)
+        })
+      },
+      directivePlanner(),
+      {
+        create(input) {
+          if (input.phase === 'inference_started') observed.push(input.modelContext);
+          return baseFactory.create(input);
+        }
+      },
+      { now: () => at(4) }
+    );
+
+    await expect(dispatcher.dispatch({
+      commandId: 'dispatch-context-checkpoint',
+      runId: 'run-context-checkpoint',
+      turnId: TURN_ID,
+      attemptId: ATTEMPT_ID,
+      expectedVersion: 3,
+      occurredAt: at(3)
+    })).resolves.toMatchObject({ status: 'succeeded' });
+    expect(observed).toEqual([marker]);
+  });
+
   it('does not cross the durable start boundary when already cancelled', async () => {
     const setup = await createIntendedAttempt('run-pre-cancelled');
     const engine = {
@@ -480,7 +525,7 @@ describe('durable Agent Turn and inference attempts', () => {
     const dispatcher = new AgentInferenceDispatchService(
       setup.unit,
       inputReader,
-      engine,
+      preparedEngine(engine),
       directivePlanner(),
       checkpointFactory(),
       { now: () => at(4) }
@@ -514,7 +559,7 @@ describe('durable Agent Turn and inference attempts', () => {
     const blockedDispatcher = new AgentInferenceDispatchService(
       reopenedStarted,
       inputReader,
-      engine,
+      preparedEngine(engine),
       directivePlanner(),
       checkpointFactory(),
       { now: () => at(6) }
@@ -567,7 +612,7 @@ describe('durable Agent Turn and inference attempts', () => {
     const dispatcher = new AgentInferenceDispatchService(
       reopenedRetry,
       retryReader,
-      retryEngine,
+      preparedEngine(retryEngine),
       directivePlanner(),
       checkpointFactory(),
       { now: () => at(8) }
@@ -599,7 +644,7 @@ describe('durable Agent Turn and inference attempts', () => {
         ATTEMPT_ID,
         'run-uncertain'
       ),
-      uncertainEngine,
+      preparedEngine(uncertainEngine),
       directivePlanner(),
       checkpointFactory(),
       { now: () => at(4) }
@@ -636,14 +681,14 @@ describe('durable Agent Turn and inference attempts', () => {
         ATTEMPT_ID,
         'run-failed'
       ),
-      {
+      preparedEngine({
         decide: async () => {
           throw new AgentInferenceDeterministicFailureError(
             'MODEL_INPUT_REJECTED',
             'The bounded input was rejected.'
           );
         }
-      },
+      }),
       directivePlanner(),
       checkpointFactory(),
       { now: () => at(4) }
@@ -666,14 +711,14 @@ describe('durable Agent Turn and inference attempts', () => {
         ATTEMPT_ID,
         'run-cancelled'
       ),
-      {
+      preparedEngine({
         decide: async () => {
           throw new AgentInferenceCancellationAcknowledgedError(
             'provider-ack-2',
             'Provider confirmed non-execution.'
           );
         }
-      },
+      }),
       directivePlanner(),
       checkpointFactory(),
       { now: () => at(4) }
@@ -798,6 +843,20 @@ function directivePlanner(): DefaultAgentInferenceDirectivePlanner {
       normalizedInput: invocation.input
     })
   });
+}
+
+function preparedEngine(engine: {
+  decide(input: AgentTurnInput, signal: AbortSignal): Promise<import('../src/index.js').AgentDirective>;
+}) {
+  return {
+    prepare: async (input: AgentTurnInput, signal: AbortSignal) => {
+      signal.throwIfAborted();
+      return {
+        modelContext: [],
+        decide: (decisionSignal: AbortSignal) => engine.decide(input, decisionSignal)
+      };
+    }
+  };
 }
 
 function checkpointFactory() {

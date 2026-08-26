@@ -8,7 +8,7 @@
 | 命令 | 当前结果 | 证据 |
 |---|---|---|
 | `npm.cmd run typecheck` | PASS | Protocol、Agent Core、Runtime、App 类型检查通过 |
-| `npm.cmd test` | PASS | Protocol 39、Agent Core 97、Runtime 676、App 249，共 1,061 项 |
+| `npm.cmd test` | PASS | Protocol 39、Agent Core 99、Runtime 681、App 249，共 1,068 项 |
 | `npm.cmd run check:architecture` | PASS | 845 个 TS/TSX 文件、3,387 条内部边、0 SCC、0 循环边、0 规则违规；Hotspot Boundary Gate 通过 |
 | `npm.cmd run audit:runtime-independence` | PASS | 866 个生产文件；无入站 HTTP、仓库外文件依赖或根脚本路径 |
 | `npm.cmd run verify:release-contract` | PASS | 安装器、迁移、模型资产和验收矩阵契约通过 |
@@ -79,12 +79,12 @@ Provider 是 smoke 脚本启动的进程外、确定性 HTTPS OpenAI-compatible 
 
 以下能力已有源码和自动测试，但当前没有完整 v3 product consumer 或真实验收：
 
-- Memory、Embedding 与长期 Context；
+- Memory、Embedding 与 spill；
 - SubAgent、Background Task 与 Scheduler；
 - 完整 Hook lifecycle；
 - Diagnostics publisher 与 Telemetry lifecycle；
 - Provider Resilience policy 在 v3 inference adapter 中的消费；
-- Context compaction、Tool result pruning 和 spill；
+- Context compaction 与 Tool result pruning 已进入 v3；精确 tokenizer、spill、Live Provider 长上下文验收仍未完成；
 - 不唤醒模型的独立 context injection 与可恢复 token/reasoning stream；运行中 follow-up/steer 已进入生产链路。
 
 这些条目在 [verification-matrix.json](verification-matrix.json) 中只能标记为 `partial` 或 `not_accepted`，不能因为目录、schema 或单元测试存在而标记为产品已验收。

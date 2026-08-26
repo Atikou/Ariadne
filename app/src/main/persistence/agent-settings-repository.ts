@@ -57,13 +57,20 @@ const persistedProviderSchema = z.object({
   enabled: z.boolean(),
   baseUrl: z.string().url().max(2_048).refine((value) => new URL(value).protocol === 'https:'),
   model: z.string().trim().min(1).max(256),
+  contextWindowTokens: z.number().int().min(8_192).max(10_000_000),
+  maxOutputTokens: z.number().int().min(256).max(1_000_000),
   inference: modelInferenceProfileSchema,
   encryptedApiKey: encryptedApiKeySchema
-}).strict();
+}).strict().refine(
+  (provider) => provider.maxOutputTokens < provider.contextWindowTokens,
+  'Provider maxOutputTokens must be smaller than contextWindowTokens.'
+);
 const persistedProviderFileSchema = z.object({
   enabled: z.boolean(),
   baseUrl: z.string().url().max(2_048).refine((value) => new URL(value).protocol === 'https:'),
   model: z.string().trim().min(1).max(256),
+  contextWindowTokens: z.number().int().min(8_192).max(10_000_000).optional(),
+  maxOutputTokens: z.number().int().min(256).max(1_000_000).optional(),
   inference: modelInferenceProfileSchema.optional(),
   encryptedApiKey: encryptedApiKeySchema.optional()
 }).strict();
@@ -111,6 +118,8 @@ export interface RuntimeAgentProviderSettings {
   enabled: boolean;
   baseUrl: string;
   model: string;
+  contextWindowTokens: number;
+  maxOutputTokens: number;
   inference: ModelInferenceProfile;
   apiKey?: string;
 }
@@ -189,6 +198,8 @@ export class AgentSettingsRepository {
         enabled: provider.enabled,
         baseUrl: provider.baseUrl,
         model: provider.model,
+        contextWindowTokens: provider.contextWindowTokens,
+        maxOutputTokens: provider.maxOutputTokens,
         inference: structuredClone(provider.inference),
         apiKeyStatus: this.apiKeyStatus(provider.encryptedApiKey)
       })),
@@ -212,6 +223,8 @@ export class AgentSettingsRepository {
           enabled: provider.enabled,
           baseUrl: provider.baseUrl,
           model: provider.model,
+          contextWindowTokens: provider.contextWindowTokens,
+          maxOutputTokens: provider.maxOutputTokens,
           inference: structuredClone(provider.inference),
           ...(apiKey ? { apiKey } : {})
         };
@@ -478,6 +491,10 @@ function applySettingsOperations(
         if (patch.enabled !== undefined) target.enabled = patch.enabled;
         if (patch.baseUrl !== undefined) target.baseUrl = patch.baseUrl;
         if (patch.model !== undefined) target.model = patch.model;
+        if (patch.contextWindowTokens !== undefined) {
+          target.contextWindowTokens = patch.contextWindowTokens;
+        }
+        if (patch.maxOutputTokens !== undefined) target.maxOutputTokens = patch.maxOutputTokens;
         if (patch.inference !== undefined) target.inference = structuredClone(patch.inference);
         if (patch.clearApiKey) target.encryptedApiKey = null;
         else if (patch.apiKey) target.encryptedApiKey = cipher.encrypt(patch.apiKey);
@@ -523,6 +540,8 @@ function createDefaultAgentSettings(defaultWorkspaceRoot: string): PersistedAgen
       enabled: true,
       baseUrl: AGENT_PROVIDER_CATALOG[id].defaultBaseUrl,
       model: AGENT_PROVIDER_CATALOG[id].defaultModel,
+      contextWindowTokens: AGENT_PROVIDER_CATALOG[id].defaultContextWindowTokens,
+      maxOutputTokens: AGENT_PROVIDER_CATALOG[id].defaultMaxOutputTokens,
       inference: structuredClone(AGENT_PROVIDER_CATALOG[id].defaultInference),
       encryptedApiKey: null
     }])) as PersistedAgentSettings['providers'],
@@ -589,6 +608,8 @@ function toTomlDocument(settings: PersistedAgentSettings): TomlTable {
         enabled: provider.enabled,
         baseUrl: provider.baseUrl,
         model: provider.model,
+        contextWindowTokens: provider.contextWindowTokens,
+        maxOutputTokens: provider.maxOutputTokens,
         inference: structuredClone(provider.inference),
         ...(provider.encryptedApiKey ? { encryptedApiKey: provider.encryptedApiKey } : {})
       }];

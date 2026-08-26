@@ -36,6 +36,51 @@ const PROVIDER_KEY = 'provider-atomic-result';
 const DEFAULT_TOOLS = [testAvailableTool('workspace.write')];
 
 describe('atomic inference result application', () => {
+  it('rebases the durable start checkpoint over inbox input queued during preparation', async () => {
+    const setup = await admittedSetup({
+      runId: 'run-inference-preparation-inbox-concurrency',
+      permissionMode: 'trusted'
+    });
+    const engine = {
+      prepare: vi.fn(async () => {
+        const current = setup.unit.loadRun(setup.runId);
+        if (current === null) throw new Error('concurrent inbox fixture Run missing');
+        await new AgentRunCommandService(setup.unit).execute({
+          kind: 'run.enqueue_inbox_input',
+          commandId: 'enqueue-during-inference-preparation',
+          runId: setup.runId,
+          expectedVersion: current.version,
+          occurredAt: at(1),
+          input: {
+            inputId: 'input-during-inference-preparation',
+            messageId: 'message-during-inference-preparation',
+            delivery: 'next_step',
+            content: 'Use this after the prepared response.',
+            contentDigest: `sha256:${'8'.repeat(64)}`
+          }
+        }, { turnInputPayloads: [], effectPayloads: [] });
+      }),
+      decide: vi.fn(async () => ({ kind: 'respond' as const, content: 'Prepared response.' }))
+    };
+
+    const dispatched = await createDispatcher(setup, engine).dispatch(
+      dispatchRequest('dispatch-with-preparation-inbox', setup.runId)
+    );
+
+    expect(dispatched.run).toMatchObject({
+      version: 4,
+      state: { status: 'running' },
+      inbox: [{
+        inputId: 'input-during-inference-preparation',
+        state: 'queued',
+        delivery: 'next_step'
+      }],
+      turns: [{ attempts: [{ state: { status: 'succeeded' } }] }]
+    });
+    expect(engine.prepare).toHaveBeenCalledOnce();
+    expect(engine.decide).toHaveBeenCalledOnce();
+  });
+
   it('commits a Provider result on top of an inbox mutation made during inference', async () => {
     const setup = await admittedSetup({
       runId: 'run-inference-inbox-concurrency',
@@ -1101,7 +1146,10 @@ async function admittedSetup(options: {
 
 function createDispatcher(
   setup: AtomicSetup,
-  engine: { decide(input: AgentTurnInput, signal: AbortSignal): Promise<AgentDirective> },
+  engine: {
+    prepare?(input: AgentTurnInput, signal: AbortSignal): Promise<void>;
+    decide(input: AgentTurnInput, signal: AbortSignal): Promise<AgentDirective>;
+  },
   unitOfWork: AgentRunUnitOfWork = setup.unit,
   toolAdmissionPolicy: AgentToolAdmissionPolicy = ALLOW_TOOL_ADMISSION_POLICY
 ): AgentInferenceDispatchService {
@@ -1120,7 +1168,17 @@ function createDispatcher(
         };
       })
     },
-    engine,
+    {
+      prepare: async (input, signal) => {
+        signal.throwIfAborted();
+        await engine.prepare?.(input, signal);
+        signal.throwIfAborted();
+        return {
+          modelContext: [],
+          decide: (decisionSignal: AbortSignal) => engine.decide(input, decisionSignal)
+        };
+      }
+    },
     new DefaultAgentInferenceDirectivePlanner(
       TEST_EFFECT_DIGESTER,
       toolAdmissionPolicy

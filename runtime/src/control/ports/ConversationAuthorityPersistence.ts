@@ -84,6 +84,13 @@ extends ConversationRunHandoffTransaction {
     version: number
   ): Promise<ConversationMessageVersion | null>;
 
+  /** Exact immutable message history through one authoritative objective. */
+  loadSessionMessageHistoryThrough(
+    sessionId: string,
+    messageId: string,
+    messageVersion: number
+  ): Promise<readonly ConversationMessageVersion[]>;
+
   loadCommittedAuthorityCommand(
     commandId: string
   ): Promise<CommittedConversationAuthorityCommand | null>;

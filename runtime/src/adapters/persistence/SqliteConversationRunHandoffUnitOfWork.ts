@@ -483,6 +483,47 @@ class SqliteConversationTransaction implements ConversationAuthorityTransaction 
       : parseMessageVersionRow(row, `message-version:${messageId}:${String(version)}`);
   }
 
+  public async loadSessionMessageHistoryThrough(
+    sessionId: string,
+    messageId: string,
+    messageVersion: number
+  ): Promise<readonly ConversationMessageVersion[]> {
+    this.assertActive();
+    assertCanonicalId(sessionId, 'session message history lookup');
+    assertCanonicalId(messageId, 'session message history objective lookup');
+    if (!Number.isSafeInteger(messageVersion) || messageVersion < 1) {
+      throw storageInvariant('session_message_history_lookup_invalid');
+    }
+    const rows = this.database.prepare(
+      `SELECT message.message_id, message.version, message.session_id,
+              message.workspace_id, message.role, message.payload_json,
+              message.content_digest, message.created_at
+       FROM conversation_commands AS command
+       INNER JOIN conversation_message_versions AS message
+         ON message.message_id=command.message_id
+        AND message.version=command.message_version
+       WHERE command.session_id=?
+         AND command.resulting_session_version <= (
+           SELECT objective.resulting_session_version
+           FROM conversation_commands AS objective
+           WHERE objective.session_id=?
+             AND objective.message_id=?
+             AND objective.message_version=?
+         )
+       ORDER BY command.resulting_session_version ASC
+       LIMIT 2048`
+    ).all(
+      sessionId,
+      sessionId,
+      messageId,
+      messageVersion
+    ) as unknown as MessageVersionRow[];
+    return rows.map((row, index) => parseMessageVersionRow(
+      row,
+      `session-history:${sessionId}:${String(index)}`
+    ));
+  }
+
   public async loadCommittedAuthorityCommand(
     commandId: string
   ): Promise<CommittedConversationAuthorityCommand | null> {

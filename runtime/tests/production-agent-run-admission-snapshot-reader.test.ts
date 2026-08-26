@@ -152,6 +152,28 @@ describe('ProductionAgentRunAdmissionSnapshotReader', () => {
     });
   });
 
+  it('injects the exact authoritative Conversation history through the objective', async () => {
+    const fixture = await createFixture({
+      priorMessages: [
+        { role: 'user', content: 'earlier user request' },
+        { role: 'assistant', content: 'earlier assistant result' }
+      ]
+    });
+    const catalogSnapshot = compiledCatalog();
+    const bundle = await authorityBundle(fixture.request, catalogSnapshot);
+    const snapshot = await readerWith(
+      fixture.conversation,
+      provider(async () => bundle),
+      catalogProvider(async () => new ImmutableAgentToolCatalog(catalogSnapshot))
+    ).readAdmissionSnapshot(fixture.request, new AbortController().signal);
+
+    expect(snapshot.input.messages).toEqual([
+      { kind: 'text', role: 'user', content: 'earlier user request' },
+      { kind: 'text', role: 'assistant', content: 'earlier assistant result' },
+      { kind: 'text', role: 'user', content: OBJECTIVE }
+    ]);
+  });
+
   it('materializes the exact read-only plan authority without a second Tool filter', async () => {
     const fixture = await createFixture({
       execution: {
@@ -367,6 +389,10 @@ interface FixtureOptions {
   readonly messageRole?: 'user' | 'assistant';
   readonly currentSessionVersion?: number;
   readonly execution?: ConversationMessageVersion['payload']['execution'];
+  readonly priorMessages?: readonly {
+    readonly role: 'user' | 'assistant';
+    readonly content: string;
+  }[];
 }
 
 interface Fixture {
@@ -466,13 +492,29 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
     contentDigest: objectiveDigest,
     createdAt: ACCEPTED_AT
   };
+  const history: ConversationMessageVersion[] = [];
+  for (const [index, prior] of (options.priorMessages ?? []).entries()) {
+    history.push({
+      messageId: `message-prior-${String(index)}`,
+      version: 1,
+      sessionId: commandIdentity.sessionId,
+      workspaceId: commandIdentity.workspaceId,
+      role: prior.role,
+      payload: { content: prior.content },
+      contentDigest: await digestConversationMessageContent(prior.content),
+      createdAt: new Date(Date.parse(ACCEPTED_AT) - (options.priorMessages!.length - index) * 1_000)
+        .toISOString()
+    });
+  }
+  history.push(message);
   return {
     request: requested.outbox,
     conversation: new StaticConversationAuthorityUnitOfWork(
       session,
       head,
       message,
-      requested.saga
+      requested.saga,
+      history
     )
   };
 }
@@ -590,7 +632,8 @@ implements ConversationAuthorityUnitOfWork {
     private readonly session: ConversationSession,
     private readonly head: ConversationMessageHead,
     private readonly message: ConversationMessageVersion,
-    private readonly saga: ConversationRunHandoffSaga
+    private readonly saga: ConversationRunHandoffSaga,
+    private readonly history: readonly ConversationMessageVersion[] = [message]
   ) {}
 
   public async authorityTransaction<T>(
@@ -606,6 +649,7 @@ implements ConversationAuthorityUnitOfWork {
         this.objectiveReadInsideTransaction = this.active;
         return this.message;
       },
+      loadSessionMessageHistoryThrough: async () => this.history,
       loadCommittedAuthorityCommand: async () => null,
       loadCommittedCommand: async () => null,
       commitCreatedSession: forbiddenWrite,

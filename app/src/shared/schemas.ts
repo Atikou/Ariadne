@@ -109,6 +109,8 @@ const agentProviderSettingsPatchSchema = z
     enabled: z.boolean().optional(),
     baseUrl: httpsUrlSchema.optional(),
     model: z.string().trim().min(1).max(256).optional(),
+    contextWindowTokens: z.number().int().min(8_192).max(10_000_000).optional(),
+    maxOutputTokens: z.number().int().min(256).max(1_000_000).optional(),
     inference: modelInferenceProfileSchema.optional(),
     apiKey: z.string().trim().min(8).max(8_192).optional(),
     clearApiKey: z.literal(true).optional()
@@ -175,9 +177,14 @@ const agentProviderSettingsViewSchema = z.object({
   enabled: z.boolean(),
   baseUrl: httpsUrlSchema,
   model: z.string().trim().min(1).max(256),
+  contextWindowTokens: z.number().int().min(8_192).max(10_000_000),
+  maxOutputTokens: z.number().int().min(256).max(1_000_000),
   inference: modelInferenceProfileSchema,
   apiKeyStatus: apiKeyStatusSchema
-}).strict();
+}).strict().refine(
+  (provider) => provider.maxOutputTokens < provider.contextWindowTokens,
+  '最大输出必须小于上下文窗口。'
+);
 
 const agentWorkspaceSettingsViewSchema = z.object({
   workspaceId: z.string().trim().min(1).max(128),

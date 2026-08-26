@@ -9,7 +9,8 @@ import {
   digestConversationMessageContent,
   assertValidConversationMessageHead,
   assertValidConversationMessageVersion,
-  assertValidConversationSession
+  assertValidConversationSession,
+  type ConversationMessageVersion
 } from '../conversation/ConversationAuthority.js';
 import {
   assertValidConversationRunHandoffSaga
@@ -40,6 +41,7 @@ interface ExactConversationObjective {
   readonly objectiveDigest: string;
   readonly content: string;
   readonly execution: ConversationMessageExecutionV3;
+  readonly history: readonly ConversationMessageVersion[];
 }
 
 export interface AgentAdmissionInstructionSource {
@@ -55,6 +57,7 @@ export class ProductionAgentRunAdmissionSnapshotError extends Error {
     public readonly code:
       | 'AGENT_ADMISSION_CONVERSATION_AUTHORITY_MISSING'
       | 'AGENT_ADMISSION_CONVERSATION_AUTHORITY_MISMATCH'
+      | 'AGENT_ADMISSION_CONTEXT_INVALID'
       | 'AGENT_ADMISSION_AUTHORITY_MISSING'
       | 'AGENT_ADMISSION_AUTHORITY_INVALID'
       | 'AGENT_ADMISSION_INSTRUCTIONS_INVALID'
@@ -182,6 +185,29 @@ implements AgentRunAdmissionSnapshotReader {
         cause
       );
     }
+    const contextMessages = objective.history.map((message) => ({
+      kind: 'text' as const,
+      role: message.role,
+      content: message.payload.content
+    }));
+    const systemMessages = [
+      ...(instructionText.length === 0 ? [] : [{
+        kind: 'text' as const,
+        role: 'system' as const,
+        content: instructionText
+      }]),
+      ...(objective.execution.mode === 'plan' ? [{
+        kind: 'text' as const,
+        role: 'system' as const,
+        content: 'Plan mode is read-only. Inspect with read-only tools when needed, then respond with a concrete implementation plan. Do not request or invoke write or shell tools.'
+      }] : [])
+    ];
+    if (systemMessages.length + contextMessages.length > 2_047) {
+      throw error(
+        'AGENT_ADMISSION_CONTEXT_INVALID',
+        'Conversation history exceeds the protected v3 Turn collection bound.'
+      );
+    }
     return {
       sessionId: objective.sessionId,
       workspaceId: objective.workspaceId,
@@ -191,17 +217,8 @@ implements AgentRunAdmissionSnapshotReader {
       binding: cloneAgentRunBinding(binding),
       input: {
         messages: [
-          ...(instructionText.length === 0 ? [] : [{
-            kind: 'text' as const,
-            role: 'system' as const,
-            content: instructionText
-          }]),
-          ...(objective.execution.mode === 'plan' ? [{
-            kind: 'text' as const,
-            role: 'system' as const,
-            content: 'Plan mode is read-only. Inspect with read-only tools when needed, then respond with a concrete implementation plan. Do not request or invoke write or shell tools.'
-          }] : []),
-          { kind: 'text', role: 'user', content: objective.content }
+          ...systemMessages,
+          ...contextMessages
         ],
         availableTools
       }
@@ -218,6 +235,11 @@ implements AgentRunAdmissionSnapshotReader {
       const saga = await transaction.loadSaga(request.sagaId);
       const head = await transaction.loadMessageHead(request.objectiveMessageId);
       const message = await transaction.loadMessageVersion(
+        request.objectiveMessageId,
+        request.objectiveMessageVersion
+      );
+      const history = await transaction.loadSessionMessageHistoryThrough(
+        request.sessionId,
         request.objectiveMessageId,
         request.objectiveMessageVersion
       );
@@ -273,6 +295,27 @@ implements AgentRunAdmissionSnapshotReader {
           'Conversation admission authority drifted from the immutable Handoff request.'
         );
       }
+      if (
+        history.length === 0
+        || history.length > 2_048
+        || history.some((entry) => {
+          try {
+            assertValidConversationMessageVersion(entry);
+          } catch {
+            return true;
+          }
+          return entry.sessionId !== session.sessionId
+            || entry.workspaceId !== session.workspaceId;
+        })
+        || history.at(-1)?.messageId !== message.messageId
+        || history.at(-1)?.version !== message.version
+        || history.at(-1)?.contentDigest !== message.contentDigest
+      ) {
+        throw error(
+          'AGENT_ADMISSION_CONTEXT_INVALID',
+          'Conversation history does not terminate at the exact immutable objective.'
+        );
+      }
       return Object.freeze({
         sessionId: session.sessionId,
         workspaceId: session.workspaceId,
@@ -282,7 +325,8 @@ implements AgentRunAdmissionSnapshotReader {
         content: message.payload.content,
         execution: structuredClone(
           message.payload.execution ?? { mode: 'agent' as const }
-        )
+        ),
+        history: history.map((entry) => structuredClone(entry))
       });
     });
   }

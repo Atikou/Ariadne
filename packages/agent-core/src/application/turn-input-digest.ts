@@ -3,8 +3,8 @@ import { assertValidAgentAvailableTool } from '../domain/tool.js';
 import { assertCanonicalPublicId } from '../domain/values.js';
 import type { AgentTurnInput, AgentTurnInputModelData } from './agent-engine.js';
 
-/** Leaves one request slot for the Engine's mandatory protocol System message. */
-const MAX_MESSAGES = 1_023;
+/** Protected history may exceed one Provider request; v3 compacts it first. */
+const MAX_MESSAGES = 2_047;
 const MAX_TOOLS = 1_000;
 /**
  * Bounded canonical JSON leaves room for snapshot metadata, the Engine's
