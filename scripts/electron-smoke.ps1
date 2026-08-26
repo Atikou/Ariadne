@@ -125,6 +125,13 @@ $agentDatabasePath = Join-Path $smokeDataRoot "runtime\data\agent-control\agent-
 $projectionDatabasePath = Join-Path $smokeDataRoot "runtime\data\public-projection\projection.db"
 $effectBoundaryPath = Join-Path $smokeDataRoot "effect-started-boundary.marker"
 $projectionBoundaryPath = Join-Path $smokeDataRoot "projection-pending-boundary.marker"
+$runtimeKillAckRoot = Join-Path $workspaceRoot "runtime-kills"
+$runtimeKillAckNames = @(
+  "inference-killed.json",
+  "effect-killed.json",
+  "projection-killed.json"
+)
+$runtimeKillScenarios = @("crash_inference", "crash_effect", "crash_projection")
 $providerPassphrase = "ariadne-electron-smoke"
 $providerModel = "ariadne-smoke-model"
 $nodePath = (Get-Command node -ErrorAction Stop).Source
@@ -160,6 +167,7 @@ if (-not (Test-Path -LiteralPath $electronPath -PathType Leaf)) {
 New-Item -ItemType Directory -Path $smokeDataRoot | Out-Null
 New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $workspaceRoot "fixtures") -Force | Out-Null
+New-Item -ItemType Directory -Path $runtimeKillAckRoot -Force | Out-Null
 [IO.File]::WriteAllText(
   (Join-Path $workspaceRoot "fixtures\read.txt"),
   "ARIADNE_SMOKE_READ_FIXTURE",
@@ -213,8 +221,15 @@ try {
   $runtimeKillPhase = 0
   while (-not $process.HasExited) {
     if ($runtimeKillPhase -lt 3 -and (Test-Path -LiteralPath $providerStatePath -PathType Leaf)) {
+      $providerSnapshot = $null
       try {
         $providerSnapshot = Get-Content -Raw -Encoding UTF8 -LiteralPath $providerStatePath | ConvertFrom-Json
+      }
+      catch {
+        # The Provider replaces this JSON atomically. A transient read failure is
+        # not a failed boundary; the next poll reads the complete snapshot.
+      }
+      if ($null -ne $providerSnapshot) {
         $shouldKill = switch ($runtimeKillPhase) {
           0 { $providerSnapshot.scenarios.crash_inference.requests -ge 1 }
           1 { Test-Path -LiteralPath $effectBoundaryPath -PathType Leaf }
@@ -234,13 +249,26 @@ try {
           $runtime = Find-SmokeRuntimeProcess -ElectronProcessId $process.Id `
             -RuntimeEntryPath $runtimeEntryPath
           if ($null -ne $runtime) {
-            Stop-Process -Id ([int]$runtime.ProcessId) -Force
+            $runtimeProcessId = [int]$runtime.ProcessId
+            $stoppedRuntime = Stop-Process -Id $runtimeProcessId -Force -PassThru
+            if (-not $stoppedRuntime.WaitForExit(5000)) {
+              throw "Electron smoke Runtime process $runtimeProcessId did not exit after boundary kill."
+            }
+            $acknowledgement = [ordered]@{
+              protocol = "ariadne-electron-smoke-runtime-kill.v1"
+              phase = $runtimeKillPhase
+              scenario = $runtimeKillScenarios[$runtimeKillPhase]
+              runtimeProcessId = $runtimeProcessId
+              killedAt = [DateTime]::UtcNow.ToString("O")
+            } | ConvertTo-Json -Compress
+            [IO.File]::WriteAllText(
+              (Join-Path $runtimeKillAckRoot $runtimeKillAckNames[$runtimeKillPhase]),
+              $acknowledgement,
+              [Text.UTF8Encoding]::new($false)
+            )
             $runtimeKillPhase += 1
           }
         }
-      }
-      catch {
-        if ($_.Exception.Message -like "Electron smoke found multiple Runtime*") { throw }
       }
     }
     Start-Sleep -Milliseconds 10

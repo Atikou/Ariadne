@@ -29,7 +29,7 @@ npm.cmd run verify:reproducible
 npm.cmd run test:electron
 ```
 
-`verify:reproducible` 依次检查源码快照、类型、全量测试、依赖方向、热点边界、Runtime 独立性和发布契约。`test:electron` 另外验证真实 Electron 窗口及 Runtime 强杀恢复；它不由普通静态 CI 代替。
+`verify:reproducible` 依次检查源码快照、类型、全量测试、依赖方向、热点边界、Runtime 独立性和发布契约。`test:electron` 另外验证真实 Electron 窗口及三处 Runtime 强杀恢复；每一处都必须由外层验证器确认目标进程已经退出并写入本次运行的确认标记，Renderer 才能继续验证恢复结果。artifact 中的 `runtimeBoundaryKillsAcknowledged` 和三项恢复语义必须同时为 `true`，因此最终状态自然完成不能伪装成崩溃恢复通过。它不由普通静态 CI 代替。
 
 ## `verify:source-snapshot` 的失败条件
 

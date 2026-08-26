@@ -26,6 +26,7 @@ interface SmokeResult {
   inferenceCrashRecovered: boolean;
   effectCrashRecoveredWithoutReplay: boolean;
   projectionCrashReplayedWithoutDuplicateEffect: boolean;
+  runtimeBoundaryKillsAcknowledged: boolean;
   providerTraceValid: boolean;
   providerRequests: number;
   providerResponses: number;
@@ -60,6 +61,7 @@ interface SmokeObservation {
   inferenceCrashRecovered?: boolean;
   effectCrashRecoveredWithoutReplay?: boolean;
   projectionCrashReplayedWithoutDuplicateEffect?: boolean;
+  runtimeBoundaryKillsAcknowledged?: boolean;
 }
 
 interface ProviderScenarioState {
@@ -219,6 +221,10 @@ export async function runElectronSmokeTest(
           workspaceId: 'primary',
           relativePath
         });
+        const waitForRuntimeKillAck = (name) => waitUntilAcrossRuntimeRestart(async () => {
+          const listing = await listWorkspace('runtime-kills');
+          return listing.entries.some((entry) => entry.name === name) ? true : null;
+        }, 90_000);
 
         const settings = await api.agentSettings.load();
         const configured = await api.agentSettings.apply({
@@ -390,6 +396,7 @@ export async function runElectronSmokeTest(
 
         const crashedInference = await createRun('ariadne-smoke:crash_inference');
         await waitForRun(crashedInference.runId, (run) => run.status === 'running');
+        const inferenceKillAcknowledged = await waitForRuntimeKillAck('inference-killed.json');
         const inferenceRecovery = await waitUntilAcrossRuntimeRestart(async () => {
           const runtime = await api.runtime.getStatus();
           if (!runtime.ok || runtime.value.availability !== 'ready') return null;
@@ -401,6 +408,7 @@ export async function runElectronSmokeTest(
         const crashedEffect = await createRun('ariadne-smoke:crash_effect');
         const crashEffectDecision = await pendingPermission(crashedEffect.runId);
         await resolvePermission(crashedEffect.runId, crashEffectDecision, 'allow_once');
+        const effectKillAcknowledged = await waitForRuntimeKillAck('effect-killed.json');
         const effectRecovery = await waitUntilAcrossRuntimeRestart(async () => {
           const runtime = await api.runtime.getStatus();
           if (!runtime.ok || runtime.value.availability !== 'ready') return null;
@@ -413,6 +421,7 @@ export async function runElectronSmokeTest(
         const crashedProjection = await createRun('ariadne-smoke:crash_projection');
         const crashProjectionDecision = await pendingPermission(crashedProjection.runId);
         await resolvePermission(crashedProjection.runId, crashProjectionDecision, 'allow_once');
+        const projectionKillAcknowledged = await waitForRuntimeKillAck('projection-killed.json');
         const projectionTerminal = await waitUntilAcrossRuntimeRestart(async () => {
           const runtime = await api.runtime.getStatus();
           if (!runtime.ok || runtime.value.availability !== 'ready') return null;
@@ -458,7 +467,10 @@ export async function runElectronSmokeTest(
             && cancelledTerminal.run.status === 'cancelled',
           inferenceCrashRecovered: inferenceRecovery.run.status === 'interrupted',
           effectCrashRecoveredWithoutReplay,
-          projectionCrashReplayedWithoutDuplicateEffect
+          projectionCrashReplayedWithoutDuplicateEffect,
+          runtimeBoundaryKillsAcknowledged: inferenceKillAcknowledged
+            && effectKillAcknowledged
+            && projectionKillAcknowledged
         };
       } catch (error) {
         return { fatalError: error instanceof Error ? error.stack ?? error.message : String(error) };
@@ -499,6 +511,7 @@ export async function runElectronSmokeTest(
       effectCrashRecoveredWithoutReplay: observation.effectCrashRecoveredWithoutReplay === true,
       projectionCrashReplayedWithoutDuplicateEffect:
         observation.projectionCrashReplayedWithoutDuplicateEffect === true,
+      runtimeBoundaryKillsAcknowledged: observation.runtimeBoundaryKillsAcknowledged === true,
       providerTraceValid,
       providerRequests: providerState.requests,
       providerResponses: providerState.responses,
@@ -529,6 +542,7 @@ export async function runElectronSmokeTest(
       && result.inferenceCrashRecovered
       && result.effectCrashRecoveredWithoutReplay
       && result.projectionCrashReplayedWithoutDuplicateEffect
+      && result.runtimeBoundaryKillsAcknowledged
       && result.providerTraceValid
       && result.fatalError === null
       && result.consoleErrors.length === 0;

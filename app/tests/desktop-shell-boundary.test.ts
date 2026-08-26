@@ -1,5 +1,5 @@
 import { readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 async function collectSourceFiles(directory: string): Promise<string[]> {
@@ -88,8 +88,13 @@ describe('Ariadne desktop architecture boundary', () => {
   });
 
   it('uses the v3 Projection as the Electron smoke model oracle', async () => {
+    const projectRoot = resolve(process.cwd(), '..');
     const smoke = await readFile(
       join(process.cwd(), 'src', 'main', 'smoke', 'electron-smoke.ts'),
+      'utf8'
+    );
+    const wrapper = await readFile(
+      join(projectRoot, 'scripts', 'electron-smoke.ps1'),
       'utf8'
     );
 
@@ -98,7 +103,13 @@ describe('Ariadne desktop architecture boundary', () => {
     expect(smoke).toContain('runtimeStatusConsistent');
     expect(smoke).toContain('conversationContextMenuVisible');
     expect(smoke).toContain("document.querySelectorAll('[data-runtime-availability]')");
+    expect(smoke).toContain("waitForRuntimeKillAck('inference-killed.json')");
+    expect(smoke).toContain("waitForRuntimeKillAck('effect-killed.json')");
+    expect(smoke).toContain("waitForRuntimeKillAck('projection-killed.json')");
+    expect(smoke).toContain('runtimeBoundaryKillsAcknowledged');
     expect(smoke).not.toContain("kind: 'models.list'");
+    expect(wrapper).toContain('ariadne-electron-smoke-runtime-kill.v1');
+    expect(wrapper).toMatch(/Stop-Process[\s\S]*?WaitForExit\(5000\)[\s\S]*?WriteAllText/);
   });
 
   it('requires an authorized workspace identity for file and terminal capabilities', async () => {
