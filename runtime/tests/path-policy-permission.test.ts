@@ -79,7 +79,8 @@ describe("path and permission normalization", () => {
 
   it("uses an external file parent as execution root without widening the approved target", () => {
     const workspaceRoot = mkdtempSync(path.join(os.tmpdir(), "ariadne-primary-path-"));
-    const externalRoot = mkdtempSync(path.join(process.cwd(), ".ariadne-external-path-"));
+    const externalParent = process.platform === "win32" ? os.homedir() : os.tmpdir();
+    const externalRoot = mkdtempSync(path.join(externalParent, ".ariadne-external-path-"));
     roots.push(workspaceRoot, externalRoot);
     const absoluteTarget = path.join(externalRoot, "proof.txt");
 
