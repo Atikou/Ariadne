@@ -51,6 +51,8 @@ deepseek-harness 自身仍标记为 developer preview，并明确允许破坏性
 - [Capability Seams](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/docs/capability-seams.md)
 - [Extension Cookbook](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/docs/cookbook/extension-cookbook.md)
 - [SubAgent Capability Family](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/subagent/README.md)
+- [Persistent Terminal Service](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/docs/subsystems/terminal.md)
+- [Model-facing Terminal Tools](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/terminal/tool-terminal/README.md)
 - [Windows ACL Sandbox](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/sandbox/sandbox-windows-acl/README.md)
 
 ### 2.2 Ariadne 快照边界
@@ -155,7 +157,7 @@ Ariadne 当前使用编译验证过的 immutable Tool Catalog，并将工具身�
 | 已修复 | 能力装配硬编码 | 单一 bootstrap Manifest 驱动 Provider 图、Catalog、status、诊断与生命周期 | 保持静态、冻结、可审计；不引入任意磁盘动态加载 |
 | 已修复 | Skills 全量注入 | bootstrap 固定 metadata/revision，正文只经 `skill.load` 进入受保护 continuation | 保持按需加载、版本核验和无脚本执行 |
 | 已修复 | Hooks 仅有 `run.pre` | 8 个 typed v3 生命周期边界已接入，pre 可拒绝、post 只观察 | 保持稳定 delivery identity、去重和敏感数据零载荷 |
-| P2 | 后台任务与终端缺失 | 一次性命令为主，无持久 PTY/Job 控制 | owner-scoped terminal、background job list/read/stop |
+| 部分修复 | 后台任务与终端缺失 | v3 已有 owner-scoped 持久进程资源和 list/read/write/stop；仍不是 PTY | 补齐真实 PTY、前台进程组 signal 与完成通知 |
 | 已修复 | Diagnostics/Telemetry 未闭环 | 生命周期诊断已脱敏、持久、可重放且有 512 条 retention；Telemetry 由启动成功的 Provider 宣告 | 扩展事件种类时继续保持 observer 与 authority 分离 |
 | P2 | Provider Resilience 设置未落地 | schema 可配置，v3 Gateway 不消费 | Adapter 层统一 retry/rate-limit/circuit-breaker |
 
@@ -492,11 +494,19 @@ Diagnostics/Telemetry 当前满足：
 - Browser screenshot/download/click/type/scroll/navigate/snapshot/wait；
 - Workspace list/read/write/run command。
 
+已补齐：
+
+- Agent Run + workspace 双重所有权的持久进程资源；
+- 稳定 resource id、幂等 start，以及跨 Tool Effect 的 list/read/write/stop；
+- stdout/stderr 有序 cursor、512 KiB 有界保留、Run terminal/Runtime shutdown 的 cancel + join；
+- 一次性 `workspace.run_command` 保留为有限、可审计任务的默认路径。
+
+边界说明：进程句柄只在当前 Runtime 生命周期内有效，Runtime 重启不会伪造“已恢复”的 OS 进程；可重放的是持久化的 Tool call/result，关闭时所有活跃 Lease 都会被取消并等待收敛。
+
 仍缺少：
 
-- owner-scoped persistent PTY；
-- background job registry；
-- list/read/send/kill 控制；
+- owner-scoped persistent PTY（当前是可交互 stdin 的管道进程，不伪装为 PTY）；
+- 前台进程组 signal、提示符/静默等待判断和后台完成通知；
 - 结构化文件搜索；
 - Git 状态/差异工具；
 - v3 Code Intelligence/LSP consumer。

@@ -11,7 +11,12 @@ import { ConfiguredAgentLifecycleHooks } from './ConfiguredAgentLifecycleHooks.j
 /** Connects typed v3 dispatch boundaries to configured Hooks without payload access. */
 export class ProductionAgentLifecycleBridge
 implements AgentDispatchLifecycleObserver {
-  public constructor(private readonly hooks: ConfiguredAgentLifecycleHooks) {}
+  public constructor(
+    private readonly hooks: ConfiguredAgentLifecycleHooks,
+    private readonly terminalObserver?: {
+      closeOwner(runId: string): void | Promise<void>;
+    }
+  ) {}
 
   public observe(observation: AgentDispatchLifecycleObservation): void {
     this.hooks.observe(
@@ -25,6 +30,12 @@ implements AgentDispatchLifecycleObserver {
         observation.runId,
         observation.occurredAt
       );
+      try {
+        void Promise.resolve(this.terminalObserver?.closeOwner(observation.runId))
+          .catch(() => undefined);
+      } catch {
+        // Resource cleanup is observer-only and cannot change committed Run state.
+      }
     }
   }
 

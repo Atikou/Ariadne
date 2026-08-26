@@ -171,6 +171,9 @@ export interface ProductionAgentControlExecutionPipelineFactoryOptions {
     AgentRunWorkSchedulerOptions,
     'startedWorkRecovery' | 'authorityVerifier'
   >;
+  readonly processSessionLifecycle?: {
+    closeOwner(runId: string): void | Promise<void>;
+  };
 }
 
 export class ProductionAgentControlExecutionPipelineError extends Error {
@@ -246,7 +249,10 @@ implements AgentControlExecutionPipelineFactory {
       input.runtimePolicy?.hooks.definitions ?? [],
       input.hookDeliverySink
     );
-    const lifecycle = new ProductionAgentLifecycleBridge(lifecycleHooks);
+    const lifecycle = new ProductionAgentLifecycleBridge(
+      lifecycleHooks,
+      this.options.processSessionLifecycle
+    );
     const catalogs = new ImmutableAgentToolCatalogRegistry(
       this.options.toolCatalogSnapshots,
       lifecycleHooks

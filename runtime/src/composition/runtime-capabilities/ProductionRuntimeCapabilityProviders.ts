@@ -1,7 +1,9 @@
 import { ProductionMcpAgentClient } from '../../adapters/mcp/ProductionMcpAgentClient.js';
 import { createBrowserAgentToolRegistrations } from '../first-party-tools/BrowserAgentTools.js';
 import { createMcpAgentToolRegistrations } from '../first-party-tools/McpAgentTools.js';
+import { createProcessSessionAgentToolRegistrations } from '../first-party-tools/ProcessSessionAgentTools.js';
 import { createWorkspaceAgentToolRegistrations } from '../first-party-tools/WorkspaceAgentTools.js';
+import { AgentProcessSessionService } from '../../control/resources/AgentProcessSessionService.js';
 import { defineRuntimeCapabilityProvider, type RuntimeCapabilityProvider } from './RuntimeCapabilityProvider.js';
 import { agentExtensionCapabilityProviders } from './AgentExtensionCapabilityProviders.js';
 
@@ -37,6 +39,22 @@ export function productionRuntimeCapabilityProviders(): readonly RuntimeCapabili
       })
     ),
     defineRuntimeCapabilityProvider(
+      'workspace.process-sessions', ['workspace.tools'],
+      ['agent.process-sessions'], ['background.tasks'],
+      (context) => {
+        const sessions = new AgentProcessSessionService(context.processSandboxFactory);
+        const enabled = context.processSandboxFactory !== undefined
+          && context.bootstrap.agentPermissions?.allowedPermissions.includes('shell') === true
+          && [...context.workspaceBindings.values()].some((workspace) => workspace.access === 'write');
+        return {
+          publicCapabilities: enabled ? ['background.tasks'] : [],
+          tools: createProcessSessionAgentToolRegistrations(context.workspaceBindings, sessions),
+          services: { 'agent.process-sessions': sessions },
+          close: async (shutdown) => sessions.close(shutdown.remainingMs())
+        };
+      }
+    ),
+    defineRuntimeCapabilityProvider(
       'browser.tools', ['agent.control'], ['agent.tools.browser'], ['browser.web'],
       (context) => ({
         publicCapabilities: context.bootstrap.agentPermissions?.allowedPermissions
@@ -60,7 +78,7 @@ export function productionRuntimeCapabilityProviders(): readonly RuntimeCapabili
       }
     ),
     defineRuntimeCapabilityProvider(
-      'agent.tools', ['workspace.tools', 'browser.tools', 'mcp.tools'],
+      'agent.tools', ['workspace.process-sessions', 'browser.tools', 'mcp.tools'],
       ['agent.tool-catalog'], ['agent.tools'],
       () => ({ publicCapabilities: ['agent.tools'] })
     ),

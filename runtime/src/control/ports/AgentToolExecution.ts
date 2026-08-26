@@ -49,6 +49,13 @@ export interface AgentToolContractDocumentV1 {
     | 'workspace_relative_path'
     | 'workspace_resource_id'
     | 'external_resource_id';
+  /** Whether one invocation is bounded or controls a Runtime-owned resource. */
+  readonly lifecycleSemantics:
+    | 'bounded_invocation'
+    | 'resource_create'
+    | 'resource_observe'
+    | 'resource_mutate'
+    | 'resource_close';
   readonly sideEffect: 'none' | 'read' | 'write' | 'external';
   readonly idempotency:
     | 'not_idempotent'

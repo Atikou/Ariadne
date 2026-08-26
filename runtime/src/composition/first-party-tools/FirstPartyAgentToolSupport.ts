@@ -36,6 +36,7 @@ interface RegistrationDefinition {
   readonly approval: 'never' | 'required';
   readonly timeoutMs?: number;
   readonly resourceSemantics?: AgentToolContractDocumentV1['resourceSemantics'];
+  readonly lifecycleSemantics?: AgentToolContractDocumentV1['lifecycleSemantics'];
   readonly inputSchema: AgentToolJsonValue;
   readonly outputSchema: AgentToolJsonValue;
   readonly validate: AgentToolExecutableImplementationV1['normalizeAndValidate'];
@@ -63,6 +64,7 @@ export function registration(
     permission: { authority: 'run_grant', approval: definition.approval },
     scopeSemantics: 'all_requested_workspace_scopes_must_be_granted',
     resourceSemantics: definition.resourceSemantics ?? 'workspace_relative_path',
+    lifecycleSemantics: definition.lifecycleSemantics ?? 'bounded_invocation',
     sideEffect: definition.sideEffect,
     idempotency: definition.sideEffect === 'read'
       ? 'not_idempotent'

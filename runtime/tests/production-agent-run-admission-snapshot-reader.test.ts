@@ -733,6 +733,7 @@ function registration(
     permission: { authority: 'run_grant', approval: 'never' },
     scopeSemantics: 'all_requested_workspace_scopes_must_be_granted',
     resourceSemantics: 'workspace_relative_path',
+    lifecycleSemantics: 'bounded_invocation',
     sideEffect: access,
     idempotency: access === 'write'
       ? 'idempotency_key_required'

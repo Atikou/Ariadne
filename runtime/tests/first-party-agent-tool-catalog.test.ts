@@ -60,9 +60,7 @@ describe('first-party Agent Tool Catalog', () => {
     const sandbox = {
       mode: 'workspace-write' as const,
       runFile,
-      runShell: vi.fn(),
-      startFile: vi.fn(),
-      startShell: vi.fn()
+      openFileLease: vi.fn()
     };
     const catalog = await compileCapabilityCatalog([{
       workspaceId: 'workspace-command',
@@ -116,6 +114,16 @@ describe('first-party Agent Tool Catalog', () => {
     expect(catalog.entries.map((entry) => entry.document.toolName)).toEqual(
       [...FIRST_PARTY_AGENT_TOOL_NAMES]
     );
+    expect(catalog.entries.find((entry) => entry.document.toolName === 'workspace.run_command')
+      ?.document.lifecycleSemantics).toBe('bounded_invocation');
+    expect(catalog.entries.find((entry) => entry.document.toolName === 'workspace.process_start')
+      ?.document.lifecycleSemantics).toBe('resource_create');
+    expect(catalog.entries.find((entry) => entry.document.toolName === 'workspace.process_read')
+      ?.document.lifecycleSemantics).toBe('resource_observe');
+    expect(catalog.entries.find((entry) => entry.document.toolName === 'workspace.process_write')
+      ?.document.lifecycleSemantics).toBe('resource_mutate');
+    expect(catalog.entries.find((entry) => entry.document.toolName === 'workspace.process_stop')
+      ?.document.lifecycleSemantics).toBe('resource_close');
 
     const navigate = catalog.entries.find(
       (entry) => entry.document.toolName === 'browser.navigate'

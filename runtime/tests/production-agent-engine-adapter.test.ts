@@ -57,6 +57,7 @@ describe('ProductionAgentEngineAdapter', () => {
         toolVersion: fixture.tool.toolVersion,
         capabilityIds: ['workspace.write'],
         scopeSemantics: 'all_requested_workspace_scopes_must_be_granted',
+        lifecycleSemantics: 'bounded_invocation',
         allowedScopes: ['src'],
         inputSchema: { type: 'object' }
       }]
@@ -570,7 +571,8 @@ describe('ProductionAgentEngineAdapter', () => {
         descriptorVersion: 1,
         tool: { ...fixture.tool, contractDigest: `sha256:${'f'.repeat(64)}` },
         inputSchema: { type: 'object' },
-        scopeSemantics: 'all_requested_workspace_scopes_must_be_granted'
+        scopeSemantics: 'all_requested_workspace_scopes_must_be_granted',
+        lifecycleSemantics: 'bounded_invocation'
       }])
     };
     const adapter = new ProductionAgentEngineAdapter(
@@ -1071,7 +1073,8 @@ function exactContracts(
         required: ['path'],
         additionalProperties: false
       },
-      scopeSemantics: 'all_requested_workspace_scopes_must_be_granted' as const
+      scopeSemantics: 'all_requested_workspace_scopes_must_be_granted' as const,
+      lifecycleSemantics: 'bounded_invocation' as const
     }])
   };
 }

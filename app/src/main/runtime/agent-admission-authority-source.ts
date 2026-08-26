@@ -123,7 +123,10 @@ function createManifest(input: {
     toolName === 'workspace.list_files'
     || toolName === 'workspace.read_file'
     || (toolName === 'skill.load' && capabilitySet.has('skills.read'))
-    || (toolName === 'workspace.run_command' && capabilitySet.has('workspace.shell'))
+    || (
+      (toolName === 'workspace.run_command' || toolName.startsWith('workspace.process_'))
+      && capabilitySet.has('workspace.shell')
+    )
     || (toolName === 'workspace.write_file' && capabilitySet.has('workspace.write'))
     || (toolName.startsWith('mcp.') && capabilitySet.has('mcp.use'))
     || (

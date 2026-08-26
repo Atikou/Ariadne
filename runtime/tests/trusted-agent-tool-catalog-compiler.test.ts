@@ -62,8 +62,11 @@ describe('compileTrustedAgentToolCatalog', () => {
     const execute = contractDigest(registration({
       artifactOverrides: { execute: bytes('execute-artifact-v2') }
     }));
+    const lifecycle = contractDigest(registration({
+      lifecycleSemantics: 'resource_create'
+    }));
 
-    expect(new Set([baseline, schema, permission, normalizer, execute]).size).toBe(5);
+    expect(new Set([baseline, schema, permission, normalizer, execute, lifecycle]).size).toBe(6);
   });
 
   it('changes catalogDigest when a Tool or capability contract changes', () => {
@@ -186,6 +189,7 @@ function registration(options: RegistrationOptions = {}): TrustedAgentToolRegist
     permission: { authority: 'run_grant', approval: 'never' },
     scopeSemantics: 'all_requested_workspace_scopes_must_be_granted',
     resourceSemantics: 'workspace_relative_path',
+    lifecycleSemantics: 'bounded_invocation',
     sideEffect: 'write',
     idempotency: 'idempotency_key_required',
     recovery: 'retry_same_idempotency_key',

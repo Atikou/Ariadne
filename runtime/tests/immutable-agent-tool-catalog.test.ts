@@ -278,7 +278,8 @@ describe('ImmutableAgentToolCatalog', () => {
         required: ['path'],
         properties: { path: { type: 'string' } }
       },
-      scopeSemantics: 'all_requested_workspace_scopes_must_be_granted'
+      scopeSemantics: 'all_requested_workspace_scopes_must_be_granted',
+      lifecycleSemantics: 'bounded_invocation'
     }]);
     expect(Object.isFrozen(descriptors)).toBe(true);
     expect(Object.isFrozen(descriptors[0])).toBe(true);
@@ -365,6 +366,7 @@ function contractDocument(
     permission: { authority: 'run_grant', approval: 'never' },
     scopeSemantics: 'all_requested_workspace_scopes_must_be_granted',
     resourceSemantics: 'workspace_relative_path',
+    lifecycleSemantics: 'bounded_invocation',
     sideEffect: 'write',
     idempotency: 'idempotency_key_required',
     recovery: 'retry_same_idempotency_key',

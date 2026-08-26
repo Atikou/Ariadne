@@ -176,7 +176,8 @@ AgentInferenceToolContractReader {
             `inferenceToolContract.${entry.available.tool.toolName}.inputSchema`
           )
         ),
-        scopeSemantics: entry.document.scopeSemantics
+        scopeSemantics: entry.document.scopeSemantics,
+        lifecycleSemantics: entry.document.lifecycleSemantics
       });
     });
     signal.throwIfAborted();

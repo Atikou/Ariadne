@@ -60,7 +60,14 @@ describe('production Runtime Capability Manifest', () => {
       transport: 'streamable-http',
       endpoint: 'https://mcp.example.com/'
     }];
-    const manifest = await compileProductionRuntimeCapabilityManifest({ bootstrap });
+    const manifest = await compileProductionRuntimeCapabilityManifest({
+      bootstrap,
+      processSandboxFactory: () => ({
+        mode: 'workspace-write',
+        runFile: vi.fn(),
+        openFileLease: vi.fn()
+      })
+    });
 
     expect(manifest.publicCapabilities).toEqual([
       'agent.inbox',
@@ -68,6 +75,7 @@ describe('production Runtime Capability Manifest', () => {
       'agent.plans',
       'agent.runs',
       'agent.tools',
+      'background.tasks',
       'browser.web',
       'companion.agent-plan',
       'companion.chat',
@@ -92,7 +100,6 @@ describe('production Runtime Capability Manifest', () => {
       .toMatchObject({ status: 'started', publicCapabilities: ['mcp.tools'] });
     expect(manifest.unwiredPublicCapabilities).toEqual([
       'agent.proposals',
-      'background.tasks',
       'memory.manage',
       'resources',
       'scheduler'
@@ -139,7 +146,7 @@ describe('production Runtime Capability Manifest', () => {
         contractVersion: '1.0',
         requires: ['workspace.tools'],
         provides: ['invalid.public-output'],
-        publicCapabilities: ['background.tasks']
+        publicCapabilities: ['agent.proposals']
       },
       start: () => ({ publicCapabilities: ['scheduler'] })
     };

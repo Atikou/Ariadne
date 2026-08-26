@@ -89,6 +89,19 @@ describe('Main Agent admission authority source builder', () => {
   });
 
   it('only admits tools whose complete capability requirements are granted', () => {
+    const full = buildAgentAdmissionAuthoritySource(base);
+    expect(full.status).toBe('enabled');
+    if (full.status === 'enabled') {
+      expect(full.manifests[0]!.toolCatalog.allowedToolNames).toEqual(
+        expect.arrayContaining([
+          'workspace.process_start',
+          'workspace.process_list',
+          'workspace.process_read',
+          'workspace.process_write',
+          'workspace.process_stop'
+        ])
+      );
+    }
     const readOnly = buildAgentAdmissionAuthoritySource({
       ...base,
       allowedPermissions: ['read']

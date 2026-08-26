@@ -64,6 +64,7 @@ interface PreparedToolContract {
   readonly capabilityIds: readonly string[];
   readonly inputSchema: AgentToolJsonValue;
   readonly scopeSemantics: AgentInferenceToolContractDescriptorV1['scopeSemantics'];
+  readonly lifecycleSemantics: AgentInferenceToolContractDescriptorV1['lifecycleSemantics'];
   readonly allowedScopes: readonly string[];
 }
 
@@ -738,6 +739,7 @@ function prepareToolContracts(
       capabilityIds: Object.freeze([...available.capabilityIds]),
       inputSchema,
       scopeSemantics: descriptor.scopeSemantics,
+      lifecycleSemantics: descriptor.lifecycleSemantics,
       allowedScopes: Object.freeze(resolveAllowedScopes(
         input.run.binding,
         available,
@@ -854,6 +856,7 @@ function renderProtocolPrompt(
       toolVersion: tool.tool.toolVersion,
       capabilityIds: [...tool.capabilityIds],
       scopeSemantics: tool.scopeSemantics,
+      lifecycleSemantics: tool.lifecycleSemantics,
       allowedScopes: [...tool.allowedScopes],
       inputSchema: tool.inputSchema
     }))
@@ -997,18 +1000,27 @@ function isExactDescriptor(
 ): value is AgentInferenceToolContractDescriptorV1 {
   if (!isPlainObject(value)) return false;
   const keys = Object.keys(value);
-  return keys.length === 4
+  return keys.length === 5
     && keys.every((key) => [
       'descriptorVersion',
       'tool',
       'inputSchema',
-      'scopeSemantics'
+      'scopeSemantics',
+      'lifecycleSemantics'
     ].includes(key))
     && value.descriptorVersion === 1
     && (
       value.scopeSemantics === 'none'
       || value.scopeSemantics === 'all_requested_workspace_scopes_must_be_granted'
-    );
+    )
+    && typeof value.lifecycleSemantics === 'string'
+    && [
+      'bounded_invocation',
+      'resource_create',
+      'resource_observe',
+      'resource_mutate',
+      'resource_close'
+    ].includes(value.lifecycleSemantics);
 }
 
 function cloneToolCatalogBinding(

@@ -13,6 +13,12 @@ export interface AgentInferenceToolContractDescriptorV1 {
   readonly scopeSemantics:
     | 'none'
     | 'all_requested_workspace_scopes_must_be_granted';
+  readonly lifecycleSemantics:
+    | 'bounded_invocation'
+    | 'resource_create'
+    | 'resource_observe'
+    | 'resource_mutate'
+    | 'resource_close';
 }
 
 export interface ReadAgentInferenceToolContractsRequest {

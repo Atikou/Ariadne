@@ -169,6 +169,7 @@ function cloneAndValidateDocument(
     'permission',
     'scopeSemantics',
     'resourceSemantics',
+    'lifecycleSemantics',
     'sideEffect',
     'idempotency',
     'recovery',
@@ -216,6 +217,13 @@ function cloneAndValidateDocument(
     'workspace_resource_id',
     'external_resource_id'
   ], `${field}.resourceSemantics`);
+  assertOneOf(canonical.lifecycleSemantics, [
+    'bounded_invocation',
+    'resource_create',
+    'resource_observe',
+    'resource_mutate',
+    'resource_close'
+  ], `${field}.lifecycleSemantics`);
   assertOneOf(
     canonical.sideEffect,
     ['none', 'read', 'write', 'external'],

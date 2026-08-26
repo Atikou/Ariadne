@@ -690,6 +690,7 @@ function createProductionExecutionPipelineFactory(
   return new ProductionAgentControlExecutionPipelineFactory({
     toolCatalogSnapshots: input.capabilityManifest.agentToolCatalogSnapshots,
     credentialEnvironment: input.credentialEnvironment,
+    processSessionLifecycle: input.capabilityManifest.service('agent.process-sessions'),
     recoveryReporter: {
       reportExecutionIntentRecovery: async (notice) => {
         console.error('[agent-control] execution intent requires recovery', {
