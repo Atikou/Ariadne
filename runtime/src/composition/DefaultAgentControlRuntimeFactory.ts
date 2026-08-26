@@ -76,6 +76,7 @@ import { loadAgentPersistenceKeyRing } from './loadAgentPersistenceKeyRing.js';
 import {
   ConversationAgentResultCoordinator
 } from './ConversationAgentResultCoordinator.js';
+import { AgentTerminalResultCoordinator } from './AgentTerminalResultCoordinator.js';
 import {
   type AgentControlExecutionPipeline,
   type AgentControlExecutionPipelineFactory
@@ -162,11 +163,15 @@ implements AgentControlRuntimeLifecycle {
     const projectionWakePublisher = projectionWakeEventSink === undefined
       ? undefined
       : new PublicProjectionWakePublisher(projectionWakeEventSink);
-    const terminalResults = new ConversationAgentResultCoordinator(
+    const conversationTerminalResults = new ConversationAgentResultCoordinator(
       conversation,
       new ConversationAgentResultProjectionService(conversation),
       new ProtectedAgentTerminalAssistantContentResolver(unitOfWork),
       conversationCommandNow
+    );
+    const terminalResults = new AgentTerminalResultCoordinator(
+      unitOfWork,
+      conversationTerminalResults
     );
     this.agentPublisher = new AgentRunPublicProjectionPublisher(
       unitOfWork,

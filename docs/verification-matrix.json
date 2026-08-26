@@ -169,9 +169,24 @@
       "notes": "Conversation history, deterministic pressure compaction, Tool-result pruning, exact configured capacity and bounded overflow recovery are connected to v3 admission/inference with unit and production-pipeline integration evidence. Spill, exact Provider tokenizers, Memory/Embedding consumers, live models and real-window long-context scenarios remain unaccepted."
     },
     {
-      "module": "subagent-background-and-scheduler",
+      "module": "subagent-one-shot-child-run",
       "source": [
-        "runtime/src/subagent",
+        "packages/agent-core/src/application/agent-subagent-delegation-service.ts",
+        "packages/agent-core/src/application/agent-child-results-continuation-planner.ts",
+        "runtime/src/control/execution/AgentDelegatedInferenceDispatchController.ts",
+        "runtime/src/control/execution/AgentChildResultsContinuationController.ts",
+        "runtime/src/composition/AgentTerminalResultCoordinator.ts"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_accepted",
+      "realWindow": "not_accepted",
+      "realMachine": "not_accepted",
+      "notes": "The strict model Directive, atomic Parent/Delegation/Budget/Child commit, ordinary child scheduling, durable terminal observation, protected child-results continuation and Parent/Child public projection are connected and covered by the production-pipeline integration test. External or continuable providers, child-specific public control, live models and a real Electron SubAgent scenario remain unaccepted."
+    },
+    {
+      "module": "background-and-scheduler",
+      "source": [
         "runtime/src/background",
         "runtime/src/scheduler"
       ],
@@ -180,7 +195,7 @@
       "realModel": "not_accepted",
       "realWindow": "not_accepted",
       "realMachine": "not_accepted",
-      "notes": "Source and isolated tests exist. v3 model directives, public commands, projection, Renderer consumers and restart semantics are not a product capability."
+      "notes": "Source and isolated tests exist. v3 public commands, projection, Renderer consumers and restart semantics are not a product capability."
     },
     {
       "module": "diagnostics-telemetry-and-provider-resilience",

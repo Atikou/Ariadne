@@ -76,15 +76,16 @@ Message accepted
   -> deterministic exact-capacity context preparation
   -> inference-start checkpoint with context request digests
   -> exact model inference
-  -> respond | request decision | invoke tool
+  -> respond | request decision | invoke tool | delegate SubAgent
   -> authorized effect dispatch
   -> causal effect-result continuation
+  -> or ordinary Child Run + child-result continuation
   -> terminal result projection
 ```
 
 当前默认生产 Composition 已装配 `ProductionAgentControlExecutionPipelineFactory`、`AgentRunWorkScheduler`、精确模型网关和 immutable first-party Tool Catalog。Tool 身份、schema、输入摘要、工作区、能力授权和模型绑定在 admission 时固定；执行时不得按名称重新解析成另一实现。
 
-Plan、Budget、Delegation 和 Child Run 已进入 Agent Core/Control 权威模型，但 SubAgent 从模型 Directive、Child Run 调度到公开投影和 UI 的完整产品闭环尚未接通。
+Plan、Budget、Delegation 和 Child Run 已进入 Agent Core/Control 权威模型。one-shot SubAgent 已接通模型 Directive、原子 Child Run 创建、普通 v3 调度、终态结果回灌、公开父子投影和 UI 状态；外部/continuable Provider 与专用 Child 控制面尚未接入。
 
 ## 5. Public Projection 与 Renderer
 
@@ -108,7 +109,8 @@ Renderer 的写操作只使用 v3 Session/Message、Decision 和 Cancel 命令�
 | Hooks | v3 只消费 `run.pre` |
 | Context | Conversation 历史、压力压缩、Tool result pruning、overflow recovery 已进入 v3；spill 与精确 tokenizer 未完成 |
 | Memory/Embedding | 有旧实现和测试，但没有完整 v3 生产 consumer |
-| SubAgent/Background/Scheduler | 有领域或旧模块基础，没有 v3 产品闭环 |
+| SubAgent | one-shot ordinary Child Run 已形成 v3 产品闭环；外部/continuable Provider 未接入 |
+| Background/Scheduler | 有旧模块基础，没有 v3 产品闭环 |
 | Diagnostics/Telemetry/Provider Resilience | 有 schema/实现片段，v3 生命周期或 consumer 不完整 |
 
 Runtime status 只能宣告真实装配并满足权限条件的能力。协议枚举、设置字段、目录或单元测试本身都不是能力证据。

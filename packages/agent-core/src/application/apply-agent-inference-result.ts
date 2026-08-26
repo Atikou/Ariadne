@@ -227,6 +227,13 @@ function applySucceededDirective(
         events
       };
     }
+    case 'delegate_subagent':
+      return {
+        state: { status: 'running', checkpointVersion, enteredAt: occurredAt },
+        turns,
+        effects: run.effects,
+        events
+      };
     case 'invoke_tools':
       return applyToolInvocations(
         run,

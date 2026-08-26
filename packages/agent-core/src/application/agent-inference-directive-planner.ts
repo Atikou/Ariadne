@@ -50,7 +50,21 @@ export interface PlanAgentInferenceDirectiveRequest {
   readonly directive: AgentDirective;
   /** Exact catalog snapshot already bound by the Turn input digest. */
   readonly availableTools: AgentTurnInputModelData['availableTools'];
+  /** Protected current model history, used only to seed an admitted child Turn. */
+  readonly messages?: AgentTurnInputModelData['messages'];
   readonly occurredAt: string;
+}
+
+export interface AgentSubagentDelegationPlan {
+  readonly delegationId: string;
+  readonly childRunId: string;
+  readonly childGrantId: string;
+  readonly description: string;
+  readonly prompt: string;
+  readonly objective: AgentControlJsonValue;
+  readonly objectiveDigest: string;
+  readonly sourceMessages: AgentTurnInputModelData['messages'];
+  readonly availableTools: AgentTurnInputModelData['availableTools'];
 }
 
 export interface AgentInferenceDirectivePlan {
@@ -61,6 +75,7 @@ export interface AgentInferenceDirectivePlan {
   readonly effectPayloads: readonly AgentEffectPayloadCommit[];
   readonly directivePayloads: readonly AgentDirectivePayloadCommit[];
   readonly planVersions: readonly AgentPlanVersionCommit[];
+  readonly subagent?: AgentSubagentDelegationPlan;
 }
 
 /** Deterministic planning boundary; it performs no persistence or Tool I/O. */
@@ -118,6 +133,9 @@ implements AgentInferenceDirectivePlanner {
     }
 
     if (request.directive.kind !== 'invoke_tools') {
+      if (request.directive.kind === 'delegate_subagent') {
+        return this.planSubagentDelegation(request);
+      }
       const planned = await this.commitNonToolDirective(request);
       const result = await succeededPlan(planned.directive, planned.payloads);
       return { ...result, planVersions: planned.planVersions };
@@ -291,6 +309,71 @@ implements AgentInferenceDirectivePlanner {
     };
   }
 
+  private async planSubagentDelegation(
+    request: PlanAgentInferenceDirectiveRequest
+  ): Promise<AgentInferenceDirectivePlan> {
+    const source = request.directive;
+    if (source.kind !== 'delegate_subagent') {
+      throw new AgentRunInvariantError('SubAgent planning requires a delegation Directive.');
+    }
+    if (request.messages === undefined) {
+      return deterministicFailure(
+        'AGENT_SUBAGENT_CONTEXT_UNAVAILABLE',
+        'SubAgent delegation requires the exact protected parent Turn input.'
+      );
+    }
+    const identity = [
+      request.resultCommandId,
+      request.run.runId,
+      request.turn.turnId,
+      request.attempt.attemptId
+    ] as const;
+    const delegationId = await deriveStableAgentId('delegation', ...identity);
+    const childRunId = await deriveStableAgentId('delegated-run', ...identity);
+    const childGrantId = await deriveStableAgentId('delegated-budget', ...identity);
+    const objective: AgentControlJsonValue = {
+      format: 'ariadne.subagent-objective',
+      schemaVersion: 1,
+      description: source.subagent.description,
+      prompt: source.subagent.prompt
+    };
+    const objectiveDigest = await sha256AgentControlData(objective);
+    const directive: AgentCommittedDirective = {
+      kind: 'delegate_subagent',
+      delegationId,
+      childRunId,
+      objectiveDigest
+    };
+    return {
+      result: {
+        status: 'succeeded',
+        directive,
+        directiveDigest: await digestAgentCommittedDirective(directive)
+      },
+      effectPayloads: [],
+      directivePayloads: [],
+      planVersions: [],
+      subagent: {
+        delegationId,
+        childRunId,
+        childGrantId,
+        description: source.subagent.description,
+        prompt: source.subagent.prompt,
+        objective,
+        objectiveDigest,
+        sourceMessages: request.messages.map((message) => message.kind === 'text'
+          ? { ...message }
+          : {
+              ...message,
+              result: cloneCanonicalAgentToolInput(message.result)
+            }),
+        availableTools: request.availableTools.map((tool, index) => (
+          cloneAgentAvailableTool(tool, `subagent.availableTools[${String(index)}]`)
+        ))
+      }
+    };
+  }
+
   private async commitNonToolDirective(
     request: PlanAgentInferenceDirectiveRequest
   ): Promise<{
@@ -363,6 +446,10 @@ implements AgentInferenceDirectivePlanner {
           }]
         };
       }
+      case 'delegate_subagent':
+        throw new AgentRunInvariantError(
+          'SubAgent Directives must use the delegation planning branch.'
+        );
       case 'checkpoint': {
         const artifactId = await directiveArtifactId(request, 'checkpoint-reason');
         const contentDigest = await sha256AgentControlData(source.reason);

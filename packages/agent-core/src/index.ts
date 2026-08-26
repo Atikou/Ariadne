@@ -26,6 +26,8 @@ export * from './application/agent-run-command-service.js';
 export * from './application/agent-run-admission-service.js';
 export * from './application/admit-agent-run.js';
 export * from './application/agent-inference-directive-planner.js';
+export * from './application/agent-subagent-delegation-service.js';
+export * from './application/agent-child-results-continuation-planner.js';
 export * from './application/apply-agent-inference-result.js';
 export * from './application/agent-effect-dispatch-service.js';
 export * from './application/agent-effect-continuation-planner.js';

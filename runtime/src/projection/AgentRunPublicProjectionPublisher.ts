@@ -260,9 +260,14 @@ export function projectAgentRunV3(
     sessionId: run.binding.sessionId,
     ...(run.binding.objectiveRef.kind === 'conversation_message'
       ? { sourceMessageId: run.binding.objectiveRef.messageId }
-      : {}),
+      : {
+          parentRunId: run.binding.objectiveRef.parentRunId,
+          delegationId: run.binding.objectiveRef.delegationId
+        }),
     version: run.version,
-    title: 'Agent run',
+    title: run.binding.objectiveRef.kind === 'parent_delegation'
+      ? 'SubAgent task'
+      : 'Agent run',
     status: publicRunStatus(run),
     label: publicRunLabel(run),
     toolActivities: run.effects.map((effect) => {

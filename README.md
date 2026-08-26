@@ -30,7 +30,7 @@ Renderer 只消费 Public DTO；Main 拥有 OS 能力、凭据和 Runtime 生命
 - v3 Decision 处理；
 - v3 Run 取消。
 
-目录中仍存在的 Memory、Embedding、SubAgent、Scheduler、Background Task、完整 Hooks、Telemetry 和 Provider Resilience 代码，不等于这些能力已经接入 v3 产品路径。只有具备生产 Provider、Consumer、持久权威、公开投影、恢复测试并由 Runtime status 宣告的能力，才算产品能力。
+目录中仍存在的 Memory、Embedding、Scheduler、Background Task、旧 SubAgent、完整 Hooks、Telemetry 和 Provider Resilience 代码，不等于这些能力已经接入 v3 产品路径。只有具备生产 Provider、Consumer、持久权威、公开投影、恢复测试并由 Runtime status 宣告的能力，才算产品能力。
 
 ## 开发验证
 
@@ -59,7 +59,7 @@ npm.cmd run verify:release
 - 持久化 UoW、Composition Factory 和 First-party Tool Catalog 仍是大型热点；
 - Agent inbox 与运行中 steer/follow-up 已接入；仍缺少可恢复 token/reasoning 流和独立 context injection；
 - v3 已接入 Conversation 历史、确定性 Context compaction、Tool result pruning 和有界 Provider overflow recovery；spill 与精确 tokenizer 尚未接入；
-- Child Run 有领域基础，但 SubAgent 没有形成生产闭环；
+- one-shot ordinary Child SubAgent 已形成生产闭环；外部/continuable Provider 和 Child 专用控制面尚未接入；
 - 能力装配仍集中在工厂和静态目录，缺少冻结的 Capability Manifest；
 - Diagnostics、Telemetry、Provider Resilience 和完整 Hooks 尚未形成 v3 生命周期。
 

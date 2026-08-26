@@ -60,6 +60,14 @@ export type AgentTurnCause =
       readonly sourceAttemptId: string;
       readonly sourceDirectiveDigest: string;
       readonly inputIds: readonly string[];
+    }
+  | {
+      readonly kind: 'child_results';
+      readonly sourceTurnId: string;
+      readonly sourceAttemptId: string;
+      readonly sourceDirectiveDigest: string;
+      readonly delegationIds: readonly string[];
+      readonly childRunIds: readonly string[];
     };
 
 export interface AgentTurnIntention {
@@ -425,6 +433,7 @@ function assertValidTurnIntention(
   assertInputSummary(intention.inputSummary);
   const causeMatchesObjective = intention.cause.kind === 'effect_results'
     || intention.cause.kind === 'inbox_inputs'
+    || intention.cause.kind === 'child_results'
     || (
       intention.cause.kind === 'conversation_objective'
       && runBinding.objectiveRef.kind === 'conversation_message'
@@ -553,6 +562,42 @@ function assertValidTurnCause(cause: AgentTurnCause): void {
           'Inbox continuation requires at least one claimed input.'
         );
       }
+      return;
+    case 'child_results':
+      assertExactObjectKeys(
+        cause,
+        [
+          'kind',
+          'sourceTurnId',
+          'sourceAttemptId',
+          'sourceDirectiveDigest',
+          'delegationIds',
+          'childRunIds'
+        ],
+        'turn.intention.cause'
+      );
+      assertIdentifier(cause.sourceTurnId, 'turn.intention.cause.sourceTurnId');
+      assertIdentifier(cause.sourceAttemptId, 'turn.intention.cause.sourceAttemptId');
+      assertSha256Digest(
+        cause.sourceDirectiveDigest,
+        'turn.intention.cause.sourceDirectiveDigest'
+      );
+      assertDenseDataArray(cause.delegationIds, 'turn.intention.cause.delegationIds');
+      assertDenseDataArray(cause.childRunIds, 'turn.intention.cause.childRunIds');
+      assertUniqueCanonicalPublicIds(
+        cause.delegationIds,
+        'turn.intention.cause.delegationIds'
+      );
+      assertUniqueCanonicalPublicIds(cause.childRunIds, 'turn.intention.cause.childRunIds');
+      if (
+        cause.delegationIds.length === 0
+        || cause.delegationIds.length !== cause.childRunIds.length
+      ) {
+        throw new AgentRunInvariantError(
+          'Child-result Turn causes require non-empty paired Delegation and child Run identities.'
+        );
+      }
+      return;
       return;
   }
 }

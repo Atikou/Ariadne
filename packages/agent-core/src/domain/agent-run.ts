@@ -252,6 +252,7 @@ export function assertValidAgentRun(run: AgentRun): void {
         turnIndex > 0
         && turn.intention.cause.kind !== 'effect_results'
         && turn.intention.cause.kind !== 'inbox_inputs'
+        && turn.intention.cause.kind !== 'child_results'
       )
     ) {
       throw new AgentRunInvariantError(
@@ -321,6 +322,37 @@ export function assertValidAgentRun(run: AgentRun): void {
     const turn = run.turns[continuationIndex];
     if (turn === undefined) continue;
     const cause = turn.intention.cause;
+    if (cause.kind === 'child_results') {
+      const causalKey = [
+        cause.sourceTurnId,
+        cause.sourceAttemptId,
+        cause.sourceDirectiveDigest
+      ].join('\u0000');
+      const sourceTurnIndex = run.turns.findIndex(
+        (candidate: AgentTurn) => candidate.turnId === cause.sourceTurnId
+      );
+      const sourceAttempt = run.turns[sourceTurnIndex]?.attempts.find(
+        (candidate: AgentInferenceAttempt) => candidate.attemptId === cause.sourceAttemptId
+      );
+      if (
+        continuationCauses.has(causalKey)
+        || sourceTurnIndex < 0
+        || sourceTurnIndex >= continuationIndex
+        || sourceAttempt?.state.status !== 'succeeded'
+        || sourceAttempt.state.directive.kind !== 'delegate_subagent'
+        || sourceAttempt.state.directiveDigest !== cause.sourceDirectiveDigest
+        || cause.delegationIds.length !== 1
+        || cause.childRunIds.length !== 1
+        || cause.delegationIds[0] !== sourceAttempt.state.directive.delegationId
+        || cause.childRunIds[0] !== sourceAttempt.state.directive.childRunId
+      ) {
+        throw new AgentRunInvariantError(
+          'A child-result continuation must bind one earlier succeeded SubAgent Directive.'
+        );
+      }
+      continuationCauses.add(causalKey);
+      continue;
+    }
     if (cause.kind !== 'effect_results') continue;
     const causalKey = [
       cause.sourceTurnId,

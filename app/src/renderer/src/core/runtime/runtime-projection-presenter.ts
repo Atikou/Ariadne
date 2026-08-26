@@ -27,6 +27,8 @@ export type RuntimeRun = Omit<RunSummary, 'origin' | 'status'> & {
   status: PublicRunProjectionV3['status'];
   inbox: PublicAgentInboxInputV3[];
   interactionMessages: RuntimeMessage[];
+  parentRunId?: string;
+  delegationId?: string;
 };
 
 export type RuntimePermissionDecision = Omit<
@@ -103,6 +105,8 @@ export function presentRun(run: PublicRunProjectionV3): RuntimeRun {
     runId: run.runId,
     ...(run.sessionId === undefined ? {} : { sessionId: run.sessionId }),
     ...(run.sourceMessageId === undefined ? {} : { sourceMessageId: run.sourceMessageId }),
+    ...(run.parentRunId === undefined ? {} : { parentRunId: run.parentRunId }),
+    ...(run.delegationId === undefined ? {} : { delegationId: run.delegationId }),
     origin: 'projection',
     title: run.title,
     status: run.status,

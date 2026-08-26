@@ -7,6 +7,7 @@ import type {
   AgentAdmissionAuthoritySource,
   RuntimeBootstrap
 } from '@ariadne/protocol/host';
+import { AgentPlanBudgetChildRunService } from '@ariadne/agent-core';
 import { PUBLIC_PROJECTION_CONTRACT_VERSION } from '@ariadne/protocol/public';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -244,6 +245,104 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
       expect(url).toBe('https://provider.example/v1/chat/completions');
       expect(new Headers(init?.headers).get('authorization'))
         .toBe(`Bearer ${PROVIDER_SECRET}`);
+    } finally {
+      await harness.runtime.shutdown(createShutdownContext(Date.now() + 5_000));
+    }
+  });
+
+  it('closes the SubAgent loop through child execution, terminal observation, and parent continuation', async () => {
+    const catalog = trustedCatalog();
+    const responses = [
+      {
+        kind: 'delegate_subagent',
+        subagent: {
+          description: 'Inspect one bounded subsystem',
+          prompt: 'Inspect the bounded subsystem and report the decisive evidence.'
+        }
+      },
+      { kind: 'respond', content: 'child evidence' },
+      { kind: 'respond', content: 'parent used child evidence' }
+    ];
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+      const directive = responses.shift();
+      if (directive === undefined) throw new Error('unexpected_subagent_provider_call');
+      return providerResponse({
+        protocol: 'ariadne.agent-directive.v3',
+        directive
+      });
+    });
+    const source = enabledSource(catalog);
+    source.manifests[0]!.rootBudget.vector.modelTurns = 6;
+    const harness = await createHarness(
+      catalog,
+      source,
+      fetch
+    );
+    try {
+      await harness.runtime.start();
+      await createSession(harness.runtime);
+      const accepted = await harness.runtime.executeOwnedCommand(
+        messageEnvelope('message-subagent-e2e')
+      );
+      const sagaId = requireAcceptedSagaId(accepted);
+      await expect.poll(
+        () => harness.conversation.countPendingHandoffOutbox(),
+        { timeout: 2_000, interval: 5 }
+      ).toBe(0);
+      const saga = await harness.conversation.transaction(
+        (transaction) => transaction.loadSaga(sagaId)
+      );
+      if (saga?.stage.kind !== 'agent_run_linked') {
+        throw new Error('pipeline_subagent_run_not_linked');
+      }
+      await harness.pipeline.executionScheduler.drainOnce();
+      const parent = await harness.unitOfWork.transaction(
+        (transaction) => transaction.loadRun(saga.stage.runId)
+      );
+      expect(parent?.state.status).toBe('waiting_children');
+      const delegation = await harness.unitOfWork.transaction(async (transaction) => {
+        const items = await transaction.listDelegationsByParent?.(saga.stage.runId);
+        return items?.[0] ?? null;
+      });
+      if (parent === null || delegation === null) {
+        throw new Error('pipeline_subagent_delegation_missing');
+      }
+      await harness.pipeline.runWorkScheduler.drainOnce();
+      const child = await harness.unitOfWork.transaction(
+        (transaction) => transaction.loadRun(delegation.childRunId)
+      );
+      expect(child?.state.status).toBe('completed');
+      if (child === null || child.state.status !== 'completed') {
+        throw new Error('pipeline_subagent_child_not_terminal');
+      }
+      await new AgentPlanBudgetChildRunService(harness.unitOfWork).observeChildTerminal({
+        kind: 'control.children.observe_terminal',
+        commandId: 'observe-subagent-child-e2e',
+        runId: parent.runId,
+        expectedVersion: parent.version,
+        occurredAt: child.updatedAt,
+        childRunId: child.runId,
+        childRunVersion: child.version,
+        childStatus: 'completed'
+      });
+      await harness.pipeline.runWorkScheduler.drainOnce();
+      const completedParent = await harness.unitOfWork.transaction(
+        (transaction) => transaction.loadRun(parent.runId)
+      );
+      expect(completedParent).toMatchObject({
+        state: { status: 'completed' },
+        turns: [
+          { attempts: [{ state: { directive: { kind: 'delegate_subagent' } } }] },
+          {
+            intention: { cause: { kind: 'child_results' } },
+            attempts: [{ state: { directive: { kind: 'respond' } } }]
+          }
+        ]
+      });
+      expect(fetch).toHaveBeenCalledTimes(3);
+      const parentContinuation = JSON.stringify(requestBody(fetch.mock.calls[2]?.[1]));
+      expect(parentContinuation).toContain('ariadne.subagent-results');
+      expect(parentContinuation).toContain('child evidence');
     } finally {
       await harness.runtime.shutdown(createShutdownContext(Date.now() + 5_000));
     }

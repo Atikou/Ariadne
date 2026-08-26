@@ -100,6 +100,8 @@ export const publicRunProjectionV3Schema = z.object({
   runId: publicProjectionCanonicalIdSchema,
   sessionId: publicProjectionCanonicalIdSchema.optional(),
   sourceMessageId: publicProjectionCanonicalIdSchema.optional(),
+  parentRunId: publicProjectionCanonicalIdSchema.optional(),
+  delegationId: publicProjectionCanonicalIdSchema.optional(),
   version: versionSchema,
   title: boundedLabelSchema,
   status: z.enum([
@@ -125,6 +127,13 @@ export const publicRunProjectionV3Schema = z.object({
   startedAt: publicProjectionCanonicalTimestampSchema.optional(),
   completedAt: publicProjectionCanonicalTimestampSchema.optional()
 }).strict().superRefine((value, context) => {
+  if ((value.parentRunId === undefined) !== (value.delegationId === undefined)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['parentRunId'],
+      message: 'parentRunId and delegationId must appear together.'
+    });
+  }
   if (
     value.startedAt !== undefined
     && Date.parse(value.updatedAt) < Date.parse(value.startedAt)

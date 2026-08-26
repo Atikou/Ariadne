@@ -233,14 +233,16 @@ describe('AgentRunWorkClassifier', () => {
     });
   });
 
-  it('fails closed for a Delegation objective without a production owner', () => {
+  it('assigns a Delegation objective to the dedicated child inference owner', () => {
     const run = objectiveRun('delegation_objective', 'intended');
 
     expect(classifyAgentRunWork(run)).toMatchObject({
-      kind: 'unsupported',
-      reason: 'delegation_objective',
+      kind: 'dispatch_delegated_initial',
       turnId: SOURCE_TURN_ID,
-      attemptId: SOURCE_ATTEMPT_ID
+      attemptId: SOURCE_ATTEMPT_ID,
+      parentRunId: 'run-parent',
+      delegationId: 'delegation-work',
+      objectiveDigest: digest('9')
     });
   });
 

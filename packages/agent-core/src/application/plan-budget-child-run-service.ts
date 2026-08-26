@@ -554,6 +554,10 @@ export class AgentPlanBudgetChildRunService {
           childRunId: child.runId,
           childRunVersion: child.version,
           childStatus: command.childStatus
+        }, {
+          type: 'run.state_changed',
+          from: parent.state.status,
+          to: nextParent.state
         }],
         checkpointArtifacts(nextParent, command.occurredAt, {
           phase: nextParent.state.status,

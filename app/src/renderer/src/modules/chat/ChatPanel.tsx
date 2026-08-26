@@ -132,7 +132,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
     return options;
   }, [selectedSession, workspaces]);
   const nodes = useMemo(() => runtime.messages.map(toConversationNode), [runtime.messages]);
-  const activeRun = runtime.runs.find((run) => run.sessionId === runtime.selectedSessionId && [
+  const activeRun = runtime.runs.find((run) => run.parentRunId === undefined && run.sessionId === runtime.selectedSessionId && [
     'queued', 'running', 'waiting_permission', 'waiting_decision', 'waiting_budget',
     'waiting_children', 'cancelling'
   ].includes(run.status));

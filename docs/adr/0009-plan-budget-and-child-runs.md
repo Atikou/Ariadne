@@ -13,10 +13,11 @@ is the sole mutation primitive; old v2 production tables and the single-Run
 commit fallback are gone.
 
 Default production Composition routes Conversation admission, exact inference,
-Effect dispatch, continuation and recovery through this authority. Plan and
-Child Run rules are implemented and tested, but a complete SubAgent product
-consumer from model Directive through public projection/UI is not connected.
-Historical database migration and real-process crash acceptance remain pending.
+Effect dispatch, continuation and recovery through this authority. The first
+SubAgent product provider is now connected end to end: model Directive, atomic
+Parent/Child admission, ordinary Child scheduling, terminal observation,
+protected result continuation and Public Projection/Renderer status. Historical
+database migration and real-process SubAgent crash acceptance remain pending.
 
 ## Context
 
@@ -147,7 +148,8 @@ credential-like payloads are rejected before persistence, and two independent
 effect inputs from the same command and Run can coexist without weakening their
 exact command/version foreign-key binding.
 
-Default Composition owns initial Inference, Effect/Continuation and durable
-recovery scheduling. Child Run state is authoritative, while a complete
-SubAgent product consumer is still absent. Offline migration and a real
-process/window Agent smoke remain acceptance work beyond the Core/SQLite suite.
+Default Composition owns initial Inference, delegated initial Inference,
+Effect/Child-result continuation and durable recovery scheduling. The one-shot
+ordinary Child provider has production-pipeline integration coverage. Offline
+migration, external/continuable providers and a real process/window SubAgent
+smoke remain outside the accepted scope.

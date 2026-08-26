@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   AgentInferenceDispatchRecoveryRequiredError,
   AgentInferenceDispatchService,
+  AgentSubagentDelegationService,
   AgentRunAdmissionService,
   AgentRunCommandService,
   DefaultAgentInferenceDirectivePlanner,
@@ -36,6 +37,59 @@ const PROVIDER_KEY = 'provider-atomic-result';
 const DEFAULT_TOOLS = [testAvailableTool('workspace.write')];
 
 describe('atomic inference result application', () => {
+  it('atomically commits a model delegation with one executable ordinary child Run', async () => {
+    const setup = await admittedSetup({
+      runId: 'run-model-subagent-delegation',
+      permissionMode: 'trusted'
+    });
+    const dispatcher = createDispatcher(
+      setup,
+      {
+        decide: vi.fn(async () => ({
+          kind: 'delegate_subagent' as const,
+          subagent: {
+            description: 'Inspect the bounded subsystem',
+            prompt: 'Inspect the subsystem and return one concise evidence-backed result.'
+          }
+        }))
+      },
+      setup.unit,
+      ALLOW_TOOL_ADMISSION_POLICY,
+      new AgentSubagentDelegationService(setup.unit)
+    );
+
+    const result = await dispatcher.dispatch(
+      dispatchRequest('dispatch-model-subagent', setup.runId)
+    );
+    expect(result.run.state).toMatchObject({
+      status: 'waiting_children',
+      requiredChildRunIds: [expect.any(String)],
+      terminalChildRunIds: []
+    });
+    const directive = result.attempt.state.status === 'succeeded'
+      ? result.attempt.state.directive
+      : null;
+    expect(directive).toMatchObject({ kind: 'delegate_subagent' });
+    if (directive?.kind !== 'delegate_subagent') throw new Error('missing delegation');
+    const child = setup.unit.loadRun(directive.childRunId);
+    expect(child).toMatchObject({
+      runId: directive.childRunId,
+      version: 1,
+      state: { status: 'running' },
+      binding: {
+        objectiveRef: {
+          kind: 'parent_delegation',
+          parentRunId: setup.runId,
+          delegationId: directive.delegationId,
+          objectiveDigest: directive.objectiveDigest
+        },
+        budget: { source: { kind: 'parent_allocation', parentRunId: setup.runId } }
+      },
+      turns: [{ intention: { cause: { kind: 'delegation_objective' } } }]
+    });
+    expect(setup.unit.commitCount).toBe(3);
+  });
+
   it('rebases the durable start checkpoint over inbox input queued during preparation', async () => {
     const setup = await admittedSetup({
       runId: 'run-inference-preparation-inbox-concurrency',
@@ -1151,7 +1205,8 @@ function createDispatcher(
     decide(input: AgentTurnInput, signal: AbortSignal): Promise<AgentDirective>;
   },
   unitOfWork: AgentRunUnitOfWork = setup.unit,
-  toolAdmissionPolicy: AgentToolAdmissionPolicy = ALLOW_TOOL_ADMISSION_POLICY
+  toolAdmissionPolicy: AgentToolAdmissionPolicy = ALLOW_TOOL_ADMISSION_POLICY,
+  subagentDelegations?: AgentSubagentDelegationService
 ): AgentInferenceDispatchService {
   return new AgentInferenceDispatchService(
     unitOfWork,
@@ -1205,7 +1260,8 @@ function createDispatcher(
         };
       }
     },
-    { now: () => at(2) }
+    { now: () => at(2) },
+    subagentDelegations
   );
 }
 

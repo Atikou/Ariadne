@@ -18,7 +18,12 @@ import type { AgentRunWorkClassification } from './AgentRunWorkClassifier.js';
 
 type StartedWork = Extract<
   AgentRunWorkClassification,
-  { readonly kind: 'recovery_uncertain_effect' | 'recovery_uncertain_inference' }
+  {
+    readonly kind:
+      | 'recovery_uncertain_effect'
+      | 'recovery_uncertain_inference'
+      | 'recovery_uncertain_delegated_inference'
+  }
 >;
 
 export interface AgentStartedWorkRecoveryReceiptV1 {
@@ -213,21 +218,40 @@ export class AgentStartedWorkRecoveryCoordinator {
 
   private async recoverInference(
     run: AgentRun,
-    work: Extract<StartedWork, { readonly kind: 'recovery_uncertain_inference' }>,
+    work: Extract<
+      StartedWork,
+      {
+        readonly kind:
+          | 'recovery_uncertain_inference'
+          | 'recovery_uncertain_delegated_inference'
+      }
+    >,
     signal: AbortSignal
   ): Promise<AgentStartedWorkRecoveryReceiptV1> {
     const turn = run.turns.find((candidate) => candidate.turnId === work.turnId);
     const attempt = turn?.attempts.find(
       (candidate) => candidate.attemptId === work.attemptId
     );
+    const cause = turn?.intention.cause;
+    const exactContinuation = work.kind === 'recovery_uncertain_inference'
+      && (
+        cause?.kind === 'effect_results'
+        || cause?.kind === 'inbox_inputs'
+        || cause?.kind === 'child_results'
+      )
+      && cause.sourceTurnId === work.sourceTurnId
+      && cause.sourceAttemptId === work.sourceAttemptId
+      && cause.sourceDirectiveDigest === work.sourceDirectiveDigest;
+    const exactDelegation = work.kind === 'recovery_uncertain_delegated_inference'
+      && cause?.kind === 'delegation_objective'
+      && cause.parentRunId === work.parentRunId
+      && cause.delegationId === work.delegationId
+      && cause.objectiveDigest === work.objectiveDigest;
     if (
       turn === undefined
       || attempt?.state.status !== 'started'
-      || turn.intention.cause.kind !== 'effect_results'
       || turn.intention.inputDigest !== work.inputDigest
-      || turn.intention.cause.sourceTurnId !== work.sourceTurnId
-      || turn.intention.cause.sourceAttemptId !== work.sourceAttemptId
-      || turn.intention.cause.sourceDirectiveDigest !== work.sourceDirectiveDigest
+      || (!exactContinuation && !exactDelegation)
     ) {
       throw invariant('Started inference recovery identity drifted from the aggregate.');
     }

@@ -172,6 +172,9 @@ class RuntimeKernelApplication implements RuntimeApplication {
         'agent.permissions',
         'agent.plans',
         'agent.tools',
+        ...(this.input.bootstrap.agentAdmissionAuthoritySource.status === 'enabled'
+          ? ['agent.subagents' as const]
+          : []),
         'models.local',
         'models.remote',
         'workspace.read',

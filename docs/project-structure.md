@@ -44,7 +44,7 @@ Ariadne/
 │  ├─ src/sandbox/              # Process sandbox integration
 │  ├─ src/context/              # Context/Memory/Embedding/Repo Map implementations
 │  ├─ src/adapters/model/       # v3 exact inference 与生产长上下文生命周期
-│  ├─ src/subagent/             # 尚未形成 v3 产品闭环
+│  ├─ src/subagent/             # 旧隔离实现；不是 v3 one-shot Child 生产入口
 │  ├─ src/background/           # 尚未形成 v3 产品闭环
 │  ├─ src/scheduler/            # 尚未形成 v3 产品闭环
 │  ├─ src/telemetry/            # 尚未形成完整 v3 lifecycle

@@ -1,6 +1,7 @@
 import {
   AgentEffectDispatchService,
   AgentInferenceDispatchService,
+  AgentSubagentDelegationService,
   DefaultAgentInferenceDirectivePlanner,
   type AgentRunBinding
 } from '@ariadne/agent-core';
@@ -54,6 +55,15 @@ import {
 import {
   AgentFollowUpInferenceDispatchController
 } from '../control/execution/AgentFollowUpInferenceDispatchController.js';
+import {
+  AgentDelegatedInferenceDispatchController
+} from '../control/execution/AgentDelegatedInferenceDispatchController.js';
+import {
+  AgentChildResultsContinuationController
+} from '../control/execution/AgentChildResultsContinuationController.js';
+import {
+  ProtectedAgentTerminalAssistantContentResolver
+} from './ProtectedAgentTerminalAssistantContentResolver.js';
 import {
   V3AgentInferenceDispatchCheckpointFactory
 } from '../control/execution/AgentInferenceDispatchCheckpointFactory.js';
@@ -267,7 +277,9 @@ implements AgentControlExecutionPipelineFactory {
       inputReader,
       engine,
       directivePlanner,
-      new V3AgentInferenceDispatchCheckpointFactory()
+      new V3AgentInferenceDispatchCheckpointFactory(),
+      undefined,
+      new AgentSubagentDelegationService(input.unitOfWork)
     );
     const dispatcher = new AgentRunExecutionDispatchController(
       input.unitOfWork,
@@ -294,6 +306,15 @@ implements AgentControlExecutionPipelineFactory {
       input.unitOfWork,
       inference
     );
+    const delegatedInference = new AgentDelegatedInferenceDispatchController(
+      input.unitOfWork,
+      inference
+    );
+    const childResultsContinuation = new AgentChildResultsContinuationController(
+      input.unitOfWork,
+      input.unitOfWork,
+      new ProtectedAgentTerminalAssistantContentResolver(input.unitOfWork)
+    );
     const startedWorkRecovery = new AgentStartedWorkRecoveryCoordinator(
       input.unitOfWork
     );
@@ -311,6 +332,8 @@ implements AgentControlExecutionPipelineFactory {
       {
         ...this.options.runWorkScheduler,
         startedWorkRecovery,
+        delegatedInference,
+        childResultsContinuation,
         authorityVerifier: new ProductionAgentRunWorkAuthorityVerifier(
           models,
           catalogs

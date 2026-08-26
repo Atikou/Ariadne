@@ -65,9 +65,11 @@ export function registerAgentTurn(
     assertExactEffectResultCause(run, command.turn.cause);
   } else if (command.turn.cause.kind === 'inbox_inputs') {
     assertExactInboxCause(run, command.turn.cause);
+  } else if (command.turn.cause.kind === 'child_results') {
+    assertExactChildResultsCause(run, command.turn.cause);
   } else {
     throw new AgentRunTransitionError(
-      'Every continuation Turn must bind Effect results or claimed Agent inbox inputs.'
+      'Every continuation Turn must bind Effect results, child results, or claimed Agent inbox inputs.'
     );
   }
   assertNoStartedEffects(run, command.kind);
@@ -112,6 +114,12 @@ export function registerAgentTurn(
           }
         : command.turn.cause.kind === 'inbox_inputs'
           ? { ...command.turn.cause, inputIds: [...command.turn.cause.inputIds] }
+          : command.turn.cause.kind === 'child_results'
+            ? {
+                ...command.turn.cause,
+                delegationIds: [...command.turn.cause.delegationIds],
+                childRunIds: [...command.turn.cause.childRunIds]
+              }
         : { ...command.turn.cause },
       bindingVersion: binding.bindingVersion,
       ...(binding.bindingVersion === 4
@@ -139,6 +147,42 @@ export function registerAgentTurn(
       { type: 'inference_attempt.registered', turnId: turn.turnId, attempt }
     ]
   };
+}
+
+function assertExactChildResultsCause(
+  run: AgentRun,
+  cause: Extract<RegisterAgentTurnCommand['turn']['cause'], { kind: 'child_results' }>
+): void {
+  const sourceTurn = run.turns.at(-1);
+  const sourceAttempt = sourceTurn?.attempts.at(-1);
+  if (
+    sourceTurn === undefined
+    || sourceAttempt?.state.status !== 'succeeded'
+    || sourceAttempt.state.directive.kind !== 'delegate_subagent'
+    || sourceTurn.turnId !== cause.sourceTurnId
+    || sourceAttempt.attemptId !== cause.sourceAttemptId
+    || sourceAttempt.state.directiveDigest !== cause.sourceDirectiveDigest
+    || cause.delegationIds.length !== 1
+    || cause.childRunIds.length !== 1
+    || cause.delegationIds[0] !== sourceAttempt.state.directive.delegationId
+    || cause.childRunIds[0] !== sourceAttempt.state.directive.childRunId
+    || run.state.status !== 'running'
+  ) {
+    throw new AgentRunTransitionError(
+      'Child-result continuation must extend the latest settled delegated child batch.'
+    );
+  }
+  if (run.turns.some((turn) => {
+    const existing = turn.intention.cause;
+    return existing.kind === 'child_results'
+      && existing.sourceTurnId === cause.sourceTurnId
+      && existing.sourceAttemptId === cause.sourceAttemptId
+      && existing.sourceDirectiveDigest === cause.sourceDirectiveDigest;
+  })) {
+    throw new AgentRunTransitionError(
+      'A SubAgent Directive can cause at most one child-result continuation Turn.'
+    );
+  }
 }
 
 function assertExactInboxCause(

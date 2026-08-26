@@ -49,6 +49,7 @@ export function isOwnedAgentFollowUpInference(
     && (
       turn.intention.cause.kind === 'effect_results'
       || turn.intention.cause.kind === 'inbox_inputs'
+      || turn.intention.cause.kind === 'child_results'
     )
     && turn.attempts.length === 1
     && turn.attempts[0]?.attemptId === attempt.attemptId
@@ -95,7 +96,11 @@ export class AgentFollowUpInferenceDispatchController {
     }
 
     const cause = turn.intention.cause;
-    if (cause.kind !== 'effect_results' && cause.kind !== 'inbox_inputs') {
+    if (
+      cause.kind !== 'effect_results'
+      && cause.kind !== 'inbox_inputs'
+      && cause.kind !== 'child_results'
+    ) {
       throw invariant('Follow-up inference cannot own an objective Turn.');
     }
     const commandId = await deriveStableAgentId(

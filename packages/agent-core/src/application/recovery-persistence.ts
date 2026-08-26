@@ -891,7 +891,9 @@ function assertExactCurrentContinuationSuffix(
 
   const inputIds = cause.kind === 'inbox_inputs'
     ? cause.inputIds
-    : cause.inboxInputIds ?? [];
+    : cause.kind === 'effect_results'
+      ? cause.inboxInputIds ?? []
+      : [];
   const inputMessages = messages.slice(messages.length - inputIds.length);
   if (
     inputMessages.length !== inputIds.length
@@ -910,6 +912,19 @@ function assertExactCurrentContinuationSuffix(
   if (cause.kind === 'inbox_inputs') {
     const assistant = messages[beforeInputs - 1];
     if (assistant?.kind !== 'text' || assistant.role !== 'assistant') {
+      throw turnInputConflict(run.runId, 'turn_input_cause_mismatch');
+    }
+    return;
+  }
+  if (cause.kind === 'child_results') {
+    const assistant = messages[beforeInputs - 2];
+    const childResults = messages[beforeInputs - 1];
+    if (
+      assistant?.kind !== 'text'
+      || assistant.role !== 'assistant'
+      || childResults?.kind !== 'text'
+      || childResults.role !== 'user'
+    ) {
       throw turnInputConflict(run.runId, 'turn_input_cause_mismatch');
     }
     return;
@@ -1085,6 +1100,13 @@ function sameTurnCause(left: AgentTurnCause, right: AgentTurnCause): boolean {
         && left.sourceAttemptId === right.sourceAttemptId
         && left.sourceDirectiveDigest === right.sourceDirectiveDigest
         && sameStringArray(left.inputIds, right.inputIds);
+    case 'child_results':
+      return right.kind === left.kind
+        && left.sourceTurnId === right.sourceTurnId
+        && left.sourceAttemptId === right.sourceAttemptId
+        && left.sourceDirectiveDigest === right.sourceDirectiveDigest
+        && sameStringArray(left.delegationIds, right.delegationIds)
+        && sameStringArray(left.childRunIds, right.childRunIds);
   }
 }
 
@@ -1162,6 +1184,8 @@ function collectDirectiveArtifactReferences(
               contentDigest: directive.outputDigest
             };
           }
+          break;
+        case 'delegate_subagent':
           break;
         case 'fail':
           reference = {

@@ -368,6 +368,40 @@ describe('AgentRunPublicProjectionPublisher', () => {
       updatedAt: at(1)
     })).toMatchObject({ status: 'waiting_children', label: 'Waiting for child runs' });
   });
+
+  it('projects immutable Parent and Delegation identity for an ordinary child Run', () => {
+    const queued = queuedRun('run-child-projection');
+    const child: AgentRun = {
+      ...queued,
+      binding: {
+        ...queued.binding,
+        objectiveRef: {
+          kind: 'parent_delegation',
+          parentRunId: 'run-parent-projection',
+          delegationId: 'delegation-projection',
+          objectiveDigest: `sha256:${'7'.repeat(64)}`
+        },
+        budget: {
+          ...queued.binding.budget,
+          grantId: 'grant-child-projection',
+          runId: queued.runId,
+          source: {
+            kind: 'parent_allocation',
+            parentRunId: 'run-parent-projection',
+            parentGrantId: 'grant-parent-projection',
+            delegationId: 'delegation-projection'
+          }
+        }
+      }
+    };
+
+    expect(projectAgentRunV3(child)).toMatchObject({
+      runId: child.runId,
+      parentRunId: 'run-parent-projection',
+      delegationId: 'delegation-projection',
+      title: 'SubAgent task'
+    });
+  });
 });
 
 interface DecisionLifecycle {

@@ -7,7 +7,7 @@ import type { SaveStatus } from './Workspace';
 export function GlobalStatusBar({ services, saveStatus }: { services: ModuleServices; saveStatus: SaveStatus }): React.JSX.Element {
   const runtime = useRuntimeSnapshot(services.runtime);
   const available = runtime.status.availability === 'ready';
-  const activeRun = runtime.runs.find((run) => run.origin === 'agent' && [
+  const activeRun = runtime.runs.find((run) => run.parentRunId === undefined && run.origin === 'agent' && [
     'queued', 'running', 'waiting_permission', 'waiting_plan_handoff', 'waiting_budget'
   ].includes(run.status));
   const pendingPermissions = runtime.permissions.filter((request) => request.status === 'pending').length;

@@ -17,7 +17,12 @@ import type {
 
 type StartedWork = Extract<
   AgentRunWorkClassification,
-  { readonly kind: 'recovery_uncertain_effect' | 'recovery_uncertain_inference' }
+  {
+    readonly kind:
+      | 'recovery_uncertain_effect'
+      | 'recovery_uncertain_inference'
+      | 'recovery_uncertain_delegated_inference'
+  }
 >;
 
 type ActionableWork = Extract<
@@ -27,7 +32,9 @@ type ActionableWork = Extract<
       | 'dispatch_effect'
       | 'continue_effect_results'
       | 'continue_inbox'
+      | 'continue_child_results'
       | 'dispatch_follow_up'
+      | 'dispatch_delegated_initial'
       | 'fail_model_turn_budget'
       | 'fail_deadline_expired';
   }
@@ -88,6 +95,13 @@ export interface AgentRunWorkInboxContinuationOwner {
   continueInbox(
     recovery: ReadyResumableAgentRunRecovery,
     inputIds: readonly string[],
+    signal: AbortSignal
+  ): Promise<AgentRunWorkContinuationReceipt>;
+}
+
+export interface AgentRunWorkChildResultsContinuationOwner {
+  continueChildResults(
+    recovery: ReadyResumableAgentRunRecovery,
     signal: AbortSignal
   ): Promise<AgentRunWorkContinuationReceipt>;
 }
@@ -184,6 +198,8 @@ export interface AgentRunWorkSchedulerOptions {
   /** Startup-only. Steady-state started work is always a health fault. */
   readonly startedWorkRecovery?: AgentRunStartedWorkRecoveryOwner;
   readonly authorityVerifier?: AgentRunWorkAuthorityVerifier;
+  readonly delegatedInference?: AgentRunWorkFollowUpOwner;
+  readonly childResultsContinuation?: AgentRunWorkChildResultsContinuationOwner;
 }
 
 export interface AgentRunWorkDrainResult {
@@ -192,7 +208,9 @@ export interface AgentRunWorkDrainResult {
   readonly dispatchedEffects: number;
   readonly continuedBatches: number;
   readonly continuedInboxInputs: number;
+  readonly continuedChildResults: number;
   readonly dispatchedFollowUps: number;
+  readonly dispatchedDelegatedInitials: number;
   readonly terminalizedRuns: number;
 }
 
@@ -204,7 +222,8 @@ export interface AgentRunWorkSchedulerFault {
     | 'unsupported'
     | 'health_fault'
     | 'recovery_uncertain_effect'
-    | 'recovery_uncertain_inference';
+    | 'recovery_uncertain_inference'
+    | 'recovery_uncertain_delegated_inference';
   readonly reason: string;
 }
 
@@ -254,6 +273,10 @@ export class AgentRunWorkScheduler {
   private readonly clock: AgentRunWorkSchedulerClock;
   private readonly startedWorkRecovery: AgentRunStartedWorkRecoveryOwner | undefined;
   private readonly authorityVerifier: AgentRunWorkAuthorityVerifier | undefined;
+  private readonly delegatedInference: AgentRunWorkFollowUpOwner | undefined;
+  private readonly childResultsContinuation:
+    | AgentRunWorkChildResultsContinuationOwner
+    | undefined;
   private readonly abortController = new AbortController();
   private timer: ReturnType<typeof setInterval> | null = null;
   private activeDrain: Promise<AgentRunWorkDrainResult> | null = null;
@@ -284,6 +307,8 @@ export class AgentRunWorkScheduler {
     this.clock = options.clock ?? SYSTEM_CLOCK;
     this.startedWorkRecovery = options.startedWorkRecovery;
     this.authorityVerifier = options.authorityVerifier;
+    this.delegatedInference = options.delegatedInference;
+    this.childResultsContinuation = options.childResultsContinuation;
   }
 
   /** Full pagination and abandoned-start recovery complete before readiness. */
@@ -367,6 +392,7 @@ export class AgentRunWorkScheduler {
       const started = round.runs.flatMap((item) => (
         item.work?.kind === 'recovery_uncertain_effect'
           || item.work?.kind === 'recovery_uncertain_inference'
+          || item.work?.kind === 'recovery_uncertain_delegated_inference'
           ? [item.work]
           : []
       ));
@@ -522,6 +548,35 @@ export class AgentRunWorkScheduler {
         result.dispatchedFollowUps += 1;
         return;
       }
+      case 'continue_child_results': {
+        const resumable = requireResumable(recovery, work);
+        if (this.childResultsContinuation === undefined) {
+          throw new Error('SubAgent results have no production continuation owner.');
+        }
+        const receipt = await this.childResultsContinuation.continueChildResults(
+          resumable,
+          this.abortController.signal
+        );
+        assertChildResultsContinuationReceipt(receipt, work);
+        result.continuedChildResults += work.childRunIds.length;
+        return;
+      }
+      case 'dispatch_delegated_initial': {
+        requireResumable(recovery, work);
+        if (this.delegatedInference === undefined) {
+          throw new Error('Delegated inference has no production work owner.');
+        }
+        const receipt = await this.delegatedInference.dispatchOwned({
+          runId: work.runId,
+          turnId: work.turnId,
+          attemptId: work.attemptId,
+          expectedVersion: work.expectedVersion,
+          occurredAt: this.now()
+        }, this.abortController.signal);
+        assertFollowUpReceipt(receipt, work);
+        result.dispatchedDelegatedInitials += 1;
+        return;
+      }
       case 'fail_model_turn_budget':
       case 'fail_deadline_expired': {
         requireResumable(recovery, work);
@@ -652,7 +707,9 @@ interface MutableAgentRunWorkDrainResult {
   dispatchedEffects: number;
   continuedBatches: number;
   continuedInboxInputs: number;
+  continuedChildResults: number;
   dispatchedFollowUps: number;
+  dispatchedDelegatedInitials: number;
   terminalizedRuns: number;
 }
 
@@ -663,7 +720,9 @@ function mutableDrainResult(): MutableAgentRunWorkDrainResult {
     dispatchedEffects: 0,
     continuedBatches: 0,
     continuedInboxInputs: 0,
+    continuedChildResults: 0,
     dispatchedFollowUps: 0,
+    dispatchedDelegatedInitials: 0,
     terminalizedRuns: 0
   };
 }
@@ -704,7 +763,8 @@ function collectFaults(
     }
     if (
       (work.kind === 'recovery_uncertain_effect'
-        || work.kind === 'recovery_uncertain_inference')
+        || work.kind === 'recovery_uncertain_inference'
+        || work.kind === 'recovery_uncertain_delegated_inference')
       && !startupRecoveryAvailable
     ) {
       faults.push(startedWorkFault(work));
@@ -728,7 +788,9 @@ function isActionable(work: AgentRunWorkClassification): work is ActionableWork 
   return work.kind === 'dispatch_effect'
     || work.kind === 'continue_effect_results'
     || work.kind === 'continue_inbox'
+    || work.kind === 'continue_child_results'
     || work.kind === 'dispatch_follow_up'
+    || work.kind === 'dispatch_delegated_initial'
     || work.kind === 'fail_model_turn_budget'
     || work.kind === 'fail_deadline_expired';
 }
@@ -745,6 +807,20 @@ function assertInboxContinuationReceipt(
     || !nonEmpty(receipt.turnId)
     || !nonEmpty(receipt.attemptId)
   ) throw new Error('Inbox continuation returned a contradictory work receipt.');
+}
+
+function assertChildResultsContinuationReceipt(
+  receipt: AgentRunWorkContinuationReceipt,
+  work: Extract<ActionableWork, { readonly kind: 'continue_child_results' }>
+): void {
+  if (
+    receipt.receiptVersion !== 1
+    || receipt.runId !== work.runId
+    || receipt.runVersion <= work.expectedVersion
+    || !nonEmpty(receipt.commandId)
+    || !nonEmpty(receipt.turnId)
+    || !nonEmpty(receipt.attemptId)
+  ) throw new Error('SubAgent continuation returned a contradictory work receipt.');
 }
 
 function isConcurrentSnapshotConflict(error: unknown): boolean {
@@ -802,7 +878,10 @@ function assertContinuationReceipt(
 
 function assertFollowUpReceipt(
   receipt: AgentRunWorkFollowUpReceipt,
-  work: Extract<ActionableWork, { readonly kind: 'dispatch_follow_up' }>
+  work: Extract<
+    ActionableWork,
+    { readonly kind: 'dispatch_follow_up' | 'dispatch_delegated_initial' }
+  >
 ): void {
   if (receipt.status === 'waiting_recovery') {
     if (receipt.result !== undefined) {
@@ -815,7 +894,10 @@ function assertFollowUpReceipt(
 
 function assertFollowUpResultIdentity(
   result: AgentRunWorkFollowUpResultIdentity,
-  work: Extract<ActionableWork, { readonly kind: 'dispatch_follow_up' }>
+  work: Extract<
+    ActionableWork,
+    { readonly kind: 'dispatch_follow_up' | 'dispatch_delegated_initial' }
+  >
 ): void {
   if (
     result.run.runId !== work.runId

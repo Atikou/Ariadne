@@ -18,7 +18,7 @@ Renderer 使用 React 与 Dockview。业务状态只来自 Public Projection v3�
 | Terminal | Main 管理的 node-pty 会话 | 桌面能力，不等于 Agent 的持久终端 Tool |
 | Settings | Main 的设置仓库 | Provider、工作区、权限模式和桌面偏好 |
 
-SubAgent、Background Task、Scheduler、Memory 管理等模块当前没有 v3 command/projection consumer，不应增加占位按钮或用本地 Mock 伪装成可用能力。
+Agent Status 已消费 one-shot SubAgent 的 Parent/Child Run Projection。Background Task、Scheduler、Memory 管理以及外部/continuable SubAgent Provider 当前仍没有 v3 product consumer，不应增加占位按钮或用本地 Mock 伪装成可用能力。
 
 ## 状态流
 

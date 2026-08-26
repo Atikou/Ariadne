@@ -40,8 +40,12 @@ import type { AgentRunUnitOfWork } from './unit-of-work.js';
 import { deriveStableAgentId } from './stable-id.js';
 import { canonicalizeAgentControlData } from './control-command-digest.js';
 import type {
-  AgentInferenceDirectivePlanner
+  AgentInferenceDirectivePlanner,
+  AgentSubagentDelegationPlan
 } from './agent-inference-directive-planner.js';
+import type {
+  AgentSubagentDelegationService
+} from './agent-subagent-delegation-service.js';
 import type { AgentInferenceAttemptResult } from './commands.js';
 import {
   EMPTY_AGENT_CONTROL_COMMIT_FACTS,
@@ -115,6 +119,11 @@ export interface AgentInferenceDispatchResult {
   readonly alreadySettled: boolean;
 }
 
+export type AgentSubagentDelegationCommitter = Pick<
+  AgentSubagentDelegationService,
+  'commit'
+>;
+
 export class AgentInferenceDispatchRecoveryRequiredError extends Error {
   public readonly code = 'AGENT_INFERENCE_DISPATCH_RECOVERY_REQUIRED';
 
@@ -182,7 +191,8 @@ export class AgentInferenceDispatchService {
     private readonly engine: AgentEngine,
     private readonly directivePlanner: AgentInferenceDirectivePlanner,
     private readonly checkpoints: AgentInferenceDispatchCheckpointFactory,
-    private readonly clock: AgentInferenceDispatchClock = SYSTEM_CLOCK
+    private readonly clock: AgentInferenceDispatchClock = SYSTEM_CLOCK,
+    private readonly subagentDelegations?: AgentSubagentDelegationCommitter
   ) {
     this.commands = new AgentRunCommandService(unitOfWork);
   }
@@ -325,6 +335,7 @@ export class AgentInferenceDispatchService {
     let effectPayloads: readonly AgentEffectPayloadCommit[] = [];
     let directivePayloads: readonly AgentDirectivePayloadCommit[] = [];
     let planVersions: readonly AgentPlanVersionCommit[] = [];
+    let subagent: AgentSubagentDelegationPlan | undefined;
     try {
       directive = await prepared.decide(signal);
     } catch (error) {
@@ -377,12 +388,14 @@ export class AgentInferenceDispatchService {
           attempt: resultAttempt,
           directive,
           availableTools: payload.input.availableTools,
+          messages: payload.input.messages,
           occurredAt: finishedAt
         });
         result = plan.result;
         effectPayloads = plan.effectPayloads;
         directivePayloads = plan.directivePayloads;
         planVersions = plan.planVersions;
+        subagent = plan.subagent;
       } catch {
         result = await uncertainResult(
           request,
@@ -391,6 +404,7 @@ export class AgentInferenceDispatchService {
         effectPayloads = [];
         directivePayloads = [];
         planVersions = [];
+        subagent = undefined;
       }
     }
     if (result === undefined) {
@@ -398,7 +412,17 @@ export class AgentInferenceDispatchService {
         'Inference dispatch did not produce a durable result plan.'
       );
     }
-    const recorded = await this.commands.execute({
+    const resultArtifacts = checkpointArtifacts(this.checkpoints.create({
+      run: resultAuthority,
+      turn: resultTurn,
+      attempt: resultAttempt,
+      checkpointVersion: resultAuthority.state.checkpointVersion + 1,
+      phase: 'inference_result',
+      occurredAt: finishedAt,
+      result
+    }), effectPayloads, directivePayloads);
+    const recorded = subagent === undefined
+      ? await this.commands.execute({
       kind: 'run.record_inference_attempt_result',
       commandId: resultCommandId,
       runId: started.run.runId,
@@ -407,18 +431,21 @@ export class AgentInferenceDispatchService {
       turnId: startedTurn.turnId,
       attemptId: startedAttempt.attemptId,
       result
-    }, checkpointArtifacts(this.checkpoints.create({
-      run: resultAuthority,
-      turn: resultTurn,
-      attempt: resultAttempt,
-      checkpointVersion: resultAuthority.state.checkpointVersion + 1,
-      phase: 'inference_result',
-      occurredAt: finishedAt,
-      result
-    }), effectPayloads, directivePayloads), {
-      ...EMPTY_AGENT_CONTROL_COMMIT_FACTS,
-      planVersions
-    });
+    }, resultArtifacts, {
+        ...EMPTY_AGENT_CONTROL_COMMIT_FACTS,
+        planVersions
+      })
+      : await this.commitSubagentDelegation({
+          commandId: resultCommandId,
+          runId: started.run.runId,
+          expectedVersion: resultAuthority.version,
+          occurredAt: finishedAt,
+          turnId: startedTurn.turnId,
+          attemptId: startedAttempt.attemptId,
+          result: requireSucceededDelegationResult(result),
+          parentArtifacts: resultArtifacts,
+          delegation: subagent
+        });
     const recordedTurn = requireTurn(recorded.run, request.turnId);
     const recordedAttempt = requireAttempt(recordedTurn, request.attemptId);
     return {
@@ -431,6 +458,23 @@ export class AgentInferenceDispatchService {
     };
   }
 
+  private async commitSubagentDelegation(
+    request: Parameters<AgentSubagentDelegationService['commit']>[0]
+  ): Promise<AgentRunCommandResult> {
+    if (this.subagentDelegations === undefined) {
+      throw new AgentRunInvariantError(
+        'SubAgent delegation has no production commit owner.'
+      );
+    }
+    const committed = await this.subagentDelegations.commit(request);
+    return {
+      commandId: committed.commandId,
+      run: committed.parent,
+      events: committed.parentEvents,
+      replayed: committed.replayed
+    };
+  }
+
   private async loadRun(runId: string): Promise<AgentRun> {
     const run = await this.unitOfWork.transaction((transaction) =>
       transaction.loadRun(runId)
@@ -438,6 +482,17 @@ export class AgentInferenceDispatchService {
     if (run === null) throw new AgentRunNotFoundError(runId);
     return run;
   }
+}
+
+function requireSucceededDelegationResult(
+  result: AgentInferenceAttemptResult
+): Extract<AgentInferenceAttemptResult, { readonly status: 'succeeded' }> {
+  if (result.status !== 'succeeded') {
+    throw new AgentRunInvariantError(
+      'A planned SubAgent delegation must have one succeeded committed Directive.'
+    );
+  }
+  return result;
 }
 
 function assertInboxOnlyPreparationMutation(

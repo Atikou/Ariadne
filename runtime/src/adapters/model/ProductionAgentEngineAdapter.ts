@@ -46,6 +46,7 @@ export type {
 
 const DIRECTIVE_PROTOCOL = 'ariadne.agent-directive.v3';
 const EFFECT_RESULTS_PROTOCOL = 'ariadne.agent-effect-results.v3';
+const SUBAGENT_RESULTS_FORMAT = 'ariadne.subagent-results';
 const MODEL_BINDING_ERROR = 'agent_model_binding_unavailable';
 const TOOL_CONTRACT_ERROR = 'agent_tool_contract_unavailable';
 const MODEL_DIRECTIVE_ERROR = 'agent_model_directive_invalid';
@@ -230,7 +231,10 @@ function groupModelHistory(messages: readonly ExactAgentModelInferenceMessage[])
       current.role === 'assistant'
       && current.content.includes(`\"protocol\":\"${DIRECTIVE_PROTOCOL}\"`)
       && next?.role === 'user'
-      && next.content.includes(`\"protocol\":\"${EFFECT_RESULTS_PROTOCOL}\"`)
+      && (
+        next.content.includes(`\"protocol\":\"${EFFECT_RESULTS_PROTOCOL}\"`)
+        || next.content.includes(`\"format\":\"${SUBAGENT_RESULTS_FORMAT}\"`)
+      )
     ) {
       groups.push({ kind: 'tool_exchange', messages: [current, next] });
       index += 1;
@@ -262,6 +266,8 @@ function prepareBoundModelHistory(
       ? cause.effectIds.length + (cause.inboxInputIds?.length ?? 0)
       : cause.kind === 'inbox_inputs'
         ? 1 + cause.inputIds.length
+        : cause.kind === 'child_results'
+          ? 2
         : Number.POSITIVE_INFINITY);
   }, 0);
   const baseCount = input.messages.length - appendedCount;
@@ -293,6 +299,23 @@ function prepareBoundModelHistory(
         history.push({ role: message.role, content: message.content });
       }
       messageIndex += batch.length;
+      continue;
+    }
+    if (cause.kind === 'child_results') {
+      const batch = input.messages.slice(messageIndex, messageIndex + 2);
+      if (
+        batch.length !== 2
+        || batch[0]?.kind !== 'text'
+        || batch[0].role !== 'assistant'
+        || batch[1]?.kind !== 'text'
+        || batch[1].role !== 'user'
+      ) throw invalidBoundModelHistory();
+      verifyChildResultTextBatch(input, turn, batch[0].content, batch[1].content);
+      history.push(
+        { role: 'assistant', content: batch[0].content },
+        { role: 'user', content: batch[1].content }
+      );
+      messageIndex += 2;
       continue;
     }
     if (cause.kind !== 'effect_results') throw invalidBoundModelHistory();
@@ -343,6 +366,73 @@ function prepareBoundModelHistory(
   }
   if (messageIndex !== input.messages.length) throw invalidBoundModelHistory();
   return history;
+}
+
+function verifyChildResultTextBatch(
+  input: AgentTurnInput,
+  turn: AgentTurn,
+  assistantContent: string,
+  resultContent: string
+): void {
+  const cause = turn.intention.cause;
+  if (cause.kind !== 'child_results') throw invalidBoundModelHistory();
+  const sourceTurn = input.run.turns.find(
+    (candidate) => candidate.turnId === cause.sourceTurnId
+  );
+  const sourceAttempt = sourceTurn?.attempts.find(
+    (candidate) => candidate.attemptId === cause.sourceAttemptId
+  );
+  if (
+    sourceAttempt?.state.status !== 'succeeded'
+    || sourceAttempt.state.directive.kind !== 'delegate_subagent'
+    || sourceAttempt.state.directiveDigest !== cause.sourceDirectiveDigest
+    || cause.delegationIds.length !== 1
+    || cause.childRunIds.length !== 1
+    || sourceAttempt.state.directive.delegationId !== cause.delegationIds[0]
+    || sourceAttempt.state.directive.childRunId !== cause.childRunIds[0]
+  ) throw invalidBoundModelHistory();
+  const assistant = parseExactObject(assistantContent);
+  const result = parseExactObject(resultContent);
+  const delegated = typeof assistant.directive === 'object'
+    && assistant.directive !== null
+    && !Array.isArray(assistant.directive)
+    ? assistant.directive as Record<string, unknown>
+    : null;
+  if (
+    assistant.protocol !== DIRECTIVE_PROTOCOL
+    || delegated?.kind !== 'delegate_subagent'
+    || delegated.delegationId !== cause.delegationIds[0]
+    || delegated.childRunId !== cause.childRunIds[0]
+    || delegated.objectiveDigest !== sourceAttempt.state.directive.objectiveDigest
+    || result.format !== SUBAGENT_RESULTS_FORMAT
+    || result.schemaVersion !== 1
+    || !Array.isArray(result.results)
+    || result.results.length !== 1
+  ) throw invalidBoundModelHistory();
+  const child = result.results[0];
+  if (
+    typeof child !== 'object'
+    || child === null
+    || Array.isArray(child)
+    || child.delegationId !== cause.delegationIds[0]
+    || child.childRunId !== cause.childRunIds[0]
+    || !Number.isSafeInteger(child.childRunVersion)
+    || !['completed', 'failed', 'cancelled'].includes(String(child.status))
+    || typeof child.content !== 'string'
+    || child.content.length === 0
+  ) throw invalidBoundModelHistory();
+}
+
+function parseExactObject(content: string): Record<string, unknown> {
+  try {
+    const value: unknown = JSON.parse(content);
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw invalidBoundModelHistory();
+    }
+    return value as Record<string, unknown>;
+  } catch {
+    throw invalidBoundModelHistory();
+  }
 }
 
 function requireCurrentSchedulableAttempt(input: AgentTurnInput): {
@@ -722,6 +812,13 @@ function renderProtocolPrompt(
       }]
     }
   };
+  const delegateSubagent = {
+    kind: 'delegate_subagent',
+    subagent: {
+      description: 'short display description',
+      prompt: 'complete self-contained delegated objective'
+    }
+  };
   const prompt = JSON.stringify({
     protocol: DIRECTIVE_PROTOCOL,
     instruction:
@@ -742,6 +839,7 @@ function renderProtocolPrompt(
       : {
           respond: { kind: 'respond', content: 'non-empty string' },
           invoke_tools: invokeTools,
+          delegate_subagent: delegateSubagent,
           propose_plan: proposePlan,
           checkpoint: { kind: 'checkpoint', reason: 'non-empty string' },
           complete: { kind: 'complete', outputRef: 'optional non-empty string' },
@@ -857,6 +955,17 @@ function parseDirective(
               impact: planImpactValue(step.impact)
             };
           })
+        }
+      };
+    }
+    case 'delegate_subagent': {
+      const exact = exactObject(candidate, ['kind', 'subagent']);
+      const subagent = exactObject(exact.subagent, ['description', 'prompt']);
+      return {
+        kind: 'delegate_subagent',
+        subagent: {
+          description: stringValue(subagent.description),
+          prompt: stringValue(subagent.prompt)
         }
       };
     }

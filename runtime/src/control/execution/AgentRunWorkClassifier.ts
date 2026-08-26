@@ -58,6 +58,14 @@ export type AgentRunWorkClassification =
       readonly inputIds: readonly string[];
     })
   | (AgentRunWorkIdentity & {
+      readonly kind: 'continue_child_results';
+      readonly sourceTurnId: string;
+      readonly sourceAttemptId: string;
+      readonly sourceDirectiveDigest: string;
+      readonly delegationIds: readonly string[];
+      readonly childRunIds: readonly string[];
+    })
+  | (AgentRunWorkIdentity & {
       readonly kind: 'fail_model_turn_budget';
       readonly observedModelTurns: number;
       readonly modelTurnLimit: number;
@@ -93,6 +101,15 @@ export type AgentRunWorkClassification =
       readonly sourceDirectiveDigest: string;
     })
   | (AgentRunWorkIdentity & {
+      readonly kind: 'dispatch_delegated_initial';
+      readonly turnId: string;
+      readonly attemptId: string;
+      readonly inputDigest: string;
+      readonly parentRunId: string;
+      readonly delegationId: string;
+      readonly objectiveDigest: string;
+    })
+  | (AgentRunWorkIdentity & {
       readonly kind: 'recovery_uncertain_inference';
       readonly turnId: string;
       readonly attemptId: string;
@@ -100,6 +117,15 @@ export type AgentRunWorkClassification =
       readonly sourceTurnId: string;
       readonly sourceAttemptId: string;
       readonly sourceDirectiveDigest: string;
+    })
+  | (AgentRunWorkIdentity & {
+      readonly kind: 'recovery_uncertain_delegated_inference';
+      readonly turnId: string;
+      readonly attemptId: string;
+      readonly inputDigest: string;
+      readonly parentRunId: string;
+      readonly delegationId: string;
+      readonly objectiveDigest: string;
     })
   | (AgentRunWorkIdentity & {
       readonly kind: 'owned_by_execution_intent';
@@ -263,6 +289,17 @@ function classifyRunningRun(
   }
 
   const directive = attempt.state.directive;
+  if (directive.kind === 'delegate_subagent') {
+    return {
+      ...identity,
+      kind: 'continue_child_results',
+      sourceTurnId: turn.turnId,
+      sourceAttemptId: attempt.attemptId,
+      sourceDirectiveDigest: attempt.state.directiveDigest,
+      delegationIds: [directive.delegationId],
+      childRunIds: [directive.childRunId]
+    };
+  }
   if (directive.kind === 'respond' || directive.kind === 'complete') {
     const inputIds = claimableResponseBoundaryInputs(run);
     if (inputIds.length > 0) {
@@ -481,11 +518,13 @@ function classifyIntendedInference(
   if (cause.kind === 'delegation_objective') {
     return {
       ...identity,
-      kind: 'unsupported',
-      reason: 'delegation_objective',
+      kind: 'dispatch_delegated_initial',
       turnId: turn.turnId,
       attemptId: attempt.attemptId,
-      decisionId: null
+      inputDigest: turn.intention.inputDigest,
+      parentRunId: cause.parentRunId,
+      delegationId: cause.delegationId,
+      objectiveDigest: cause.objectiveDigest
     };
   }
   return {
@@ -519,11 +558,13 @@ function classifyStartedInference(
   if (cause.kind === 'delegation_objective') {
     return {
       ...identity,
-      kind: 'unsupported',
-      reason: 'delegation_objective',
+      kind: 'recovery_uncertain_delegated_inference',
       turnId: turn.turnId,
       attemptId: attempt.attemptId,
-      decisionId: null
+      inputDigest: turn.intention.inputDigest,
+      parentRunId: cause.parentRunId,
+      delegationId: cause.delegationId,
+      objectiveDigest: cause.objectiveDigest
     };
   }
   return {

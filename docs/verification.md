@@ -80,7 +80,7 @@ Provider 是 smoke 脚本启动的进程外、确定性 HTTPS OpenAI-compatible 
 以下能力已有源码和自动测试，但当前没有完整 v3 product consumer 或真实验收：
 
 - Memory、Embedding 与 spill；
-- SubAgent、Background Task 与 Scheduler；
+- 外部/continuable SubAgent Provider、Background Task 与 Scheduler；one-shot ordinary Child 已有 production-pipeline integration evidence，但尚无真实窗口场景；
 - 完整 Hook lifecycle；
 - Diagnostics publisher 与 Telemetry lifecycle；
 - Provider Resilience policy 在 v3 inference adapter 中的消费；

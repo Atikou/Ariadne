@@ -29,6 +29,11 @@ export interface AgentToolInvocationDirective {
   readonly scope: readonly string[];
 }
 
+export interface AgentSubagentDirective {
+  readonly description: string;
+  readonly prompt: string;
+}
+
 export type AgentPlanStepImpact =
   | 'read_only'
   | 'workspace_change'
@@ -60,6 +65,10 @@ export type AgentDirective =
       readonly kind: 'propose_plan';
       /** Engine supplies bounded content; Core owns every durable identity. */
       readonly plan: AgentPlanProposal;
+    }
+  | {
+      readonly kind: 'delegate_subagent';
+      readonly subagent: AgentSubagentDirective;
     }
   | {
       readonly kind: 'checkpoint';
@@ -104,6 +113,12 @@ export type AgentCommittedDirective =
   | {
       readonly kind: 'request_decision';
       readonly decision: PlanDecisionDraft;
+    }
+  | {
+      readonly kind: 'delegate_subagent';
+      readonly delegationId: string;
+      readonly childRunId: string;
+      readonly objectiveDigest: string;
     }
   | {
       readonly kind: 'checkpoint';
@@ -199,6 +214,27 @@ export function assertValidAgentDirective(directive: AgentDirective): void {
       assertExactObjectKeys(directive, ['kind', 'plan'], 'directive');
       assertPlanProposal(directive.plan);
       return;
+    case 'delegate_subagent':
+      assertExactObjectKeys(directive, ['kind', 'subagent'], 'directive');
+      if (!isPlainObject(directive.subagent)) {
+        throw new AgentRunInvariantError('directive.subagent must be a plain object.');
+      }
+      assertExactObjectKeys(
+        directive.subagent,
+        ['description', 'prompt'],
+        'directive.subagent'
+      );
+      assertBoundedNonEmpty(
+        directive.subagent.description,
+        'directive.subagent.description',
+        256
+      );
+      assertBoundedNonEmpty(
+        directive.subagent.prompt,
+        'directive.subagent.prompt',
+        MAX_DIRECTIVE_CONTENT_LENGTH
+      );
+      return;
     case 'checkpoint':
       assertExactObjectKeys(directive, ['kind', 'reason'], 'directive');
       assertBoundedNonEmpty(
@@ -241,6 +277,24 @@ export function assertValidCommittedAgentDirective(
     if (directive.kind === 'request_decision') {
       assertExactObjectKeys(directive, ['kind', 'decision'], 'committedDirective');
       assertCommittedPlanDecision(directive.decision);
+    } else if (directive.kind === 'delegate_subagent') {
+      assertExactObjectKeys(
+        directive,
+        ['kind', 'delegationId', 'childRunId', 'objectiveDigest'],
+        'committedDirective'
+      );
+      assertCanonicalPublicId(
+        directive.delegationId,
+        'committedDirective.delegationId'
+      );
+      assertCanonicalPublicId(
+        directive.childRunId,
+        'committedDirective.childRunId'
+      );
+      assertSha256Digest(
+        directive.objectiveDigest,
+        'committedDirective.objectiveDigest'
+      );
     } else if (directive.kind === 'respond') {
       assertExactObjectKeys(
         directive,

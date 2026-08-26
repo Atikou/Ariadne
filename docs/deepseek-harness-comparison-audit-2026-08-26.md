@@ -151,7 +151,7 @@ Ariadne 当前使用编译验证过的 immutable Tool Catalog，并将工具身�
 | 已修复 | 统一运行中 Agent inbox | 同一 Run 已支持 durable next-turn/next-step、replace/remove、原子 claim 和 Public Projection | 后续独立建设不唤醒模型的 context injection |
 | P1 | 无 v3 token/reasoning 流 | 公共 Projection 主要发布已提交最终状态 | Chunk 有稳定 attempt/sequence，并可重放或明确声明仅临时 |
 | 部分修复 | 无生产 Context Compaction/Spill | Conversation 历史、确定性压缩、Tool result pruning、精确容量和 overflow recovery 已进入 v3 | 剩余：spill 引用恢复与精确 tokenizer |
-| P1 | SubAgent 未形成产品闭环 | Child Run 领域规则存在，Provider/Directive/Control/UI 未接通 | v3 Delegation 从模型到 Child Run、结果和控制完整闭环 |
+| 部分修复 | SubAgent 产品闭环 | one-shot ordinary Child 已接通 Directive、原子创建、调度、结果回灌和父子投影 | 剩余：continuable/external Provider、Child 专用控制和真实窗口场景 |
 | P1 | 能力装配硬编码 | Factory、Catalog、status 枚举集中修改 | 启动期冻结的 Capability Manifest 与窄 Provider seam |
 | P2 | Skills 全量注入 | 启用 Skill 的完整正文在 admission 时一次性进入指令 | Catalog 渐进披露，按需加载完整 Skill |
 | P2 | Hooks 仅有 `run.pre` | 其他 hook schema 存在但 v3 不消费 | typed、可审计、可去重的生命周期扩展点 |
@@ -338,38 +338,40 @@ SpillStore
 - 相同 checkpoint 恢复不会重复压缩；
 - 删除会话时能删除对应私有 spill/summary 数据。
 
-### 6.6 P1：SubAgent 只有领域基础，没有生产能力闭环
+### 6.6 部分修复：one-shot SubAgent 已形成生产闭环
 
-Ariadne 当前已有：
+Ariadne 当前生产路径已有：
 
 - Child Run 普通聚合模型；
 - 父子授权子集校验；
 - Budget allocation/release；
 - Delegation 和 Child terminal facts；
-- 旧 `runtime/src/subagent` 实现。
+- 严格 `delegate_subagent` 模型 Directive；
+- Parent 推理结果、Delegation、Budget 和普通 Child Run 的单事务提交；
+- dedicated Child 首轮调度与 started-work recovery；
+- Child terminal observation、protected `child_results` 回灌和 Parent 续跑；
+- Parent/Child Public Projection 与 Agent Status 消费。
 
-当前缺少：
+当前仍缺少：
 
-- v3 模型 Directive 产生 Delegation；
-- 生产 ChildRunPort Provider；
 - spawn/fork/external provider 选择；
 - continuable child 控制；
-- Child Run Public Projection；
-- Renderer 的 child tree、状态、取消和结果展示；
-- 父 Run 等待、收集、超时和部分失败策略。
+- Child 专用公开取消和续接命令；
+- 多 Child 批处理、超时和部分失败策略；
+- 真实商业模型和真实 Electron SubAgent 场景。
 
-建议先只实现一种 Provider：**in-process fresh child**。在其生产验收完成前，不要同时接 fork、ACP、Codex 和 Claude Code。
+第一种 Provider 已固定为 **in-process fresh child**。旧 `runtime/src/subagent` 不作为 fallback；fork、ACP、Codex 和 Claude Code 必须以后续独立 Provider seam 接入。
 
-第一阶段验收：
+第一阶段验收状态：
 
-1. Parent 原子提交多个 Delegation 和 Child Run；
-2. Child 权限、Workspace、Tool、Model、Budget 都是 Parent 的子集；
-3. Child 运行和结果持久化；
-4. Parent 可等待 required children；
-5. Parent cancel 可确定性传播；
-6. Runtime 强杀后 Child/Parent 状态可恢复；
-7. Public Projection 可显示父子关系；
-8. 同一 delegation receipt replay 不重复创建 Child。
+1. 已完成：单个 Parent/Delegation/Child 原子提交；
+2. 已完成：Child 权限、Workspace、Tool、Model、Policy、Budget 子集校验；
+3. 已完成：Child 运行、终态事实和结果回灌持久化；
+4. 已完成：Parent 等待 required child 并在终态后恢复；
+5. 待补：Parent/Child 活跃取消的完整确定性传播；
+6. 部分完成：started Provider 恢复已接入，真实进程强杀场景待补；
+7. 已完成：Public Projection 和 Renderer 显示父子关系；
+8. 已完成：稳定 identity、command receipt 与 replay 防止重复 Child。
 
 ### 6.7 P1：能力装配仍是硬编码
 
