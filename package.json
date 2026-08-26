@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "description": "Ariadne Electron desktop shell",
-  "packageManager": "npm@10.9.2",
+  "packageManager": "npm@11.13.0",
   "engines": {
-    "node": "22.13.1",
-    "npm": "10.9.2"
+    "node": "24.16.0",
+    "npm": "11.13.0"
   },
   "workspaces": [
     "app",

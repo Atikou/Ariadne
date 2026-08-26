@@ -4,8 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const expectedNode = '22.13.1';
-const expectedNpm = '10.9.2';
+const expectedNode = '24.16.0';
+const expectedNpm = '11.13.0';
 const failures = [];
 
 const rootPackage = readJson('package.json');

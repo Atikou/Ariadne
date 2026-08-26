@@ -8,8 +8,8 @@
 
 ## 固定输入
 
-- Node.js `22.13.1`，由 `.nvmrc`、根 `package.json` 和 CI 共同固定；
-- Node.js 发行包自带的 npm `10.9.2`；
+- Node.js `24.16.0`，由 `.nvmrc`、根 `package.json` 和 CI 共同固定；
+- Node.js 发行包自带的 npm `11.13.0`；
 - 根 `package-lock.json` 和 `packaging/runtime/package-lock.json`；
 - Git commit 中的源码、测试、迁移、文档和构建脚本；
 - CI action 使用不可变 commit SHA，不使用浮动 tag。
@@ -23,7 +23,7 @@ git clone https://github.com/Atikou/Ariadne.git
 Set-Location Ariadne
 git checkout <需要复现的提交>
 
-# 使用 .nvmrc 指定的 Node.js；该版本自带 npm 10.9.2
+# 使用 .nvmrc 指定的 Node.js；该版本自带 npm 11.13.0
 npm.cmd ci
 npm.cmd run verify:reproducible
 npm.cmd run test:electron
