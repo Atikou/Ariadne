@@ -1,6 +1,6 @@
 import type { AgentIntentType } from "../agent/IntentTypes.js";
 import type { ToolPermission } from "../core/permissions.js";
-import type { UserPermissionPolicy } from "../agent/RunPolicyTypes.js";
+import type { UserPermissionPolicy } from "../agent/RunPolicyPrimitives.js";
 import { assessPermissionDeniedRisk, assessToolRisk, type StructuredToolRisk } from "./ToolRiskAssessment.js";
 import type { ScopedApprovedPermissions } from "./permissionRequestTypes.js";
 import { isToolCallGranted } from "./scopedPermissionCheck.js";

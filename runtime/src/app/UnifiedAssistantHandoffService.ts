@@ -116,7 +116,7 @@ export class UnifiedAssistantHandoffService {
     return result;
   }
 
-  async recoverInterruptedCompanionSessionDeletions(): Promise<{
+  async recoverInterruptedCompanionSessionDeletions(signal?: AbortSignal): Promise<{
     restored: number;
     completed: number;
     failed: number;
@@ -127,7 +127,9 @@ export class UnifiedAssistantHandoffService {
     const missingSessionRetirements: Array<
       ReturnType<AgentHandoffCoordinator["listPendingCompanionSessionDeletions"]>[number]
     > = [];
+    throwIfRecoveryAborted(signal);
     for (const retirement of this.deps.coordinator.listPendingCompanionSessionDeletions()) {
+      throwIfRecoveryAborted(signal);
       try {
         if (this.deps.companion.hasSession({
           sessionId: retirement.deletion.companionSessionId,
@@ -141,22 +143,27 @@ export class UnifiedAssistantHandoffService {
           missingSessionRetirements.push(retirement);
         }
       } catch {
+        throwIfRecoveryAborted(signal);
         failed += 1;
       }
     }
     for (const retirement of missingSessionRetirements) {
+      throwIfRecoveryAborted(signal);
       try {
         await this.deps.companion.rebuildVector(
           retirement.deletion.storageRoot
             ? { storageRoot: retirement.deletion.storageRoot }
             : undefined,
         );
+        throwIfRecoveryAborted(signal);
         this.deps.coordinator.completeCompanionSessionDeletion(retirement);
         completed += 1;
       } catch {
+        throwIfRecoveryAborted(signal);
         failed += 1;
       }
     }
+    throwIfRecoveryAborted(signal);
     return { restored, completed, failed };
   }
 
@@ -187,4 +194,8 @@ export class UnifiedAssistantHandoffService {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function throwIfRecoveryAborted(signal?: AbortSignal): void {
+  signal?.throwIfAborted();
 }

@@ -1,20 +1,23 @@
+import { createShutdownContext, type ShutdownContext } from "../ingress/ShutdownContext.js";
+
 interface AppShutdownDependencies {
-  runtime: { stop(): Promise<void> };
+  runtime: { stop(context?: ShutdownContext): Promise<void> };
   orchestrator: {
     listRunningAgentRuns(): Array<{ runId: string }>;
     cancelRun(runId: string): unknown;
+    waitUntilAgentRunIdle(runId: string): Promise<void>;
   };
-  backgroundTasks: { shutdown(): Promise<void> };
+  backgroundTasks: { shutdown(timeoutMs?: number): Promise<void> };
   trace: {
-    close(): Promise<void>;
+    close(context?: ShutdownContext): Promise<void>;
     getIndexStore(): { close(): void } | undefined;
   };
   registry: { close(): void };
   companionService: { close(): void };
-  mcp: { stop(): Promise<void> };
-  projectIndex: { dispose(): Promise<void> };
+  mcp: { stop(context?: ShutdownContext): Promise<void> };
+  projectIndex: { dispose(context?: ShutdownContext): Promise<void> };
   contextDb: { close(): void };
-  telemetry: { shutdown(): Promise<void> };
+  telemetry: { shutdown(context?: ShutdownContext): Promise<void> };
   hooks: {
     dispatch(input: {
       event: "stop";
@@ -29,31 +32,41 @@ interface AppShutdownDependencies {
 export class AppShutdownCoordinator {
   private preparation?: Promise<void>;
   private completion?: Promise<void>;
+  private context?: ShutdownContext;
 
   constructor(private readonly dependencies: AppShutdownDependencies) {}
 
-  prepare(): Promise<void> {
-    this.preparation ??= this.performPreparation();
+  prepare(context?: ShutdownContext): Promise<void> {
+    const shutdownContext = this.resolveContext(context);
+    this.preparation ??= this.performPreparation(shutdownContext);
     return this.preparation;
   }
 
-  shutdown(): Promise<void> {
-    this.completion ??= this.performShutdown();
+  shutdown(context?: ShutdownContext): Promise<void> {
+    const shutdownContext = this.resolveContext(context);
+    this.completion ??= this.performShutdown(shutdownContext);
     return this.completion;
   }
 
-  private async performPreparation(): Promise<void> {
+  private resolveContext(context?: ShutdownContext): ShutdownContext {
+    this.context ??= context ?? createShutdownContext(Date.now() + 10_000);
+    return this.context;
+  }
+
+  private async performPreparation(context: ShutdownContext): Promise<void> {
+    context.throwIfExpired();
     try {
       await this.dependencies.hooks.dispatch({
         event: "stop",
         eventId: "runtime-stop",
         payload: {},
-        authority: { permissions: [], timeoutMs: 5_000 },
+        authority: { permissions: [], timeoutMs: Math.max(1, Math.min(5_000, context.remainingMs(2_000))) },
       });
     } catch {
       // Stop delivery is durable, but a broken notification cannot prevent safe shutdown.
     }
-    await this.dependencies.runtime.stop();
+    context.throwIfExpired();
+    await this.dependencies.runtime.stop(context);
     try {
       for (const run of this.dependencies.orchestrator.listRunningAgentRuns()) {
         this.dependencies.orchestrator.cancelRun(run.runId);
@@ -61,33 +74,87 @@ export class AppShutdownCoordinator {
     } catch {
       // Cancellation is best-effort; resource finalization must still proceed.
     }
-    await this.dependencies.backgroundTasks.shutdown();
+    context.throwIfExpired();
+    await this.dependencies.backgroundTasks.shutdown(context.remainingMs(1_500));
   }
 
-  private async performShutdown(): Promise<void> {
-    await this.prepare();
-    await this.waitForActiveRuns(5_000);
-    await this.dependencies.trace.close();
-    this.dependencies.trace.getIndexStore()?.close();
-    await this.dependencies.mcp.stop();
-    this.dependencies.registry.close();
-    this.dependencies.companionService.close();
-    await this.dependencies.projectIndex.dispose();
-    await this.dependencies.telemetry.shutdown();
-    this.dependencies.contextDb.close();
+  private async performShutdown(context: ShutdownContext): Promise<void> {
+    try {
+      await this.prepare(context);
+      await this.waitForActiveRuns(context, 2_000);
+    } catch (error) {
+      // An unjoined run may still own database handles or external effects.
+      // Retain every store and let Main terminate the fenced Runtime process.
+      throw new AggregateError([error], 'app_shutdown_barrier_failed');
+    }
+    const failures: unknown[] = [];
+    await this.runOptional(context, failures, () => this.dependencies.trace.close(context));
+    this.runRequiredClose(failures, () => this.dependencies.trace.getIndexStore()?.close());
+    await this.runOptional(context, failures, () => this.dependencies.mcp.stop(context));
+    this.runRequiredClose(failures, () => this.dependencies.registry.close());
+    this.runRequiredClose(failures, () => this.dependencies.companionService.close());
+    await this.runOptional(context, failures, () => this.dependencies.projectIndex.dispose(context));
+    await this.runOptional(context, failures, () => this.dependencies.telemetry.shutdown(context));
+    // The primary database is the final ownership boundary and is always closed,
+    // even when optional service cleanup consumed its budget or failed.
+    this.runRequiredClose(failures, () => this.dependencies.contextDb.close());
+    if (failures.length > 0) throw new AggregateError(failures, "app_shutdown_failed");
+    context.throwIfExpired();
   }
 
-  private async waitForActiveRuns(timeoutMs: number): Promise<void> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      let running = 0;
-      try {
-        running = this.dependencies.orchestrator.listRunningAgentRuns().length;
-      } catch {
-        return;
-      }
-      if (running === 0) return;
-      await new Promise((resolve) => setTimeout(resolve, 100));
+  private async waitForActiveRuns(context: ShutdownContext, maxWaitMs: number): Promise<void> {
+    context.throwIfExpired('app_shutdown_active_run_deadline_exceeded');
+    const running = this.dependencies.orchestrator.listRunningAgentRuns();
+    if (running.length === 0) return;
+    const waitMs = Math.min(maxWaitMs, context.remainingMs(1_500));
+    if (waitMs <= 0) {
+      throw new Error('app_shutdown_active_run_deadline_exceeded');
+    }
+    let timer: NodeJS.Timeout | undefined;
+    let onAbort: (() => void) | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      const fail = (): void => reject(
+        new Error('app_shutdown_active_runs_not_drained')
+      );
+      timer = setTimeout(fail, waitMs);
+      timer.unref?.();
+      onAbort = fail;
+      context.signal.addEventListener('abort', fail, { once: true });
+    });
+    try {
+      await Promise.race([
+        Promise.all(running.map((run) => (
+          this.dependencies.orchestrator.waitUntilAgentRunIdle(run.runId)
+        ))),
+        deadline
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (onAbort !== undefined) context.signal.removeEventListener('abort', onAbort);
+    }
+    if (this.dependencies.orchestrator.listRunningAgentRuns().length !== 0) {
+      throw new Error('app_shutdown_active_runs_not_drained');
+    }
+  }
+
+  private async runOptional(
+    context: ShutdownContext,
+    failures: unknown[],
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    if (context.remainingMs(500) === 0) return;
+    try {
+      await operation();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+
+  private runRequiredClose(failures: unknown[], operation: () => void): void {
+    try {
+      operation();
+    } catch (error) {
+      failures.push(error);
     }
   }
 }

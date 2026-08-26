@@ -1,19 +1,14 @@
-import type { AgentExecutionMeta, AgentStopReason } from "../RunPolicyTypes.js";
+import type { AgentExecutionMeta } from "../AgentExecutionMetaContracts.js";
+import type { AgentStopReason } from "../RunPolicyPrimitives.js";
+import type {
+  ExecutionPresentation,
+  UserFacingExecutionState,
+} from "./ExecutionPresentationContracts.js";
 
-export type UserFacingExecutionState =
-  | "answering"
-  | "analyzing"
-  | "planning"
-  | "waiting_plan_approval"
-  | "editing"
-  | "debugging"
-  | "waiting_tool_permission"
-  | "verifying"
-  | "write_gate_blocked"
-  | "completed"
-  | "completed_partial"
-  | "failed"
-  | "cancelled";
+export type {
+  ExecutionPresentation,
+  UserFacingExecutionState,
+} from "./ExecutionPresentationContracts.js";
 
 const WORKFLOW_LABELS: Record<string, string> = {
   answerWorkflow: "正在回答",
@@ -39,11 +34,6 @@ const TASK_STATE_LABELS: Record<string, string> = {
   failed: "执行失败",
   cancelled: "已取消",
 };
-
-export interface ExecutionPresentation {
-  userFacingState: UserFacingExecutionState;
-  userFacingLabel: string;
-}
 
 export function presentExecutionState(meta: Partial<AgentExecutionMeta>): ExecutionPresentation {
   if (meta.stopReason === "awaiting_plan_handoff") {

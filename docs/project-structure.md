@@ -1,56 +1,94 @@
-# 项目结构
+# Ariadne 项目结构
+
+> 核对日期：2026-08-26
+
+本仓库使用 npm workspaces，构建顺序为：
+
+```text
+Protocol -> Agent Core -> Runtime -> App
+```
+
+## 物理结构
 
 ```text
 Ariadne/
 ├─ app/
-│  ├─ src/main/runtime/       # Runtime 生命周期、Host capability 与 Main-owned MCP HTTP/OAuth
-│  ├─ src/main/persistence/   # 设置、桌面状态与安全凭据存储
-│  ├─ src/main/smoke/         # 真实 Electron 冒烟验证
-│  ├─ src/main/windows/       # 主窗口、Popout 白名单与无端口 Renderer 源
-│  ├─ src/main/               # 托盘、终端、文件等桌面能力
-│  ├─ src/preload/            # 固定、类型化的 Renderer 桥
-│  ├─ src/renderer/public/    # Dockview 独立窗口的最小同源文档
-│  ├─ src/renderer/           # React + Dockview UI 和 RuntimeStore
-│  ├─ src/shared/             # App 内部桌面 IPC 契约
-│  └─ tests/                  # App 边界、UI 与 Supervisor 测试
-├─ packages/protocol/
-│  ├─ src/public.ts           # Renderer 安全的公开协议
-│  ├─ src/host.ts             # Main ↔ Runtime 私有进程协议
-│  ├─ src/headless.ts         # stdin/stdout NDJSON 协议
-│  ├─ src/settings.ts         # 版本化、非密钥 runtimePolicy
-│  ├─ src/common.ts           # 共享基础 schema
-│  └─ tests/                  # 版本、尺寸、严格校验与安全测试
+│  ├─ src/main/                 # Electron Main、RuntimeSupervisor、OS capabilities
+│  ├─ src/preload/              # 固定、类型化的 Renderer bridge
+│  ├─ src/renderer/             # React + Dockview Feature Stores/UI
+│  ├─ src/shared/               # App 内部桌面契约
+│  └─ tests/
+├─ packages/
+│  ├─ protocol/
+│  │  ├─ src/public.ts          # Public command/result/status
+│  │  ├─ src/public/            # Projection v3 DTO
+│  │  ├─ src/host.ts            # Main <-> Runtime 私有协议
+│  │  ├─ src/headless.ts        # NDJSON v3
+│  │  └─ src/settings.ts        # 非密钥 Runtime Policy
+│  └─ agent-core/
+│     ├─ src/domain/            # Run、Turn、Decision、Effect、Plan、Budget
+│     ├─ src/application/       # Command、Dispatcher、UoW Port
+│     └─ tests/
 ├─ runtime/
-│  ├─ src/application/        # RuntimeFacade 与运行上下文
-│  ├─ src/transport/          # Node IPC Runtime 宿主
-│  ├─ src/entry/              # 子进程入口
-│  ├─ src/run/ + src/events/  # RunAggregate、checkpoint、账本与持久 outbox
-│  ├─ src/mcp/ + src/sandbox/ # MCP 适配与受控进程边界
-│  ├─ src/context/            # Token、摘要、记忆、Embedding 与代码理解
-│  ├─ src/*                   # 其余 Ariadne Agent、Tool、Policy 与扩展能力
-│  ├─ native/                 # Windows 原生沙箱与烟雾工程
-│  ├─ config/                 # 配置模板
-│  ├─ scripts/                # 模型运行时和沙箱发布脚本
-│  └─ tests/                  # 独立 Runtime 集成与边界测试
-├─ scripts/electron-smoke.ps1 # 真实窗口联调入口
-├─ artifacts/                 # 验证输出，不是运行时数据目录
-└─ docs/
+│  ├─ src/entry/                # Runtime 进程入口
+│  ├─ src/transport/            # Node IPC / Headless adapter
+│  ├─ src/ingress/              # command identity、deadline、lifecycle ports
+│  ├─ src/application/          # Runtime Kernel、模型目录与推理网关
+│  ├─ src/control/              # Agent Control use cases/ports
+│  ├─ src/conversation/         # Conversation domain contracts
+│  ├─ src/composition/          # 唯一生产组装入口
+│  ├─ src/adapters/             # Persistence、Model、Tool、MCP adapters
+│  ├─ src/projection/           # Conversation/Agent/Model publishers
+│  ├─ src/tools/                # 通用 Tool contracts/implementations
+│  ├─ src/security/             # Content/egress/policy boundaries
+│  ├─ src/sandbox/              # Process sandbox integration
+│  ├─ src/context/              # Context/Memory/Embedding/Repo Map implementations
+│  ├─ src/subagent/             # 尚未形成 v3 产品闭环
+│  ├─ src/background/           # 尚未形成 v3 产品闭环
+│  ├─ src/scheduler/            # 尚未形成 v3 产品闭环
+│  ├─ src/telemetry/            # 尚未形成完整 v3 lifecycle
+│  ├─ native/                   # Windows Sandbox helper
+│  └─ tests/
+├─ scripts/                     # 架构、独立性、打包、签名与发布门禁
+├─ docs/                        # 当前文档、目标架构、ADR 与验收矩阵
+├─ artifacts/                   # 本地验证证据，不是 Runtime 数据目录
+└─ .github/workflows/           # CI
 ```
 
-根 `package.json` 将 `app`、`packages/protocol` 和 `runtime` 注册为 npm workspaces，构建顺序固定为 Protocol → Runtime → App。
+`runtime/src/agent`、`runtime/src/app`、`runtime/src/orchestrator` 等历史模块目录仍可能存在源码和测试，但它们不是当前 v3 命令入口。新增能力不得从这些目录建立第二生产路径。
 
 ## 依赖方向
 
 ```text
-app ────────┐
-            ├──> packages/protocol
-runtime ────┘
-
-app -X-> runtime/src
-runtime -X-> app/src
-Renderer -X-> Node/Electron/数据库/任意传输
+Renderer -> Public Contracts
+Preload/Main -> Public + Host/Desktop Contracts
+Runtime Transport -> Runtime Ingress
+Runtime Ingress -> Control
+Control -> Agent Core Application/Domain
+Runtime Adapters -> Agent Core Ports
+Composition -> Kernel + Control + Adapters + Transport
 ```
 
-Dockview Popout 是桌面壳的按需窗口能力，不是第二个 App/Renderer 实例：模块 DOM 和服务仍由主 Renderer 管理，Main 只负责创建经过白名单校验、无脚本且无 Preload 的原生承载窗口；Popout WebContents 不在 IPC 授权集合中。
+硬约束：
 
-`runtime/native` 只保存 Ariadne 原生沙箱实现；Runtime 不包含第二套 DesktopHost、入站 HTTP Server、网页测试台、运行状态、模型权重或 `.env`。
+- App 与 Runtime 只通过版本化 Protocol 通信；
+- Renderer/Preload 不导入 Host、Node、Electron、数据库或 Runtime 源码；
+- Transport 不创建 Store、Context 或业务 Facade；
+- Agent Core 不依赖 Electron、Node、SQLite、Provider 或 Tool 实现；
+- 具体 Adapter 只由 Composition Root 实例化；
+- Runtime 不引用仓库外源码或启动入站 HTTP Server。
+
+## Runtime 数据目录
+
+```text
+<dataRoot>/
+└─ data/
+   ├─ runtime-control/runtime-command.db
+   ├─ conversation/conversation.db
+   ├─ agent-control/agent-control.db
+   └─ public-projection/projection.db
+```
+
+每个数据库只有一个 Writer 和 owner fence。Conversation 与 Agent Control 通过持久 Saga 协作；Projection 可重建；Trace 和 Renderer cache 不属于业务权威。
+
+当前实现细节见 [当前架构](architecture.md)，长期不变量见 [目标架构](architecture-v3.md)。

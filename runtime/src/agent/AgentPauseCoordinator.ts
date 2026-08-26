@@ -21,13 +21,15 @@ import { planHandoffMessageForVariant } from "./planHandoffMessages.js";
 import type {
   AgentExecutionStage,
   AgentRunMode,
+  PlanExecutionVariant,
+  UserPermissionPolicy,
+} from "./RunPolicyPrimitives.js";
+import type {
   AgentWorkflowDebugAnalysis,
   AgentWorkflowInternalPlan,
   AgentWorkflowProposal,
   AgentWorkflowRefactorPlan,
-  PlanExecutionVariant,
-  UserPermissionPolicy,
-} from "./RunPolicyTypes.js";
+} from "./WorkflowExecutionContracts.js";
 import type { AgentIntentType } from "./IntentTypes.js";
 import type { AgentToolStep } from "./toolStep.js";
 import {

@@ -1,7 +1,7 @@
 import type { AgentCompletionContext } from "../agent/completion/TaskCompletionContract.js";
 import type { LoopChatFn } from "../agent/AgentLoop.js";
 import { Planner } from "../agent/Planner.js";
-import { parseUserPermissionPolicyValue } from "../agent/RunPolicyTypes.js";
+import { parseUserPermissionPolicyValue } from "../agent/RunPolicyPrimitives.js";
 import type { ApiResult } from "../core/apiResult.js";
 import { PlanActivationWorkflow } from "../plan/PlanActivationWorkflow.js";
 import {

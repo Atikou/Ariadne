@@ -5,7 +5,7 @@ import type { ToolPermission } from "../core/permissions.js";
 import type { ProcessSandbox } from "../sandbox/ProcessSandbox.js";
 import type { AgentToolStep } from "./toolStep.js";
 import { toolStepPayloadForContext } from "./toolStepOutcome.js";
-import type { AgentRunMode, RunBudget } from "./RunPolicyTypes.js";
+import type { AgentRunMode, RunBudget } from "./RunPolicyPrimitives.js";
 import type { BudgetManager } from "./BudgetManager.js";
 import { countSuccessfulPermissionUsage } from "./BudgetManager.js";
 import type { RunStateLocationContext } from "../orchestrator/runStateLocation.js";

@@ -1,5 +1,5 @@
 import type { ModelTaskType } from "../model/taskType.js";
-import { parseRunModeValue, type AgentRunMode } from "./RunPolicyTypes.js";
+import { parseRunModeValue, type AgentRunMode } from "./RunPolicyPrimitives.js";
 import { defaultWorkflowPlanner, type WorkflowPlan } from "./WorkflowPlanner.js";
 import type { AgentIntentType, AgentWorkflowType } from "./IntentTypes.js";
 import { defaultWorkflowRouter } from "./WorkflowRouter.js";

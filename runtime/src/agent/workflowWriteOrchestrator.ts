@@ -1,14 +1,14 @@
 import { DebugFixWorkflow } from "./DebugFixWorkflow.js";
 import { EditWriteWorkflow } from "./EditWriteWorkflow.js";
 import type { AgentIntentType } from "./IntentTypes.js";
+import type { UserPermissionPolicy } from "./RunPolicyPrimitives.js";
 import type {
   AgentWorkflowDebugAnalysis,
   AgentWorkflowDebugFix,
   AgentWorkflowProposal,
   AgentWorkflowRefactorPlan,
   AgentWorkflowWritePhase,
-  UserPermissionPolicy,
-} from "./RunPolicyTypes.js";
+} from "./WorkflowExecutionContracts.js";
 import { assessWorkflowWriteGate } from "./WorkflowWriteGate.js";
 import type { AgentToolStep } from "./toolStep.js";
 

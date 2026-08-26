@@ -4,7 +4,7 @@ import type { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { AgentIntentType } from "./IntentTypes.js";
 import type { ToolPermission } from "../core/permissions.js";
 import type { ProcessSandbox } from "../sandbox/ProcessSandbox.js";
-import type { UserPermissionPolicy, RunBudget } from "./RunPolicyTypes.js";
+import type { UserPermissionPolicy, RunBudget } from "./RunPolicyPrimitives.js";
 import type { AgentToolStep } from "./toolStep.js";
 import { toolStepPayloadForContext } from "./toolStepOutcome.js";
 import { ToolExecutionGateway } from "./ToolExecutionGateway.js";

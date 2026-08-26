@@ -27,6 +27,7 @@ describe('production packaging pipeline', () => {
     expect(appPackage.scripts['package:win']).toContain('package:win:build');
     expect(appPackage.scripts['package:win:build']).toContain('package:prepare');
     expect(appPackage.scripts['package:prepare']).toContain('build --workspace @ariadne/protocol');
+    expect(appPackage.scripts['package:prepare']).toContain('build --workspace @ariadne/agent-core');
     expect(appPackage.scripts['package:prepare']).toContain('build --workspace @ariadne/runtime');
     expect(appPackage.scripts['package:prepare']).toContain('--arch=x64');
     expect(appPackage.scripts['package:win:build']).toContain('--x64');
@@ -36,7 +37,12 @@ describe('production packaging pipeline', () => {
     expect(appPackage.scripts['package:win']).toContain('verify-windows-release-signatures.mjs');
     expect(rootPackage.scripts['verify:release']).toContain('audit:dependencies');
     expect(rootPackage.scripts['verify:release']).toContain('audit:runtime-independence');
-    expect(rootPackage.workspaces).toEqual(['app', 'packages/protocol', 'runtime']);
+    expect(rootPackage.workspaces).toEqual([
+      'app',
+      'packages/agent-core',
+      'packages/protocol',
+      'runtime'
+    ]);
     expect(rootPackage.scripts['audit:runtime-independence']).toBe(
       'node scripts/audit-runtime-independence.mjs'
     );
@@ -48,6 +54,9 @@ describe('production packaging pipeline', () => {
       expect.objectContaining({ to: 'runtime/node_modules/@ariadne/runtime/.runtime/transformers' })
     ]));
     expect(runtimeDistributionLock.packages['node_modules/@ariadne/runtime']?.resolved).toBe('file:../../runtime');
+    expect(runtimeDistributionLock.packages['node_modules/@ariadne/agent-core']?.resolved).toBe(
+      'file:../../packages/agent-core'
+    );
     expect(prepareScript).toContain("const NODE_VERSION = '22.23.1'");
     expect(prepareScript).toContain('7df0bc9375723f4a86b3aa1b7cc73342423d9677a8df4538aca31a049e309c29');
     expect(prepareScript).toContain("return value?.trim() || 'x64'");

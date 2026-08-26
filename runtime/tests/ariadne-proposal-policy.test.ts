@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { UserPermissionPolicy } from "../src/agent/RunPolicyTypes.js";
+import type { UserPermissionPolicy } from "../src/agent/RunPolicyPrimitives.js";
 import {
   AgentProposalCapabilityPolicy,
   permissionPolicyForPermissions,

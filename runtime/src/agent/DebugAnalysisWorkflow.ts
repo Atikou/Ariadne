@@ -1,6 +1,7 @@
 import type { AgentIntentType } from "./IntentTypes.js";
 import type { ToolPermission } from "../core/permissions.js";
-import type { AgentWorkflowDebugAnalysis, UserPermissionPolicy } from "./RunPolicyTypes.js";
+import type { UserPermissionPolicy } from "./RunPolicyPrimitives.js";
+import type { AgentWorkflowDebugAnalysis } from "./WorkflowExecutionContracts.js";
 
 export interface DebugAnalysisWorkflowInput {
   goal: string;

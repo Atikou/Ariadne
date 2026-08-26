@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { nonEmptyIdSchema } from './common.js';
+import { isoDateTimeSchema, nonEmptyIdSchema } from './common.js';
 import { runtimeBootstrapSchema, runtimeErrorSchema } from './host.js';
 import {
   runtimeCommandSchema,
@@ -11,7 +11,7 @@ import {
 
 export const headlessHelloSchema = z.object({
   type: z.literal('hello'),
-  protocolVersion: z.literal('2.0'),
+  protocolVersion: z.literal('3.0'),
   bootstrap: runtimeBootstrapSchema,
   resumeCursor: z.number().int().nonnegative().default(0)
 }).strict();
@@ -21,11 +21,14 @@ export const headlessInputSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('command'),
     requestId: nonEmptyIdSchema,
+    commandId: nonEmptyIdSchema,
+    deadlineAt: isoDateTimeSchema,
     command: runtimeCommandSchema
   }).strict(),
   z.object({
     type: z.literal('shutdown'),
-    requestId: nonEmptyIdSchema
+    requestId: nonEmptyIdSchema,
+    deadlineAt: isoDateTimeSchema.optional()
   }).strict()
 ]);
 export type HeadlessInput = z.infer<typeof headlessInputSchema>;
@@ -33,7 +36,7 @@ export type HeadlessInput = z.infer<typeof headlessInputSchema>;
 export const headlessOutputSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('ready'),
-    protocolVersion: z.literal('2.0'),
+    protocolVersion: z.literal('3.0'),
     status: runtimeStatusSchema,
     resumeCursor: z.number().int().nonnegative()
   }).strict(),

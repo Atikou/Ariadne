@@ -5,14 +5,14 @@ import type { RunState } from "../orchestrator/runStateTypes.js";
 import { wrapExternalToolOutput } from "../util/injection.js";
 import { renderNotifications } from "./AgentNotificationRenderer.js";
 import type { PausedRunSnapshot } from "./PausedRunStore.js";
+import type { RunPolicy } from "./RunPolicyContracts.js";
 import type {
   AgentWorkflowDebugAnalysis,
   AgentWorkflowInternalPlan,
   AgentWorkflowProposal,
   AgentWorkflowRefactorPlan,
-  AgentWorkflowSwitch,
-  RunPolicy,
-} from "./RunPolicyTypes.js";
+} from "./WorkflowExecutionContracts.js";
+import type { AgentWorkflowSwitch } from "./WorkflowStateContracts.js";
 import type { AgentIntentType } from "./IntentTypes.js";
 import type { SessionTaskManager } from "./task/SessionTaskManager.js";
 import type { AgentTimelineService } from "./timeline/AgentTimelineService.js";

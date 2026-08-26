@@ -5,23 +5,22 @@ import { describe, expect, it } from 'vitest';
 describe('conversation-scoped approval cards', () => {
   it('renders pending approvals inside only their owning conversation', async () => {
     const root = join(process.cwd(), 'src', 'renderer', 'src');
-    const [app, cards, approvalState, chat, styles] = await Promise.all([
+    const [app, cards, chat, styles] = await Promise.all([
       readFile(join(root, 'app', 'App.tsx'), 'utf8'),
       readFile(join(root, 'app', 'ApprovalCenter.tsx'), 'utf8'),
-      readFile(join(process.cwd(), 'src', 'shared', 'conversation-approval-state.ts'), 'utf8'),
       readFile(join(root, 'modules', 'chat', 'ChatPanel.tsx'), 'utf8'),
       readFile(join(root, 'app', 'styles.css'), 'utf8')
     ]);
 
     expect(app).not.toContain('<ApprovalCenter');
     expect(cards).toContain('export function ConversationApprovalCards');
-    expect(cards).toContain('resolveApprovalSessionId');
-    expect(approvalState).toContain('reference.sessionId');
-    expect(approvalState).toContain('run.runId === reference.runId');
-    expect(cards).toContain("proposal.status === 'pending'");
+    expect(cards).toContain('resolveProjectionApprovalSessionId');
+    expect(cards).not.toContain("from '@shared/conversation-approval-state'");
+    expect(cards).not.toContain("proposal.status === 'pending'");
     expect(cards).toContain("request.status === 'pending'");
     expect(cards).toContain("handoff.status === 'pending'");
-    expect(cards).toContain('respondToProposal');
+    expect(cards).not.toContain('...snapshot.proposals');
+    expect(cards).not.toContain('respondToProposal');
     expect(cards).toContain('respondToPermission');
     expect(cards).toContain('respondToPlan');
 

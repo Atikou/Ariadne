@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { ArrowDown, Check, Copy, Hand, Send, Settings2, ShieldAlert, ShieldCheck, Sparkles } from 'lucide-react';
+import { ArrowDown, Check, Copy, Folder, Hand, Send, Settings2, ShieldAlert, ShieldCheck, Sparkles } from 'lucide-react';
 import type {
   ChatRoutingStrategy,
   ModelInferenceOptions,
   ModelSummary,
 } from '@ariadne/protocol/public';
+import type { AgentPermissionMode, AgentSettingsView } from '@shared/contract';
 import {
-  AGENT_PROVIDER_IDS,
-  type AgentPermissionMode,
-  type AgentSettingsUpdate,
-  type AgentSettingsView
-} from '@shared/contract';
-import { useRuntimeSnapshot, type RuntimeMessage } from '@renderer/core/runtime/runtime-store';
+  useRuntimeSnapshot,
+  type RuntimeMessage,
+  type RuntimeRun
+} from '@renderer/core/runtime/runtime-store';
 import { formatRuntimeAvailability } from '@renderer/core/runtime/runtime-labels';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import { SelectMenu, type SelectMenuOption } from '@renderer/shared/ui/SelectMenu';
@@ -26,6 +25,9 @@ import { RunProcessingDisclosure } from './RunProcessingDisclosure';
 import { MODULE_IDS } from '@renderer/core/modules/module-ids';
 import { ConversationApprovalCards } from '@renderer/app/ApprovalCenter';
 import { ComposerAddMenu } from './ComposerAddMenu';
+import { deriveChatModelState, type ChatModelState } from './chat-model-state';
+import type { ConversationWorkspace } from '@renderer/core/conversations/conversation-navigation-service';
+import { useConversationPresentationRevision } from '@renderer/core/conversations/use-conversation-presentation';
 
 const AUTO_MODEL_ID = '__auto__';
 const AUTO_ROUTING_PREFIX = `${AUTO_MODEL_ID}:`;
@@ -44,11 +46,14 @@ const permissionModeOptions: readonly SelectMenuOption<AgentPermissionMode>[] = 
 
 export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
   const runtime = useRuntimeSnapshot(services.runtime);
+  useConversationPresentationRevision(services.conversationNavigation);
   const [draft, setDraft] = useState('');
   const [selectedModelId, setSelectedModelId] = useState(AUTO_MODEL_ID);
   const [routingStrategy, setRoutingStrategy] = useState<ChatRoutingStrategy>('local-first');
   const [permissionMode, setPermissionMode] = useState<AgentPermissionMode>('request');
   const [settingsSnapshot, setSettingsSnapshot] = useState<AgentSettingsView | null>(null);
+  const [workspaces, setWorkspaces] = useState<readonly ConversationWorkspace[]>([]);
+  const [draftWorkspaceId, setDraftWorkspaceId] = useState<string | null>(null);
   const [savingPermissionMode, setSavingPermissionMode] = useState(false);
   const [inferenceByModel, setInferenceByModel] = useState<Record<string, ModelInferenceOptions>>({});
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -60,24 +65,31 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   const followLatestRef = useRef(true);
   const defaultsLoadedRef = useRef(false);
   const selectedSession = runtime.sessions.find((session) => session.sessionId === runtime.selectedSessionId);
-  const availableModels = runtime.models.filter((model) => model.availability === 'ready');
+  const composerWorkspaceId = selectedSession?.workspaceId ?? draftWorkspaceId;
   const planModeAvailable = runtime.status.availability === 'ready'
     && runtime.status.capabilities.includes('companion.agent-plan');
   const planModeEnabled = services.runtime.isPlanModeEnabled(runtime.selectedSessionId);
-  const modeEligibleModels = planModeEnabled
-    ? availableModels.filter((model) => model.supportsAgent)
-    : availableModels;
-  const eligibleModels = routingStrategy === 'privacy-first'
-    ? modeEligibleModels.filter((model) => model.location === 'local')
-    : modeEligibleModels;
+  const modelState = useMemo(() => deriveChatModelState({
+    runtimeAvailability: runtime.status.availability,
+    planModeAvailable,
+    planModeEnabled,
+    routingStrategy,
+    models: runtime.models
+  }), [
+    runtime.status.availability,
+    planModeAvailable,
+    planModeEnabled,
+    routingStrategy,
+    runtime.models
+  ]);
+  const availableModels = modelState.readyModels;
+  const eligibleModels = modelState.eligibleModels;
   const selectedModel = eligibleModels.find((model) => model.id === selectedModelId);
   const selectedInference = selectedModel
     ? inferenceByModel[selectedModel.id] ?? defaultInference(selectedModel)
     : undefined;
   const reasoning = selectedModel?.inference?.reasoning;
-  const canChat = runtime.status.availability === 'ready'
-    && eligibleModels.length > 0
-    && (!planModeEnabled || planModeAvailable);
+  const canChat = modelState.canChat;
   const modelOptions = useMemo<readonly SelectMenuOption<string>[]>(() => [
     {
       value: AUTO_MODEL_ID,
@@ -103,11 +115,24 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
       ? AUTO_MODEL_ID
       : routingSelectionValue(routingStrategy)
     : selectedModelId;
+  const workspaceOptions = useMemo<readonly SelectMenuOption<string>[]>(() => {
+    const options: SelectMenuOption<string>[] = workspaces.map((workspace) => ({
+      value: workspace.workspaceId,
+      label: workspace.name,
+      description: workspace.rootPath
+    }));
+    if (selectedSession && !options.some((option) => option.value === selectedSession.workspaceId)) {
+      options.unshift({ value: selectedSession.workspaceId, label: 'Ariadne 助手' });
+    }
+    return options;
+  }, [selectedSession, workspaces]);
   const nodes = useMemo(() => runtime.messages.map(toConversationNode), [runtime.messages]);
   const activeRun = runtime.runs.find((run) => run.sessionId === runtime.selectedSessionId && [
-    'queued', 'running', 'waiting_permission', 'waiting_plan_handoff', 'waiting_budget'
+    'queued', 'running', 'waiting_permission', 'waiting_decision', 'waiting_budget',
+    'waiting_children', 'cancelling'
   ].includes(run.status));
   const running = Boolean(activeRun);
+  const runActionAvailable = activeRun?.origin !== 'projection';
   const sending = runtime.messages.some((message) => message.deliveryState === 'pending');
 
   useEffect(() => {
@@ -120,6 +145,31 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
     }).catch(() => undefined);
   }, [services.agentSettings]);
 
+  useEffect(() => {
+    let active = true;
+    const refreshWorkspaces = (): void => {
+      void services.conversationNavigation.listSelectableWorkspaces().then((catalog) => {
+        if (active) setWorkspaces(catalog);
+      }).catch(() => undefined);
+    };
+    const applySelection = (workspaceId: string | null): void => {
+      if (active) setDraftWorkspaceId(workspaceId);
+    };
+    const unsubscribeWorkspaces = services.conversationNavigation.onWorkspacesChanged(refreshWorkspaces);
+    const unsubscribeSelection = services.conversationNavigation.onSelectedWorkspaceChanged(applySelection);
+    refreshWorkspaces();
+    return () => {
+      active = false;
+      unsubscribeWorkspaces();
+      unsubscribeSelection();
+    };
+  }, [services.conversationNavigation]);
+
+  useEffect(() => services.events.subscribe('chat:new-draft-requested', ({ workspaceId }) => {
+    setDraftWorkspaceId(workspaceId);
+    requestAnimationFrame(() => composerInputRef.current?.focus());
+  }), [services.events]);
+
   useEffect(() => services.system.onApprovalNavigation(({ sessionId }) => {
     void services.runtime.selectSession(sessionId).catch(() => undefined);
   }), [services.runtime, services.system]);
@@ -131,25 +181,17 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
     setSavingPermissionMode(true);
     try {
       const settings = settingsSnapshot ?? await services.agentSettings.load();
-      const providers = Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => {
-        const provider = settings.providers[id];
-        return [id, {
-          enabled: provider.enabled,
-          baseUrl: provider.baseUrl,
-          model: provider.model,
-          inference: provider.inference,
-          clearApiKey: false
-        }];
-      })) as AgentSettingsUpdate['providers'];
-      const saved = await services.agentSettings.update({
-        routingStrategy: settings.routingStrategy,
-        permissionMode: nextPermissionMode,
-        customPermissions: settings.customPermissions,
-        workspaceRoot: settings.workspaceRoot,
-        workspaceAccess: settings.workspaceAccess,
-        localModelRoots: settings.localModelRoots,
-        providers
+      const result = await services.agentSettings.apply({
+        expectedRevision: settings.revision,
+        operations: [{ kind: 'permissions.set', mode: nextPermissionMode }]
       });
+      if (!result.ok) {
+        setSettingsSnapshot(result.settings);
+        setPermissionMode(result.settings.permissionMode);
+        console.error(result.error.code, result.error.message);
+        return;
+      }
+      const saved = result.settings;
       setSettingsSnapshot(saved);
       setPermissionMode(saved.permissionMode);
       services.events.emit('chat:workspace-access-changed', saved.workspaceAccess);
@@ -250,18 +292,15 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
 
   const send = async (): Promise<void> => {
     const message = draft;
-    if (!message.trim() || running || sending || !canChat || (planModeEnabled && !planModeAvailable)) return;
+    if (!message.trim() || !composerWorkspaceId || running || sending || !canChat || (planModeEnabled && !planModeAvailable)) return;
     setDraft('');
     setFollowingLatest(true);
     try {
-      const workspaceId = selectedSession?.workspaceId
-        ?? services.conversationNavigation.getSelectedWorkspaceId()
-        ?? undefined;
       await services.runtime.sendMessage(message, {
         ...(selectedModelId !== AUTO_MODEL_ID ? { modelId: selectedModelId } : {}),
         ...(selectedInference ? { inference: selectedInference } : {}),
         ...(planModeEnabled ? {} : { routingStrategy }),
-        ...(workspaceId ? { workspaceId } : {})
+        workspaceId: composerWorkspaceId
       });
     } catch {
       setDraft(message);
@@ -316,21 +355,17 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
       <div className="chat-conversation">
         <header className="chat-header">
           <div>
-            <h1 id={`${moduleId}-title`}>{selectedSession?.title ?? 'Ariadne 助手'}</h1>
-            <span className="chat-subtitle"><span className="presence-dot" /> Runtime {formatRuntimeAvailability(runtime.status.availability)}</span>
+            <h1 id={`${moduleId}-title`}>{selectedSession
+              ? services.conversationNavigation.sessionTitle(selectedSession.sessionId, selectedSession.title)
+              : 'Ariadne 助手'}</h1>
+            <span className="chat-subtitle" data-runtime-availability={runtime.status.availability}><span className="presence-dot" /> Runtime {formatRuntimeAvailability(runtime.status.availability)}</span>
           </div>
           <div className="chat-header-meta">
             <StatusPill tone={running
               ? 'running'
-              : runtime.status.availability !== 'ready'
-                ? 'danger'
-                : availableModels.length > 0
-                  ? 'success'
-                  : 'warning'}>
+              : modelState.statusTone}>
               {activeRun?.userFacingLabel
-                ?? (runtime.status.availability === 'ready' && availableModels.length === 0
-                  ? '未配置模型'
-                  : formatRuntimeAvailability(runtime.status.availability))}
+                ?? modelState.statusLabel}
             </StatusPill>
           </div>
         </header>
@@ -339,7 +374,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
           <div className="message-viewport" ref={viewportRef} onScroll={handleViewportScroll}>
             <div className="message-list" ref={messageListRef}>
               {nodes.length === 0
-                ? <EmptyConversation hasModel={availableModels.length > 0} />
+                ? <EmptyConversation modelState={modelState} />
                 : nodes.map((node) => (
                   <div id={`chat-node-${node.id}`} data-conversation-node key={node.id} className={`conversation-node conversation-node--${node.kind}`}>
                     <ConversationMessage
@@ -376,21 +411,28 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
 
         <div className="composer-wrap">
           <div className="composer">
+            <div className="composer-context-bar">
+              {composerWorkspaceId && workspaceOptions.length > 0
+                ? <SelectMenu<string>
+                    className="composer-workspace-menu"
+                    ariaLabel="选择工作区"
+                    placement="top"
+                    leadingIcon={<Folder size={13} />}
+                    value={composerWorkspaceId}
+                    options={workspaceOptions}
+                    disabled={selectedSession !== undefined}
+                    onChange={(workspaceId) => {
+                      setDraftWorkspaceId(workspaceId);
+                      void services.conversationNavigation.selectWorkspace(workspaceId).catch(() => undefined);
+                    }}
+                  />
+                : <span className="composer-workspace-empty"><Folder size={13} />请先打开工作区</span>}
+            </div>
             <textarea
               ref={composerInputRef}
               value={draft}
               rows={1}
-              placeholder={runtime.status.availability !== 'ready'
-                ? 'Runtime 当前不可用'
-                : planModeEnabled && !planModeAvailable
-                  ? '当前 Runtime 构建不支持计划模式，请完整重启 Ariadne'
-                : eligibleModels.length === 0
-                  ? planModeEnabled
-                    ? '请先配置支持 Agent 协议的可用模型'
-                    : '请先在设置中配置 API Key 或本地模型目录'
-                  : planModeEnabled
-                    ? '描述需要规划的任务；计划模式只读分析'
-                    : '向 Ariadne 发送消息；按 Shift + Enter 换行'}
+              placeholder={modelState.composerPlaceholder}
               aria-label="消息输入框"
               disabled={!canChat}
               onChange={(event) => setDraft(event.target.value)}
@@ -465,11 +507,17 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                 <button
                   type="button"
                   className={`send-button${running ? ' send-button--stop' : ''}`}
-                  disabled={sending || (!running && (!draft.trim() || !canChat))}
+                  disabled={sending || (running
+                    ? !runActionAvailable
+                    : !draft.trim() || !composerWorkspaceId || !canChat)}
                   onClick={() => running && activeRun
                     ? void services.runtime.cancelRun(activeRun)
                     : void send()}
-                  aria-label={running ? activeRun?.origin === 'agent' ? '取消 Agent 任务' : '停止生成' : '发送消息'}
+                  aria-label={running
+                    ? runActionAvailable
+                      ? activeRun?.origin === 'agent' ? '取消 Agent 任务' : '停止生成'
+                      : '运行操作等待 v3 决策写入通道'
+                    : '发送消息'}
                 >
                   {running ? <span className="send-stop-glyph" aria-hidden="true" /> : <Send size={16} />}
                 </button>
@@ -530,10 +578,8 @@ function reasoningEffortLabel(value: 'none' | 'low' | 'medium' | 'high' | 'xhigh
   return { none: '无', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' }[value];
 }
 
-function EmptyConversation({ hasModel }: { hasModel: boolean }): React.JSX.Element {
-  return <div className="empty-conversation"><span><Sparkles size={21} /></span><h2>{hasModel ? '开始新会话' : '先配置可用模型'}</h2><p>{hasModel
-    ? '描述你的目标，AI 会直接开始处理；只有实际工具权限不足时，Ariadne 才会向你确认具体操作。'
-    : '打开设置，填写 OpenAI、DeepSeek、Kimi 或 Anthropic API Key，也可以添加本地模型目录。'}</p></div>;
+function EmptyConversation({ modelState }: { modelState: ChatModelState }): React.JSX.Element {
+  return <div className="empty-conversation"><span><Sparkles size={21} /></span><h2>{modelState.emptyTitle}</h2><p>{modelState.emptyDescription}</p></div>;
 }
 
 function toConversationNode(message: RuntimeMessage): ConversationNode {
@@ -574,7 +620,7 @@ function ConversationMessage({
   onCopy
 }: {
   node: ConversationNode;
-  run?: import('@ariadne/protocol/public').RunSummary | undefined;
+  run?: RuntimeRun | undefined;
   activities: import('@ariadne/protocol/public').RunActivity[];
   onOpenActivity?: (() => void) | undefined;
   onCopy(text: string): Promise<void>;

@@ -1,10 +1,8 @@
 import type { ToolPermission } from "../core/permissions.js";
 
-import type { AgentRunMode } from "./RunPolicyTypes.js";
+import type { AgentRunMode, UserPermissionPolicy } from "./RunPolicyPrimitives.js";
 
 import type { WorkflowRouteResult } from "./WorkflowRouter.js";
-
-import type { UserPermissionPolicy } from "./RunPolicyTypes.js";
 
 import { isHardWorkflow, isSoftWorkflow } from "./WorkflowRouter.js";
 

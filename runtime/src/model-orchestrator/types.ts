@@ -1,6 +1,7 @@
 import type { DraftReviewResult, ExecutionStrategy, RouterDecision } from "../model-router/types.js";
 import type { ChatRequest, ModelResponse } from "../model/types.js";
 import type { ModelRole } from "../model-router/types.js";
+import type { ParallelVoteResult } from "./pipelineContracts.js";
 
 export interface RenderedPrompt {
   systemSectionsText: string;
@@ -27,7 +28,7 @@ export interface OrchestratorResult {
   collaborationRunId?: string;
   modelCallIds: string[];
   reviewResult?: DraftReviewResult;
-  voteResult?: import("./pipelines/parallel-vote-pipeline.js").ParallelVoteResult;
+  voteResult?: ParallelVoteResult;
   fallbackCount?: number;
   fallbackLogIds?: string[];
   clientName?: string;

@@ -1,20 +1,6 @@
-import type { ChatMessage, ChatRequest, ModelToolSpec } from "./types.js";
+import type { TokenCount, TokenCounter } from "./types.js";
 
-export interface TokenCount {
-  tokens: number;
-  exact: boolean;
-  method: "model_tokenizer" | "provider_profile_conservative";
-  tokenizer: string;
-}
-
-export interface TokenCounter {
-  readonly profile: string;
-  readonly exact: boolean;
-  countText(text: string): Promise<TokenCount>;
-  countMessages(messages: readonly ChatMessage[]): Promise<TokenCount>;
-  countTools(tools: readonly ModelToolSpec[]): Promise<TokenCount>;
-  countRequest(request: Pick<ChatRequest, "messages" | "tools">): Promise<TokenCount>;
-}
+export type { TokenCount, TokenCounter } from "./types.js";
 
 export function createConservativeTokenCounter(profile: string): TokenCounter {
   const result = (tokens: number): TokenCount => ({

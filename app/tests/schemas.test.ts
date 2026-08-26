@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
-  agentSettingsUpdateSchema,
+  agentSettingsMutationSchema,
   clipboardWriteRequestSchema,
   closeTerminalRequestSchema,
   createTerminalSessionRequestSchema,
   resizeTerminalRequestSchema,
+  runtimeDesktopRequestSchema,
+  runtimeRequestResultSchema,
+  runtimeStatusResultSchema,
   saveLayoutRequestSchema,
   showWindowRequestSchema,
   titleBarThemeSchema,
@@ -14,6 +17,54 @@ import {
 } from '@shared/schemas';
 
 describe('IPC schemas', () => {
+  it('requires structured Runtime results and bounded public errors', () => {
+    expect(runtimeDesktopRequestSchema.safeParse({
+      commandId: 'renderer-command-1',
+      command: { kind: 'runtime.status.get' }
+    }).success).toBe(true);
+    expect(runtimeDesktopRequestSchema.safeParse({
+      commandId: '',
+      command: { kind: 'runtime.status.get' }
+    }).success).toBe(false);
+    expect(runtimeDesktopRequestSchema.safeParse({
+      kind: 'runtime.status.get'
+    }).success).toBe(false);
+    expect(runtimeStatusResultSchema.safeParse({
+      ok: true,
+      value: {
+        availability: 'ready',
+        capabilities: [],
+        observedAt: new Date().toISOString()
+      }
+    }).success).toBe(true);
+    expect(runtimeRequestResultSchema.safeParse({
+      ok: false,
+      error: {
+        code: 'command_outcome_uncertain',
+        message: 'Outcome must be reconciled.',
+        retryable: false,
+        correlationId: 'command-1'
+      }
+    }).success).toBe(true);
+    expect(runtimeRequestResultSchema.safeParse({
+      ok: false,
+      error: {
+        code: 'INVALID CODE',
+        message: 'bad',
+        retryable: true,
+        correlationId: 'command-1'
+      }
+    }).success).toBe(false);
+    expect(runtimeRequestResultSchema.safeParse({
+      kind: 'runtime.status',
+      status: {
+        availability: 'ready',
+        capabilities: [],
+        observedAt: new Date().toISOString()
+      }
+    }).success).toBe(false);
+  });
+
   it('accepts bounded clipboard text and rejects invalid payloads', () => {
     expect(clipboardWriteRequestSchema.safeParse({ text: 'copy me' }).success).toBe(true);
     expect(clipboardWriteRequestSchema.safeParse({ text: '' }).success).toBe(false);
@@ -43,37 +94,44 @@ describe('IPC schemas', () => {
 
   it('accepts supported Agent providers and rejects unsafe model settings', () => {
     const valid = {
-      routingStrategy: 'cloud-first',
-      permissionMode: 'request',
-      customPermissions: {
-        approvalPolicy: 'risk-based',
-        sandboxMode: 'workspace-write',
-        allowedPermissions: ['read', 'write', 'shell', 'network', 'dangerous']
-      },
-      workspaceRoot: 'E:\\Project\\Ariadne',
-      workspaceAccess: 'write',
-      localModelRoots: ['D:\\Models'],
-      providers: {
-        openai: { enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'gpt-test', inference: {}, apiKey: 'test-api-key', clearApiKey: false },
-        deepseek: { enabled: true, baseUrl: 'https://api.deepseek.com', model: 'deepseek-test', inference: { reasoning: { modes: ['off', 'on'], defaultMode: 'on', efforts: ['high', 'max'], defaultEffort: 'high' } }, clearApiKey: false },
-        kimi: { enabled: true, baseUrl: 'https://api.moonshot.ai/v1', model: 'kimi-k3', inference: { reasoning: { modes: ['on'], defaultMode: 'on', efforts: ['low', 'high', 'max'], defaultEffort: 'max' } }, clearApiKey: false },
-        anthropic: { enabled: false, baseUrl: 'https://api.anthropic.com', model: 'claude-test', inference: {}, clearApiKey: false }
-      }
+      expectedRevision: 7,
+      operations: [{
+        kind: 'provider.update',
+        providerId: 'openai',
+        patch: {
+          enabled: true,
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-test',
+          inference: {},
+          apiKey: 'test-api-key'
+        }
+      }]
     };
-    expect(agentSettingsUpdateSchema.safeParse(valid).success).toBe(true);
-    expect(agentSettingsUpdateSchema.safeParse({
+    expect(agentSettingsMutationSchema.safeParse(valid).success).toBe(true);
+    expect(agentSettingsMutationSchema.safeParse({
       ...valid,
-      providers: {
-        ...valid.providers,
-        openai: { ...valid.providers.openai, baseUrl: 'http://api.example.com/v1' }
-      }
+      operations: [{
+        ...valid.operations[0],
+        patch: { ...valid.operations[0]!.patch, baseUrl: 'http://api.example.com/v1' }
+      }]
     }).success).toBe(false);
-    expect(agentSettingsUpdateSchema.safeParse({
+    expect(agentSettingsMutationSchema.safeParse({
       ...valid,
-      providers: {
-        ...valid.providers,
-        openai: { ...valid.providers.openai, clearApiKey: true }
-      }
+      operations: [{
+        ...valid.operations[0],
+        patch: { ...valid.operations[0]!.patch, clearApiKey: true }
+      }]
+    }).success).toBe(false);
+    expect(agentSettingsMutationSchema.safeParse({
+      expectedRevision: 7,
+      operations: [
+        { kind: 'permissions.set', mode: 'request' },
+        { kind: 'permissions.set', mode: 'risk-based' }
+      ]
+    }).success).toBe(false);
+    expect(agentSettingsMutationSchema.safeParse({
+      ...valid,
+      routingStrategy: 'cloud-first'
     }).success).toBe(false);
   });
 

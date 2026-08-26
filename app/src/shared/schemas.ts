@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { modelInferenceProfileSchema } from '@ariadne/protocol/public';
+import {
+  modelInferenceProfileSchema,
+  runtimeCommandSchema,
+  runtimeResultSchema,
+  runtimeStatusSchema
+} from '@ariadne/protocol/public';
 import { runtimePolicySnapshotSchema } from '@ariadne/protocol/settings';
 import type { JsonObject, JsonValue } from './contract';
 import {
@@ -25,6 +30,30 @@ export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
 );
 
 export const jsonObjectSchema: z.ZodType<JsonObject> = z.record(z.string(), jsonValueSchema);
+
+export const publicErrorSchema = z
+  .object({
+    code: z.string().regex(/^[a-z][a-z0-9_]{1,127}$/u),
+    message: z.string().min(1).max(4_096),
+    retryable: z.boolean(),
+    correlationId: z.string().min(1).max(256),
+    details: z.array(z.string().max(1_024)).max(64).optional()
+  })
+  .strict();
+
+const resultSchema = <T extends z.ZodType>(value: T) => z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), value }).strict(),
+  z.object({ ok: z.literal(false), error: publicErrorSchema }).strict()
+]);
+
+export const runtimeStatusResultSchema = resultSchema(runtimeStatusSchema);
+export const runtimeRequestResultSchema = resultSchema(runtimeResultSchema);
+export const runtimeDesktopRequestSchema = z
+  .object({
+    command: runtimeCommandSchema,
+    commandId: z.string().trim().min(1).max(256).optional()
+  })
+  .strict();
 
 export const saveLayoutRequestSchema = z
   .object({
@@ -75,34 +104,62 @@ const httpsUrlSchema = z.string().trim().url().max(2_048).refine(
   '远程模型地址必须使用 HTTPS。'
 );
 
-const agentProviderSettingsUpdateSchema = z
+const agentProviderSettingsPatchSchema = z
   .object({
-    enabled: z.boolean(),
-    baseUrl: httpsUrlSchema,
-    model: z.string().trim().min(1).max(256),
-    inference: modelInferenceProfileSchema,
+    enabled: z.boolean().optional(),
+    baseUrl: httpsUrlSchema.optional(),
+    model: z.string().trim().min(1).max(256).optional(),
+    inference: modelInferenceProfileSchema.optional(),
     apiKey: z.string().trim().min(8).max(8_192).optional(),
-    clearApiKey: z.boolean()
+    clearApiKey: z.literal(true).optional()
   })
   .strict()
+  .refine(
+    (value) => Object.values(value).some((field) => field !== undefined),
+    'Provider update must change at least one field.'
+  )
   .refine((value) => !(value.apiKey && value.clearApiKey), '不能同时替换和清除 API Key。');
 
-export const agentSettingsUpdateSchema = z
-  .object({
-    routingStrategy: agentRoutingStrategySchema,
-    permissionMode: z.enum(AGENT_PERMISSION_MODES),
+export const agentSettingsOperationSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('permissions.set'),
+    mode: z.enum(AGENT_PERMISSION_MODES),
     customPermissions: z.object({
       approvalPolicy: z.enum(AGENT_APPROVAL_POLICIES),
       sandboxMode: z.enum(AGENT_SANDBOX_MODES),
       allowedPermissions: z.array(z.enum(AGENT_TOOL_PERMISSIONS)).min(1).max(5)
-    }).strict(),
-    workspaceRoot: absolutePathSchema,
-    workspaceAccess: z.enum(['read', 'write']),
-    localModelRoots: z.array(absolutePathSchema).max(8),
-    providers: z.record(agentProviderIdSchema, agentProviderSettingsUpdateSchema),
-    runtimePolicy: runtimePolicySnapshotSchema.optional()
-  })
-  .strict();
+    }).strict().optional()
+  }).strict(),
+  z.object({ kind: z.literal('routing.set'), strategy: agentRoutingStrategySchema }).strict(),
+  z.object({ kind: z.literal('modelRoots.replace'), roots: z.array(absolutePathSchema).max(8) }).strict(),
+  z.object({
+    kind: z.literal('provider.update'),
+    providerId: agentProviderIdSchema,
+    patch: agentProviderSettingsPatchSchema
+  }).strict(),
+  z.object({ kind: z.literal('runtimePolicy.replace'), policy: runtimePolicySnapshotSchema }).strict(),
+  z.object({ kind: z.literal('workspace.select'), rootPath: absolutePathSchema }).strict()
+]);
+
+export const agentSettingsMutationSchema = z.object({
+  expectedRevision: z.number().int().positive(),
+  operations: z.array(agentSettingsOperationSchema).min(1).max(16)
+}).strict().superRefine((mutation, context) => {
+  const identities = new Set<string>();
+  for (const [index, operation] of mutation.operations.entries()) {
+    const identity = operation.kind === 'provider.update'
+      ? `${operation.kind}:${operation.providerId}`
+      : operation.kind;
+    if (identities.has(identity)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['operations', index],
+        message: `Duplicate settings operation: ${identity}`
+      });
+    }
+    identities.add(identity);
+  }
+});
 
 export const agentWorkspaceRequestSchema = z.object({
   workspaceId: z.string().trim().min(1).max(128)
@@ -127,13 +184,12 @@ const agentWorkspaceSettingsViewSchema = z.object({
   rootPath: absolutePathSchema,
   access: z.enum(['read', 'write']),
   pinned: z.boolean().optional(),
-  archivedAt: z.string().datetime().optional(),
-  purgeAfter: z.string().datetime().optional(),
-  purgedAt: z.string().datetime().optional()
+  archivedAt: z.string().datetime().optional()
 }).strict();
 
 export const agentSettingsViewSchema = z.object({
-  schemaVersion: z.literal(2),
+  schemaVersion: z.literal(3),
+  revision: z.number().int().positive(),
   routingStrategy: agentRoutingStrategySchema,
   permissionMode: z.enum(AGENT_PERMISSION_MODES),
   customPermissions: z.object({

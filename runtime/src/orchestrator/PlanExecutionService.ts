@@ -1,4 +1,5 @@
 import type { Planner } from "../agent/Planner.js";
+import type { UserPermissionPolicy } from "../agent/RunPolicyPrimitives.js";
 import { TaskExecutionWorkflow } from "../agent/TaskExecutionWorkflow.js";
 import { buildCorrectionSteps } from "../plan/planReplanOnFailure.js";
 import type { Plan } from "../agent/types.js";
@@ -23,7 +24,7 @@ import type { SessionWorkspaceResolver } from "./SessionWorkspaceResolver.js";
 import type { TaskService } from "./TaskService.js";
 
 export interface PlanExecutionPayload {
-  permissionPolicy?: import("../agent/RunPolicyTypes.js").UserPermissionPolicy;
+  permissionPolicy?: UserPermissionPolicy;
   /** Internal server grant only. AgentEntryService never accepts this from public input. */
   runGrantedPermissions?: readonly ToolPermission[];
   sessionId?: string;

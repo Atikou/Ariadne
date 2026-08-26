@@ -1,101 +1,107 @@
-# Ariadne P0/P1 验证说明
+# Ariadne 验证与验收边界
 
-> 状态日期：2026-07-24。自动回归不能替代真实模型、正式签名或干净机器验收。
+> 状态日期：2026-08-26
+> 自动回归不能替代真实模型、正式签名或干净机器验收。
 
-## 1. 开发门禁
+## 1. 当前复核
 
-协议发生变化后必须先构建 Protocol，再检查或测试下游。根命令已经固定该顺序：
+| 命令 | 当前结果 | 证据 |
+|---|---|---|
+| `npm.cmd run typecheck` | PASS | Protocol、Agent Core、Runtime、App 类型检查通过 |
+| `npm.cmd test` | PASS | Protocol 39、Agent Core 93、Runtime 667、App 247，共 1,046 项 |
+| `npm.cmd run check:architecture` | PASS | 839 个 TS/TSX 文件、3,351 条内部边、0 SCC、0 循环边、0 规则违规；Hotspot Boundary Gate 通过 |
+| `npm.cmd run audit:runtime-independence` | PASS | 862 个生产文件；无入站 HTTP、仓库外文件依赖或根脚本路径 |
+| `npm.cmd run verify:release-contract` | PASS | 安装器、迁移、模型资产和验收矩阵契约通过 |
+| `npm.cmd run test:electron` | PASS | 真实窗口完成 direct、Tool continuation、Decision allow/deny、运行中取消和三个持久边界的 Runtime 强杀恢复 |
+
+`test:electron` 的最新结果记录了 11 次 Provider 请求、9 次响应、2 次被取消请求；三个强杀点分别位于 initial inference started、effect started 和 Agent authority completed/Public Projection pending。上述数字是本次修复后的当前工作树结果；后续仍应以命令和 artifact 为准。
+
+## 2. 历史审计快照
+
+在后续工作树状态变化前，本日对比审计曾记录：
+
+- `typecheck` 通过；
+- Protocol 39、Agent Core 90、Runtime 659、App 246，共 1,034 项测试通过；
+- Architecture Gate 扫描 825 个 TS/TSX 文件、3,290 条内部边，0 循环、0 违规；
+- Runtime independence 扫描 848 个生产文件并通过；
+- 当时的 Electron Conversation/Projection smoke 通过。
+
+这些数字是升级真实 Agent smoke 之前的固定审计时点，不能替代当前命令和 artifact。
+
+## 3. 开发门禁
 
 ```powershell
 npm.cmd run typecheck
 npm.cmd test
+npm.cmd run check:architecture
 npm.cmd run audit:runtime-independence
 npm.cmd run verify:release-contract
 npm.cmd run test:electron
 ```
 
-当前证据：
+- `typecheck` 和 `test` 按 Protocol -> Agent Core -> Runtime -> App 顺序运行。
+- `check:architecture` 验证完整 TS/TSX 依赖图和规则，并执行 Hotspot Boundary Gate；后者限制 Factory、Tool family 和 SQLite UoW 子边界的规模与职责回流，不允许通过刷新 baseline 隐藏新增债务。
+- `audit:runtime-independence` 只证明源码、依赖、入口和入站网络边界独立，不证明产品能力。
+- `verify:release-contract` 校验安装器、数据库兼容策略、外部 Embedding 资产和本验收矩阵的静态契约。
 
-| 层 | 自动测试 | 结果 |
-|---|---:|---|
-| Protocol | 18 | 通过 |
-| Runtime | 162 | 通过 |
-| App | 163 | 通过 |
-| 合计 | 343 | 通过 |
+## 4. Electron smoke 的准确含义
 
-全量 TypeScript 检查、Runtime 独立性审计、发布契约静态检查，以及真实 Electron 窗口加真实 Runtime 子进程冒烟均已通过。精确数量以当前命令输出为准。
+当前 `app/src/main/smoke/electron-smoke.ts` 通过产品公开路径运行：
 
-## 2. P0 自动覆盖
-
-- Protocol 2.0 的 Public、Host、Headless 严格 envelope、未知字段和版本拒绝。
-- `RunAggregate` typed command、非法转换、`expectedAggregateVersion` 竞争和 `recovery_required`。
-- aggregate、checkpoint、tool ledger、domain event outbox 的事务提交。
-- outbox 断线、重启、缺口、分页、重复事件及消费者幂等。
-- 单 revision `runtime.snapshot.get`、`events.replay` 和 Renderer 的 `eventId + aggregateVersion` 投影。
-- Zod 4 `ToolContract` 的嵌套字段、枚举、必填、未知字段和输出校验。
-- native tool 与文本 fallback 到同一 `AgentAction`，以及最多两次无副作用协议修复。
-- 安全只读工具并发、资源冲突串行、取消、超时、部分失败和结果顺序。
-- 工具 intent/start/result checkpoint、幂等键、文件哈希恢复和不确定副作用阻塞。
-- 文件、网页、命令输出、Diff、MCP、SubAgent 的指令权限隔离及 secret egress gate。
-- Browser 服务健康与工具注册一致性。
-- 11 类隔离工作区 Eval 场景。
-
-## 3. P1 自动覆盖
-
-- 精确/保守 TokenCounter、输出与工具 Schema 预留、超大 section 跳过。
-- GGUF Embedding 接口、严格摘要 Schema、记忆生命周期及 list/get/update/delete。
-- TS/JS、JSON/Markdown、Python、C# fixture，LSP 假服务、Tree-sitter fallback 和 Repo Map。
-- MCP Streamable HTTP、HTTPS 限制、ToolContract 适配、原生沙箱双工 STDIO、Main-owned OAuth/PKCE、state/授权拒绝、凭据加密、崩溃和工具变更通知。
-- Skills 指令优先级，session/run/model/tool/subagent/stop Hook 的超时、拒绝和 delivery 去重。
-- Resource Registry 内容寻址、opaque DTO、更新与删除。
-- Browser 安全默认值、动态能力和 Runtime 工具适配。
-- Headless NDJSON 的 cursor、重连、取消、`--once` 与退出码。
-- Task Checkpoint compare/restore 的账本范围与哈希冲突。
-- Provider 限流、退避、熔断和首 token 后不可透明重试。
-- OTel endpoint allowlist 与属性脱敏。
-- 数据库迁移前备份、事务回滚及新 Schema 拒写。
-- NSIS 生命周期和发布资产静态契约。
-
-Windows 原生 Sandbox helper 还需独立构建并执行受限 Runner 冒烟；当前工作树的协议输入、Broker pipe、路径别名/Junction/Symlink、资源限制和受限 Runner 均已通过：
-
-```powershell
-npm.cmd run sandbox:native:build --workspace @ariadne/runtime
-dotnet run --project runtime/native/Ariadne.WindowsSandbox.RunnerSmokeTests/Ariadne.WindowsSandbox.RunnerSmokeTests.csproj -c Release --no-build
+```text
+Renderer -> Sandbox Preload -> Electron Main -> Node IPC -> Runtime
+         -> SQLite authority/outbox -> Public Projection -> Renderer
 ```
 
-## 4. Runtime 独立性
+它验证：
 
-```powershell
-npm.cmd run audit:runtime-independence
-```
+- 真实 Electron 主窗口、Sandbox Preload、Main、Runtime 子进程、SQLite 和 Public Projection；
+- 通过真实设置接口启用唯一可用的 Agent 模型；
+- 直接回答形成带因果 `runId` 的 terminal assistant message；
+- `workspace.read_file` 执行后由 Provider continuation 消费精确结果；
+- `workspace.write_file` 在 allow 前不产生外部动作，allow 后只写一次，deny 后不写；
+- 推理进行中取消会中止 Provider 请求，并以持久 recovery evidence 收敛为 cancelled；
+- 在 initial inference started、effect started、projection pending 三个持久边界强杀真实 Runtime 子进程；
+- 重启后分别收敛为 interrupted 或完成投影，不重复 Provider 请求和文件副作用；
+- Renderer 没有控制台错误，失败时保存诊断快照和截图。
 
-该审计只读取当前工作树，验证：
+Provider 是 smoke 脚本启动的进程外、确定性 HTTPS OpenAI-compatible fixture。它经过真实网络/证书/Provider adapter，但不是外部商业 Provider。强杀边界由独立只读 SQLite watcher 观察权威状态，不依赖固定延时猜测。
 
-- workspace 与 `file:` 依赖不越出当前仓库；
-- Runtime 不创建入站 HTTP Server、不监听端口；
-- 构建与发布脚本不引用仓库外实现；
-- Electron Main → Node IPC → Runtime 是桌面应用唯一执行路径。
-
-它不替代功能测试、真实窗口或发布机验收。
-
-## 5. 真实 Electron
-
-```powershell
-npm.cmd run test:electron
-```
-
-该命令使用隔离的临时 `userData` 启动真实 Electron 和真实 Runtime 子进程，验证主 Renderer、固定 Preload、Runtime ready、单快照/事件状态流、工作区与会话、设置、Dockview Popout 安全边界及 Renderer 控制台。
-
-证据输出：
+证据位于：
 
 - `artifacts/electron-runtime-smoke/electron-runtime-smoke.json`
 - `artifacts/electron-runtime-smoke/electron-runtime-smoke.png`
 
-这项测试没有注入真实远程/本地模型，也没有覆盖真实网站下载或正式安装器。
+它不验证真实远程 Provider、本地聊天模型、真实 Browser/MCP、正式签名 Sandbox Helper 或正式安装器；这些能力不得由确定性 smoke 代替。
 
-## 6. 发布门禁
+## 5. 自动测试覆盖与生产接线必须分开
 
-只检查无需证书的静态契约：
+以下能力已有源码和自动测试，但当前没有完整 v3 product consumer 或真实验收：
+
+- Memory、Embedding 与长期 Context；
+- SubAgent、Background Task 与 Scheduler；
+- 完整 Hook lifecycle；
+- Diagnostics publisher 与 Telemetry lifecycle；
+- Provider Resilience policy 在 v3 inference adapter 中的消费；
+- Context compaction、Tool result pruning 和 spill；
+- 运行中 follow-up/steer/inject 与可恢复 token stream。
+
+这些条目在 [verification-matrix.json](verification-matrix.json) 中只能标记为 `partial` 或 `not_accepted`，不能因为目录、schema 或单元测试存在而标记为产品已验收。
+
+## 6. 矩阵状态语义
+
+| 状态 | 含义 |
+|---|---|
+| `verified` | 该维度已有直接、当前、可重复的证据 |
+| `partial` | 只覆盖部分路径，或实现存在但 consumer/lifecycle 不完整 |
+| `not_accepted` | 该维度尚无可接受证据 |
+| `not_applicable` | 该维度不适用于此模块 |
+
+`realWindow=verified` 只表示真实 Electron 路径直接覆盖该模块；单元测试使用 Electron 类型或 mock Browser 不算真实窗口。
+
+## 7. 发布门禁
+
+静态发布契约：
 
 ```powershell
 npm.cmd run verify:release-contract
@@ -107,23 +113,15 @@ npm.cmd run verify:release-contract
 npm.cmd run verify:release
 ```
 
-`verify:release` 依次执行依赖审计、发布契约、Protocol、Runtime、App、独立性、真实 Electron、签名环境、Windows 安装包构建、打包 Runtime/模型/Sandbox 资产校验和 Authenticode 产物校验。缺少证书、固定模型资产或受信任 helper 时必须失败，不能降级成“跳过但通过”。
+正式门禁依次覆盖依赖、契约、Protocol、Agent Core、Runtime、App、独立性、Electron、签名环境、Windows 包、打包 Runtime/模型/Sandbox 资产和 Authenticode。缺少正式证书、模型资产或受信任 helper 时必须失败。
 
-NSIS 行为：
+## 8. 当前仍未验收
 
-- 安装、升级和卸载前回收残留应用及 Sandbox helper；
-- 静默卸载默认保留用户数据；
-- 交互卸载只有用户显式确认才删除用户数据；
-- 数据库升级前备份，失败回滚；降级通过恢复版本化备份完成。
+- 真实远程 Provider 和本地聊天模型；
+- Plan/Recovery/预算等未进入本 smoke 的 Decision 类型；
+- 实际 Embedding 模型的多语言召回；
+- 签名 Sandbox helper 下的真实 MCP STDIO 和真实远程 MCP OAuth；
+- Browser 真实 HTTPS、重定向、敏感输入和下载隔离；
+- 正式签名安装包在干净 Windows 上的安装、N-1 升级、迁移失败回滚、降级和卸载。
 
-## 7. 尚未验收
-
-- 真实远程 Provider 与真实本地聊天模型：工具、权限、计划、取消、强杀恢复。
-- 实际 BGE-M3 GGUF 资产的多语言语义召回。
-- 签名原生 helper 下的真实 MCP STDIO 服务，以及真实远程 OAuth 首次授权、刷新、撤销和断线恢复。
-- Browser 真实 HTTPS、重定向、敏感输入和下载隔离。
-- 真实 OTLP collector。
-- 正式签名应用、安装器和 Sandbox helper。
-- 干净 Windows 机器上的全新安装、N-1 升级、迁移失败回滚、备份降级和卸载。
-
-逐模块状态由 [verification-matrix.json](verification-matrix.json) 记录；`not_accepted` 不能因单元测试通过而改成 `verified`。
+详细差距和退出条件见 [deepseek-harness 对比审计](deepseek-harness-comparison-audit-2026-08-26.md)。

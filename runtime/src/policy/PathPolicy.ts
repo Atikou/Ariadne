@@ -226,7 +226,7 @@ export function buildPathConfirmationRequest(input: {
   toolName: string;
   decision: PathAccessDecision;
   intent: import("../agent/IntentTypes.js").AgentIntentType;
-  permissionPolicy: import("../agent/RunPolicyTypes.js").UserPermissionPolicy;
+  permissionPolicy: import("../agent/RunPolicyPrimitives.js").UserPermissionPolicy;
 }): PermissionConfirmationRequest {
   const target = input.decision.requestTarget ?? input.decision.normalizedPath;
   const operationLabel =

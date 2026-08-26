@@ -1,529 +1,357 @@
 import { describe, expect, it, vi } from 'vitest';
-
 import type {
-  CompanionMessage,
+  PublicMessageProjectionV3,
+  PublicRunProjectionV3,
   RuntimeCommand,
   RuntimeEventEnvelope,
   RuntimeResult,
   RuntimeStatus
 } from '@ariadne/protocol/public';
 import { RuntimeStore } from '../src/renderer/src/core/runtime/runtime-store';
-import type { AriadneApi } from '../src/shared/contract';
-import { emptyRuntimeSnapshot, runtimeEnvelope } from './runtime-event-fixture';
+import { successfulRuntimeApi } from './support/runtime-api';
+import {
+  NOW,
+  projectionCommit,
+  projectionSnapshot,
+  readBatch,
+  run,
+  session,
+  upsertChange
+} from './projection-v3-fixture';
+import { runtimeEnvelope } from './runtime-event-fixture';
 
-const stoppedStatus: RuntimeStatus = {
-  availability: 'stopped',
-  capabilities: [],
-  observedAt: '2026-07-22T00:00:00.000Z'
-};
-
-const readyPlanStatus: RuntimeStatus = {
+const READY: RuntimeStatus = {
   availability: 'ready',
-  capabilities: ['companion.chat', 'companion.agent-plan'],
-  observedAt: '2026-07-22T00:00:00.000Z'
+  capabilities: ['companion.chat'],
+  observedAt: NOW
 };
 
-describe('RuntimeStore Chat sending', () => {
-  it('sends Plan mode as an explicit Agent mode without a Companion routing strategy', async () => {
-    const request = vi.fn(async (command: RuntimeCommand): Promise<RuntimeResult> => {
-      if (command.kind === 'runtime.snapshot.get') return emptyRuntimeSnapshot(0);
-      if (command.kind === 'models.list' || command.kind === 'models.check') {
-        return { kind: 'models.catalog', models: [] };
-      }
-      if (command.kind === 'trace.list') return { kind: 'trace', entries: [] };
-      if (command.kind === 'companion.chat.start') {
-        return {
-          kind: 'companion.chat.accepted',
-          runId: 'run-plan',
-          sessionId: 'session-plan',
-          executionMode: 'agent-plan'
-        };
-      }
-      if (command.kind === 'companion.messages.list') {
-        return { kind: 'companion.messages', messages: [] };
-      }
-      if (command.kind === 'companion.sessions.list') {
-        return { kind: 'companion.sessions', sessions: [] };
-      }
-      if (command.kind === 'runs.list') return { kind: 'runs', runs: [] };
-      throw new Error(`Unexpected command: ${command.kind}`);
-    });
-    const store = new RuntimeStore({
-      getStatus: async () => readyPlanStatus,
-      request,
-      onEvent: () => () => undefined
-    });
-    await store.initialize();
-    store.setPlanModeEnabled(true);
-
-    await store.sendMessage('Create a plan first', {
-      modelId: 'model-1',
-      workspaceId: 'primary'
-    });
-
-    expect(request).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'companion.chat.start',
-      message: 'Create a plan first',
-      modelId: 'model-1',
-      agentMode: 'plan',
-      workspaceId: 'primary'
-    }));
-    const start = request.mock.calls
-      .map(([command]) => command)
-      .find((command) => command.kind === 'companion.chat.start');
-    expect(start).not.toHaveProperty('routingStrategy');
-    expect(store.isPlanModeEnabled('session-plan')).toBe(true);
-    expect(store.getSnapshot().planModeSessionIds).not.toContain('__new_session__');
-  });
-
-  it('fails closed when a ready Runtime does not advertise Companion Agent Plan support', async () => {
-    const request = vi.fn(async (command: RuntimeCommand): Promise<RuntimeResult> => {
-      if (command.kind === 'runtime.snapshot.get') return emptyRuntimeSnapshot(0);
-      if (command.kind === 'models.list' || command.kind === 'models.check') {
-        return { kind: 'models.catalog', models: [] };
-      }
-      if (command.kind === 'companion.sessions.list') {
-        return { kind: 'companion.sessions', sessions: [] };
-      }
-      if (command.kind === 'trace.list') return { kind: 'trace', entries: [] };
-      throw new Error(`Unexpected command: ${command.kind}`);
-    });
-    const store = new RuntimeStore({
-      getStatus: async () => ({
-        availability: 'ready',
-        capabilities: ['companion.chat'],
-        observedAt: '2026-07-22T00:00:00.000Z'
-      }),
-      request,
-      onEvent: () => () => undefined
-    });
-    await store.initialize();
-    store.setPlanModeEnabled(true);
-
-    await expect(store.sendMessage('Create a plan'))
-      .rejects.toThrow('Runtime 与界面版本不一致');
-    expect(request.mock.calls.some(([command]) => command.kind === 'companion.chat.start')).toBe(false);
-  });
-
-  it('rejects a silently downgraded Plan request from the Runtime acknowledgement', async () => {
-    const request = vi.fn(async (command: RuntimeCommand): Promise<RuntimeResult> => {
-      if (command.kind === 'runtime.snapshot.get') return emptyRuntimeSnapshot(0);
-      if (command.kind === 'models.list' || command.kind === 'models.check') {
-        return { kind: 'models.catalog', models: [] };
-      }
-      if (command.kind === 'trace.list') return { kind: 'trace', entries: [] };
-      if (command.kind === 'companion.chat.start') {
-        return {
-          kind: 'companion.chat.accepted',
-          runId: 'run-downgraded',
-          sessionId: 'session-downgraded',
-          executionMode: 'companion'
-        };
-      }
-      if (command.kind === 'companion.messages.list') {
-        return { kind: 'companion.messages', messages: [] };
-      }
-      if (command.kind === 'companion.sessions.list') {
-        return { kind: 'companion.sessions', sessions: [] };
-      }
-      if (command.kind === 'runs.list') return { kind: 'runs', runs: [] };
-      throw new Error(`Unexpected command: ${command.kind}`);
-    });
-    const store = new RuntimeStore({
-      getStatus: async () => readyPlanStatus,
-      request,
-      onEvent: () => () => undefined
-    });
-    await store.initialize();
-    store.setPlanModeEnabled(true);
-
-    await expect(store.sendMessage('Create a plan'))
-      .rejects.toThrow('Runtime 接受的执行模式不一致');
-  });
-
-  it('keeps user-authored whitespace unchanged in optimistic history and the Runtime command', async () => {
-    const message = '  你好\n下一行  ';
-    let resolveRequest: ((result: RuntimeResult) => void) | undefined;
-    const request = vi.fn((command: RuntimeCommand): Promise<RuntimeResult> => {
-      if (command.kind === 'companion.chat.start') {
-        return new Promise<RuntimeResult>((resolve) => {
-          resolveRequest = resolve;
-        });
-      }
-      if (command.kind === 'companion.messages.list') {
-        return Promise.resolve({ kind: 'companion.messages', messages: [] });
-      }
-      if (command.kind === 'companion.sessions.list') {
-        return Promise.resolve({ kind: 'companion.sessions', sessions: [] });
-      }
-      if (command.kind === 'runs.list') return Promise.resolve({ kind: 'runs', runs: [] });
-      return Promise.reject(new Error(`Unexpected command: ${command.kind}`));
-    });
-    const api: AriadneApi['runtime'] = {
-      getStatus: async () => stoppedStatus,
-      request,
-      onEvent: () => () => undefined
-    };
-    const store = new RuntimeStore(api);
-
-    const sending = store.sendMessage(message, {
-      modelId: 'model-1',
-      routingStrategy: 'privacy-first',
-      workspaceId: 'primary'
-    });
-
-    expect(store.getSnapshot().messages[0]?.content).toBe(message);
-    expect(store.getSnapshot().messages[1]).toMatchObject({
-      role: 'assistant',
-      content: '',
-      status: 'streaming'
-    });
-    expect(request).toHaveBeenCalledWith(expect.objectContaining({ message, routingStrategy: 'privacy-first' }));
-
-    resolveRequest?.({
-      kind: 'companion.chat.accepted',
-      runId: 'run-exact',
-      sessionId: 'session-exact',
-      executionMode: 'companion'
-    });
-    await expect(sending).resolves.toEqual({ runId: 'run-exact', sessionId: 'session-exact' });
-  });
-
-  it('renders an assistant thinking placeholder immediately, then replaces both optimistic messages from events', async () => {
-    let emit: ((event: RuntimeEventEnvelope) => void) | undefined;
-    let resolveRequest: ((result: RuntimeResult) => void) | undefined;
-    const pendingRequest = new Promise<RuntimeResult>((resolve) => {
-      resolveRequest = resolve;
-    });
-    let authoritativeMessages: CompanionMessage[] = [];
-    const request = vi.fn((command: RuntimeCommand): Promise<RuntimeResult> => {
-      if (command.kind === 'companion.chat.start') return pendingRequest;
-      if (command.kind === 'runtime.snapshot.get') return Promise.resolve(emptyRuntimeSnapshot(1));
-      if (command.kind === 'models.list' || command.kind === 'models.check') {
-        return Promise.resolve({ kind: 'models.catalog', models: [] });
-      }
-      if (command.kind === 'trace.list') return Promise.resolve({ kind: 'trace', entries: [] });
-      if (command.kind === 'companion.messages.list') {
-        return Promise.resolve({ kind: 'companion.messages', messages: authoritativeMessages });
-      }
-      if (command.kind === 'companion.sessions.list') {
-        return Promise.resolve({ kind: 'companion.sessions', sessions: [] });
-      }
-      if (command.kind === 'runs.list') return Promise.resolve({ kind: 'runs', runs: [] });
-      return Promise.reject(new Error(`Unexpected command: ${command.kind}`));
-    });
-    const api: AriadneApi['runtime'] = {
-      getStatus: async () => stoppedStatus,
-      request,
-      onEvent(listener) {
-        emit = listener;
-        return () => undefined;
-      }
-    };
-    const store = new RuntimeStore(api);
-    await store.initialize();
-    emit?.(runtimeEnvelope({
-      kind: 'runtime.status.changed',
-      status: {
-        availability: 'ready',
-        capabilities: [],
-        observedAt: '2026-07-22T00:00:00.000Z'
-      }
-    }, 1));
-    await vi.waitFor(() => {
-      expect(store.getSnapshot().status.availability).toBe('ready');
-    });
-
-    const sending = store.sendMessage('发送后立即出现', { modelId: 'model-1', workspaceId: 'primary' });
-    const [optimistic, thinking] = store.getSnapshot().messages;
-
-    expect(optimistic).toMatchObject({
-      role: 'user',
-      content: '发送后立即出现',
-      deliveryState: 'pending'
-    });
-    expect(thinking).toMatchObject({
-      role: 'assistant',
-      content: '',
-      status: 'streaming'
-    });
-    expect(request).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'companion.chat.start',
-      clientMessageId: optimistic?.messageId,
-      message: '发送后立即出现',
-      workspaceId: 'primary'
-    }));
-
-    authoritativeMessages = [
-      {
-        messageId: optimistic!.messageId,
-        sessionId: 'session-1',
-        role: 'user',
-        content: '发送后立即出现',
-        status: 'completed',
-        createdAt: '2026-07-22T00:00:01.000Z'
-      },
-      {
-        messageId: 'assistant-1',
-        sessionId: 'session-1',
-        role: 'assistant',
-        content: '',
-        status: 'streaming',
-        createdAt: '2026-07-22T00:00:02.000Z'
-      }
-    ];
-
-    emit?.(runtimeEnvelope({
-      kind: 'companion.message.changed',
-      message: authoritativeMessages[0]!
-    }, 2));
-
-    expect(store.getSnapshot().selectedSessionId).toBe('session-1');
-    expect(store.getSnapshot().messages).toHaveLength(2);
-    expect(store.getSnapshot().messages[0]).toMatchObject({
-      messageId: optimistic!.messageId,
-      sessionId: 'session-1',
-      content: '发送后立即出现'
-    });
-    expect(store.getSnapshot().messages[0]?.deliveryState).toBeUndefined();
-    expect(store.getSnapshot().messages[1]).toMatchObject({
-      status: 'streaming',
-      content: ''
-    });
-
-    emit?.(runtimeEnvelope({
-      kind: 'companion.message.changed',
-      message: authoritativeMessages[1]!
-    }, 3));
-
-    expect(store.getSnapshot().messages).toEqual(authoritativeMessages);
-
-    emit?.(runtimeEnvelope({
-      kind: 'companion.reasoning.delta',
-      runId: 'run-1',
-      sessionId: 'session-1',
-      messageId: 'assistant-1',
-      text: '检查约束',
-      source: 'provider',
-      startedAt: '2026-07-22T00:00:02.000Z'
-    }, 4));
-    expect(store.getSnapshot().messages[1]).toMatchObject({
-      content: '',
-      reasoning: {
-        content: '检查约束',
-        status: 'streaming',
-        source: 'provider'
-      }
-    });
-
-    emit?.(runtimeEnvelope({
-      kind: 'companion.message.changed',
-      message: {
-        ...authoritativeMessages[1]!,
-        reasoning: {
-          content: '检查约束',
-          status: 'completed',
-          source: 'provider',
-          startedAt: '2026-07-22T00:00:02.000Z',
-          completedAt: '2026-07-22T00:00:03.000Z',
-          durationMs: 1_000
-        }
-      }
-    }, 5));
-    emit?.(runtimeEnvelope({
-      kind: 'companion.token.delta',
-      runId: 'run-1',
-      sessionId: 'session-1',
-      messageId: 'assistant-1',
-      text: '最终回答'
-    }, 6));
-    expect(store.getSnapshot().messages[1]).toMatchObject({
-      content: '最终回答',
-      reasoning: {
-        content: '检查约束',
-        status: 'completed',
-        durationMs: 1_000
-      }
-    });
-
-    resolveRequest?.({
-      kind: 'companion.chat.accepted',
-      runId: 'run-1',
-      sessionId: 'session-1',
-      executionMode: 'companion'
-    });
-    await expect(sending).resolves.toEqual({ runId: 'run-1', sessionId: 'session-1' });
-  });
-
-  it('recovers authoritative messages after acceptance when all live message events were missed', async () => {
-    let resolveStart: ((result: RuntimeResult) => void) | undefined;
-    const authoritativeMessages = [
-      {
-        messageId: 'runtime-user-id',
-        sessionId: 'session-recovered',
-        role: 'user' as const,
-        content: '恢复丢失事件',
-        status: 'completed' as const,
-        createdAt: '2026-07-22T00:00:01.000Z'
-      },
-      {
-        messageId: 'runtime-assistant-id',
-        sessionId: 'session-recovered',
-        role: 'assistant' as const,
-        content: '已恢复',
-        status: 'completed' as const,
-        createdAt: '2026-07-22T00:00:02.000Z'
-      }
-    ];
-    const request = vi.fn((command: RuntimeCommand): Promise<RuntimeResult> => {
-      if (command.kind === 'companion.chat.start') {
-        return new Promise<RuntimeResult>((resolve) => {
-          resolveStart = resolve;
-        });
-      }
-      if (command.kind === 'companion.messages.list') {
-        return Promise.resolve({ kind: 'companion.messages', messages: authoritativeMessages });
-      }
-      if (command.kind === 'companion.sessions.list') {
-        return Promise.resolve({
-          kind: 'companion.sessions',
-          sessions: [{
-            sessionId: 'session-recovered',
-            workspaceId: 'primary',
-            title: 'Recovered',
-            pinned: false,
-            createdAt: '2026-07-22T00:00:00.000Z',
-            updatedAt: '2026-07-22T00:00:02.000Z'
-          }]
-        });
-      }
-      if (command.kind === 'runs.list') return Promise.resolve({ kind: 'runs', runs: [] });
-      return Promise.reject(new Error(`Unexpected command: ${command.kind}`));
-    });
-    const store = new RuntimeStore({
-      getStatus: async () => stoppedStatus,
-      request,
-      onEvent: () => () => undefined
-    });
-
-    const sending = store.sendMessage('恢复丢失事件', { workspaceId: 'primary' });
-    expect(store.getSnapshot().messages.map((item) => item.role)).toEqual(['user', 'assistant']);
-
-    resolveStart?.({
-      kind: 'companion.chat.accepted',
-      runId: 'run-recovered',
-      sessionId: 'session-recovered',
-      executionMode: 'companion'
-    });
-    await expect(sending).resolves.toEqual({
-      runId: 'run-recovered',
-      sessionId: 'session-recovered'
-    });
-
-    expect(store.getSnapshot().selectedSessionId).toBe('session-recovered');
-    expect(store.getSnapshot().messages).toEqual(authoritativeMessages);
-    expect(store.getSnapshot().sessions[0]?.sessionId).toBe('session-recovered');
-    expect(request).toHaveBeenCalledWith({
-      kind: 'companion.messages.list',
-      sessionId: 'session-recovered',
-      limit: 500
-    });
-  });
-
-  it('keeps both immediate messages visible and marks them failed when submission fails', async () => {
-    const api: AriadneApi['runtime'] = {
-      getStatus: async () => stoppedStatus,
-      request: vi.fn(async () => {
-        throw new Error('Runtime unavailable');
-      }),
-      onEvent: () => () => undefined
-    };
-    const store = new RuntimeStore(api);
-
-    const sending = store.sendMessage('不要等模型回复');
-    expect(store.getSnapshot().messages[0]?.deliveryState).toBe('pending');
-    expect(store.getSnapshot().messages[1]).toMatchObject({
-      role: 'assistant',
-      status: 'streaming'
-    });
-
-    await expect(sending).rejects.toThrow('Runtime unavailable');
-    expect(store.getSnapshot().messages[0]).toMatchObject({
-      content: '不要等模型回复',
-      deliveryState: 'failed'
-    });
-    expect(store.getSnapshot().messages[1]).toMatchObject({
-      role: 'assistant',
-      content: '未能开始回复。',
-      status: 'failed',
-      error: {
-        code: 'RUNTIME_REQUEST_FAILED',
-        message: 'Runtime unavailable',
-        retryable: true
-      }
-    });
-    expect(store.getSnapshot().trace.at(-1)).toMatchObject({
-      level: 'error',
-      category: 'runtime.request.error',
-      message: 'Runtime unavailable'
-    });
-  });
-
-  it('uses the displayed session workspace instead of an unrelated selected workspace', async () => {
+describe('RuntimeStore v3 chat boundary', () => {
+  it('keeps the local overlay until authoritative message, run and assistant arrive', async () => {
+    let resolveAccept: ((result: RuntimeResult) => void) | null = null;
+    let accepted = false;
+    let projected = false;
+    let clientMessageId = '';
     const commands: RuntimeCommand[] = [];
-    const request = vi.fn(async (command: RuntimeCommand): Promise<RuntimeResult> => {
-      commands.push(command);
-      if (command.kind === 'companion.sessions.create') {
-        return {
-          kind: 'companion.session',
-          session: {
-            sessionId: 'session-secondary',
-            workspaceId: 'secondary',
-            title: 'Secondary session',
-            pinned: false,
-            createdAt: '2026-07-22T00:00:00.000Z',
-            updatedAt: '2026-07-22T00:00:00.000Z'
-          }
-        };
-      }
-      if (command.kind === 'companion.messages.list') return { kind: 'companion.messages', messages: [] };
-      if (command.kind === 'companion.chat.start') {
-        return {
-          kind: 'companion.chat.accepted',
-          runId: 'run-secondary',
-          sessionId: 'session-secondary',
-          executionMode: 'companion'
-        };
-      }
-      if (command.kind === 'companion.sessions.list') {
-        return {
-          kind: 'companion.sessions',
-          sessions: [{
-            sessionId: 'session-secondary',
-            workspaceId: 'secondary',
-            title: 'Secondary session',
-            pinned: false,
-            createdAt: '2026-07-22T00:00:00.000Z',
-            updatedAt: '2026-07-22T00:00:00.000Z'
-          }]
-        };
-      }
-      if (command.kind === 'runs.list') return { kind: 'runs', runs: [] };
-      throw new Error(`Unexpected command: ${command.kind}`);
-    });
-    const store = new RuntimeStore({
-      getStatus: async () => stoppedStatus,
-      request,
+    const store = new RuntimeStore(successfulRuntimeApi({
+      getStatus: async () => READY,
+      request: (command) => {
+        commands.push(command);
+        if (command.kind === 'projection.snapshot.get') {
+          return Promise.resolve({
+            kind: 'projection.snapshot',
+            snapshot: projectionSnapshot({ sessions: [session('session-a')] })
+          });
+        }
+        if (command.kind === 'projection.commits.read') {
+          const commits = accepted && !projected ? [chatProjectionCommit(clientMessageId)] : [];
+          projected ||= commits.length > 0;
+          return Promise.resolve({
+            kind: 'projection.commits',
+            batch: readBatch(command.request.afterCursor, command.request.afterDigest, commits, {
+              streamId: command.request.streamId
+            })
+          });
+        }
+        if (command.kind === 'conversation.message.accept.v3') {
+          clientMessageId = command.messageId;
+          return new Promise<RuntimeResult>((resolve) => { resolveAccept = resolve; });
+        }
+        throw new Error(`Unexpected command: ${command.kind}`);
+      },
       onEvent: () => () => undefined
-    });
+    }));
+    await store.initialize();
+    await store.selectSession('session-a');
 
-    await store.createSession({ workspaceId: 'secondary' });
-    await store.sendMessage('继续当前会话', { workspaceId: 'primary' });
+    const sending = store.sendMessage('Hello projection');
+    await vi.waitFor(() => expect(resolveAccept).not.toBeNull());
+    expect(store.getSnapshot().messages).toMatchObject([
+      { role: 'user', content: 'Hello projection', deliveryState: 'pending' },
+      { role: 'assistant', status: 'streaming' }
+    ]);
 
-    expect(commands.find((command) => command.kind === 'companion.chat.start')).toMatchObject({
-      kind: 'companion.chat.start',
-      sessionId: 'session-secondary',
-      workspaceId: 'secondary'
+    accepted = true;
+    (resolveAccept as unknown as (result: RuntimeResult) => void)({
+      kind: 'conversation.message.accepted.v3',
+      sessionId: 'session-a',
+      sessionVersion: 2,
+      messageId: clientMessageId,
+      messageVersion: 1,
+      sagaId: 'saga-chat'
     });
+    await sending;
+    await vi.waitFor(() => expect(store.getSnapshot().projectionCursor).toBe(1));
+    expect(store.getSnapshot().messages).toEqual([
+      expect.objectContaining({ messageId: clientMessageId, role: 'user' }),
+      expect.objectContaining({ messageId: 'assistant-chat', role: 'assistant' })
+    ]);
+    expect(store.getSnapshot().pendingOverlayIds).toEqual([]);
+    expect(commands.map((command) => command.kind)).not.toContain('companion.chat.start');
+  });
+
+  it('creates a v3 Session before accepting the first message', async () => {
+    const commands: RuntimeCommand[] = [];
+    const store = new RuntimeStore(successfulRuntimeApi({
+      getStatus: async () => ({
+        ...READY,
+        capabilities: ['companion.chat', 'companion.agent-plan']
+      }),
+      request: async (command) => {
+        commands.push(command);
+        if (command.kind === 'projection.snapshot.get') {
+          return { kind: 'projection.snapshot', snapshot: projectionSnapshot() };
+        }
+        if (command.kind === 'projection.commits.read') {
+          return {
+            kind: 'projection.commits',
+            batch: readBatch(command.request.afterCursor, command.request.afterDigest, [], {
+              streamId: command.request.streamId
+            })
+          };
+        }
+        if (command.kind === 'conversation.session.create.v3') {
+          return { kind: 'conversation.session.created.v3', sessionId: command.sessionId, version: 1 };
+        }
+        if (command.kind === 'conversation.message.accept.v3') {
+          expect(command.expectedSessionVersion).toBe(1);
+          expect(command.execution).toEqual({
+            mode: 'plan',
+            modelId: 'model-selected',
+            inference: { reasoningMode: 'on', reasoningEffort: 'high' },
+            routingStrategy: 'quality-first'
+          });
+          return {
+            kind: 'conversation.message.accepted.v3',
+            sessionId: command.sessionId,
+            sessionVersion: 2,
+            messageId: command.messageId,
+            messageVersion: 1,
+            sagaId: 'first-message-saga'
+          };
+        }
+        throw new Error(`Unexpected command: ${command.kind}`);
+      },
+      onEvent: () => () => undefined
+    }));
+    await store.initialize();
+    store.setPlanModeEnabled(true);
+
+    const result = await store.sendMessage('First message', {
+      workspaceId: 'workspace-primary',
+      modelId: 'model-selected',
+      inference: { reasoningMode: 'on', reasoningEffort: 'high' },
+      routingStrategy: 'quality-first'
+    });
+    expect(result.sessionId).toBeTruthy();
+    expect(store.getSnapshot()).toMatchObject({ selectedSessionId: result.sessionId, sessions: [] });
+    expect(commands.map((command) => command.kind)).toEqual([
+      'projection.snapshot.get',
+      'projection.commits.read',
+      'conversation.session.create.v3',
+      'conversation.message.accept.v3',
+      'projection.commits.read'
+    ]);
+  });
+
+  it('clears the processing overlay when a pre-Run terminal assistant message arrives', async () => {
+    let accepted = false;
+    let projected = false;
+    let clientMessageId = '';
+    const store = new RuntimeStore(successfulRuntimeApi({
+      getStatus: async () => READY,
+      request: async (command) => {
+        if (command.kind === 'projection.snapshot.get') {
+          return { kind: 'projection.snapshot', snapshot: projectionSnapshot({ sessions: [session('session-a')] }) };
+        }
+        if (command.kind === 'conversation.message.accept.v3') {
+          clientMessageId = command.messageId;
+          accepted = true;
+          return {
+            kind: 'conversation.message.accepted.v3', sessionId: 'session-a',
+            sessionVersion: 2, messageId: clientMessageId, messageVersion: 1,
+            sagaId: 'saga-start-failed'
+          };
+        }
+        if (command.kind === 'projection.commits.read') {
+          const commits = accepted && !projected
+            ? [startFailureProjectionCommit(clientMessageId)]
+            : [];
+          projected ||= commits.length > 0;
+          return {
+            kind: 'projection.commits',
+            batch: readBatch(command.request.afterCursor, command.request.afterDigest, commits, {
+              streamId: command.request.streamId
+            })
+          };
+        }
+        throw new Error(`Unexpected command: ${command.kind}`);
+      },
+      onEvent: () => () => undefined
+    }));
+    await store.initialize();
+    await store.selectSession('session-a');
+    await store.sendMessage('Plan this');
+    await vi.waitFor(() => expect(store.getSnapshot().projectionCursor).toBe(1));
+    expect(store.getSnapshot().pendingOverlayIds).toEqual([]);
+    expect(store.getSnapshot().messages).toEqual([
+      expect.objectContaining({ messageId: clientMessageId, role: 'user' }),
+      expect.objectContaining({
+        messageId: 'assistant-start-failed',
+        role: 'assistant',
+        content: expect.stringContaining('无法启动')
+      })
+    ]);
+  });
+
+  it('clears pending overlays when Runtime resets', async () => {
+    let statusListener: ((status: RuntimeStatus) => void) | null = null;
+    const store = new RuntimeStore(successfulRuntimeApi({
+      getStatus: async () => READY,
+      request: async (command) => {
+        if (command.kind === 'projection.snapshot.get') {
+          return { kind: 'projection.snapshot', snapshot: projectionSnapshot({ sessions: [session('session-a')] }) };
+        }
+        if (command.kind === 'projection.commits.read') {
+          return {
+            kind: 'projection.commits',
+            batch: readBatch(command.request.afterCursor, command.request.afterDigest, [], {
+              streamId: command.request.streamId
+            })
+          };
+        }
+        if (command.kind === 'conversation.message.accept.v3') {
+          return {
+            kind: 'conversation.message.accepted.v3',
+            sessionId: command.sessionId,
+            sessionVersion: 2,
+            messageId: command.messageId,
+            messageVersion: 1,
+            sagaId: 'pending-saga'
+          };
+        }
+        throw new Error(`Unexpected command: ${command.kind}`);
+      },
+      onStatus: (next) => {
+        statusListener = next;
+        return () => { statusListener = null; };
+      },
+      onEvent: () => () => undefined
+    }));
+    await store.initialize();
+    await store.selectSession('session-a');
+    await store.sendMessage('Pending overlay');
+    expect(store.getSnapshot().messages).toHaveLength(2);
+
+    (statusListener as unknown as (status: RuntimeStatus) => void)({
+      ...READY,
+      availability: 'restarting',
+      observedAt: '2026-07-31T00:00:01.000Z'
+    });
+    expect(store.getSnapshot().messages).toEqual([]);
+    expect(store.getSnapshot().pendingOverlayIds).toEqual([]);
+  });
+
+  it('routes cancellation through the authoritative projected Run version', async () => {
+    const commands: RuntimeCommand[] = [];
+    const store = new RuntimeStore(successfulRuntimeApi({
+      getStatus: async () => READY,
+      request: async (command) => {
+        commands.push(command);
+        if (command.kind === 'projection.snapshot.get') {
+          return {
+            kind: 'projection.snapshot',
+            snapshot: projectionSnapshot({ runs: [run('run-cancel', 'running', 7)] })
+          };
+        }
+        if (command.kind === 'projection.commits.read') {
+          return {
+            kind: 'projection.commits',
+            batch: readBatch(command.request.afterCursor, command.request.afterDigest, [], {
+              streamId: command.request.streamId
+            })
+          };
+        }
+        if (command.kind === 'agent.run.cancel.v3') {
+          expect(command).toMatchObject({
+            runId: 'run-cancel',
+            expectedVersion: 7,
+            reason: 'user_requested'
+          });
+          return {
+            kind: 'agent.run.cancelled.v3',
+            runId: command.runId,
+            runVersion: 8
+          };
+        }
+        throw new Error(`Unexpected command: ${command.kind}`);
+      },
+      onEvent: () => () => undefined
+    }));
+    await store.initialize();
+
+    await store.cancelRun(store.getSnapshot().runs[0]!);
+
+    expect(commands.map((command) => command.kind)).toContain('agent.run.cancel.v3');
   });
 });
+
+function chatProjectionCommit(clientMessageId: string) {
+  const user: PublicMessageProjectionV3 = {
+    messageId: clientMessageId,
+    sessionId: 'session-a',
+    version: 1,
+    role: 'user',
+    content: 'Hello projection',
+    status: 'completed',
+    createdAt: NOW,
+    updatedAt: NOW
+  };
+  const assistant: PublicMessageProjectionV3 = {
+    messageId: 'assistant-chat',
+    sessionId: 'session-a',
+    runId: 'run-chat',
+    version: 1,
+    role: 'assistant',
+    content: 'Projected answer',
+    status: 'completed',
+    createdAt: '2026-07-31T00:00:01.000Z',
+    updatedAt: '2026-07-31T00:00:01.000Z'
+  };
+  const run: PublicRunProjectionV3 = {
+    runId: 'run-chat',
+    sessionId: 'session-a',
+    sourceMessageId: clientMessageId,
+    version: 1,
+    title: 'Agent run',
+    status: 'completed',
+    label: 'Completed',
+    toolActivities: [],
+    updatedAt: NOW,
+    startedAt: NOW,
+    completedAt: NOW
+  };
+  return projectionCommit('event-chat', [
+    upsertChange('messages', user, user.messageId),
+    upsertChange('messages', assistant, assistant.messageId),
+    upsertChange('runs', run, run.runId)
+  ]);
+}
+
+function startFailureProjectionCommit(clientMessageId: string) {
+  const user: PublicMessageProjectionV3 = {
+    messageId: clientMessageId, sessionId: 'session-a', version: 1,
+    role: 'user', content: 'Plan this', status: 'completed',
+    createdAt: NOW, updatedAt: NOW
+  };
+  const assistant: PublicMessageProjectionV3 = {
+    messageId: 'assistant-start-failed', sessionId: 'session-a', version: 1,
+    role: 'assistant', content: '任务无法启动：当前运行权限或工具配置不可用。',
+    status: 'completed', createdAt: '2026-07-31T00:00:01.000Z',
+    updatedAt: '2026-07-31T00:00:01.000Z'
+  };
+  return projectionCommit('event-start-failed', [
+    upsertChange('messages', user, user.messageId),
+    upsertChange('messages', assistant, assistant.messageId)
+  ]);
+}

@@ -9,7 +9,7 @@ import {
 import type { CapabilityEscalationRecord } from "./CapabilityEscalation.js";
 import type { BudgetManager } from "./BudgetManager.js";
 import { effectiveWorkflowRoute, type EffectiveWorkflowContext } from "./EffectiveWorkflowContext.js";
-import type { RunBudgetKey, UserPermissionPolicy } from "./RunPolicyTypes.js";
+import type { RunBudgetKey, UserPermissionPolicy } from "./RunPolicyPrimitives.js";
 import type { AgentToolStep } from "./toolStep.js";
 import type { WorkflowRouteResult } from "./WorkflowRouter.js";
 

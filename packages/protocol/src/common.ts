@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const ARIADNE_RUNTIME_PROTOCOL = 'ariadne_runtime' as const;
-export const ARIADNE_RUNTIME_PROTOCOL_VERSION = '2.0' as const;
+export const ARIADNE_RUNTIME_PROTOCOL_VERSION = '3.0' as const;
 // Public Runtime payloads may contain a persisted Companion message of up to
 // 2,000,000 characters. Reserve enough UTF-8 envelope space for that contract
 // while retaining a hard IPC memory ceiling.

@@ -9,11 +9,14 @@ import {
   parseHostToRuntimeMessage,
   parseRuntimeToHostMessage,
   type RuntimeBootstrap,
+  type RuntimeCancel,
   type AgentPermissionsBootstrap,
   type ModelProviderBootstrap,
   type RuntimeReady,
   type RuntimeResponse,
   type RuntimeCapabilityRequest,
+  agentAdmissionAuthoritySourceSchema,
+  type AgentAdmissionAuthoritySource,
   type RuntimeToHostMessage
 } from '@ariadne/protocol/host';
 import type { RuntimePolicySnapshot } from '@ariadne/protocol/settings';
@@ -49,6 +52,7 @@ export interface RuntimeSupervisorOptions {
   modelProviders: ModelProviderBootstrap[];
   routingStrategy: 'local-first' | 'cloud-first' | 'privacy-first' | 'quality-first';
   agentPermissions: AgentPermissionsBootstrap;
+  agentAdmissionAuthoritySource: AgentAdmissionAuthoritySource;
   runtimePolicy: RuntimePolicySnapshot;
   workspaces: RuntimeWorkspaceConfiguration[];
   profile: string;
@@ -68,9 +72,11 @@ export interface RuntimeSupervisorOptions {
 }
 
 interface PendingRequest {
+  commandId: string;
   resolve(result: RuntimeResult): void;
   reject(error: Error): void;
   timer: NodeJS.Timeout;
+  removeAbortListener?: () => void;
 }
 
 interface StartupAttempt {
@@ -83,18 +89,26 @@ interface StartupAttempt {
 interface ShutdownAttempt {
   child: ChildProcess;
   requestId: string;
-  resolve(): void;
+  completed: boolean;
 }
 
 export class RuntimeRequestError extends Error {
   constructor(
     readonly code: string,
     message: string,
-    readonly retryable: boolean
+    readonly retryable: boolean,
+    readonly correlationId: string = randomUUID(),
+    readonly details?: readonly string[]
   ) {
     super(message);
     this.name = 'RuntimeRequestError';
   }
+}
+
+export interface RuntimeRequestOptions {
+  commandId?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 export class RuntimeSupervisor {
@@ -115,6 +129,7 @@ export class RuntimeSupervisor {
   private stopping = false;
   private disposed = false;
   private capabilities: RuntimeStatus['capabilities'] = [];
+  private statusClock = 0;
   private currentStatus: RuntimeStatus = this.createStatus('stopped');
   private readonly pending = new Map<string, PendingRequest>();
   private readonly eventListeners = new Set<(event: RuntimeEventEnvelope) => void>();
@@ -203,6 +218,13 @@ export class RuntimeSupervisor {
     if (this.child && this.currentStatus.availability === 'ready') {
       return this.toReadySnapshot();
     }
+    if (this.child && this.child.exitCode === null && this.child.signalCode === null) {
+      throw new RuntimeRequestError(
+        'runtime_previous_process_alive',
+        'The previous Runtime process has not exited; replacement is blocked.',
+        false
+      );
+    }
 
     this.stopping = false;
     this.activeBuildFingerprint = buildFingerprint;
@@ -212,6 +234,7 @@ export class RuntimeSupervisor {
     mkdirSync(this.options.dataRoot, { recursive: true });
     const runtimeInstanceId = randomUUID();
     this.runtimeInstanceId = runtimeInstanceId;
+    this.eventDeliveryQueue = Promise.resolve();
 
     let resolveStartup!: (ready: RuntimeReady) => void;
     let rejectStartup!: (error: Error) => void;
@@ -220,8 +243,17 @@ export class RuntimeSupervisor {
       rejectStartup = reject;
     });
     const timer = setTimeout(() => {
-      this.failStartup(new RuntimeRequestError('runtime_handshake_timeout', 'Runtime 启动超时。', true));
-      this.child?.kill();
+      const diagnostic = this.lastDiagnostic ? `（${this.lastDiagnostic}）` : '';
+      this.failStartup(new RuntimeRequestError(
+        'runtime_handshake_timeout',
+        `Runtime 启动超时${diagnostic}。`,
+        true
+      ));
+      const child = this.child;
+      if (child) {
+        this.setStatus('crashed', 'Runtime handshake timed out; waiting for the old process to exit.');
+        child.kill();
+      }
     }, this.options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS);
     this.startup = { promise, resolve: resolveStartup, reject: rejectStartup, timer };
 
@@ -254,9 +286,29 @@ export class RuntimeSupervisor {
     return promise;
   }
 
-  async request(commandInput: RuntimeCommand): Promise<RuntimeResult> {
+  async request(
+    commandInput: RuntimeCommand,
+    options: RuntimeRequestOptions = {}
+  ): Promise<RuntimeResult> {
     const command = runtimeCommandSchema.parse(commandInput);
+    const commandId = options.commandId ?? randomUUID();
+    if (options.signal?.aborted) {
+      throw new RuntimeRequestError(
+        'runtime_request_cancelled',
+        'Runtime 请求在发送前已取消。',
+        false,
+        commandId
+      );
+    }
     await this.start();
+    if (options.signal?.aborted) {
+      throw new RuntimeRequestError(
+        'runtime_request_cancelled',
+        'Runtime request was cancelled while the Runtime was starting.',
+        false,
+        commandId
+      );
+    }
     const child = this.child;
     const runtimeInstanceId = this.runtimeInstanceId;
     if (!child?.connected || !runtimeInstanceId || this.currentStatus.availability !== 'ready') {
@@ -264,24 +316,70 @@ export class RuntimeSupervisor {
     }
 
     const requestId = randomUUID();
-    const timeoutMs = this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    const timeoutMs = options.timeoutMs
+      ?? this.options.requestTimeoutMs
+      ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    const deadlineAt = new Date(Date.now() + timeoutMs).toISOString();
     return new Promise<RuntimeResult>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pending.delete(requestId);
-        reject(new RuntimeRequestError('runtime_request_timeout', 'Runtime 请求超时。', true));
+        this.cancelPendingRequest(
+          requestId,
+          'deadline_exceeded',
+          new RuntimeRequestError(
+            'runtime_request_timeout',
+            'Runtime request timed out; reuse the same commandId to reconcile the outcome safely.',
+            false,
+            commandId
+          )
+        );
       }, timeoutMs);
-      this.pending.set(requestId, { resolve, reject, timer });
+      const abort = (): void => {
+        this.cancelPendingRequest(
+          requestId,
+          'caller_cancelled',
+          new RuntimeRequestError(
+            'runtime_request_cancelled',
+            'Runtime 请求已由调用方取消。',
+            false,
+            commandId
+          )
+        );
+      };
+      const removeAbortListener = options.signal
+        ? () => options.signal?.removeEventListener('abort', abort)
+        : undefined;
+      options.signal?.addEventListener('abort', abort, { once: true });
+      this.pending.set(requestId, {
+        commandId,
+        resolve,
+        reject,
+        timer,
+        ...(removeAbortListener ? { removeAbortListener } : {})
+      });
+      if (options.signal?.aborted) {
+        abort();
+        return;
+      }
       void this.send(child, {
         protocol: ARIADNE_RUNTIME_PROTOCOL,
         protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
         runtimeInstanceId,
         type: 'request',
         requestId,
+        commandId,
+        deadlineAt,
         command
       }).catch((error: unknown) => {
         clearTimeout(timer);
+        const pending = this.pending.get(requestId);
+        pending?.removeAbortListener?.();
         this.pending.delete(requestId);
-        reject(toError(error, 'Runtime 请求发送失败。'));
+        reject(new RuntimeRequestError(
+          'runtime_request_send_failed',
+          toError(error, 'Runtime 请求发送失败。').message,
+          true,
+          commandId
+        ));
       });
     });
   }
@@ -301,56 +399,80 @@ export class RuntimeSupervisor {
       this.restartTimer = null;
     }
     this.clearRestartStabilityTimer();
-    this.rejectPending(new RuntimeRequestError('runtime_stopped', 'Runtime 已停止。', false));
+    this.rejectPendingUncertain('Runtime stopped before confirming the command outcome.');
     this.failStartup(new RuntimeRequestError('runtime_stopped', 'Runtime 已停止。', false));
 
     const child = this.child;
     const runtimeInstanceId = this.runtimeInstanceId;
-    if (!child || child.exitCode !== null || !child.connected || !runtimeInstanceId) {
-      if (child === this.child) {
-        this.child = null;
-        this.runtimeInstanceId = null;
-        this.readySnapshot = null;
-        this.activeBuildFingerprint = null;
-      }
-      if (child && child.exitCode === null && child.signalCode === null) child.kill();
+    if (!child) {
       this.setStatus('stopped');
       return;
     }
 
+    if (child.exitCode !== null || child.signalCode !== null) {
+      this.releaseExitedChild(child);
+      this.setStatus('stopped');
+      return;
+    }
+
+    const timeoutMs = this.options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
+    const deadlineAt = Date.now() + timeoutMs;
+    const exitReserveMs = Math.min(2_000, Math.max(250, Math.floor(timeoutMs * 0.25)));
+    const gracefulExitDeadline = deadlineAt - exitReserveMs;
     const requestId = randomUUID();
-    const completed = new Promise<void>((resolve) => {
-      this.shutdownAttempt = { child, requestId, resolve };
-    });
+    this.shutdownAttempt = { child, requestId, completed: false };
     const exited = waitForExit(child);
     try {
-      await this.send(child, {
-        protocol: ARIADNE_RUNTIME_PROTOCOL,
-        protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
-        runtimeInstanceId,
-        type: 'shutdown',
-        requestId,
-        reason,
-        deadlineMs: this.options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS
-      });
-      await Promise.race([
-        completed,
-        exited,
-        delay(this.options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS)
-      ]);
+      if (child.connected && runtimeInstanceId) {
+        await this.send(child, {
+          protocol: ARIADNE_RUNTIME_PROTOCOL,
+          protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
+          runtimeInstanceId,
+          type: 'shutdown',
+          requestId,
+          reason,
+          deadlineAt: new Date(deadlineAt).toISOString()
+        });
+      }
+      const exitedGracefully = await waitForExitUntil(exited, gracefulExitDeadline);
+      if (!exitedGracefully && child.exitCode === null && child.signalCode === null) {
+        child.kill();
+      }
+      const exitedAfterKill = child.exitCode !== null
+        || child.signalCode !== null
+        || await waitForExitUntil(exited, deadlineAt);
+      if (!exitedAfterKill) {
+        this.setStatus(
+          'crashed',
+          'Runtime process did not exit after termination; replacement is blocked.'
+        );
+        throw new RuntimeRequestError(
+          'runtime_process_exit_timeout',
+          'Runtime process did not exit before the shutdown deadline.',
+          false
+        );
+      }
     } catch {
-      // The child error listener owns the public failure state. Shutdown still
-      // guarantees that the failed child is reaped before this operation ends.
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill();
+        const exitedAfterKill = await waitForExitUntil(exited, deadlineAt);
+        if (!exitedAfterKill) {
+          this.setStatus(
+            'crashed',
+            'Runtime process did not exit after termination; replacement is blocked.'
+          );
+          throw new RuntimeRequestError(
+            'runtime_process_exit_timeout',
+            'Runtime process did not exit before the shutdown deadline.',
+            false
+          );
+        }
+      }
     } finally {
       if (this.shutdownAttempt?.child === child) this.shutdownAttempt = null;
-      if (this.child === child) {
-        this.child = null;
-        this.runtimeInstanceId = null;
-        this.readySnapshot = null;
-        this.activeBuildFingerprint = null;
-      }
-      if (child.exitCode === null && child.signalCode === null) child.kill();
-      await Promise.race([exited, delay(2_000)]);
+    }
+    if (child.exitCode !== null || child.signalCode !== null) {
+      this.releaseExitedChild(child);
       this.setStatus('stopped');
     }
   }
@@ -373,6 +495,9 @@ export class RuntimeSupervisor {
       modelProviders: this.options.modelProviders.map((provider) => ({ ...provider })),
       routingStrategy: this.options.routingStrategy,
       agentPermissions: structuredClone(this.options.agentPermissions),
+      agentAdmissionAuthoritySource: structuredClone(
+        this.options.agentAdmissionAuthoritySource
+      ),
       runtimePolicy: structuredClone(this.options.runtimePolicy),
       profile: this.options.profile,
       workspaces: this.options.workspaces.map((workspace) => ({ ...workspace })),
@@ -400,12 +525,28 @@ export class RuntimeSupervisor {
       case 'response':
         this.handleResponse(message);
         return;
+      case 'cancel_acknowledged':
+        return;
       case 'event':
-        this.eventDeliveryQueue = this.eventDeliveryQueue
-          .then(() => this.deliverEvent(message.event))
-          .catch((error) => {
-            this.handleProtocolViolation(toError(error, 'Runtime event replay failed.').message);
-          });
+        {
+          const eventRuntimeInstanceId = message.runtimeInstanceId;
+          const eventChild = child;
+          this.eventDeliveryQueue = this.eventDeliveryQueue
+            .then(async () => {
+              if (
+                eventChild !== this.child
+                || eventRuntimeInstanceId !== this.runtimeInstanceId
+              ) return;
+              await this.deliverEvent(message.event, eventChild, eventRuntimeInstanceId);
+            })
+            .catch((error) => {
+              if (
+                eventChild !== this.child
+                || eventRuntimeInstanceId !== this.runtimeInstanceId
+              ) return;
+              this.handleProtocolViolation(toError(error, 'Runtime event replay failed.').message);
+            });
+        }
         return;
       case 'capability_request':
         void this.handleCapabilityRequest(child, message);
@@ -415,7 +556,7 @@ export class RuntimeSupervisor {
           this.shutdownAttempt?.child === child
           && this.shutdownAttempt.requestId === message.requestId
         ) {
-          this.shutdownAttempt.resolve();
+          this.shutdownAttempt.completed = true;
         }
     }
   }
@@ -451,7 +592,8 @@ export class RuntimeSupervisor {
           error: {
             code: 'host_capability_failed',
             message: failure.message.slice(0, 1_024),
-            retryable: false
+            retryable: false,
+            correlationId: message.requestId
           }
         }
       }).catch(() => undefined);
@@ -488,14 +630,48 @@ export class RuntimeSupervisor {
   private handleResponse(message: RuntimeResponse): void {
     const pending = this.pending.get(message.requestId);
     if (!pending) return;
+    if (pending.commandId !== message.commandId) {
+      this.handleProtocolViolation('Runtime 响应的逻辑命令标识不匹配。');
+      return;
+    }
     clearTimeout(pending.timer);
+    pending.removeAbortListener?.();
     this.pending.delete(message.requestId);
     if (message.outcome.ok) pending.resolve(message.outcome.result);
     else pending.reject(new RuntimeRequestError(
       message.outcome.error.code,
       message.outcome.error.message,
-      message.outcome.error.retryable
+      message.outcome.error.retryable,
+      message.outcome.error.correlationId,
+      message.outcome.error.details
     ));
+  }
+
+  private cancelPendingRequest(
+    requestId: string,
+    reason: RuntimeCancel['reason'],
+    error: RuntimeRequestError
+  ): void {
+    const pending = this.pending.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pending.removeAbortListener?.();
+    this.pending.delete(requestId);
+    pending.reject(error);
+
+    const child = this.child;
+    const runtimeInstanceId = this.runtimeInstanceId;
+    if (!child?.connected || !runtimeInstanceId) return;
+    void this.send(child, {
+      protocol: ARIADNE_RUNTIME_PROTOCOL,
+      protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
+      runtimeInstanceId,
+      type: 'cancel',
+      cancelRequestId: randomUUID(),
+      targetRequestId: requestId,
+      commandId: pending.commandId,
+      reason
+    }).catch(() => undefined);
   }
 
   private handleChildError(child: ChildProcess, error: Error): void {
@@ -506,37 +682,38 @@ export class RuntimeSupervisor {
   private handleChildFailure(child: ChildProcess, error: Error): void {
     if (child !== this.child) return;
     this.clearRestartStabilityTimer();
-    this.child = null;
-    this.runtimeInstanceId = null;
     this.readySnapshot = null;
     this.activeBuildFingerprint = null;
-    if (this.shutdownAttempt?.child === child) this.shutdownAttempt.resolve();
     this.failStartup(error);
-    this.rejectPending(error);
-    if (child.exitCode === null && child.signalCode === null) child.kill();
-    if (!this.stopping && !this.disposed) {
-      this.setStatus('crashed', error.message);
-      this.scheduleRestart();
-    } else {
-      this.setStatus('stopped');
+    this.rejectPendingUncertain(error.message);
+    if (child.pid === undefined) {
+      this.releaseExitedChild(child);
+      if (!this.stopping && !this.disposed) {
+        this.setStatus('crashed', error.message);
+        this.scheduleRestart();
+      } else {
+        this.setStatus('stopped');
+      }
+      return;
     }
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+    this.setStatus(
+      this.stopping || this.disposed ? 'stopped' : 'crashed',
+      this.stopping || this.disposed ? undefined : `${error.message} Waiting for process exit.`
+    );
   }
 
   private handleExit(child: ChildProcess, code: number | null, signal: NodeJS.Signals | null): void {
     if (child !== this.child) return;
     this.clearRestartStabilityTimer();
-    this.child = null;
-    this.runtimeInstanceId = null;
-    this.readySnapshot = null;
-    this.activeBuildFingerprint = null;
-    if (this.shutdownAttempt?.child === child) this.shutdownAttempt.resolve();
+    this.releaseExitedChild(child);
     const unexpected = !this.stopping && !this.disposed;
     const detail = unexpected
       ? `Runtime 意外退出（${code === null ? signal ?? 'unknown' : `code ${code}`}）${this.lastDiagnostic ? `：${this.lastDiagnostic}` : '。'}`
       : undefined;
     const error = new RuntimeRequestError('runtime_exited', detail ?? 'Runtime 已退出。', unexpected);
     this.failStartup(error);
-    this.rejectPending(error);
+    this.rejectPendingUncertain(error.message);
     if (unexpected) {
       console.error(`Runtime child exited unexpectedly${this.lastDiagnostic ? `: ${this.lastDiagnostic}` : '.'}`);
       this.setStatus('crashed', detail);
@@ -548,8 +725,20 @@ export class RuntimeSupervisor {
 
   private handleProtocolViolation(detail: string): void {
     this.failStartup(new RuntimeRequestError('runtime_protocol_violation', detail, true));
-    this.rejectPending(new RuntimeRequestError('runtime_protocol_violation', detail, true));
-    this.child?.kill();
+    this.rejectPendingUncertain(detail);
+    const child = this.child;
+    if (child) {
+      this.setStatus('crashed', `${detail} Waiting for process exit.`);
+      child.kill();
+    }
+  }
+
+  private releaseExitedChild(child: ChildProcess): void {
+    if (this.child !== child) return;
+    this.child = null;
+    this.runtimeInstanceId = null;
+    this.readySnapshot = null;
+    this.activeBuildFingerprint = null;
   }
 
   private captureDiagnostic(chunk: Buffer | string): void {
@@ -603,10 +792,17 @@ export class RuntimeSupervisor {
     startup.reject(error);
   }
 
-  private rejectPending(error: Error): void {
+  private rejectPendingUncertain(reason: string): void {
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
-      pending.reject(error);
+      pending.removeAbortListener?.();
+      pending.reject(new RuntimeRequestError(
+        'command_outcome_uncertain',
+        'Runtime disconnected before the command outcome was confirmed; reconcile with the same commandId.',
+        false,
+        pending.commandId,
+        [reason]
+      ));
     }
     this.pending.clear();
   }
@@ -636,26 +832,20 @@ export class RuntimeSupervisor {
     }
   }
 
-  private async deliverEvent(event: RuntimeEventEnvelope): Promise<void> {
+  private async deliverEvent(
+    event: RuntimeEventEnvelope,
+    sourceChild: ChildProcess,
+    sourceRuntimeInstanceId: string
+  ): Promise<void> {
+    const isCurrentEpoch = (): boolean => (
+      sourceChild === this.child
+      && sourceRuntimeInstanceId === this.runtimeInstanceId
+    );
+    if (!isCurrentEpoch()) return;
     if (event.cursor <= this.lastEventCursor) return;
-    if (this.lastEventCursor > 0 && event.cursor > this.lastEventCursor + 1) {
-      while (this.lastEventCursor + 1 < event.cursor) {
-        const replay = await this.request({
-          kind: 'events.replay',
-          afterCursor: this.lastEventCursor,
-          limit: 2_000
-        });
-        if (replay.kind !== 'events.replay' || replay.events.length === 0) {
-          throw new Error(`Runtime event gap after cursor ${this.lastEventCursor}.`);
-        }
-        for (const replayed of replay.events) {
-          if (replayed.cursor >= event.cursor) break;
-          this.notifyEventListeners(replayed);
-          this.lastEventCursor = replayed.cursor;
-        }
-      }
-    }
-    if (event.cursor <= this.lastEventCursor) return;
+    // Public Runtime events are coalescible Projection wake hints, not an
+    // authoritative event stream. A cursor gap is recovered by Renderer
+    // Projection synchronization and must never invoke the retired replay API.
     this.notifyEventListeners(event);
     this.lastEventCursor = event.cursor;
   }
@@ -671,10 +861,11 @@ export class RuntimeSupervisor {
   }
 
   private createStatus(availability: RuntimeStatus['availability'], detail?: string): RuntimeStatus {
+    this.statusClock = Math.max(Date.now(), this.statusClock + 1);
     return {
       availability,
       capabilities: [...this.capabilities],
-      observedAt: new Date().toISOString(),
+      observedAt: new Date(this.statusClock).toISOString(),
       ...(availability === 'ready' ? {
         runtimeVersion: this.readySnapshot?.runtimeVersion,
         runtimeBuildFingerprint: this.readySnapshot?.runtimeBuildFingerprint,
@@ -742,6 +933,7 @@ function assertSupervisorOptions(options: RuntimeSupervisorOptions): void {
   for (const root of options.modelRoots) assertAbsolutePath('modelRoot', root);
   if (options.workspaces.length === 0) throw new Error('At least one Runtime workspace is required.');
   for (const workspace of options.workspaces) assertAbsolutePath('workspaceRoot', workspace.rootPath);
+  agentAdmissionAuthoritySourceSchema.parse(options.agentAdmissionAuthoritySource);
   if (options.restartStabilityMs !== undefined && options.restartStabilityMs <= 0) {
     throw new Error('restartStabilityMs must be positive.');
   }
@@ -763,6 +955,19 @@ function waitForExit(child: ChildProcess): Promise<void> {
   return new Promise((resolve) => child.once('exit', () => resolve()));
 }
 
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+async function waitForExitUntil(exit: Promise<void>, deadlineAt: number): Promise<boolean> {
+  const remainingMs = Math.max(0, deadlineAt - Date.now());
+  if (remainingMs === 0) return false;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      exit.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), remainingMs);
+        timer.unref?.();
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }

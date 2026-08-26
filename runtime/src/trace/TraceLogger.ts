@@ -15,6 +15,7 @@ import { randomUUID } from "node:crypto";
 import { redactValue } from "../util/redact.js";
 import { gzipTraceSegmentInPlace } from "../util/traceSegmentIo.js";
 import { migrateLegacyTraceFile } from "./traceCatalog.js";
+import type { TraceEvent, TraceLevel } from "./TraceEvent.js";
 import { ACTIVE_SEGMENT_PATH, TraceIndexStore } from "./TraceIndexStore.js";
 import {
   nextSegmentRelPath,
@@ -22,16 +23,7 @@ import {
   type TracePathLayout,
 } from "./tracePaths.js";
 
-export type TraceLevel = "debug" | "info" | "warning" | "error";
-
-export interface TraceEvent {
-  type: string;
-  level?: TraceLevel;
-  category?: string;
-  message?: string;
-  metadata?: Record<string, unknown>;
-  [key: string]: unknown;
-}
+export type { TraceEvent, TraceLevel } from "./TraceEvent.js";
 
 export interface PreparedTraceEvent {
   eventId: string;

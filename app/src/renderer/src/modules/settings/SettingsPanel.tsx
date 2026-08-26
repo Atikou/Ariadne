@@ -2,8 +2,10 @@ import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, t
 import { AlertTriangle, ArchiveRestore, BellRing, CheckCircle2, ChevronRight, Database, FolderArchive, KeyRound, Laptop, Moon, Plus, Save, Sun, X } from 'lucide-react';
 import type {
   AgentProviderId,
+  AgentProviderSettingsPatch,
   AgentProviderSettingsView,
-  AgentSettingsUpdate,
+  AgentSettingsEffect,
+  AgentSettingsOperation,
   AgentSettingsView,
   ThemePreference,
   UserPreferences
@@ -13,6 +15,7 @@ import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
 import { formatRuntimeAvailability } from '@renderer/core/runtime/runtime-labels';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import { workspaceNameFromPath } from '@renderer/core/conversations/conversation-navigation-service';
+import { useConversationPresentationRevision } from '@renderer/core/conversations/use-conversation-presentation';
 import { createEditableLocalModelRoots, moveLocalModelRoot, normalizeLocalModelRoots } from './local-model-roots';
 
 const themeOptions: Array<{ value: ThemePreference; label: string; icon: typeof Sun }> = [
@@ -27,6 +30,7 @@ const initialProviderExpansion = Object.fromEntries(AGENT_PROVIDER_IDS.map((id) 
 
 export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
   const runtime = useRuntimeSnapshot(services.runtime);
+  const sessionPresentationRevision = useConversationPresentationRevision(services.conversationNavigation);
   const [preferences, setPreferences] = useState<UserPreferences | null>(null);
   const [agentSettings, setAgentSettings] = useState<AgentSettingsView | null>(null);
   const [apiKeys, setApiKeys] = useState<Record<AgentProviderId, string>>(emptyKeys);
@@ -38,6 +42,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
   const localModelRootInputs = useRef<Array<HTMLInputElement | null>>([]);
   const localModelRootHandles = useRef<Array<HTMLButtonElement | null>>([]);
   const preferenceUpdateGeneration = useRef(0);
+  const persistedAgentSettings = useRef<AgentSettingsView | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
   const [preferenceError, setPreferenceError] = useState<string | null>(null);
@@ -49,14 +54,22 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
     void Promise.all([services.preferences.load(), services.agentSettings.load()]).then(([loadedPreferences, loadedAgentSettings]) => {
       setPreferences(loadedPreferences);
       setAgentSettings(loadedAgentSettings);
+      persistedAgentSettings.current = loadedAgentSettings;
       setLocalModelRoots(createEditableLocalModelRoots(loadedAgentSettings.localModelRoots));
     }).catch((error) => {
       setSaveResult({ tone: 'error', message: errorMessage(error) });
     });
     if (typeof services.agentSettings.onWorkspacesChanged !== 'function') return undefined;
     return services.agentSettings.onWorkspacesChanged((settings) => {
+      persistedAgentSettings.current = persistedAgentSettings.current
+        ? {
+            ...persistedAgentSettings.current,
+            revision: settings.revision,
+            workspaces: settings.workspaces
+          }
+        : settings;
       setAgentSettings((current) => current
-        ? { ...current, workspaces: settings.workspaces }
+        ? { ...current, revision: settings.revision, workspaces: settings.workspaces }
         : settings);
     });
   }, [services]);
@@ -166,35 +179,55 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
   const saveAgentSettings = async (event: FormEvent): Promise<void> => {
     event.preventDefault();
     if (!agentSettings || saving) return;
+    const baseline = persistedAgentSettings.current;
+    if (!baseline) return;
     setSaving(true);
     setSaveResult(null);
     try {
-      const providers = Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => {
+      const normalizedRoots = normalizeLocalModelRoots(localModelRoots);
+      const operations: AgentSettingsOperation[] = [];
+      if (agentSettings.workspaceRoot !== baseline.workspaceRoot) {
+        operations.push({ kind: 'workspace.select', rootPath: agentSettings.workspaceRoot });
+      }
+      if (!sameJsonValue(normalizedRoots, baseline.localModelRoots)) {
+        operations.push({ kind: 'modelRoots.replace', roots: normalizedRoots });
+      }
+      for (const id of AGENT_PROVIDER_IDS) {
         const provider = agentSettings.providers[id];
+        const previous = baseline.providers[id];
+        const patch: AgentProviderSettingsPatch = {};
+        if (provider.enabled !== previous.enabled) patch.enabled = provider.enabled;
+        if (provider.baseUrl !== previous.baseUrl) patch.baseUrl = provider.baseUrl;
+        if (provider.model !== previous.model) patch.model = provider.model;
+        if (!sameJsonValue(provider.inference, previous.inference)) patch.inference = provider.inference;
         const apiKey = apiKeys[id].trim();
-        return [id, {
-          enabled: provider.enabled,
-          baseUrl: provider.baseUrl,
-          model: provider.model,
-          inference: provider.inference,
-          clearApiKey: clearRequests[id],
-          ...(apiKey ? { apiKey } : {})
-        }];
-      })) as AgentSettingsUpdate['providers'];
-      const saved = await services.agentSettings.update({
-        routingStrategy: agentSettings.routingStrategy,
-        permissionMode: agentSettings.permissionMode,
-        customPermissions: agentSettings.customPermissions,
-        workspaceRoot: agentSettings.workspaceRoot,
-        workspaceAccess: agentSettings.workspaceAccess,
-        localModelRoots: normalizeLocalModelRoots(localModelRoots),
-        providers
+        if (clearRequests[id]) patch.clearApiKey = true;
+        else if (apiKey) patch.apiKey = apiKey;
+        if (Object.keys(patch).length > 0) {
+          operations.push({ kind: 'provider.update', providerId: id, patch });
+        }
+      }
+      if (operations.length === 0) {
+        setSaveResult({ tone: 'success', message: 'Agent 设置没有变更。' });
+        return;
+      }
+      const result = await services.agentSettings.apply({
+        expectedRevision: baseline.revision,
+        operations
       });
+      if (!result.ok) {
+        persistedAgentSettings.current = result.settings;
+        setAgentSettings(result.settings);
+        setLocalModelRoots(createEditableLocalModelRoots(result.settings.localModelRoots));
+        throw new Error(`${result.error.code}: ${result.error.message}`);
+      }
+      const saved = result.settings;
+      persistedAgentSettings.current = saved;
       setAgentSettings(saved);
       setLocalModelRoots(createEditableLocalModelRoots(saved.localModelRoots));
       setApiKeys({ ...emptyKeys });
       setClearRequests({ ...noClearRequests });
-      setSaveResult({ tone: 'success', message: 'Agent 设置已保存，Runtime 已按新配置重新启动。' });
+      setSaveResult({ tone: 'success', message: settingsEffectMessage(result.effect) });
     } catch (error) {
       setSaveResult({ tone: 'error', message: errorMessage(error) });
     } finally {
@@ -218,6 +251,10 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
   const archivedWorkspaces = agentSettings?.workspaces.filter(
     (workspace) => workspace.workspaceId !== 'primary' && workspace.archivedAt
   ) ?? [];
+  const archivedSessions = runtime.sessions.filter(
+    (session) => services.conversationNavigation.isSessionArchived(session.sessionId)
+  );
+  void sessionPresentationRevision;
 
   return (
     <section className="simple-module-panel settings-panel" aria-labelledby={`${moduleId}-title`}>
@@ -226,7 +263,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
       <section className="settings-section" aria-labelledby={`${moduleId}-model-settings`}>
         <div className="settings-section-heading">
           <div className="settings-section-title"><span className="settings-section-icon"><KeyRound size={16} /></span><div className="settings-section-copy"><h2 id={`${moduleId}-model-settings`}>Agent 与模型</h2><p>配置工作区根目录、本地模型目录和远程 Provider；运行权限与路由策略在 Chat 输入区动态选择。</p></div></div>
-          <span className={`settings-runtime-state settings-runtime-state--${runtimeStateTone}`} role="status" aria-live="polite">
+          <span className={`settings-runtime-state settings-runtime-state--${runtimeStateTone}`} data-runtime-availability={runtime.status.availability} role="status" aria-live="polite">
             <span className={`settings-runtime-indicator settings-runtime-indicator--${runtimeStateTone}`} aria-hidden="true">{runtimeIsLoading ? null : runtimeStateSymbol}</span>
             <span>{runtimeStateLabel}</span>
           </span>
@@ -352,13 +389,44 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
         ) : <p className="module-empty-state">正在读取 Agent 设置…</p>}
       </section>
 
+      <section className="settings-section archived-workspaces-section" aria-labelledby={`${moduleId}-archived-sessions`}>
+        <div className="settings-section-heading">
+          <div className="settings-section-title">
+            <span className="settings-section-icon"><ArchiveRestore size={16} /></span>
+            <div className="settings-section-copy">
+              <h2 id={`${moduleId}-archived-sessions`}>已归档聊天</h2>
+              <p>归档只会从会话侧栏隐藏聊天，不会删除消息；可随时恢复。</p>
+            </div>
+          </div>
+        </div>
+        {archivedSessions.length === 0 ? (
+          <p className="archived-workspaces-empty">暂无已归档聊天。</p>
+        ) : (
+          <div className="archived-workspaces-list">
+            {archivedSessions.map((session) => (
+              <article className="archived-workspace-card" key={session.sessionId}>
+                <div>
+                  <strong>{services.conversationNavigation.sessionTitle(session.sessionId, session.title)}</strong>
+                  <small>消息与运行记录仍然保留。</small>
+                </div>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => services.conversationNavigation.restoreSession(session.sessionId)}
+                ><ArchiveRestore size={14} />恢复</button>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
       <section className="settings-section archived-workspaces-section" aria-labelledby={`${moduleId}-archived-workspaces`}>
         <div className="settings-section-heading">
           <div className="settings-section-title">
             <span className="settings-section-icon"><FolderArchive size={16} /></span>
             <div className="settings-section-copy">
               <h2 id={`${moduleId}-archived-workspaces`}>已归档工作区</h2>
-              <p>归档后保留 7 天；到期会永久清理关联会话、上下文和活动记录。</p>
+              <p>归档只会从侧栏隐藏工作区，不会删除会话数据；可随时恢复。</p>
             </div>
           </div>
         </div>
@@ -372,9 +440,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
                 <div>
                   <strong>{workspaceNameFromPath(workspace.rootPath)}</strong>
                   <code>{workspace.rootPath}</code>
-                  <small>{workspace.purgedAt
-                    ? `关联记录已于 ${formatWorkspaceLifecycleTime(workspace.purgedAt)} 永久清理；恢复后将作为空工作区使用。`
-                    : `关联记录将在 ${formatWorkspaceLifecycleTime(workspace.purgeAfter ?? workspace.archivedAt!)} 永久清理。`}</small>
+                  <small>关联会话数据会继续保留。</small>
                 </div>
                 <button
                   type="button"
@@ -433,20 +499,22 @@ function reasoningEffortLabel(value: 'none' | 'low' | 'medium' | 'high' | 'xhigh
   return { none: '无', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' }[value];
 }
 
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function settingsEffectMessage(effect: AgentSettingsEffect): string {
+  switch (effect) {
+    case 'hot_applied': return 'Agent 设置已立即应用。';
+    case 'reload_scheduled': return 'Agent 设置已保存，将在下一次 Runtime 启动时生效；当前任务不会中断。';
+    case 'restart_required': return 'Agent 设置已保存，Runtime 已按需重新加载。';
+  }
+}
+
 function errorMessage(error: unknown, fallback = '保存 Agent 设置失败。'): string {
   if (!(error instanceof Error)) return fallback;
   return error.message
     .replace(/^Error invoking remote method '[^']+':\s*/i, '')
     .replace(/^Error:\s*/i, '')
     .trim() || fallback;
-}
-
-function formatWorkspaceLifecycleTime(value: string): string {
-  return new Date(value).toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  });
 }

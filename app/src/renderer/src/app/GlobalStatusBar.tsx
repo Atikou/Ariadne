@@ -15,7 +15,7 @@ export function GlobalStatusBar({ services, saveStatus }: { services: ModuleServ
   const warningCount = (runtime.lastError ? 1 : 0) + pendingPermissions;
 
   return <footer className="global-status-bar"><div>
-    <span className={available ? 'is-success' : 'is-danger'}>
+    <span className={available ? 'is-success' : 'is-danger'} data-runtime-availability={runtime.status.availability}>
       <Radio size={11} /> Runtime {formatRuntimeAvailability(runtime.status.availability)}
     </span>
     <span><Cpu size={11} /> {readyModel?.label ?? '暂无可用模型'}</span>

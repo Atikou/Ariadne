@@ -1,6 +1,6 @@
 import type { BudgetLedgerSnapshot } from "./BudgetManager.js";
 import type { CompletionGuardResult } from "./completion/CompletionFinalGuard.js";
-import type { AgentStopReason, RunBudgetKey } from "./RunPolicyTypes.js";
+import type { AgentStopReason, RunBudgetKey } from "./RunPolicyPrimitives.js";
 import { resolveAgentRunOutcome } from "./AgentRunOutcome.js";
 
 export interface AgentActivityTimelineSink {

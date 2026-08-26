@@ -13,7 +13,7 @@ import type {
 } from "../run/RunToolCheckpointCoordinator.js";
 import type { BudgetManager } from "./BudgetManager.js";
 import type { AgentIntentType } from "./IntentTypes.js";
-import type { AgentRunMode, RunBudgetKey, UserPermissionPolicy } from "./RunPolicyTypes.js";
+import type { AgentRunMode, RunBudgetKey, UserPermissionPolicy } from "./RunPolicyPrimitives.js";
 import type { AgentToolStep } from "./toolStep.js";
 import {
   assessWorkflowToolAccess,

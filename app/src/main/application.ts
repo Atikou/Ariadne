@@ -2,7 +2,9 @@ import { app, Menu, Notification, shell, Tray } from 'electron';
 import { join } from 'node:path';
 import type { RuntimeCapabilityRequest } from '@ariadne/protocol/host';
 import type {
-  AgentSettingsUpdate,
+  AgentSettingsMutation,
+  AgentSettingsMutationResult,
+  AgentSettingsOperation,
   AgentSettingsView,
   AgentWorkspacePinUpdate,
   AgentWorkspaceRequest,
@@ -10,6 +12,7 @@ import type {
 } from '@shared/contract';
 import { IPC_CHANNELS } from '@shared/ipc';
 import { AgentSettingsRepository } from './persistence/agent-settings-repository';
+import { AgentPersistenceKeyRingStore } from './persistence/agent-persistence-keyring';
 import { McpOAuthCredentialVault } from './persistence/mcp-oauth-credential-vault';
 import { ElectronSafeStorageCipher } from './persistence/secret-cipher';
 import { StateRepository } from './persistence/state-repository';
@@ -31,13 +34,13 @@ import { RendererSource } from './windows/renderer-source';
 import { createDesktopRuntimeConfiguration, resolveDefaultWorkspaceRoot } from './runtime/runtime-configuration';
 import { RuntimeSupervisor } from './runtime/runtime-supervisor';
 import { runElectronSmokeTest } from './smoke/electron-smoke';
+import { shouldRestartRuntimeForAgentSettings } from './settings/agent-settings-effects';
 
 export class ApplicationController {
   private isQuitting = false;
   private cleanupPromise: Promise<void> | null = null;
   private startPromise: Promise<void> | null = null;
   private agentSettingsOperationQueue: Promise<void> = Promise.resolve();
-  private workspaceArchiveCleanupTimer: NodeJS.Timeout | null = null;
   private tray: Tray | null = null;
   private removeIpcHandlers: (() => void) | null = null;
   private removeApprovalNotificationEvents: (() => void) | null = null;
@@ -56,6 +59,10 @@ export class ApplicationController {
   );
   private readonly mcpOAuthVault = new McpOAuthCredentialVault(
     join(app.getPath('userData'), 'mcp-oauth-vault.json'),
+    this.secretCipher
+  );
+  private readonly agentPersistenceKeyRing = new AgentPersistenceKeyRingStore(
+    join(app.getPath('userData'), 'agent-persistence-keyring.json'),
     this.secretCipher
   );
   private readonly mcpRemote = new McpRemoteService(
@@ -154,8 +161,6 @@ export class ApplicationController {
         await this.mainWindow.saveWindowStateNow();
         await this.state.flush();
         await this.agentSettings.flush();
-        if (this.workspaceArchiveCleanupTimer) clearTimeout(this.workspaceArchiveCleanupTimer);
-        this.workspaceArchiveCleanupTimer = null;
         this.removeIpcHandlers?.();
         this.removeIpcHandlers = null;
         this.removeApprovalNotificationEvents?.();
@@ -178,7 +183,8 @@ export class ApplicationController {
     await Promise.all([
       this.state.initialize(),
       this.agentSettings.initialize(),
-      this.mcpOAuthVault.initialize()
+      this.mcpOAuthVault.initialize(),
+      this.agentPersistenceKeyRing.initialize()
     ]);
     const initialRuntimeSettings = this.agentSettings.getRuntimeSettings();
     this.workspaceFiles.setWorkspaces(initialRuntimeSettings.workspaces);
@@ -193,7 +199,7 @@ export class ApplicationController {
     this.removeIpcHandlers = registerIpcHandlers({
       getWindow: () => this.mainWindow.get(),
       agentSettings: this.agentSettings,
-      updateAgentSettings: (settings) => this.updateAgentSettings(settings),
+      applyAgentSettings: (mutation) => this.applyAgentSettingsMutation(mutation),
       setWorkspacePinned: (request) => this.setWorkspacePinned(request),
       archiveWorkspace: (request) => this.archiveWorkspace(request),
       restoreWorkspace: (request) => this.restoreWorkspace(request),
@@ -213,12 +219,9 @@ export class ApplicationController {
       });
     });
     await this.mainWindow.waitUntilRendererLoaded();
-    void this.runtime.start()
-      .then(() => this.cleanupDueArchivedWorkspaces())
-      .catch(() => {
-        console.error('Runtime was unavailable during application startup.');
-        this.scheduleArchivedWorkspaceCleanup(60_000);
-      });
+    void this.runtime.start().catch(() => {
+      console.error('Runtime was unavailable during application startup.');
+    });
     this.tray = await this.createTray();
     window.on('show', () => this.updateTrayMenu());
     window.on('hide', () => this.updateTrayMenu());
@@ -238,18 +241,33 @@ export class ApplicationController {
       capabilityHandler: async (request: RuntimeCapabilityRequest) => {
         if (request.capability === 'browser') return this.browser.handle(request.operation);
         if (request.capability === 'mcp_remote') return this.mcpRemote.handle(request.operation);
+        if (request.capability === 'agent_persistence') {
+          const keyRing = await this.agentPersistenceKeyRing.loadForRuntime();
+          return {
+            ...keyRing,
+            runtimeInstanceId: request.runtimeInstanceId
+          };
+        }
         throw new Error('host_capability_unknown');
       }
     };
   }
 
-  private async updateAgentSettings(settings: AgentSettingsUpdate): Promise<AgentSettingsView> {
+  private async applyAgentSettingsMutation(
+    mutation: AgentSettingsMutation
+  ): Promise<AgentSettingsMutationResult> {
     return this.runAgentSettingsOperation(async () => {
       const checkpoint = this.agentSettings.createCheckpoint();
-      const saved = await this.agentSettings.save(settings);
+      const result = await this.agentSettings.mutate(mutation);
+      if (!result.ok) return result;
       try {
-        await this.applyAgentSettings(saved);
-        return saved;
+        await this.applyCommittedAgentSettings(result.settings, result.effect, mutation.operations);
+        if (mutation.operations.some((operation) => (
+          operation.kind === 'permissions.set' || operation.kind === 'workspace.select'
+        ))) {
+          this.notifyWorkspaceSettingsChanged(result.settings);
+        }
+        return result;
       } catch (error) {
         return this.rollbackAgentSettings(checkpoint, error);
       }
@@ -262,7 +280,7 @@ export class ApplicationController {
       const result = await this.agentSettings.addWorkspaceRoot(rootPath);
       if (result.added) {
         try {
-          await this.applyAgentSettings(result.settings);
+          await this.applyAllAgentSettings(result.settings);
           this.notifyWorkspaceSettingsChanged(result.settings);
         } catch (error) {
           return this.rollbackAgentSettings(checkpoint, error);
@@ -284,7 +302,6 @@ export class ApplicationController {
     return this.runAgentSettingsOperation(async () => {
       const saved = await this.agentSettings.archiveWorkspace(request.workspaceId);
       this.notifyWorkspaceSettingsChanged(saved);
-      this.scheduleArchivedWorkspaceCleanup();
       return saved;
     });
   }
@@ -293,52 +310,38 @@ export class ApplicationController {
     return this.runAgentSettingsOperation(async () => {
       const saved = await this.agentSettings.restoreWorkspace(request.workspaceId);
       this.notifyWorkspaceSettingsChanged(saved);
-      this.scheduleArchivedWorkspaceCleanup();
       return saved;
     });
   }
 
-  private async cleanupDueArchivedWorkspaces(): Promise<void> {
-    await this.runAgentSettingsOperation(async () => {
-      let latestSettings: AgentSettingsView | null = null;
-      for (const workspaceId of this.agentSettings.dueArchivedWorkspaceIds()) {
-        const result = await this.runtime.request({
-          kind: 'companion.workspaces.purge',
-          workspaceId
-        });
-        if (result.kind !== 'companion.workspace.purged' || result.workspaceId !== workspaceId) {
-          throw new Error('Runtime did not confirm archived workspace cleanup.');
-        }
-        latestSettings = await this.agentSettings.markWorkspacePurged(workspaceId);
-      }
-      if (latestSettings) this.notifyWorkspaceSettingsChanged(latestSettings);
-      this.scheduleArchivedWorkspaceCleanup();
-    });
-  }
-
-  private scheduleArchivedWorkspaceCleanup(minimumDelayMs = 0): void {
-    if (this.workspaceArchiveCleanupTimer) clearTimeout(this.workspaceArchiveCleanupTimer);
-    this.workspaceArchiveCleanupTimer = null;
-    const nextPurgeAt = this.agentSettings.nextArchivedWorkspacePurgeAt();
-    if (!nextPurgeAt || this.isQuitting) return;
-    const delay = Math.min(
-      2_147_483_647,
-      Math.max(minimumDelayMs, Date.parse(nextPurgeAt) - Date.now(), 0)
-    );
-    this.workspaceArchiveCleanupTimer = setTimeout(() => {
-      this.workspaceArchiveCleanupTimer = null;
-      void this.cleanupDueArchivedWorkspaces().catch((error: unknown) => {
-        console.error('Archived workspace cleanup failed and will be retried.', error);
-        this.scheduleArchivedWorkspaceCleanup(60_000);
-      });
-    }, delay);
-  }
 
   private notifyWorkspaceSettingsChanged(settings: AgentSettingsView): void {
     this.mainWindow.get()?.webContents.send(IPC_CHANNELS.agentWorkspacesChanged, settings);
   }
 
-  private async applyAgentSettings(saved: AgentSettingsView): Promise<void> {
+  private async applyCommittedAgentSettings(
+    saved: AgentSettingsView,
+    effect: Extract<AgentSettingsMutationResult, { ok: true }>['effect'],
+    operations: readonly AgentSettingsOperation[]
+  ): Promise<void> {
+    const changesWorkspaceBoundary = operations.some((operation) => (
+      operation.kind === 'permissions.set' || operation.kind === 'workspace.select'
+    ));
+    const changesRuntimePolicy = operations.some((operation) => operation.kind === 'runtimePolicy.replace');
+    if (changesWorkspaceBoundary) this.workspaceFiles.setWorkspaces(saved.workspaces);
+    if (changesWorkspaceBoundary || changesRuntimePolicy) {
+      this.browser.configure(
+        saved.runtimePolicy.browser,
+        saved.workspaces[0]?.workspaceId ?? 'primary'
+      );
+    }
+    if (changesRuntimePolicy) await this.mcpRemote.configure(saved.runtimePolicy.mcp.servers);
+    if (shouldRestartRuntimeForAgentSettings(effect)) {
+      await this.runtime.restart(this.createRuntimeConfiguration());
+    }
+  }
+
+  private async applyAllAgentSettings(saved: AgentSettingsView): Promise<void> {
     this.workspaceFiles.setWorkspaces(saved.workspaces);
     this.browser.configure(
       saved.runtimePolicy.browser,
@@ -354,7 +357,7 @@ export class ApplicationController {
   ): Promise<never> {
     try {
       const restored = await this.agentSettings.restore(checkpoint);
-      await this.applyAgentSettings(restored);
+      await this.applyAllAgentSettings(restored);
     } catch (rollbackError) {
       throw new AggregateError(
         [originalError, rollbackError],

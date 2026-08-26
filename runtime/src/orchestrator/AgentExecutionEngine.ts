@@ -1,16 +1,15 @@
-import type { AgentRunResult } from "../agent/AgentLoop.js";
-import type { AgentLoopCreationRequest } from "./AgentLoopFactory.js";
+import type {
+  AgentExecutionEngine,
+  AgentExecutionEngineFactory,
+} from "./AgentExecutionEngineContracts.js";
+import type { AgentExecutionEngineKind } from "./AgentExecutionIdentity.js";
+import type { AgentLoopCreationRequest } from "./AgentLoopCreationContracts.js";
 
-export type AgentExecutionEngineKind = "react_loop" | "graph";
-
-export interface AgentExecutionEngine {
-  run(userMessage: string, system?: string): Promise<AgentRunResult>;
-}
-
-export interface AgentExecutionEngineFactory {
-  readonly kind: AgentExecutionEngineKind;
-  create(request: AgentLoopCreationRequest): AgentExecutionEngine;
-}
+export type {
+  AgentExecutionEngine,
+  AgentExecutionEngineFactory,
+} from "./AgentExecutionEngineContracts.js";
+export type { AgentExecutionEngineKind } from "./AgentExecutionIdentity.js";
 
 /**
  * Execution selection boundary. Permission, checkpoint, resume, Timeline and UI

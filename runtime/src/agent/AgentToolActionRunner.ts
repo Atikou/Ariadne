@@ -18,7 +18,7 @@ import type { AgentIntentType, AgentWorkflowType } from "./IntentTypes.js";
 import type { FailedActionMemory } from "./recovery/FailedActionMemory.js";
 import { applyOutcomeToStep, traceStatusForOutcome } from "./recovery/renderToolOutcome.js";
 import type { RunToolResultCache } from "./recovery/RunToolResultCache.js";
-import type { AgentRunMode, UserPermissionPolicy } from "./RunPolicyTypes.js";
+import type { AgentRunMode, UserPermissionPolicy } from "./RunPolicyPrimitives.js";
 import {
   assessSubagentDispatchGuard,
   assessSubagentSideEffectGuard,

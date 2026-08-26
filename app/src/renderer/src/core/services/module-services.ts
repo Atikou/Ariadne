@@ -5,11 +5,14 @@ import { RuntimeStore } from '../runtime/runtime-store';
 import type { ModuleServices } from '../modules/module-contract';
 import { ConfiguredConversationNavigationService } from '../conversations/conversation-navigation-service';
 
-export function createModuleServices(api: AriadneApi): ModuleServices {
+export function createModuleServices(
+  api: AriadneApi,
+  storage: Storage = window.localStorage
+): ModuleServices {
   return {
     agentSettings: api.agentSettings,
     clipboard: api.clipboard,
-    conversationNavigation: new ConfiguredConversationNavigationService(api.agentSettings, api.workspace, window.localStorage),
+    conversationNavigation: new ConfiguredConversationNavigationService(api.agentSettings, api.workspace, storage),
     events: new TypedEventBus<AppEventMap>(),
     runtime: new RuntimeStore(api.runtime),
     preferences: api.preferences,

@@ -2,7 +2,6 @@ import type { ContentEnvelope, MessageEnvelope, MessageKind } from "./messageEnv
 import { createContentEnvelope, isVerifiedContent, resolveMessageEnvelope } from "./messageEnvelope.js";
 import type { RunExecutionFacts, RunFactsLookup } from "./runFactsLookup.js";
 import { runFactsIndicateMisleadingCompletion } from "./runFactsLookup.js";
-import type { MessageRecord } from "./types.js";
 import type { ToolCall } from "../model/types.js";
 
 export type ContextTrustDecisionReason =

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { LoopChatFn } from "../agent/AgentLoop.js";
-import type { UserPermissionPolicy } from "../agent/RunPolicyTypes.js";
+import { AgentLoop, type LoopChatFn } from "../agent/AgentLoop.js";
+import type { UserPermissionPolicy } from "../agent/RunPolicyPrimitives.js";
 import type { ToolPermission } from "../core/permissions.js";
 import { BackgroundTaskManager, NotificationQueue } from "../background/index.js";
 import { loadConfig } from "../config/loadConfig.js";
@@ -87,9 +87,14 @@ import {
 import { collectSubAgentRecoveryRoots } from "./subAgentRecoveryRoots.js";
 import { resolveAppPaths, type AppPaths } from "./appPaths.js";
 import { AppShutdownCoordinator } from "./AppShutdownCoordinator.js";
+import {
+  createShutdownContext,
+  type ShutdownContext,
+} from "../ingress/ShutdownContext.js";
 import { resolveLocalModelPathLayout } from "./localModelPathLayout.js";
 import { createUnifiedAssistantRuntime } from "./createUnifiedAssistantRuntime.js";
 import type { UnifiedAssistantHandoffService } from "./UnifiedAssistantHandoffService.js";
+import { StartupRecoveryCoordinator } from "./StartupRecoveryCoordinator.js";
 import { McpClientManager } from "../mcp/McpClientManager.js";
 import {
   AgentInstructionResolver,
@@ -172,6 +177,8 @@ export class AppContext {
   readonly runtime: AppRuntimeController;
   private readonly makeAgentChat: AppModelRoutingRuntime["makeAgentChatFn"];
   private readonly shutdownCoordinator: AppShutdownCoordinator;
+  private readonly startupRecoveryCoordinator: StartupRecoveryCoordinator;
+  private shutdownContext?: ShutdownContext;
   readonly startupRecovery?: StartupRecoverySummary;
 
   constructor(opts: {
@@ -238,6 +245,7 @@ export class AppContext {
     hostCapabilities?: HostCapabilityBroker;
     telemetry: TelemetryService;
     startupRecovery?: StartupRecoverySummary;
+    startupRecoveryCoordinator: StartupRecoveryCoordinator;
     runtime: AppRuntimeController;
   }) {
     this.profile = opts.profile;
@@ -304,6 +312,7 @@ export class AppContext {
     this.hostCapabilities = opts.hostCapabilities;
     this.telemetry = opts.telemetry;
     this.startupRecovery = opts.startupRecovery;
+    this.startupRecoveryCoordinator = opts.startupRecoveryCoordinator;
     this.runtime = opts.runtime;
     this.shutdownCoordinator = new AppShutdownCoordinator({
       runtime: opts.runtime,
@@ -322,6 +331,7 @@ export class AppContext {
 
   /** Start process-level schedulers only when the application is actually served. */
   async start(): Promise<void> {
+    await this.startupRecoveryCoordinator.start();
     this.runtime.start();
     await this.initializeHostCapabilities();
     void this.mcp.start().catch((error) => {
@@ -405,17 +415,26 @@ export class AppContext {
   }
 
   /** Stop producers and cancel active work without closing stores used by draining HTTP handlers. */
-  prepareShutdown(): Promise<void> {
-    return this.shutdownCoordinator.prepare();
+  async prepareShutdown(context?: ShutdownContext): Promise<void> {
+    const shutdownContext = this.resolveShutdownContext(context);
+    await this.startupRecoveryCoordinator.prepareShutdown(shutdownContext);
+    await this.shutdownCoordinator.prepare(shutdownContext);
   }
 
   /** Ordered, idempotent final shutdown after callers have drained their ingress. */
-  shutdown(): Promise<void> {
-    return this.shutdownCoordinator.shutdown();
+  async shutdown(context?: ShutdownContext): Promise<void> {
+    const shutdownContext = this.resolveShutdownContext(context);
+    await this.startupRecoveryCoordinator.prepareShutdown(shutdownContext);
+    await this.shutdownCoordinator.shutdown(shutdownContext);
   }
 
   allModelConfigs(): ModelClientConfig[] {
     return [...this.config.models.clients, ...this.localModelService.clientConfigs()];
+  }
+
+  private resolveShutdownContext(context?: ShutdownContext): ShutdownContext {
+    this.shutdownContext ??= context ?? createShutdownContext(Date.now() + 10_000);
+    return this.shutdownContext;
   }
 
 }
@@ -713,6 +732,9 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     collectSubAgentRecoveryRoots(workspaceCatalog, contextManager.listSessions()));
   const subAgentCoordinator = new SubAgentCoordinator({
     chat: defaultAgentChat,
+    agentRunnerFactory: {
+      create: (request) => new AgentLoop(request),
+    },
     createChatForDelegatedTask,
     registry,
     trace,
@@ -833,9 +855,11 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     hooks,
   });
   orchestratorHolder.current = orchestrator;
+  const startupRecoveryCoordinator = new StartupRecoveryCoordinator();
   const unifiedAssistantRuntime = createUnifiedAssistantRuntime({
     projectRoot, companionDataDir: paths.companionDataDir, directChat, contextManager,
     workspaceCatalog, orchestrator, trace, makeChatFn: makeAgentChatFn,
+    startupRecovery: startupRecoveryCoordinator,
     browserAvailable: () =>
       registry.listProviders().some((provider) => provider.id === "browser-main"),
     ...(opts.agentHandoffPermissionPolicy
@@ -876,18 +900,26 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     planHandoffStore,
     subAgentWorkspaceRecovery,
   });
-  void orchestrator.recoverPlanAgentContinuations().then((resumed) => {
-    if (resumed > 0) {
-      trace.write({
-        type: "startup_recovery_plan_agent_continuations",
-        resumed,
-      });
-    }
-  }).catch((error) => {
-    trace.write({
-      type: "startup_recovery_plan_agent_continuations_error",
-      error: String(error),
-    });
+  startupRecoveryCoordinator.register({
+    name: "plan_agent_continuations",
+    run: async (signal) => {
+      try {
+        const resumed = await orchestrator.recoverPlanAgentContinuations(signal);
+        if (resumed > 0) {
+          trace.write({
+            type: "startup_recovery_plan_agent_continuations",
+            resumed,
+          });
+        }
+      } catch (error) {
+        if (signal.aborted) throw error;
+        trace.write({
+          type: "startup_recovery_plan_agent_continuations_error",
+          error: String(error),
+        });
+        throw error;
+      }
+    },
   });
 
   const toolsDbPath = registry.getStorage()?.dbPath;
@@ -973,6 +1005,7 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     hostCapabilities: opts.hostCapabilities,
     telemetry,
     startupRecovery,
+    startupRecoveryCoordinator,
     runtime,
   });
   if (

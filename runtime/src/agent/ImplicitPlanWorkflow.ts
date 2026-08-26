@@ -1,5 +1,6 @@
 import type { AgentIntentType, AgentWorkflowType } from "./IntentTypes.js";
-import type { AgentWorkflowInternalPlan, UserPermissionPolicy } from "./RunPolicyTypes.js";
+import type { UserPermissionPolicy } from "./RunPolicyPrimitives.js";
+import type { AgentWorkflowInternalPlan } from "./WorkflowExecutionContracts.js";
 
 export interface ImplicitPlanWorkflowInput {
   goal: string;

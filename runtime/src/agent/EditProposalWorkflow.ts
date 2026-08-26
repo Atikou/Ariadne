@@ -1,11 +1,11 @@
 import type { AgentIntentType } from "./IntentTypes.js";
 import { evaluatePermissionGuard } from "../policy/PermissionGuard.js";
 import type { ToolPermission } from "../core/permissions.js";
+import type { UserPermissionPolicy } from "./RunPolicyPrimitives.js";
 import type {
   AgentWorkflowPermissionCheck,
   AgentWorkflowProposal,
-  UserPermissionPolicy,
-} from "./RunPolicyTypes.js";
+} from "./WorkflowExecutionContracts.js";
 
 export interface EditProposalWorkflowInput {
   goal: string;

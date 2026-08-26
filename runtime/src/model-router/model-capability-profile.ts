@@ -1,35 +1,18 @@
 import type { ModelClientConfig } from "../config/types.js";
-import type { ModelProfile, ModelLevel, RuleRouteResult } from "./types.js";
+import type {
+  DeclaredCapabilityKey,
+  ModelDeclaredCapabilities,
+  ModelLevel,
+  ModelPrivacyPolicy,
+  ModelProfile,
+  RuleRouteResult
+} from "./types.js";
 
-/** 配置声明的能力画像（Level = 强弱；capabilities = 会不会）。 */
-export interface ModelDeclaredCapabilities {
-  text: boolean;
-  image: boolean;
-  audio: boolean;
-  video: boolean;
-  file: boolean;
-  code: boolean;
-  architecture: boolean;
-  toolCalling: boolean;
-  jsonMode: boolean;
-  longContext: boolean;
-  ocr: boolean;
-  uiScreenshot: boolean;
-  chartUnderstanding: boolean;
-  diagramUnderstanding: boolean;
-  spatialReasoning: boolean;
-  imageGeneration: boolean;
-  imageEditing: boolean;
-}
-
-export interface ModelPrivacyPolicy {
-  local: boolean;
-  remote: boolean;
-  /** 是否允许接收 sensitive=true 任务（仍须 location 匹配）。 */
-  allowSensitive: boolean;
-}
-
-export type DeclaredCapabilityKey = keyof ModelDeclaredCapabilities;
+export type {
+  DeclaredCapabilityKey,
+  ModelDeclaredCapabilities,
+  ModelPrivacyPolicy
+} from "./types.js";
 
 /** AgentAction 是可执行协议，进入 AgentLoop 的模型必须同时具备这两项能力。 */
 export const AGENT_PROTOCOL_REQUIRED_CAPABILITIES = ["toolCalling", "jsonMode"] as const satisfies readonly DeclaredCapabilityKey[];

@@ -1,4 +1,5 @@
 import type { Planner } from "../agent/Planner.js";
+import type { UserPermissionPolicy } from "../agent/RunPolicyPrimitives.js";
 import type { ApiResult } from "../core/apiResult.js";
 import type { PlanService } from "./PlanService.js";
 import { canAutoApprovePlan } from "./planActivationPolicy.js";
@@ -19,7 +20,7 @@ export interface PlanActivationWorkflowOptions {
     planId: string,
     version: number,
     payload: {
-      permissionPolicy?: import("../agent/RunPolicyTypes.js").UserPermissionPolicy;
+      permissionPolicy?: UserPermissionPolicy;
       sessionId?: string;
       runId?: string;
       rollbackOnFailure?: boolean;
@@ -38,7 +39,7 @@ export interface PlanActivationInput {
   sessionId?: string;
   dryRun?: boolean;
   autoApprove?: boolean;
-  permissionPolicy?: import("../agent/RunPolicyTypes.js").UserPermissionPolicy;
+  permissionPolicy?: UserPermissionPolicy;
   executionMode?: PlanExecutionMode;
   approvedBy?: string;
   rollbackOnFailure?: boolean;

@@ -1,12 +1,12 @@
 import { EditVerificationWorkflow } from "./EditVerificationWorkflow.js";
 import { WorkflowCorrectionWorkflow } from "./WorkflowCorrectionWorkflow.js";
 import type { AgentIntentType } from "./IntentTypes.js";
+import type { LocationExecutionMeta } from "./RunPolicyPrimitives.js";
 import type {
   AgentWorkflowCorrectionRecord,
   AgentWorkflowDiffRecord,
   AgentWorkflowVerificationRecord,
-  LocationExecutionMeta,
-} from "./RunPolicyTypes.js";
+} from "./WorkflowExecutionContracts.js";
 import type { AgentToolStep } from "./toolStep.js";
 import { isEffectiveWriteStep } from "./toolStepOutcome.js";
 

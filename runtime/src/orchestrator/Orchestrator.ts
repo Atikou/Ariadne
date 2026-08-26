@@ -335,8 +335,8 @@ export class Orchestrator {
     });
   }
 
-  recoverPlanAgentContinuations(): Promise<number> {
-    return this.planAgentStepContinuation.recover();
+  recoverPlanAgentContinuations(signal?: AbortSignal): Promise<number> {
+    return this.planAgentStepContinuation.recover(signal);
   }
 
 
@@ -423,6 +423,10 @@ export class Orchestrator {
     return this.deps.agentRunRegistry.listRunning();
   }
 
+  waitUntilAgentRunIdle(runId: string): Promise<void> {
+    return this.deps.agentRunRegistry.waitUntilIdle(runId);
+  }
+
   cancelRun(runId: string): ApiResult {
     const id = runId.trim();
     if (!id) return { status: 400, body: { error: "runId 不能为空" } };
@@ -485,6 +489,7 @@ export class Orchestrator {
     body: unknown,
     emit: (event: AgentStreamEvent) => void,
     makeChat?: LoopChatFn,
+    options?: { signal?: AbortSignal },
   ): Promise<void> {
     const parsed = agentConversationRequestBodySchema.safeParse(body ?? {});
     if (!parsed.success) {
@@ -513,6 +518,7 @@ export class Orchestrator {
         : undefined,
       registerForCancel: true,
       enableTimeline: true,
+      signal: options?.signal,
       onActivityEvent: (event) => {
         if (!runStarted) {
           activityBuffer.push(event);

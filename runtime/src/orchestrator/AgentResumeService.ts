@@ -6,7 +6,7 @@ import {
   type PausedRunSnapshot,
   type PausedRunStore,
 } from "../agent/PausedRunStore.js";
-import type { RunBudget } from "../agent/RunPolicyTypes.js";
+import type { RunBudget } from "../agent/RunPolicyPrimitives.js";
 import { AgentTimelineService } from "../agent/timeline/AgentTimelineService.js";
 import type { TaskStore } from "../context/stores.js";
 import type { TaskRecord } from "../context/types.js";

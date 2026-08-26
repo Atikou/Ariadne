@@ -4,7 +4,7 @@ import {
   detectPlanExecutionVariant,
   type PlanExecutionVariant,
 } from "./planExecutionVariant.js";
-import type { AgentExecutionStage, AgentRunMode, UserPermissionPolicy } from "./RunPolicyTypes.js";
+import type { AgentExecutionStage, AgentRunMode, UserPermissionPolicy } from "./RunPolicyPrimitives.js";
 
 export function buildRunPolicySystemHint(mode: AgentRunMode): string {
   if (mode === "plan") {

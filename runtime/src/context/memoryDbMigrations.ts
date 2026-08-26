@@ -3,9 +3,10 @@ import type { DatabaseSync } from "node:sqlite";
 import { ensureRoutingTables } from "../model-router/route-stores.js";
 import { ensureEvalTables } from "../model-router/eval-set-store.js";
 import { backfillMessageEnvelopes } from "./messageEnvelopeBackfill.js";
+import { retireEmptyMemoryControlShadows } from "../adapters/persistence/memoryControlShadowRetirement.js";
 import { addColumnIfMissing, hashRowId, type SqliteMigration } from "../storage/sqliteMigration.js";
 
-export const MEMORY_DB_SCHEMA_VERSION = 42;
+export const MEMORY_DB_SCHEMA_VERSION = 45;
 
 function ensureFts(
   db: DatabaseSync,
@@ -1362,6 +1363,212 @@ export const MEMORY_DB_MIGRATIONS: readonly SqliteMigration[] = [
         CREATE INDEX idx_agent_plan_contracts_run
           ON agent_plan_contracts(run_id, version DESC);
       `);
+    },
+  },
+  {
+    version: 43,
+    name: "agent_v2_run_unit_of_work",
+    up(db) {
+      db.exec(`
+        CREATE TABLE agent_v2_runs (
+          run_id TEXT PRIMARY KEY,
+          version INTEGER NOT NULL CHECK(version > 0),
+          state_status TEXT NOT NULL CHECK(state_status IN (
+            'queued', 'running', 'waiting', 'recovering',
+            'completed', 'failed', 'cancelled'
+          )),
+          aggregate_json TEXT NOT NULL CHECK(json_valid(aggregate_json)),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_agent_v2_runs_status
+          ON agent_v2_runs(state_status, updated_at DESC);
+
+        CREATE TABLE agent_v2_commands (
+          command_id TEXT PRIMARY KEY,
+          command_digest TEXT NOT NULL CHECK(
+            length(command_digest) = 71
+            AND substr(command_digest, 1, 7) = 'sha256:'
+          ),
+          run_id TEXT NOT NULL,
+          resulting_version INTEGER NOT NULL CHECK(resulting_version > 0),
+          result_run_json TEXT NOT NULL CHECK(json_valid(result_run_json)),
+          committed_at TEXT NOT NULL,
+          FOREIGN KEY(run_id) REFERENCES agent_v2_runs(run_id) ON DELETE RESTRICT,
+          UNIQUE(run_id, resulting_version)
+        );
+        CREATE INDEX idx_agent_v2_commands_run
+          ON agent_v2_commands(run_id, resulting_version);
+
+        CREATE TABLE agent_v2_events (
+          event_id TEXT PRIMARY KEY,
+          command_id TEXT NOT NULL,
+          run_id TEXT NOT NULL,
+          run_version INTEGER NOT NULL CHECK(run_version > 0),
+          sequence INTEGER NOT NULL CHECK(sequence > 0),
+          occurred_at TEXT NOT NULL,
+          event_json TEXT NOT NULL CHECK(json_valid(event_json)),
+          FOREIGN KEY(command_id) REFERENCES agent_v2_commands(command_id) ON DELETE RESTRICT,
+          FOREIGN KEY(run_id) REFERENCES agent_v2_runs(run_id) ON DELETE RESTRICT,
+          UNIQUE(command_id, sequence),
+          UNIQUE(run_id, run_version, sequence)
+        );
+        CREATE INDEX idx_agent_v2_events_run
+          ON agent_v2_events(run_id, run_version, sequence);
+
+        CREATE TABLE agent_v2_outbox (
+          cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+          event_id TEXT NOT NULL UNIQUE,
+          aggregate_type TEXT NOT NULL DEFAULT 'agent_run'
+            CHECK(aggregate_type = 'agent_run'),
+          aggregate_id TEXT NOT NULL,
+          aggregate_version INTEGER NOT NULL CHECK(aggregate_version > 0),
+          event_json TEXT NOT NULL CHECK(json_valid(event_json)),
+          created_at TEXT NOT NULL,
+          published_at TEXT,
+          FOREIGN KEY(event_id) REFERENCES agent_v2_events(event_id) ON DELETE RESTRICT,
+          FOREIGN KEY(aggregate_id) REFERENCES agent_v2_runs(run_id) ON DELETE RESTRICT
+        );
+        CREATE INDEX idx_agent_v2_outbox_pending
+          ON agent_v2_outbox(published_at, cursor);
+        CREATE INDEX idx_agent_v2_outbox_aggregate
+          ON agent_v2_outbox(aggregate_id, aggregate_version, cursor);
+
+        CREATE TABLE runtime_commands (
+          command_id TEXT PRIMARY KEY,
+          command_digest TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN (
+            'executing', 'completed', 'uncertain'
+          )),
+          outcome_json TEXT CHECK(
+            outcome_json IS NULL OR json_valid(outcome_json)
+          ),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_runtime_commands_status
+          ON runtime_commands(status, updated_at);
+      `);
+    },
+  },
+  {
+    version: 44,
+    name: "agent_v2_recovery_ledger",
+    up(db) {
+      db.exec(`
+        CREATE UNIQUE INDEX idx_agent_v2_commands_identity
+          ON agent_v2_commands(command_id, run_id, resulting_version);
+
+        CREATE TABLE agent_v2_checkpoints (
+          run_id TEXT NOT NULL,
+          checkpoint_version INTEGER NOT NULL CHECK(checkpoint_version > 0),
+          run_version INTEGER NOT NULL CHECK(run_version > 0),
+          command_id TEXT NOT NULL,
+          codec_id TEXT NOT NULL CHECK(length(codec_id) > 0),
+          payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+          created_at TEXT NOT NULL,
+          PRIMARY KEY(run_id, checkpoint_version),
+          FOREIGN KEY(run_id) REFERENCES agent_v2_runs(run_id) ON DELETE RESTRICT,
+          FOREIGN KEY(command_id, run_id, run_version)
+            REFERENCES agent_v2_commands(command_id, run_id, resulting_version)
+            ON DELETE RESTRICT,
+          UNIQUE(run_id, run_version),
+          UNIQUE(command_id)
+        );
+        CREATE INDEX idx_agent_v2_checkpoints_command
+          ON agent_v2_checkpoints(command_id);
+
+        CREATE TABLE agent_v2_effect_payloads (
+          run_id TEXT NOT NULL,
+          effect_id TEXT NOT NULL,
+          input_digest TEXT NOT NULL CHECK(length(input_digest) > 0),
+          input_command_id TEXT NOT NULL,
+          input_run_version INTEGER NOT NULL CHECK(input_run_version > 0),
+          input_codec_id TEXT NOT NULL CHECK(length(input_codec_id) > 0),
+          input_payload_json TEXT NOT NULL CHECK(json_valid(input_payload_json)),
+          result_command_id TEXT,
+          result_run_version INTEGER,
+          result_codec_id TEXT,
+          result_payload_json TEXT CHECK(
+            result_payload_json IS NULL OR json_valid(result_payload_json)
+          ),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(run_id, effect_id),
+          FOREIGN KEY(run_id) REFERENCES agent_v2_runs(run_id) ON DELETE RESTRICT,
+          FOREIGN KEY(input_command_id, run_id, input_run_version)
+            REFERENCES agent_v2_commands(command_id, run_id, resulting_version)
+            ON DELETE RESTRICT,
+          FOREIGN KEY(result_command_id, run_id, result_run_version)
+            REFERENCES agent_v2_commands(command_id, run_id, resulting_version)
+            ON DELETE RESTRICT,
+          UNIQUE(input_command_id),
+          UNIQUE(result_command_id),
+          CHECK(
+            (result_command_id IS NULL AND result_run_version IS NULL
+              AND result_codec_id IS NULL AND result_payload_json IS NULL)
+            OR
+            (result_command_id IS NOT NULL AND result_run_version IS NOT NULL
+              AND result_codec_id IS NOT NULL AND result_payload_json IS NOT NULL)
+          )
+        );
+        CREATE INDEX idx_agent_v2_effect_payloads_run
+          ON agent_v2_effect_payloads(run_id, effect_id);
+
+        ALTER TABLE agent_v2_outbox RENAME TO agent_v2_outbox_v43;
+        CREATE TABLE agent_v2_outbox (
+          cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+          event_id TEXT NOT NULL UNIQUE,
+          aggregate_type TEXT NOT NULL DEFAULT 'agent_run'
+            CHECK(aggregate_type = 'agent_run'),
+          aggregate_id TEXT NOT NULL,
+          aggregate_version INTEGER NOT NULL CHECK(aggregate_version > 0),
+          event_json TEXT NOT NULL CHECK(json_valid(event_json)),
+          created_at TEXT NOT NULL,
+          published_at TEXT,
+          published_claim_id TEXT,
+          claim_id TEXT,
+          claimed_at TEXT,
+          claim_expires_at TEXT,
+          publish_attempts INTEGER NOT NULL DEFAULT 0 CHECK(publish_attempts >= 0),
+          FOREIGN KEY(event_id) REFERENCES agent_v2_events(event_id) ON DELETE RESTRICT,
+          FOREIGN KEY(aggregate_id) REFERENCES agent_v2_runs(run_id) ON DELETE RESTRICT,
+          CHECK(
+            (claim_id IS NULL AND claimed_at IS NULL AND claim_expires_at IS NULL)
+            OR
+            (claim_id IS NOT NULL AND claimed_at IS NOT NULL AND claim_expires_at IS NOT NULL)
+          ),
+          CHECK(published_at IS NULL OR claim_id IS NULL)
+        );
+        INSERT INTO agent_v2_outbox (
+          cursor, event_id, aggregate_type, aggregate_id, aggregate_version,
+          event_json, created_at, published_at, published_claim_id,
+          claim_id, claimed_at, claim_expires_at, publish_attempts
+        )
+        SELECT cursor, event_id, aggregate_type, aggregate_id, aggregate_version,
+          event_json, created_at, published_at, NULL,
+          NULL, NULL, NULL, 0
+        FROM agent_v2_outbox_v43;
+        DROP TABLE agent_v2_outbox_v43;
+        CREATE INDEX idx_agent_v2_outbox_pending
+          ON agent_v2_outbox(published_at, cursor);
+        CREATE INDEX idx_agent_v2_outbox_aggregate
+          ON agent_v2_outbox(aggregate_id, aggregate_version, cursor);
+        CREATE INDEX idx_agent_v2_outbox_claimable
+          ON agent_v2_outbox(published_at, claim_expires_at, cursor);
+        CREATE INDEX idx_agent_v2_outbox_claim
+          ON agent_v2_outbox(claim_id, published_at, cursor);
+        CREATE INDEX idx_agent_v2_runs_recovery
+          ON agent_v2_runs(created_at, run_id)
+          WHERE state_status IN ('queued', 'running', 'waiting', 'recovering');
+      `);
+    },
+  },
+  {
+    version: 45,
+    name: "retire_isolated_control_store_shadows",
+    up(db) {
+      retireEmptyMemoryControlShadows(db);
     },
   },
 ];

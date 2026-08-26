@@ -1,5 +1,6 @@
 import type { AgentIntentType } from "./IntentTypes.js";
-import type { AgentWorkflowDebugFix, UserPermissionPolicy } from "./RunPolicyTypes.js";
+import type { UserPermissionPolicy } from "./RunPolicyPrimitives.js";
+import type { AgentWorkflowDebugFix } from "./WorkflowExecutionContracts.js";
 import type { WorkflowWriteGateResult } from "./WorkflowWriteGate.js";
 
 export interface DebugFixWorkflowInput {

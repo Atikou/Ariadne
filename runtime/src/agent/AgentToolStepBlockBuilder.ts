@@ -3,7 +3,7 @@ import { buildPathConfirmationRequest } from "../policy/PathPolicy.js";
 import type { ToolPathPreparation } from "../policy/PathPolicy.js";
 import type { ToolAction } from "./AgentActionParser.js";
 import type { AgentIntentType } from "./IntentTypes.js";
-import type { RunBudgetKey, UserPermissionPolicy } from "./RunPolicyTypes.js";
+import type { RunBudgetKey, UserPermissionPolicy } from "./RunPolicyPrimitives.js";
 import type { AgentToolStep } from "./toolStep.js";
 import type { WorkflowCapabilityAssessment } from "./WorkflowCapability.js";
 

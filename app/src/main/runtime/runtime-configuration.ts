@@ -4,8 +4,11 @@ import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:pa
 import type { RuntimeSupervisorOptions } from './runtime-supervisor';
 import type { RuntimeAgentSettings } from '../persistence/agent-settings-repository';
 import { AGENT_PROVIDER_CATALOG, AGENT_PROVIDER_IDS } from '@shared/contract';
+import {
+  buildAgentAdmissionAuthoritySource
+} from './agent-admission-authority-source';
 
-interface DesktopRuntimeConfigurationInput {
+export interface DesktopRuntimeConfigurationInput {
   appPath: string;
   userDataPath: string;
   resourcesPath: string;
@@ -82,31 +85,51 @@ export function createDesktopRuntimeConfiguration(
   delete environment.ARIADNE_RUNTIME_PROFILE;
   delete environment.ARIADNE_WORKSPACE_ROOT;
 
+  const modelProviders = AGENT_PROVIDER_IDS.map((providerId) => {
+    const definition = AGENT_PROVIDER_CATALOG[providerId];
+    const { enabled, baseUrl, model, inference } = input.agentSettings.providers[providerId];
+    return {
+      providerId,
+      name: definition.runtimeModelId,
+      protocol: definition.protocol,
+      credentialEnvironmentVariable: definition.apiKeyEnvironmentVariable,
+      enabled,
+      baseUrl,
+      model,
+      inference
+    };
+  });
+  const modelRoots = [...new Set([
+    ...input.agentSettings.localModelRoots.map((entry) => requireAbsoluteEnvironmentPath('localModelRoots', entry)),
+    ...environmentModelRoots
+  ])];
+  const agentAdmissionAuthoritySource = buildAgentAdmissionAuthoritySource({
+    settingsRevision: input.agentSettings.revision,
+    permissionMode: input.agentSettings.permissionMode,
+    allowedPermissions: input.agentSettings.permissions.allowedPermissions,
+    workspaces: input.agentSettings.workspaces,
+    modelProviders,
+    localModelRoots: modelRoots,
+    mcpEnabled: input.agentSettings.runtimePolicy.mcp.servers.some((server) => {
+      if (!server.enabled) return false;
+      const permissions = new Set(input.agentSettings.permissions.allowedPermissions);
+      if (server.transport === 'streamable-http') return permissions.has('network');
+      return permissions.has('shell')
+        && (server.workspaceAccess !== 'write' || permissions.has('write'))
+        && (server.networkAccess !== 'online-approved' || permissions.has('network'));
+    })
+  });
+
   return {
     runtimeEntry,
     runtimeBuildManifestPath,
     installRoot,
     dataRoot: join(input.userDataPath, 'runtime'),
-    modelRoots: [...new Set([
-      ...input.agentSettings.localModelRoots.map((entry) => requireAbsoluteEnvironmentPath('localModelRoots', entry)),
-      ...environmentModelRoots
-    ])],
-    modelProviders: AGENT_PROVIDER_IDS.map((providerId) => {
-      const definition = AGENT_PROVIDER_CATALOG[providerId];
-      const { enabled, baseUrl, model, inference } = input.agentSettings.providers[providerId];
-      return {
-        providerId,
-        name: definition.runtimeModelId,
-        protocol: definition.protocol,
-        credentialEnvironmentVariable: definition.apiKeyEnvironmentVariable,
-        enabled,
-        baseUrl,
-        model,
-        inference
-      };
-    }),
+    modelRoots,
+    modelProviders,
     routingStrategy: input.agentSettings.routingStrategy,
     agentPermissions: structuredClone(input.agentSettings.permissions),
+    agentAdmissionAuthoritySource,
     runtimePolicy: structuredClone(input.agentSettings.runtimePolicy),
     workspaces: input.agentSettings.workspaces.map((workspace) => ({
       workspaceId: workspace.workspaceId,

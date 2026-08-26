@@ -5,20 +5,22 @@ import type { CapabilityEscalationRecord } from "./CapabilityEscalation.js";
 import type { Finalizer } from "./Finalizer.js";
 import type { AgentIntentType } from "./IntentTypes.js";
 import { presentExecutionState } from "./presentation/ExecutionStatePresenter.js";
-import {
-  type AgentExecutionMeta,
-  type AgentStopReason,
-  type AgentWorkflowDebugAnalysis,
-  type AgentWorkflowDebugFix,
-  type AgentWorkflowInternalPlan,
-  type AgentWorkflowProposal,
-  type AgentWorkflowRefactorPlan,
-  type AgentWorkflowSwitch,
-  type AgentWorkflowWritePhase,
-  type RunBudget,
-  type RunBudgetKey,
-  type RunPolicy,
-} from "./RunPolicyTypes.js";
+import type { AgentExecutionMeta } from "./AgentExecutionMetaContracts.js";
+import type { RunPolicy } from "./RunPolicyContracts.js";
+import type {
+  AgentStopReason,
+  RunBudget,
+  RunBudgetKey,
+} from "./RunPolicyPrimitives.js";
+import type {
+  AgentWorkflowDebugAnalysis,
+  AgentWorkflowDebugFix,
+  AgentWorkflowInternalPlan,
+  AgentWorkflowProposal,
+  AgentWorkflowRefactorPlan,
+  AgentWorkflowWritePhase,
+} from "./WorkflowExecutionContracts.js";
+import type { AgentWorkflowSwitch } from "./WorkflowStateContracts.js";
 import type { AgentToolStep } from "./toolStep.js";
 import { hasPlanningPhaseArtifacts, resolveWorkflowTaskState } from "./WorkflowTaskState.js";
 import { buildWorkflowState } from "./WorkflowStateCenter.js";

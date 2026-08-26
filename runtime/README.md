@@ -1,76 +1,77 @@
 # @ariadne/runtime
 
-Ariadne Runtime 是本仓库唯一的 Agent 业务核心。它负责模型、Agent loop、Run、上下文、记忆、工具、权限、计划、SubAgent、资源、调度、领域事件和业务持久化；Electron Main 只拥有桌面能力、Host capability broker 与 Runtime 生命周期。
+Ariadne Runtime 是桌面应用唯一的 Agent 业务进程。当前生产入口只使用 `RuntimeKernelApplication`、`ComposedRuntimeIngress` 和 `DefaultAgentControlRuntimeFactory`，不再使用已删除的 `RuntimeFacade`。
 
 ## 进程边界
 
-- 桌面模式由 Electron Main 使用 `child_process.fork` 启动，并只通过 `@ariadne/protocol/host` 的 Protocol 2.0 Node IPC 通信。
-- Headless 模式复用同一 `RuntimeFacade`，stdin/stdout 使用严格 NDJSON；stdout 只输出协议，日志写 stderr。
-- Runtime 不创建入站 HTTP Server、不监听端口，也不依赖第二套执行路径。
-- 启动参数提供 `installRoot`、`dataRoot`、模型目录与 Main 已授权工作区；安装内容只读，可变数据只写 `dataRoot`。
-- Host 注入的工作区级别是权限上限；只读工作区不能批准文件写入、删除、Shell 或危险操作。
-- Browser、资源导入和安全存储只能通过 Runtime → Main 的私有 capability request/response 使用，Host DTO 不进入 Renderer。
-- 优雅关闭先拒绝新请求，等待已接受命令和持久化投递完成，再释放服务并返回 `shutdown_complete`。
+- Electron Main 通过 `child_process.fork` 启动 Runtime，并使用 `@ariadne/protocol/host` 的 Protocol 3.0 Node IPC。
+- Headless 复用 `RuntimeIngress`，使用严格 NDJSON v3；command 必须携带稳定 `commandId` 与绝对 `deadlineAt`。
+- Runtime 不创建入站 HTTP Server、不监听端口。
+- Main 注入 `installRoot`、`dataRoot`、模型目录、授权工作区、非密钥 Runtime Policy 和私有 capability client。
+- Browser、MCP 远程凭据和 OS 能力由 Main 持有；Runtime 只能通过私有 Host capability 使用。
 
-## 持久执行主干
+## 当前命令所有权
+
+`RuntimeKernelApplication` 负责 Runtime 状态、模型目录和模型推理网关。`DefaultAgentControlRuntimeFactory` 只负责生产组装和生命周期；其内部的 `AgentControlPublicCommandRouter` 负责：
+
+- `projection.snapshot.get`；
+- `projection.commits.read`；
+- `conversation.session.create.v3`；
+- `conversation.message.accept.v3`；
+- `agent.decision.resolve.v3`；
+- `agent.run.cancel.v3`。
+
+未知命令 fail closed，不会回退到旧 Facade 或第二 Writer。
+
+`FirstPartyAgentToolCatalog` 只组合并冻结 Browser、MCP、Workspace 三个 tool family，不再同时拥有全部 schema、校验和执行实现。Agent/Conversation SQLite UoW 仍是唯一事务所有者；outbox、execution intent、row mapping 和 Projection read 作为同连接子模块运行，不拥有独立提交或补偿流程。
+
+## 持久控制面
 
 ```text
-typed command
-  -> RunAggregate(expectedAggregateVersion)
-  -> SQLite transaction
-       ├─ run aggregate
-       ├─ checkpoint
-       ├─ tool ledger
-       └─ domain event outbox
-  -> persistent cursor replay
+Runtime command journal
+  -> Conversation Authority + Handoff Saga
+  -> Agent Control UoW
+       -> Run / Turn / Inference / Decision / Effect
+       -> Plan / Budget / Delegation / Child Run
+       -> checkpoint / receipt / outbox
+  -> Public Projection publisher
+  -> Snapshot + commit replay
 ```
 
-- 非法状态转换和旧 aggregate version 写入直接拒绝。
-- 工具 intent、start、result 分别落 checkpoint；不确定副作用进入 `recovery_required`，不会静默重放。
-- `RuntimeEventEnvelope` 以 `eventId + aggregateVersion` 支持幂等投影和 cursor 重放。
-- Trace 和 OpenTelemetry 只用于诊断/观测，不能成为业务事实源。
+外部 Provider 和 Tool I/O 必须先持久化 intention/start。跨过外部边界后结果未知的操作进入明确恢复状态，不自动重复非幂等动作。
 
-## 工具与内容安全
+## 当前生产能力
 
-- Zod 4 `ToolContract<I,O>` 是输入、输出和 Provider JSON Schema 的唯一契约来源。
-- native Tool Calling 与文本 JSON fallback 都先规范化成 `AgentAction`，再进入审批、并发计划和执行。
-- 只有无副作用或工作区只读、`parallel_safe` 且资源键不冲突的工具可并发，默认上限为 4。
-- 文件、网页、命令输出、Diff、MCP 和 SubAgent 回复使用 `ContentEnvelope`，默认只能作为数据。
-- MCP STDIO 通过 Windows 原生沙箱双工租约运行；远程 MCP 的 HTTP 与 OAuth 凭据由 Electron Main 托管，Runtime 不接收 token。
-- secret 到模型、网络、Telemetry 和日志的流动统一经过 egress gate。
+- v3 Conversation、Agent Run、Decision、Cancel 和 Public Projection；
+- 远程/本地模型目录与精确模型绑定；
+- immutable first-party Tool Catalog、权限准入和 Process Sandbox；
+- Workspace、Browser 与经授权的 MCP 工具；
+- Admission 时的 Skills 指令和声明式 `run.pre` Hook。
+
+以下目录或设置目前没有完整 v3 产品闭环：SubAgent、Background Task、Scheduler、Memory/Embedding、完整 Hooks、Diagnostics/Telemetry 和 Provider Resilience。它们不得仅因有源码或单元测试就出现在能力声明中。
 
 ## 主要目录
 
-- `src/application`：公开命令边界、投影与 `RuntimeFacade`。
-- `src/run`：RunAggregate、checkpoint、工具账本和恢复。
-- `src/events`：领域 outbox、持久 cursor 和事件投递。
-- `src/agent`、`src/orchestrator`：AgentAction、loop、计划和运行编排。
-- `src/tools`、`src/security`：ToolContract、并发、内容权限和外发策略。
-- `src/context`：Token、Embedding、摘要、长期记忆、LSP/Tree-sitter 与 Repo Map。
-- `src/mcp`、`src/skills`、`src/hooks`：受控扩展边界。
-- `src/resources`：内容寻址 Resource Registry。
-- `src/model`、`src/telemetry`：Provider qualification/resilience 和脱敏观测。
-- `src/transport`、`src/entry`：Node IPC 与 Headless NDJSON。
-- `src/eval`：隔离工作区评测。
+- `src/entry`、`src/transport`、`src/ingress`：进程入口、Node IPC/Headless 和命令身份。
+- `src/application`：小型 Runtime Kernel 与模型推理网关。
+- `src/control`、`src/conversation`：Agent Control 与 Conversation 业务边界。
+- `src/composition`：唯一生产组装入口和生命周期。
+- `src/adapters`：SQLite、模型、工具、MCP 等 Port 实现。
+- `src/projection`：Conversation、Agent Run 和 Model 的公共投影 publisher。
+- `src/tools`、`src/security`、`src/sandbox`：工具、内容外发和受控进程边界。
+- `src/context`、`src/subagent`、`src/background`、`src/scheduler`、`src/telemetry`：尚需按生产接线逐项判定的能力实现。
 - `native`：Windows Sandbox helper。
-- `config`：Schema compatibility 与外部模型资产清单。
 
-## 开发验证
+## 验证
 
 从仓库根目录执行：
 
 ```powershell
 npm.cmd run typecheck
 npm.cmd test
+npm.cmd run check:architecture
 npm.cmd run audit:runtime-independence
+npm.cmd run test:electron
 ```
 
-只验证 Runtime：
-
-```powershell
-npm.cmd run verify:runtime
-```
-
-直接执行桌面入口需要父进程提供 Host IPC；普通终端启动会 fail-closed。Headless 入口在构建后使用 `npm.cmd run headless --workspace @ariadne/runtime`。
-
-P0/P1 的实现与未验收边界见 [成熟度清单](../docs/Agent成熟度差距与改进路线.md) 和 [验证说明](../docs/verification.md)。
+当前验收边界见 [验证说明](../docs/verification.md)，能力差距见 [对比审计](../docs/deepseek-harness-comparison-audit-2026-08-26.md)。

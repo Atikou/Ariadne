@@ -1,19 +1,29 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { Archive, Clock3, Folder, FolderOpen, MessageSquarePlus, Pin, Search, Trash2 } from 'lucide-react';
-import type { ConversationSession, RunSummary } from '@ariadne/protocol/public';
+import { Archive, Clock3, Folder, FolderOpen, MessageSquarePlus, Pin, Search } from 'lucide-react';
+import type { ConversationSession } from '@ariadne/protocol/public';
 import type { ModuleServices } from '@renderer/core/modules/module-contract';
 import type { ConversationWorkspace } from '@renderer/core/conversations/conversation-navigation-service';
+import { useConversationPresentationRevision } from '@renderer/core/conversations/use-conversation-presentation';
 import { formatRunStatus } from '@renderer/core/runtime/runtime-labels';
-import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
-import { ConfirmDialog } from '@renderer/shared/ui/ActionDialog';
-import { pendingApprovalSessionIds } from '@shared/conversation-approval-state';
+import {
+  useRuntimeSnapshot,
+  type RuntimeRun,
+  type RuntimeSnapshot
+} from '@renderer/core/runtime/runtime-store';
+import { ConfirmDialog, TextPromptDialog } from '@renderer/shared/ui/ActionDialog';
 
 interface ConversationSidebarProps {
   services: ModuleServices;
 }
 
 interface HoveredConversation {
+  sessionId: string;
+  top: number;
+  left: number;
+}
+
+interface ConversationContextMenuState {
   sessionId: string;
   top: number;
   left: number;
@@ -29,40 +39,50 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
   const [query, setQuery] = useState('');
   const [workspaces, setWorkspaces] = useState<readonly ConversationWorkspace[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
-  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
-  const [renameDraft, setRenameDraft] = useState('');
-  const [deleteTarget, setDeleteTarget] = useState<ConversationSession | null>(null);
-  const [archiveTarget, setArchiveTarget] = useState<ConversationWorkspace | null>(null);
+  const [archiveWorkspaceTarget, setArchiveWorkspaceTarget] = useState<ConversationWorkspace | null>(null);
+  const [renameSessionTarget, setRenameSessionTarget] = useState<ConversationSession | null>(null);
+  const [archiveSessionTarget, setArchiveSessionTarget] = useState<ConversationSession | null>(null);
+  const [contextMenu, setContextMenu] = useState<ConversationContextMenuState | null>(null);
   const [hovered, setHovered] = useState<HoveredConversation | null>(null);
   const [collapsedWorkspaceIds, setCollapsedWorkspaceIds] = useState<ReadonlySet<string>>(() => new Set());
-  const [pinRevision, setPinRevision] = useState(0);
   const [openingWorkspace, setOpeningWorkspace] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const cancelRenameRef = useRef(false);
+  const presentationRevision = useConversationPresentationRevision(services.conversationNavigation);
 
   useEffect(() => {
     let active = true;
     const applyCatalog = (catalog: readonly ConversationWorkspace[]): void => {
       if (!active) return;
       setWorkspaces(catalog);
-      setSelectedWorkspaceId((current) => current && catalog.some(
-        (workspace) => workspace.workspaceId === current
-      ) ? current : null);
       void services.runtime.refresh().catch(() => undefined);
     };
-    const unsubscribe = services.conversationNavigation.onWorkspacesChanged(applyCatalog);
+    const applySelection = (workspaceId: string | null): void => {
+      if (active) setSelectedWorkspaceId(workspaceId);
+    };
+    const unsubscribeCatalog = services.conversationNavigation.onWorkspacesChanged(applyCatalog);
+    const unsubscribeSelection = services.conversationNavigation.onSelectedWorkspaceChanged(applySelection);
     void services.conversationNavigation.listWorkspaces().then(applyCatalog).catch(() => undefined);
     return () => {
       active = false;
-      unsubscribe();
+      unsubscribeCatalog();
+      unsubscribeSelection();
     };
   }, [services]);
 
   const normalizedQuery = query.trim().toLocaleLowerCase();
+  const materializedSessionIds = useMemo(
+    () => new Set(runtime.messages.map((message) => message.sessionId)),
+    [runtime.messages]
+  );
   const visibleSessions = useMemo(
     () => runtime.sessions
+      .filter((session) => materializedSessionIds.has(session.sessionId))
+      .filter((session) => !services.conversationNavigation.isSessionArchived(session.sessionId))
       .filter((session) => services.conversationNavigation.isWorkspaceActive(session.workspaceId))
-      .filter((session) => !normalizedQuery || session.title.toLocaleLowerCase().includes(normalizedQuery))
+      .filter((session) => !normalizedQuery || services.conversationNavigation
+        .sessionTitle(session.sessionId, session.title)
+        .toLocaleLowerCase()
+        .includes(normalizedQuery))
       .sort((left, right) => {
         const pinDifference = Number(
           services.conversationNavigation.isSessionPinned(right.sessionId, right.pinned)
@@ -71,7 +91,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
         );
         return pinDifference || right.updatedAt.localeCompare(left.updatedAt);
       }),
-    [normalizedQuery, pinRevision, runtime.sessions, services, workspaces]
+    [materializedSessionIds, normalizedQuery, presentationRevision, runtime.sessions, services, workspaces]
   );
   const visibleWorkspaces = useMemo(
     () => workspaces.filter((workspace) => !normalizedQuery
@@ -88,7 +108,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
   );
   const pendingSessionIds = useMemo(
     () => pendingApprovalSessionIds(runtime),
-    [runtime.permissions, runtime.planHandoffs, runtime.proposals, runtime.runs]
+    [runtime.permissions, runtime.planHandoffs, runtime.runs]
   );
 
   const hoveredSession = hovered
@@ -103,7 +123,6 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
     setActionError(null);
     try {
       await services.conversationNavigation.selectWorkspace(workspaceId);
-      setSelectedWorkspaceId(workspaceId);
       services.runtime.clearSessionSelection();
       return true;
     } catch (error) {
@@ -124,18 +143,21 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
   };
 
   const selectSession = (session: ConversationSession): void => {
-    setSelectedWorkspaceId(null);
+    services.conversationNavigation.setSessionUnread(session.sessionId, false);
     void services.conversationNavigation.selectWorkspace(session.workspaceId).catch(() => undefined);
     void services.runtime.selectSession(session.sessionId).catch(() => undefined);
   };
 
-  const createSession = async (): Promise<void> => {
+  const startNewDraft = async (): Promise<void> => {
     setActionError(null);
     try {
-      await services.runtime.createSession({
-        ...(selectedWorkspaceId ? { workspaceId: selectedWorkspaceId } : {})
-      });
-      setSelectedWorkspaceId(null);
+      const workspaceId = selectedWorkspaceId
+        ?? services.conversationNavigation.getSelectedWorkspaceId()
+        ?? workspaces[0]?.workspaceId;
+      if (!workspaceId) throw new Error('请先打开一个工作区。');
+      await services.conversationNavigation.selectWorkspace(workspaceId);
+      services.runtime.clearSessionSelection();
+      services.events.emit('chat:new-draft-requested', { workspaceId });
     } catch (error) {
       setActionError(errorMessage(error));
     }
@@ -148,8 +170,8 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
     try {
       const opened = await services.conversationNavigation.openWorkspace();
       if (!opened) return;
-      setSelectedWorkspaceId(opened.workspaceId);
       services.runtime.clearSessionSelection();
+      services.events.emit('chat:new-draft-requested', { workspaceId: opened.workspaceId });
     } catch (error) {
       setActionError(errorMessage(error));
     } finally {
@@ -158,12 +180,11 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
   };
 
   const archiveWorkspace = async (workspace: ConversationWorkspace): Promise<void> => {
-    setArchiveTarget(null);
+    setArchiveWorkspaceTarget(null);
     setActionError(null);
     try {
       await services.conversationNavigation.archiveWorkspace(workspace.workspaceId);
       if (selectedWorkspaceId === workspace.workspaceId) {
-        setSelectedWorkspaceId(null);
         services.runtime.clearSessionSelection();
       }
     } catch (error) {
@@ -171,27 +192,19 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
     }
   };
 
-  const beginRename = (session: ConversationSession): void => {
-    cancelRenameRef.current = false;
+  const openContextMenu = (event: MouseEvent<HTMLDivElement>, session: ConversationSession): void => {
+    event.preventDefault();
     setHovered(null);
-    setEditingSessionId(session.sessionId);
-    setRenameDraft(session.title);
-  };
-
-  const commitRename = (session: ConversationSession): void => {
-    if (cancelRenameRef.current) {
-      cancelRenameRef.current = false;
-      setEditingSessionId(null);
-      return;
-    }
-    const nextTitle = renameDraft.trim();
-    setEditingSessionId(null);
-    if (!nextTitle || nextTitle === session.title) return;
-    void services.runtime.renameSession(session.sessionId, nextTitle).catch(() => undefined);
+    const width = 176;
+    const height = 152;
+    setContextMenu({
+      sessionId: session.sessionId,
+      left: Math.min(event.clientX, window.innerWidth - width - 8),
+      top: Math.min(event.clientY, window.innerHeight - height - 8)
+    });
   };
 
   const showDetails = (event: MouseEvent<HTMLDivElement>, session: ConversationSession): void => {
-    if (editingSessionId === session.sessionId) return;
     const bounds = event.currentTarget.getBoundingClientRect();
     const cardWidth = 276;
     const cardHeight = 150;
@@ -208,11 +221,12 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
   ): React.JSX.Element => {
     const { collapsedByWorkspace = false, workspaceChild = false } = options;
     const pinned = services.conversationNavigation.isSessionPinned(session.sessionId, session.pinned);
+    const unread = services.conversationNavigation.isSessionUnread(session.sessionId);
+    const title = services.conversationNavigation.sessionTitle(session.sessionId, session.title);
     const waitingForApproval = pendingSessionIds.has(session.sessionId);
-    const editing = editingSessionId === session.sessionId;
     return (
       <div
-        className={`conversation-row${runtime.selectedSessionId === session.sessionId ? ' is-active' : ''}${pinned ? ' is-pinned' : ''}${waitingForApproval ? ' has-pending-approval' : ''}${workspaceChild ? ' is-workspace-child' : ''}${collapsedByWorkspace ? ' is-workspace-collapsed' : ''}`}
+        className={`conversation-row${runtime.selectedSessionId === session.sessionId ? ' is-active' : ''}${pinned ? ' is-pinned' : ''}${unread ? ' is-unread' : ''}${waitingForApproval ? ' has-pending-approval' : ''}${workspaceChild ? ' is-workspace-child' : ''}${collapsedByWorkspace ? ' is-workspace-collapsed' : ''}`}
         data-session-id={session.sessionId}
         key={session.sessionId}
         aria-hidden={collapsedByWorkspace || undefined}
@@ -225,66 +239,37 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
         } : undefined}
         onMouseEnter={(event) => showDetails(event, session)}
         onMouseLeave={() => setHovered(null)}
+        onContextMenu={(event) => openContextMenu(event, session)}
       >
         <div
           className="conversation-row-main"
           role="button"
           tabIndex={collapsedByWorkspace ? -1 : 0}
           aria-current={runtime.selectedSessionId === session.sessionId ? 'page' : undefined}
-          onClick={() => {
-            if (!editing) selectSession(session);
-          }}
-          onDoubleClick={(event) => {
-            event.preventDefault();
-            beginRename(session);
-          }}
-          onKeyDown={(event) => selectSessionFromKeyboard(event, editing, () => selectSession(session))}
+          onClick={() => selectSession(session)}
+          onKeyDown={(event) => selectSessionFromKeyboard(event, () => selectSession(session))}
         >
-          {editing ? (
-            <input
-              className="conversation-title-input"
-              aria-label={`编辑会话名称：${session.title}`}
-              autoFocus
-              value={renameDraft}
-              onClick={(event) => event.stopPropagation()}
-              onDoubleClick={(event) => event.stopPropagation()}
-              onChange={(event) => setRenameDraft(event.target.value)}
-              onBlur={() => commitRename(session)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault();
-                  event.currentTarget.blur();
-                } else if (event.key === 'Escape') {
-                  event.preventDefault();
-                  cancelRenameRef.current = true;
-                  event.currentTarget.blur();
-                }
-              }}
-            />
-          ) : (
-            <span className="conversation-title">
-              <span className="conversation-title-text">{session.title}</span>
-              {waitingForApproval && <>
-                <span className="conversation-approval-badge">等待批准</span>
-                <span className="conversation-approval-spinner" aria-hidden="true" />
-              </>}
-              {pinned && <Pin className="conversation-pinned-marker" size={11} aria-label="已置顶" />}
-            </span>
-          )}
+          <span className="conversation-title">
+            {unread && <span className="conversation-unread-marker" aria-label="未读" />}
+            <span className="conversation-title-text">{title}</span>
+            {waitingForApproval && <>
+              <span className="conversation-approval-badge">等待批准</span>
+              <span className="conversation-approval-spinner" aria-hidden="true" />
+            </>}
+            {pinned && <Pin className="conversation-pinned-marker" size={11} aria-label="已置顶" />}
+          </span>
         </div>
-        {!editing && <div className="conversation-row-actions" aria-label="会话操作">
+        <div className="conversation-row-actions" aria-label="会话操作">
           <button
             type="button"
             className={pinned ? 'is-pinned' : undefined}
-            aria-label={pinned ? `取消置顶：${session.title}` : `置顶会话：${session.title}`}
+            aria-label={pinned ? `取消置顶：${title}` : `置顶会话：${title}`}
             aria-pressed={pinned}
             onClick={() => {
               services.conversationNavigation.setSessionPinned(session.sessionId, !pinned);
-              setPinRevision((revision) => revision + 1);
             }}
           ><Pin size={12} /></button>
-          <button type="button" aria-label={`删除会话：${session.title}`} onClick={() => setDeleteTarget(session)}><Trash2 size={12} /></button>
-        </div>}
+        </div>
       </div>
     );
   };
@@ -305,7 +290,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
             className="conversation-primary-action conversation-create-button"
             aria-label="新建会话"
             disabled={runtime.status.availability !== 'ready'}
-            onClick={() => void createSession()}
+            onClick={() => void startNewDraft()}
           ><MessageSquarePlus size={14} /><span>新建会话</span></button>
         </div>
         {actionError && <p className="conversation-action-error" role="alert">{actionError}</p>}
@@ -356,7 +341,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
                   <button
                     type="button"
                     aria-label={`归档工作区：${workspace.name}`}
-                    onClick={() => setArchiveTarget(workspace)}
+                    onClick={() => setArchiveWorkspaceTarget(workspace)}
                   ><Archive size={13} /></button>
                 </div>
               </div>
@@ -380,6 +365,27 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
           && <p className="conversation-list-empty-state">暂无会话或工作区</p>}
       </div>
 
+      {contextMenu && (() => {
+        const session = runtime.sessions.find((candidate) => candidate.sessionId === contextMenu.sessionId);
+        if (!session) return null;
+        const pinned = services.conversationNavigation.isSessionPinned(session.sessionId, session.pinned);
+        const unread = services.conversationNavigation.isSessionUnread(session.sessionId);
+        return createPortal(
+          <ConversationContextMenu
+            top={contextMenu.top}
+            left={contextMenu.left}
+            pinned={pinned}
+            unread={unread}
+            onClose={() => setContextMenu(null)}
+            onTogglePinned={() => services.conversationNavigation.setSessionPinned(session.sessionId, !pinned)}
+            onRename={() => setRenameSessionTarget(session)}
+            onArchive={() => setArchiveSessionTarget(session)}
+            onToggleUnread={() => services.conversationNavigation.setSessionUnread(session.sessionId, !unread)}
+          />,
+          document.body
+        );
+      })()}
+
       {hovered && hoveredSession && createPortal(
         <ConversationDetailsPopover
           session={hoveredSession}
@@ -393,40 +399,132 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
       )}
 
       <ConfirmDialog
-        open={archiveTarget !== null}
+        open={archiveWorkspaceTarget !== null}
         title="归档这个工作区？"
-        description={archiveTarget
-          ? `“${archiveTarget.name}”及其关联会话将从侧栏隐藏。7 天内可在设置中恢复；到期后会永久清理相关聊天、上下文和活动记录。`
+        description={archiveWorkspaceTarget
+          ? `“${archiveWorkspaceTarget.name}”及其关联会话将从侧栏隐藏。可随时在设置中恢复，归档不会删除会话数据。`
           : ''}
         confirmLabel="归档"
-        onClose={() => setArchiveTarget(null)}
+        onClose={() => setArchiveWorkspaceTarget(null)}
         onConfirm={() => {
-          const target = archiveTarget;
+          const target = archiveWorkspaceTarget;
           if (target) void archiveWorkspace(target);
         }}
       />
 
-      <ConfirmDialog
-        open={deleteTarget !== null}
-        title="删除这个会话？"
-        description={deleteTarget ? `“${deleteTarget.title}”及其中保存的消息将被删除。` : ''}
-        confirmLabel="删除"
-        danger
-        onClose={() => setDeleteTarget(null)}
-        onConfirm={() => {
-          const target = deleteTarget;
-          setDeleteTarget(null);
-          if (target) void services.runtime.deleteSession(target.sessionId).catch(() => undefined);
+      <TextPromptDialog
+        open={renameSessionTarget !== null}
+        title="重命名聊天"
+        description="修改这个聊天在侧栏和标题栏中显示的名称。"
+        initialValue={renameSessionTarget
+          ? services.conversationNavigation.sessionTitle(renameSessionTarget.sessionId, renameSessionTarget.title)
+          : ''}
+        confirmLabel="保存"
+        onClose={() => setRenameSessionTarget(null)}
+        onConfirm={(title) => {
+          if (renameSessionTarget) services.conversationNavigation.renameSession(renameSessionTarget.sessionId, title);
+          setRenameSessionTarget(null);
         }}
       />
+
+      <ConfirmDialog
+        open={archiveSessionTarget !== null}
+        title="归档聊天？"
+        description={archiveSessionTarget
+          ? `“${services.conversationNavigation.sessionTitle(archiveSessionTarget.sessionId, archiveSessionTarget.title)}”将从侧栏隐藏，但会话和消息数据不会删除。`
+          : ''}
+        confirmLabel="归档聊天"
+        onClose={() => setArchiveSessionTarget(null)}
+        onConfirm={() => {
+          const target = archiveSessionTarget;
+          if (!target) return;
+          services.conversationNavigation.archiveSession(target.sessionId);
+          if (runtime.selectedSessionId === target.sessionId) services.runtime.clearSessionSelection();
+          setArchiveSessionTarget(null);
+        }}
+      />
+
     </aside>
   );
+}
+
+function ConversationContextMenu({
+  top,
+  left,
+  pinned,
+  unread,
+  onClose,
+  onTogglePinned,
+  onRename,
+  onArchive,
+  onToggleUnread
+}: {
+  top: number;
+  left: number;
+  pinned: boolean;
+  unread: boolean;
+  onClose(): void;
+  onTogglePinned(): void;
+  onRename(): void;
+  onArchive(): void;
+  onToggleUnread(): void;
+}): React.JSX.Element {
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    requestAnimationFrame(() => menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus());
+    const dismiss = (event: PointerEvent): void => {
+      if (event.target instanceof Node && !menuRef.current?.contains(event.target)) onClose();
+    };
+    const dismissFromWindow = (): void => onClose();
+    document.addEventListener('pointerdown', dismiss, true);
+    window.addEventListener('blur', dismissFromWindow);
+    window.addEventListener('resize', dismissFromWindow);
+    window.addEventListener('scroll', dismissFromWindow, true);
+    return () => {
+      document.removeEventListener('pointerdown', dismiss, true);
+      window.removeEventListener('blur', dismissFromWindow);
+      window.removeEventListener('resize', dismissFromWindow);
+      window.removeEventListener('scroll', dismissFromWindow, true);
+    };
+  }, [onClose]);
+
+  const run = (action: () => void): void => {
+    action();
+    onClose();
+  };
+
+  return <div
+    ref={menuRef}
+    className="conversation-context-menu"
+    role="menu"
+    aria-label="聊天操作"
+    style={{ top, left }}
+    onKeyDown={(event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+      event.preventDefault();
+      const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+      const current = items.indexOf(document.activeElement as HTMLButtonElement);
+      const direction = event.key === 'ArrowDown' ? 1 : -1;
+      items[(current + direction + items.length) % items.length]?.focus();
+    }}
+  >
+    <button type="button" role="menuitem" onClick={() => run(onTogglePinned)}>{pinned ? '取消置顶聊天' : '置顶聊天'}</button>
+    <button type="button" role="menuitem" onClick={() => run(onRename)}>重命名聊天</button>
+    <button type="button" role="menuitem" onClick={() => run(onArchive)}>归档聊天</button>
+    <button type="button" role="menuitem" onClick={() => run(onToggleUnread)}>{unread ? '标记为已读' : '标记为未读'}</button>
+  </div>;
 }
 
 function ConversationDetailsPopover({ session, workspace, run, pinned, top, left }: {
   session: ConversationSession;
   workspace: ConversationWorkspace | null;
-  run: RunSummary | null;
+  run: RuntimeRun | null;
   pinned: boolean;
   top: number;
   left: number;
@@ -440,18 +538,32 @@ function ConversationDetailsPopover({ session, workspace, run, pinned, top, left
   </aside>;
 }
 
-function selectSessionFromKeyboard(event: KeyboardEvent<HTMLDivElement>, editing: boolean, select: () => void): void {
-  if (editing || event.target instanceof HTMLInputElement) return;
+function selectSessionFromKeyboard(event: KeyboardEvent<HTMLDivElement>, select: () => void): void {
+  if (event.target instanceof HTMLInputElement) return;
   if (event.key !== 'Enter' && event.key !== ' ') return;
   event.preventDefault();
   select();
 }
 
-function latestSessionRun(runs: readonly RunSummary[], sessionId: string): RunSummary | null {
+function latestSessionRun(runs: readonly RuntimeRun[], sessionId: string): RuntimeRun | null {
   return runs
     .filter((run) => run.sessionId === sessionId)
     .sort((left, right) => (right.startedAt ?? right.completedAt ?? '').localeCompare(left.startedAt ?? left.completedAt ?? ''))[0]
     ?? null;
+}
+
+function pendingApprovalSessionIds(snapshot: RuntimeSnapshot): Set<string> {
+  const runSessions = new Map(snapshot.runs.flatMap((run) => (
+    run.sessionId === undefined ? [] : [[run.runId, run.sessionId] as const]
+  )));
+  const ids = new Set<string>();
+  for (const decision of [...snapshot.permissions, ...snapshot.planHandoffs]) {
+    if (decision.status !== 'pending') continue;
+    const sessionId = decision.sessionId
+      ?? (decision.runId === undefined ? undefined : runSessions.get(decision.runId));
+    if (sessionId !== undefined) ids.add(sessionId);
+  }
+  return ids;
 }
 
 function formatRelativeTime(value: string): string {

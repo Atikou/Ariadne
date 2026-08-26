@@ -32,17 +32,22 @@ export class SkillRegistry {
     for (const layer of ["built_in", "user", "workspace"] as const) {
       const root = this.layerRoot(layer);
       if (!root || !existsSync(root)) continue;
+      const canonicalRoot = realpathSync(root);
       for (const name of readdirSync(root, { withFileTypes: true })
         .filter((entry) => entry.isDirectory() && /^[a-z][a-z0-9_-]*$/u.test(entry.name))
         .map((entry) => entry.name)
         .sort()) {
         const filePath = path.join(root, name, "SKILL.md");
         if (!existsSync(filePath)) continue;
+        const canonicalFile = realpathSync(filePath);
+        if (!isWithin(canonicalRoot, canonicalFile)) {
+          throw new Error(`skill_path_outside_root:${name}`);
+        }
         byName.set(name, {
           name,
           layer,
-          filePath: realpathSync(filePath),
-          body: readBoundedText(filePath, 128 * 1024),
+          filePath: canonicalFile,
+          body: readBoundedText(canonicalFile, 128 * 1024),
         });
       }
     }
@@ -85,10 +90,14 @@ export class WorkspaceInstructionLoader {
       for (const fileName of [".ariadne/INSTRUCTIONS.md", "AGENTS.md"]) {
         const filePath = path.join(directory, fileName);
         if (!existsSync(filePath)) continue;
+        const canonicalFile = realpathSync(filePath);
+        if (!isWithin(root, canonicalFile)) {
+          throw new Error(`instruction_path_outside_workspace:${fileName}`);
+        }
         blocks.push({
           authority: index === 0 ? "workspace_root" : "target_directory",
           source: path.relative(root, filePath).replace(/\\/gu, "/") || fileName,
-          text: readBoundedText(filePath, 128 * 1024),
+          text: readBoundedText(canonicalFile, 128 * 1024),
         });
       }
     }

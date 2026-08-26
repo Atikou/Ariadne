@@ -4,12 +4,14 @@ import type { ChatMessage } from "../model/types.js";
 import type { AgentToolStep } from "./toolStep.js";
 import type {
   AgentRunMode,
+  UserPermissionPolicy,
+} from "./RunPolicyPrimitives.js";
+import type {
   AgentWorkflowDebugAnalysis,
   AgentWorkflowInternalPlan,
   AgentWorkflowProposal,
   AgentWorkflowRefactorPlan,
-  UserPermissionPolicy,
-} from "./RunPolicyTypes.js";
+} from "./WorkflowExecutionContracts.js";
 import type { AgentIntentType, AgentWorkflowType } from "./IntentTypes.js";
 import type { CapabilityEscalationRecord } from "./CapabilityEscalation.js";
 import type { BudgetLedgerSnapshot } from "./BudgetManager.js";

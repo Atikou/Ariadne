@@ -1,4 +1,4 @@
-import type { LoopChatFn } from "../agent/AgentLoop.js";
+import type { LoopChatFn } from "../model-router/agent-chat-types.js";
 import type { SubAgentConflict, SubAgentRunResult, SubAgentWriteConflict } from "./types.js";
 import { parseWriteFilePickHints } from "./writeFileVersionPick.js";
 

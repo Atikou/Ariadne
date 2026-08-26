@@ -1,9 +1,9 @@
 import type {
   PermissionRequest,
   RunActivity,
-  RunSummary,
-  RuntimeStatus,
+  RuntimeStatus
 } from '@ariadne/protocol/public';
+import type { RuntimeRun } from './runtime-projection-presenter';
 
 const runtimeAvailabilityLabels: Record<RuntimeStatus['availability'], string> = {
   stopped: '已停止',
@@ -15,12 +15,17 @@ const runtimeAvailabilityLabels: Record<RuntimeStatus['availability'], string> =
   disabled: '已停用'
 };
 
-const runStatusLabels: Record<RunSummary['status'], string> = {
+export type RunDisplayStatus = RuntimeRun['status'] | 'waiting_plan_handoff';
+
+const runStatusLabels: Record<RunDisplayStatus, string> = {
   queued: '排队中',
   running: '执行中',
   waiting_permission: '等待权限确认',
+  waiting_decision: '等待决定',
   waiting_plan_handoff: '等待计划确认',
   waiting_budget: '等待追加预算',
+  waiting_children: '等待子任务',
+  cancelling: '正在取消',
   paused: '已暂停',
   completed: '已完成',
   failed: '失败',
@@ -39,7 +44,7 @@ export function formatRuntimeAvailability(availability: RuntimeStatus['availabil
   return runtimeAvailabilityLabels[availability];
 }
 
-export function formatRunStatus(status: RunSummary['status']): string {
+export function formatRunStatus(status: RunDisplayStatus): string {
   return runStatusLabels[status];
 }
 

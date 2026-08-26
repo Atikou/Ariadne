@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
-import type { LoopChatFn } from "../agent/AgentLoop.js";
+import type { LoopChatFn } from "../model-router/agent-chat-types.js";
 import { arbitrateSubAgentConflicts } from "./SubAgentArbitrator.js";
 import { mapWithConcurrencyLimit } from "./batchConcurrency.js";
 import { DEFAULT_SUBAGENT_BATCH_CONCURRENCY, resolveSubagentTimeoutMs } from "./SubAgentRuntimePolicy.js";

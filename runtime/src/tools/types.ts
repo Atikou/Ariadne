@@ -4,7 +4,7 @@ import type { ToolPermission } from "../core/permissions.js";
 import type { NetworkPolicy } from "../policy/NetworkPolicy.js";
 import type { ShellPolicy } from "../policy/ShellPolicy.js";
 import type { StructuredToolRisk } from "../policy/ToolRiskAssessment.js";
-import type { SubAgentWorkflow } from "../subagent/SubAgentWorkflow.js";
+import type { SubAgentWorkflowPort } from "../subagent/SubAgentWorkflowContracts.js";
 import type { SuggestedToolAction, ToolOutcomeClass } from "./toolOutcome.js";
 
 export type { ToolPermission };
@@ -22,7 +22,7 @@ export interface ToolContext {
   projectIndex?: import("../context/ProjectIndex.js").ProjectIndex;
   projectSemanticIndexer?: import("../context/ProjectSemanticIndexer.js").ProjectSemanticIndexer;
   historyFileRecaller?: import("../context/HistoryFileRecaller.js").HistoryFileRecaller;
-  subAgentWorkflow?: SubAgentWorkflow;
+  subAgentWorkflow?: SubAgentWorkflowPort;
   subAgentDispatchDepth?: number;
   maxSubAgentDispatchDepth?: number;
   sensitive?: boolean;

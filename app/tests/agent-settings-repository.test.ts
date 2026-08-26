@@ -2,18 +2,16 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { parse as parseToml } from 'smol-toml';
+import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import {
   AgentSettingsRepository,
   resolveRuntimePermissionProfile
 } from '../src/main/persistence/agent-settings-repository';
+import { shouldRestartRuntimeForAgentSettings } from '../src/main/settings/agent-settings-effects';
 import type { SecretCipher } from '../src/main/persistence/secret-cipher';
-import {
-  AGENT_PROVIDER_IDS,
-  WORKSPACE_ARCHIVE_RETENTION_MS,
-  type AgentCustomPermissions,
-  type AgentProviderId,
-  type AgentSettingsUpdate
+import type {
+  AgentCustomPermissions,
+  AgentSettingsMutationResult
 } from '../src/shared/contract';
 
 const temporaryDirectories: string[] = [];
@@ -63,7 +61,8 @@ describe('AgentSettingsRepository', () => {
     await repository.initialize();
 
     const defaults = repository.getView();
-    expect(defaults.schemaVersion).toBe(2);
+    expect(defaults.schemaVersion).toBe(3);
+    expect(defaults.revision).toBe(1);
     expect(defaults.routingStrategy).toBe('cloud-first');
     expect(defaults.runtimePolicy).toMatchObject({
       schemaVersion: 1,
@@ -79,8 +78,13 @@ describe('AgentSettingsRepository', () => {
       workspaces: [{ workspaceId: 'primary', rootPath: directory, access: 'write' }]
     });
 
-    await repository.save(updateFrom(defaults, {
-      openai: { apiKey: 'sk-test-not-a-real-secret', clearApiKey: false }
+    await expectApplied(repository.mutate({
+      expectedRevision: defaults.revision,
+      operations: [{
+        kind: 'provider.update',
+        providerId: 'openai',
+        patch: { apiKey: 'sk-test-not-a-real-secret' }
+      }]
     }));
     const serialized = await readFile(file, 'utf8');
     expect(serialized).not.toContain('sk-test-not-a-real-secret');
@@ -106,15 +110,23 @@ describe('AgentSettingsRepository', () => {
     expect(repository.getRuntimeSettings().workspaces).toHaveLength(2);
     expect(repository.getRuntimeSettings().providers.openai.apiKey).toBe('sk-test-not-a-real-secret');
 
-    const workspaceUpdate = updateFrom(repository.getView());
-    workspaceUpdate.workspaceRoot = join(directory, 'chosen-workspace');
-    workspaceUpdate.permissionMode = 'custom';
-    workspaceUpdate.customPermissions = {
-      approvalPolicy: 'request',
-      sandboxMode: 'read-only',
-      allowedPermissions: ['read', 'network']
-    };
-    await repository.save(workspaceUpdate);
+    const beforeWorkspaceUpdate = repository.getView();
+    const workspaceMutation = await expectApplied(repository.mutate({
+      expectedRevision: beforeWorkspaceUpdate.revision,
+      operations: [
+        { kind: 'workspace.select', rootPath: join(directory, 'chosen-workspace') },
+        {
+          kind: 'permissions.set',
+          mode: 'custom',
+          customPermissions: {
+            approvalPolicy: 'request',
+            sandboxMode: 'read-only',
+            allowedPermissions: ['read', 'network']
+          }
+        }
+      ]
+    }));
+    expect(workspaceMutation.settings.revision).toBe(beforeWorkspaceUpdate.revision + 1);
     expect(repository.getRuntimeSettings()).toMatchObject({
       workspaceRoot: join(directory, 'chosen-workspace'),
       workspaceAccess: 'read',
@@ -143,16 +155,84 @@ describe('AgentSettingsRepository', () => {
     const repository = new AgentSettingsRepository(join(directory, 'settings.toml'), cipher, directory);
     await repository.initialize();
     const defaults = repository.getView();
-    await repository.save(updateFrom(defaults, {
-      deepseek: { apiKey: 'deepseek-test-secret', clearApiKey: false }
+    await expectApplied(repository.mutate({
+      expectedRevision: defaults.revision,
+      operations: [{
+        kind: 'provider.update',
+        providerId: 'deepseek',
+        patch: { apiKey: 'deepseek-test-secret' }
+      }]
     }));
     const configured = repository.getView();
-    await repository.save(updateFrom(configured));
+    await expectApplied(repository.mutate({
+      expectedRevision: configured.revision,
+      operations: [{
+        kind: 'provider.update',
+        providerId: 'deepseek',
+        patch: { model: configured.providers.deepseek.model }
+      }]
+    }));
     expect(repository.getRuntimeSettings().providers.deepseek.apiKey).toBe('deepseek-test-secret');
-    await repository.save(updateFrom(configured, {
-      deepseek: { clearApiKey: true }
+    const beforeClear = repository.getView();
+    await expectApplied(repository.mutate({
+      expectedRevision: beforeClear.revision,
+      operations: [{
+        kind: 'provider.update',
+        providerId: 'deepseek',
+        patch: { clearApiKey: true }
+      }]
     }));
     expect(repository.getView().providers.deepseek.apiKeyStatus).toBe('missing');
+  });
+
+  it('rejects stale revisions so Chat and Settings cannot overwrite each other', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-revision-'));
+    temporaryDirectories.push(directory);
+    const repository = new AgentSettingsRepository(join(directory, 'settings.toml'), cipher, directory);
+    await repository.initialize();
+    const sharedSnapshot = repository.getView();
+
+    const permissionResult = await expectApplied(repository.mutate({
+      expectedRevision: sharedSnapshot.revision,
+      operations: [{ kind: 'permissions.set', mode: 'risk-based' }]
+    }));
+    expect(permissionResult.effect).toBe('reload_scheduled');
+    expect(shouldRestartRuntimeForAgentSettings(permissionResult.effect)).toBe(false);
+
+    const staleSettingsPanelResult = await repository.mutate({
+      expectedRevision: sharedSnapshot.revision,
+      operations: [{
+        kind: 'provider.update',
+        providerId: 'openai',
+        patch: { model: 'settings-panel-model' }
+      }]
+    });
+    expect(staleSettingsPanelResult).toMatchObject({
+      ok: false,
+      error: {
+        code: 'settings_revision_conflict',
+        expectedRevision: sharedSnapshot.revision,
+        currentRevision: permissionResult.settings.revision
+      }
+    });
+    expect(repository.getView()).toMatchObject({
+      permissionMode: 'risk-based',
+      providers: { openai: { model: sharedSnapshot.providers.openai.model } }
+    });
+
+    if (staleSettingsPanelResult.ok) throw new Error('Expected a revision conflict.');
+    const retriedSettingsPanelResult = await expectApplied(repository.mutate({
+      expectedRevision: staleSettingsPanelResult.settings.revision,
+      operations: [{
+        kind: 'provider.update',
+        providerId: 'openai',
+        patch: { model: 'settings-panel-model' }
+      }]
+    }));
+    expect(retriedSettingsPanelResult.settings).toMatchObject({
+      permissionMode: 'risk-based',
+      providers: { openai: { model: 'settings-panel-model' } }
+    });
   });
 
   it('adds newly registered Providers and model profiles without discarding existing settings', async () => {
@@ -175,7 +255,8 @@ describe('AgentSettingsRepository', () => {
     await repository.initialize();
     const migrated = repository.getView();
     expect(migrated.routingStrategy).toBe('local-first');
-    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.schemaVersion).toBe(3);
+    expect(migrated.revision).toBe(1);
     expect(migrated.runtimePolicy.embedding).toEqual({ provider: 'lexical' });
     expect(migrated.workspaceRoot).toBe(directory);
     expect(migrated.workspaceAccess).toBe('write');
@@ -188,6 +269,38 @@ describe('AgentSettingsRepository', () => {
     await expect(readFile(legacyFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('upgrades the previous schema-2 TOML in place while preserving encrypted credentials', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-schema-2-'));
+    temporaryDirectories.push(directory);
+    const file = join(directory, 'settings.toml');
+    const original = new AgentSettingsRepository(file, cipher, directory);
+    await original.initialize();
+    const defaults = original.getView();
+    await expectApplied(original.mutate({
+      expectedRevision: defaults.revision,
+      operations: [{
+        kind: 'provider.update',
+        providerId: 'openai',
+        patch: { apiKey: 'schema-two-secret' }
+      }]
+    }));
+
+    const previousDocument = parseToml(await readFile(file, 'utf8'));
+    previousDocument.schemaVersion = 2;
+    delete previousDocument.revision;
+    await writeFile(file, stringifyToml(previousDocument));
+
+    const upgraded = new AgentSettingsRepository(file, cipher, directory);
+    await upgraded.initialize();
+    expect(upgraded.getView()).toMatchObject({
+      schemaVersion: 3,
+      revision: 1,
+      providers: { openai: { apiKeyStatus: 'configured' } }
+    });
+    expect(upgraded.getRuntimeSettings().providers.openai.apiKey).toBe('schema-two-secret');
+    expect(parseToml(await readFile(file, 'utf8'))).toMatchObject({ schemaVersion: 3, revision: 1 });
+  });
+
   it('recovers its write queue without exposing settings that failed to persist', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-recovery-'));
     temporaryDirectories.push(directory);
@@ -196,16 +309,19 @@ describe('AgentSettingsRepository', () => {
     await repository.initialize();
     const initial = repository.getView();
     const checkpoint = repository.createCheckpoint();
-    const changed = updateFrom(initial);
-    changed.routingStrategy = 'local-first';
-
     await rm(file);
     await mkdir(file);
-    await expect(repository.save(changed)).rejects.toBeInstanceOf(Error);
+    await expect(repository.mutate({
+      expectedRevision: initial.revision,
+      operations: [{ kind: 'routing.set', strategy: 'local-first' }]
+    })).rejects.toBeInstanceOf(Error);
     expect(repository.getView().routingStrategy).toBe(initial.routingStrategy);
 
     await rm(file, { recursive: true });
-    await repository.save(changed);
+    await expectApplied(repository.mutate({
+      expectedRevision: initial.revision,
+      operations: [{ kind: 'routing.set', strategy: 'local-first' }]
+    }));
 
     expect(repository.getView().routingStrategy).toBe('local-first');
     expect(parseToml(await readFile(file, 'utf8'))).toMatchObject({ routingStrategy: 'local-first' });
@@ -253,7 +369,7 @@ describe('AgentSettingsRepository', () => {
     expect(repository.getView().workspaces.filter((workspace) => workspace.rootPath === workspaceRoot)).toHaveLength(1);
   });
 
-  it('persists workspace pinning and enforces the seven-day archive cleanup lifecycle', async () => {
+  it('persists workspace pinning and keeps archived workspaces recoverable', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-archive-'));
     temporaryDirectories.push(directory);
     const repository = new AgentSettingsRepository(join(directory, 'settings.toml'), cipher, directory);
@@ -261,7 +377,6 @@ describe('AgentSettingsRepository', () => {
     const opened = await repository.addWorkspaceRoot(join(directory, 'workspace-to-archive'));
     const workspaceId = opened.workspace.workspaceId;
     const archivedAt = new Date('2026-07-30T00:00:00.000Z');
-    const purgeAt = new Date(archivedAt.getTime() + WORKSPACE_ARCHIVE_RETENTION_MS);
 
     await repository.setWorkspacePinned(workspaceId, true);
     expect(repository.getView().workspaces.find((workspace) => workspace.workspaceId === workspaceId))
@@ -269,31 +384,17 @@ describe('AgentSettingsRepository', () => {
 
     await repository.archiveWorkspace(workspaceId, archivedAt);
     expect(repository.getView().workspaces.find((workspace) => workspace.workspaceId === workspaceId))
-      .toMatchObject({
-        archivedAt: archivedAt.toISOString(),
-        purgeAfter: purgeAt.toISOString()
-      });
+      .toMatchObject({ archivedAt: archivedAt.toISOString() });
     expect(repository.getView().workspaces.find((workspace) => workspace.workspaceId === workspaceId))
       .not.toHaveProperty('pinned');
-    expect(repository.dueArchivedWorkspaceIds(new Date(purgeAt.getTime() - 1))).toEqual([]);
-    expect(repository.dueArchivedWorkspaceIds(purgeAt)).toEqual([workspaceId]);
-    expect(repository.nextArchivedWorkspacePurgeAt()).toBe(purgeAt.toISOString());
-
-    await repository.markWorkspacePurged(workspaceId, purgeAt);
-    expect(repository.getView().workspaces.find((workspace) => workspace.workspaceId === workspaceId))
-      .toMatchObject({ purgedAt: purgeAt.toISOString() });
-    expect(repository.nextArchivedWorkspacePurgeAt()).toBeNull();
-
     const reloaded = new AgentSettingsRepository(join(directory, 'settings.toml'), cipher, directory);
     await reloaded.initialize();
     expect(reloaded.getView().workspaces.find((workspace) => workspace.workspaceId === workspaceId))
-      .toMatchObject({ archivedAt: archivedAt.toISOString(), purgedAt: purgeAt.toISOString() });
+      .toMatchObject({ archivedAt: archivedAt.toISOString() });
 
     await reloaded.restoreWorkspace(workspaceId);
     const restored = reloaded.getView().workspaces.find((workspace) => workspace.workspaceId === workspaceId);
     expect(restored).not.toHaveProperty('archivedAt');
-    expect(restored).not.toHaveProperty('purgeAfter');
-    expect(restored).not.toHaveProperty('purgedAt');
   });
 
   it('normalizes duplicate persisted workspace identifiers before Host authorization', async () => {
@@ -324,34 +425,11 @@ describe('AgentSettingsRepository', () => {
   });
 });
 
-function updateFrom(
-  view: ReturnType<AgentSettingsRepository['getView']>,
-  overrides: Partial<Record<AgentProviderId, { apiKey?: string; clearApiKey: boolean }>> = {}
-): AgentSettingsUpdate {
-  return {
-    routingStrategy: view.routingStrategy,
-    permissionMode: view.permissionMode,
-    customPermissions: view.customPermissions,
-    workspaceRoot: view.workspaceRoot,
-    workspaceAccess: view.workspaceAccess,
-    localModelRoots: view.localModelRoots,
-    providers: Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => [
-      id,
-      providerUpdate(view.providers[id], overrides[id])
-    ])) as AgentSettingsUpdate['providers']
-  };
-}
-
-function providerUpdate(
-  provider: ReturnType<AgentSettingsRepository['getView']>['providers']['openai'],
-  override?: { apiKey?: string; clearApiKey: boolean }
-) {
-  return {
-    enabled: provider.enabled,
-    baseUrl: provider.baseUrl,
-    model: provider.model,
-    inference: provider.inference,
-    clearApiKey: override?.clearApiKey ?? false,
-    ...(override?.apiKey ? { apiKey: override.apiKey } : {})
-  };
+async function expectApplied(
+  mutation: Promise<AgentSettingsMutationResult>
+): Promise<Extract<AgentSettingsMutationResult, { ok: true }>> {
+  const result = await mutation;
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error(result.error.code);
+  return result;
 }

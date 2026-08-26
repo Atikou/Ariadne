@@ -34,6 +34,7 @@ export interface AgentRequestCallbacks {
   registerForCancel?: boolean;
   enableTimeline?: boolean;
   onActivityEvent?: (event: AgentActivityEvent) => void;
+  signal?: AbortSignal;
 }
 
 export interface PreparedAgentRequest {
@@ -303,9 +304,12 @@ export class AgentRequestService {
     });
     let registeredForCancel = false;
     try {
-      let cancelSignal: AbortSignal | undefined;
+      let cancelSignal = callbacks?.signal;
       if (callbacks?.registerForCancel) {
-        cancelSignal = this.deps.agentRunRegistry.register(run.id, "agent").signal;
+        const registrySignal = this.deps.agentRunRegistry.register(run.id, "agent").signal;
+        cancelSignal = cancelSignal
+          ? AbortSignal.any([cancelSignal, registrySignal])
+          : registrySignal;
         registeredForCancel = true;
       }
       const workspaceRoot = this.deps.sessionWorkspace.workspaceForSession(sessionId);

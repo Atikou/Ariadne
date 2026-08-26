@@ -1,5 +1,4 @@
 import type {
-  AgentProposal,
   PermissionRequest,
   PlanHandoff,
   RunSummary
@@ -28,15 +27,6 @@ describe('conversation approval state', () => {
   it('marks only sessions with pending approvals', () => {
     const sessionIds = pendingApprovalSessionIds({
       runs,
-      proposals: [{
-        proposalId: 'proposal-pending',
-        sessionId: 'session-proposal',
-        status: 'pending'
-      }, {
-        proposalId: 'proposal-complete',
-        sessionId: 'session-resolved',
-        status: 'completed'
-      }] as AgentProposal[],
       permissions: [{
         requestId: 'permission-pending',
         runId: 'run-with-session',
@@ -56,7 +46,6 @@ describe('conversation approval state', () => {
     });
 
     expect([...sessionIds]).toEqual([
-      'session-proposal',
       'session-from-run',
       'session-plan'
     ]);

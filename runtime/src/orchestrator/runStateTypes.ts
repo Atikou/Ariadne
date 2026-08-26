@@ -1,16 +1,18 @@
 import { defaultWorkflowPlanner } from "../agent/WorkflowPlanner.js";
+import type { AgentExecutionMeta } from "../agent/AgentExecutionMetaContracts.js";
 import type {
-  AgentExecutionMeta,
   AgentRunMode,
   AgentStopReason,
-  AgentWorkflowInternalPlan,
-  AgentWorkflowSwitch,
-  AgentWorkflowTaskState,
   RunBudget,
   RunBudgetKey,
   RunBudgetUsage,
   UserPermissionPolicy,
-} from "../agent/RunPolicyTypes.js";
+} from "../agent/RunPolicyPrimitives.js";
+import type { AgentWorkflowInternalPlan } from "../agent/WorkflowExecutionContracts.js";
+import type {
+  AgentWorkflowSwitch,
+  AgentWorkflowTaskState,
+} from "../agent/WorkflowStateContracts.js";
 import type { AgentIntentType, AgentWorkflowType } from "../agent/IntentTypes.js";
 import type { AgentToolStep } from "../agent/toolStep.js";
 import type { CompletionCriterionInput } from "../agent/completion/TaskCompletionContract.js";
@@ -25,7 +27,7 @@ import {
   type RunStateLocationContext,
   type RunStateSearchPlan,
 } from "./runStateLocation.js";
-import type { AgentExecutionEngineKind } from "./AgentExecutionEngine.js";
+import type { AgentExecutionEngineKind } from "./AgentExecutionIdentity.js";
 
 export type { PlanWorkflowStepId } from "./planWorkflowConstants.js";
 export { PLAN_WORKFLOW_STEP_IDS } from "./planWorkflowConstants.js";

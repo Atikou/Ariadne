@@ -4,7 +4,7 @@ import type {
 } from "@ariadne/protocol/public";
 
 import type { LoopChatFn } from "../agent/AgentLoop.js";
-import type { UserPermissionPolicy } from "../agent/RunPolicyTypes.js";
+import type { UserPermissionPolicy } from "../agent/RunPolicyPrimitives.js";
 import type { AppContext } from "../app/createAppContext.js";
 import type { ApiResult } from "../core/apiResult.js";
 import type { CompanionMessage } from "../companion/CompanionSessionContracts.js";
@@ -29,6 +29,7 @@ export interface CompanionAgentPlanStartInput {
   userMessageId: string;
   clientName?: string;
   inference?: ModelInferenceOptions;
+  signal?: AbortSignal;
 }
 
 export interface CompanionAgentPlanRunOptions {
@@ -124,6 +125,7 @@ export class CompanionAgentPlanWorkflow {
         }
       },
       this.createChat(input.clientName, input.inference),
+      { signal: input.signal },
     ).catch((error) => {
       if (!startedRunId) start.reject(error);
       else this.handlePersistenceFailure(startedRunId, error, startedAtMs);

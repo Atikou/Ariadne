@@ -17,7 +17,7 @@
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
-    "package:prepare": "npm run build --workspace @ariadne/protocol && npm run build --workspace @ariadne/runtime && node ../scripts/prepare-runtime-package.mjs --arch=x64",
+    "package:prepare": "npm run build --workspace @ariadne/protocol && npm run build --workspace @ariadne/agent-core && npm run build --workspace @ariadne/runtime && node ../scripts/prepare-runtime-package.mjs --arch=x64",
     "package:dir": "npm run package:prepare && npm run build && electron-builder --win --x64 --dir",
     "package:win:build": "npm run package:prepare && npm run build && electron-builder --win nsis --x64 --config.forceCodeSigning=true",
     "package:win": "node ../scripts/verify-windows-release-signing-environment.mjs && npm run package:win:build && node ../scripts/verify-packaged-runtime-assets.mjs && node ../scripts/verify-windows-release-signatures.mjs"

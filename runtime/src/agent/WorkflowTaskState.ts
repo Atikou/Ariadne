@@ -1,4 +1,5 @@
-import type { AgentStopReason, AgentWorkflowTaskState } from "./RunPolicyTypes.js";
+import type { AgentStopReason } from "./RunPolicyPrimitives.js";
+import type { AgentWorkflowTaskState } from "./WorkflowStateContracts.js";
 import type { AgentToolStep } from "./toolStep.js";
 import { isEffectiveWriteStep } from "./toolStepOutcome.js";
 

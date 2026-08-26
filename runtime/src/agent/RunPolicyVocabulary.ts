@@ -1,4 +1,4 @@
-import type { AgentExecutionMeta } from "./RunPolicyTypes.js";
+import type { AgentExecutionMeta } from "./AgentExecutionMetaContracts.js";
 
 /**
  * 运行态词汇分层（P5 SSOT）。

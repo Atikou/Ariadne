@@ -1,7 +1,11 @@
-import type { SubAgentRunResult, SubAgentWriteConflict } from "./types.js";
-import { normalizeRelPath } from "./writeConflictMerge.js";
+import type { SubAgentRunResult } from "./types.js";
+import {
+  normalizeRelPath,
+  type SubAgentWriteConflict,
+  type WriteFilePickStrategy,
+} from "./writeConflictContracts.js";
 
-export type WriteFilePickStrategy = "latest" | "earliest" | "arbitration";
+export type { WriteFilePickStrategy } from "./writeConflictContracts.js";
 
 export interface WriteFilePickHint {
   path: string;

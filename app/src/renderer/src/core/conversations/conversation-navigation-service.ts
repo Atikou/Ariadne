@@ -9,12 +9,11 @@ export interface ConversationWorkspace {
   rootPath: string;
   pinned: boolean;
   archivedAt?: string;
-  purgeAfter?: string;
-  purgedAt?: string;
 }
 
 export interface ConversationNavigationService {
   listWorkspaces(): Promise<readonly ConversationWorkspace[]>;
+  listSelectableWorkspaces(): Promise<readonly ConversationWorkspace[]>;
   listArchivedWorkspaces(): Promise<readonly ConversationWorkspace[]>;
   openWorkspace(): Promise<ConversationWorkspace | null>;
   getSelectedWorkspaceId(): string | null;
@@ -28,12 +27,32 @@ export interface ConversationNavigationService {
   restoreWorkspace(workspaceId: string): Promise<void>;
   isSessionPinned(sessionId: string, runtimePinned: boolean): boolean;
   setSessionPinned(sessionId: string, pinned: boolean): void;
+  sessionTitle(sessionId: string, runtimeTitle: string): string;
+  isSessionArchived(sessionId: string): boolean;
+  isSessionUnread(sessionId: string): boolean;
+  renameSession(sessionId: string, title: string): void;
+  archiveSession(sessionId: string): void;
+  restoreSession(sessionId: string): void;
+  setSessionUnread(sessionId: string, unread: boolean): void;
+  getSessionPresentationRevision(): number;
+  onSessionPresentationChanged(listener: () => void): () => void;
 }
 
+interface StoredSessionPreference {
+  title?: string;
+  pinned?: boolean;
+  archived?: true;
+  unread?: true;
+}
+
+type StoredSessionPreferencePatch = {
+  [Key in keyof StoredSessionPreference]?: StoredSessionPreference[Key] | undefined;
+};
+
 interface StoredConversationNavigation {
-  schemaVersion: 1;
+  schemaVersion: 2;
   selectedWorkspaceId: string | null;
-  pinOverrides: Record<string, boolean>;
+  sessionPreferences: Record<string, StoredSessionPreference>;
 }
 
 export class ConfiguredConversationNavigationService implements ConversationNavigationService {
@@ -43,6 +62,8 @@ export class ConfiguredConversationNavigationService implements ConversationNavi
   private state: StoredConversationNavigation;
   private readonly selectedWorkspaceListeners = new Set<(workspaceId: string | null) => void>();
   private readonly workspaceListeners = new Set<(workspaces: readonly ConversationWorkspace[]) => void>();
+  private readonly sessionPresentationListeners = new Set<() => void>();
+  private sessionPresentationRevision = 0;
 
   constructor(
     private readonly agentSettings: AriadneApi['agentSettings'],
@@ -57,6 +78,11 @@ export class ConfiguredConversationNavigationService implements ConversationNavi
 
   listWorkspaces(): Promise<readonly ConversationWorkspace[]> {
     return this.loadCatalog().then(() => this.visibleWorkspaces());
+  }
+
+  listSelectableWorkspaces(): Promise<readonly ConversationWorkspace[]> {
+    return this.loadCatalog().then(() => [...this.activeWorkspaces()]
+      .sort((left, right) => Number(right.pinned) - Number(left.pinned)));
   }
 
   listArchivedWorkspaces(): Promise<readonly ConversationWorkspace[]> {
@@ -84,9 +110,7 @@ export class ConfiguredConversationNavigationService implements ConversationNavi
       name: workspaceNameFromPath(workspace.rootPath),
       rootPath: workspace.rootPath,
       pinned: workspace.pinned === true,
-      ...(workspace.archivedAt ? { archivedAt: workspace.archivedAt } : {}),
-      ...(workspace.purgeAfter ? { purgeAfter: workspace.purgeAfter } : {}),
-      ...(workspace.purgedAt ? { purgedAt: workspace.purgedAt } : {})
+      ...(workspace.archivedAt ? { archivedAt: workspace.archivedAt } : {})
     }));
     this.catalogLoaded = true;
     if (!this.activeWorkspaces().some((candidate) => candidate.workspaceId === this.state.selectedWorkspaceId)) {
@@ -165,15 +189,52 @@ export class ConfiguredConversationNavigationService implements ConversationNavi
   }
 
   isSessionPinned(sessionId: string, runtimePinned: boolean): boolean {
-    return this.state.pinOverrides[sessionId] ?? runtimePinned;
+    return this.state.sessionPreferences[sessionId]?.pinned ?? runtimePinned;
   }
 
   setSessionPinned(sessionId: string, pinned: boolean): void {
-    this.state = {
-      ...this.state,
-      pinOverrides: { ...this.state.pinOverrides, [sessionId]: pinned }
-    };
-    this.persist();
+    this.updateSessionPreference(sessionId, { pinned });
+  }
+
+  sessionTitle(sessionId: string, runtimeTitle: string): string {
+    return this.state.sessionPreferences[sessionId]?.title ?? runtimeTitle;
+  }
+
+  isSessionArchived(sessionId: string): boolean {
+    return this.state.sessionPreferences[sessionId]?.archived === true;
+  }
+
+  isSessionUnread(sessionId: string): boolean {
+    return this.state.sessionPreferences[sessionId]?.unread === true;
+  }
+
+  renameSession(sessionId: string, title: string): void {
+    const normalized = title.trim();
+    if (!normalized || normalized.length > 80) {
+      throw new Error('会话名称必须包含 1 至 80 个字符。');
+    }
+    this.updateSessionPreference(sessionId, { title: normalized });
+  }
+
+  archiveSession(sessionId: string): void {
+    this.updateSessionPreference(sessionId, { archived: true, unread: undefined });
+  }
+
+  restoreSession(sessionId: string): void {
+    this.updateSessionPreference(sessionId, { archived: undefined });
+  }
+
+  setSessionUnread(sessionId: string, unread: boolean): void {
+    this.updateSessionPreference(sessionId, { unread: unread ? true : undefined });
+  }
+
+  getSessionPresentationRevision(): number {
+    return this.sessionPresentationRevision;
+  }
+
+  onSessionPresentationChanged(listener: () => void): () => void {
+    this.sessionPresentationListeners.add(listener);
+    return () => this.sessionPresentationListeners.delete(listener);
   }
 
   private activeWorkspaces(): readonly ConversationWorkspace[] {
@@ -191,6 +252,31 @@ export class ConfiguredConversationNavigationService implements ConversationNavi
       this.storage.setItem(NAVIGATION_STORAGE_KEY, JSON.stringify(this.state));
     } catch {
       // Navigation metadata is non-critical; Runtime sessions remain authoritative.
+    }
+  }
+
+  private updateSessionPreference(
+    sessionId: string,
+    patch: StoredSessionPreferencePatch
+  ): void {
+    if (!sessionId || sessionId.length > 512) throw new Error('会话标识无效。');
+    const current = this.state.sessionPreferences[sessionId] ?? {};
+    const next = { ...current, ...patch };
+    for (const key of Object.keys(next) as Array<keyof StoredSessionPreference>) {
+      if (next[key] === undefined) delete next[key];
+    }
+    const sessionPreferences = { ...this.state.sessionPreferences };
+    if (Object.keys(next).length === 0) delete sessionPreferences[sessionId];
+    else sessionPreferences[sessionId] = next as StoredSessionPreference;
+    this.state = { ...this.state, sessionPreferences };
+    this.persist();
+    this.sessionPresentationRevision += 1;
+    for (const listener of this.sessionPresentationListeners) {
+      try {
+        listener();
+      } catch (error) {
+        console.error('Session presentation observer failed.', error);
+      }
     }
   }
 
@@ -236,16 +322,25 @@ export function workspaceNameFromPath(rootPath: string): string {
 
 function readStoredNavigation(storage: Pick<Storage, 'getItem' | 'setItem'>): StoredConversationNavigation {
   const fallback: StoredConversationNavigation = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     selectedWorkspaceId: null,
-    pinOverrides: {}
+    sessionPreferences: {}
   };
   try {
     const raw = storage.getItem(NAVIGATION_STORAGE_KEY);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as unknown;
-    if (!isStoredNavigation(parsed)) return fallback;
-    return parsed;
+    if (isStoredNavigation(parsed)) return parsed;
+    if (isLegacyStoredNavigation(parsed)) {
+      return {
+        schemaVersion: 2,
+        selectedWorkspaceId: parsed.selectedWorkspaceId,
+        sessionPreferences: Object.fromEntries(
+          Object.entries(parsed.pinOverrides).map(([sessionId, pinned]) => [sessionId, { pinned }])
+        )
+      };
+    }
+    return fallback;
   } catch {
     return fallback;
   }
@@ -254,10 +349,50 @@ function readStoredNavigation(storage: Pick<Storage, 'getItem' | 'setItem'>): St
 function isStoredNavigation(value: unknown): value is StoredConversationNavigation {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<StoredConversationNavigation>;
+  if (candidate.schemaVersion !== 2) return false;
+  if (candidate.selectedWorkspaceId !== null && typeof candidate.selectedWorkspaceId !== 'string') return false;
+  if (!candidate.sessionPreferences || typeof candidate.sessionPreferences !== 'object') return false;
+  const entries = Object.entries(candidate.sessionPreferences);
+  return entries.length <= 5_000
+    && entries.every(([sessionId, preference]) => (
+      sessionId.length > 0
+      && sessionId.length <= 512
+      && isStoredSessionPreference(preference)
+    ));
+}
+
+function isStoredSessionPreference(value: unknown): value is StoredSessionPreference {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  const keys = Object.keys(candidate);
+  return keys.length <= 4
+    && keys.every((key) => ['title', 'pinned', 'archived', 'unread'].includes(key))
+    && (candidate.title === undefined || (
+      typeof candidate.title === 'string'
+      && candidate.title.trim() === candidate.title
+      && candidate.title.length >= 1
+      && candidate.title.length <= 80
+    ))
+    && (candidate.pinned === undefined || typeof candidate.pinned === 'boolean')
+    && (candidate.archived === undefined || candidate.archived === true)
+    && (candidate.unread === undefined || candidate.unread === true);
+}
+
+interface LegacyStoredConversationNavigation {
+  schemaVersion: 1;
+  selectedWorkspaceId: string | null;
+  pinOverrides: Record<string, boolean>;
+}
+
+function isLegacyStoredNavigation(value: unknown): value is LegacyStoredConversationNavigation {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<LegacyStoredConversationNavigation>;
   if (candidate.schemaVersion !== 1) return false;
   if (candidate.selectedWorkspaceId !== null && typeof candidate.selectedWorkspaceId !== 'string') return false;
   if (!candidate.pinOverrides || typeof candidate.pinOverrides !== 'object') return false;
   const entries = Object.entries(candidate.pinOverrides);
   return entries.length <= 5_000
-    && entries.every(([sessionId, pinned]) => sessionId.length > 0 && sessionId.length <= 512 && typeof pinned === 'boolean');
+    && entries.every(([sessionId, pinned]) => (
+      sessionId.length > 0 && sessionId.length <= 512 && typeof pinned === 'boolean'
+    ));
 }

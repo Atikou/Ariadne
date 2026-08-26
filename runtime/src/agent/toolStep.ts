@@ -4,7 +4,16 @@ import type { WorkspaceAccessAudit } from "../policy/PathPolicy.js";
 import type { StructuredToolRisk } from "../policy/ToolRiskAssessment.js";
 import type { SuggestedToolAction, ToolOutcomeClass } from "../tools/toolOutcome.js";
 import type { ToolResultLayers } from "../util/toolResultLayers.js";
-import type { RunBudgetKey } from "./RunPolicyTypes.js";
+import type { RunBudgetKey } from "./RunPolicyPrimitives.js";
+import type {
+  ToolStepBlockedReasonKind,
+  ToolVerificationBinding,
+} from "./ToolStepContracts.js";
+
+export type {
+  ToolStepBlockedReasonKind,
+  ToolVerificationBinding,
+} from "./ToolStepContracts.js";
 
 /** 一次工具调用的记录（用于回显执行过程）。 */
 export interface AgentToolStep {
@@ -42,17 +51,12 @@ export interface AgentToolStep {
   /** 工作流阶段写入门禁（WorkflowWriteGate），与 WorkflowCapability 只读拦截区分。 */
   workflowPhaseBlocked?: boolean;
   /** 工作流/权限/预算拦截原因分类。 */
-  blockedReasonKind?: "workflow" | "permission" | "budget" | "policy";
+  blockedReasonKind?: ToolStepBlockedReasonKind;
   budgetExhausted?: RunBudgetKey;
   risk?: StructuredToolRisk;
   confirmationRequest?: PermissionConfirmationRequest;
   /** 多工作区授权沙箱审计信息。 */
   workspaceAccess?: WorkspaceAccessAudit;
   /** 仅由执行编排代码写入；模型输入不能声明验证绑定。 */
-  verification?: {
-    kind: "write_readback" | "tool_success" | "artifact_check";
-    systemAssigned: true;
-    verifiesToolCallId?: string;
-    criterionIds?: string[];
-  };
+  verification?: ToolVerificationBinding;
 }

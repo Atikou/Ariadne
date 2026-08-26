@@ -22,6 +22,9 @@ describe('ConversationNavigationService', () => {
     const service = createService(new MemoryStorage(), 'E:\\Project\\Ariadne').service;
 
     await expect(service.listWorkspaces()).resolves.toEqual([]);
+    await expect(service.listSelectableWorkspaces()).resolves.toEqual([
+      expect.objectContaining({ workspaceId: 'primary', name: 'Ariadne' })
+    ]);
     expect(service.getSelectedWorkspaceId()).toBe('primary');
     expect(service.isAssistantWorkspace('primary')).toBe(true);
     expect(service.isAssistantWorkspace('workspace-opened')).toBe(false);
@@ -37,6 +40,44 @@ describe('ConversationNavigationService', () => {
     expect(restored.isSessionPinned('session-1', false)).toBe(true);
     restored.setSessionPinned('session-1', false);
     expect(restored.isSessionPinned('session-1', true)).toBe(false);
+  });
+
+  it('owns persistent session presentation actions and publishes one revision per change', () => {
+    const storage = new MemoryStorage();
+    const first = createService(storage, '/projects/Ariadne').service;
+    const revisions: number[] = [];
+    first.onSessionPresentationChanged(() => revisions.push(first.getSessionPresentationRevision()));
+
+    first.renameSession('session-1', '新的聊天名称');
+    first.setSessionPinned('session-1', true);
+    first.setSessionUnread('session-1', true);
+    first.archiveSession('session-1');
+
+    expect(revisions).toEqual([1, 2, 3, 4]);
+    expect(first.sessionTitle('session-1', 'Conversation')).toBe('新的聊天名称');
+    expect(first.isSessionPinned('session-1', false)).toBe(true);
+    expect(first.isSessionUnread('session-1')).toBe(false);
+    expect(first.isSessionArchived('session-1')).toBe(true);
+
+    const restored = createService(storage, '/projects/Ariadne').service;
+    expect(restored.sessionTitle('session-1', 'Conversation')).toBe('新的聊天名称');
+    expect(restored.isSessionPinned('session-1', false)).toBe(true);
+    expect(restored.isSessionArchived('session-1')).toBe(true);
+    restored.restoreSession('session-1');
+    expect(restored.isSessionArchived('session-1')).toBe(false);
+  });
+
+  it('migrates v1 pin overrides into the single session presentation record', () => {
+    const storage = new MemoryStorage();
+    storage.setItem('ariadne.conversation-navigation.v1', JSON.stringify({
+      schemaVersion: 1,
+      selectedWorkspaceId: null,
+      pinOverrides: { 'session-legacy': true }
+    }));
+
+    const service = createService(storage, '/projects/Ariadne').service;
+    expect(service.isSessionPinned('session-legacy', false)).toBe(true);
+    expect(service.sessionTitle('session-legacy', 'Conversation')).toBe('Conversation');
   });
 
   it('extracts folder names without depending on Node path APIs in Renderer', () => {
@@ -134,7 +175,8 @@ function createService(
     access: 'write'
   }];
   const settings = (): AgentSettingsView => ({
-    schemaVersion: 2,
+    schemaVersion: 3,
+    revision: 1,
     routingStrategy: 'cloud-first',
     permissionMode: 'request',
     customPermissions: {
@@ -151,7 +193,7 @@ function createService(
   });
   const agentSettings = {
     load: async () => settings(),
-    update: async () => settings(),
+    apply: async () => ({ ok: true as const, settings: settings(), effect: 'hot_applied' as const }),
     setWorkspacePinned: async ({ workspaceId, pinned }: { workspaceId: string; pinned: boolean }) => {
       const workspace = requireWorkspace(catalog, workspaceId);
       if (pinned) workspace.pinned = true;
@@ -161,15 +203,12 @@ function createService(
     archiveWorkspace: async ({ workspaceId }: { workspaceId: string }) => {
       const workspace = requireWorkspace(catalog, workspaceId);
       workspace.archivedAt = '2026-07-30T00:00:00.000Z';
-      workspace.purgeAfter = '2026-08-06T00:00:00.000Z';
       delete workspace.pinned;
       return settings();
     },
     restoreWorkspace: async ({ workspaceId }: { workspaceId: string }) => {
       const workspace = requireWorkspace(catalog, workspaceId);
       delete workspace.archivedAt;
-      delete workspace.purgeAfter;
-      delete workspace.purgedAt;
       return settings();
     },
     onWorkspacesChanged: () => () => undefined

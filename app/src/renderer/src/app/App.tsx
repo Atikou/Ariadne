@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { RotateCcw, Search, Waypoints } from 'lucide-react';
 import type { DockviewApi } from 'dockview-react';
 import type { ThemePreference } from '@shared/contract';
 import { builtinModuleRegistry } from '@renderer/core/modules/builtin-modules';
-import { createModuleServices } from '@renderer/core/services/module-services';
-import type { ModuleId } from '@renderer/core/modules/module-contract';
+import type { ModuleId, ModuleServices } from '@renderer/core/modules/module-contract';
 import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
 import { formatRuntimeAvailability } from '@renderer/core/runtime/runtime-labels';
 import { ConfirmDialog } from '@renderer/shared/ui/ActionDialog';
@@ -15,8 +14,7 @@ import { ModuleMenu } from './ModuleMenu';
 import { applyThemeToDocument, resolveEffectiveTheme, type EffectiveTheme } from './theme-sync';
 import { openModule, resetWorkspace, Workspace, type SaveStatus } from './Workspace';
 
-export function App(): React.JSX.Element {
-  const services = useMemo(() => createModuleServices(window.ariadne), []);
+export function App({ services }: { services: ModuleServices }): React.JSX.Element {
   const [dockviewApi, setDockviewApi] = useState<DockviewApi | null>(null);
   const [openModuleIds, setOpenModuleIds] = useState<ReadonlySet<string>>(new Set());
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('loading');
@@ -26,11 +24,6 @@ export function App(): React.JSX.Element {
     window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   ));
   const runtime = useRuntimeSnapshot(services.runtime);
-
-  useEffect(() => {
-    void services.runtime.initialize();
-    return () => services.runtime.dispose();
-  }, [services]);
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -92,7 +85,10 @@ export function App(): React.JSX.Element {
           <Search size={14} /><span>搜索或输入命令</span><kbd>Ctrl K</kbd>
         </button>
         <div className="titlebar-actions">
-          <span className={`runtime-title-status runtime-title-status--${runtime.status.availability}`}>
+          <span
+            className={`runtime-title-status runtime-title-status--${runtime.status.availability}`}
+            data-runtime-availability={runtime.status.availability}
+          >
             Runtime {formatRuntimeAvailability(runtime.status.availability)}
           </span>
           <ModuleMenu

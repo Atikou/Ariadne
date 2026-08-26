@@ -16,19 +16,21 @@ import {
   AGENT_PROVIDER_IDS,
   AGENT_SANDBOX_MODES,
   AGENT_TOOL_PERMISSIONS,
-  WORKSPACE_ARCHIVE_RETENTION_MS,
   type AgentApprovalPolicy,
   type AgentCustomPermissions,
   type AgentPermissionMode,
   type AgentProviderId,
   type AgentSandboxMode,
-  type AgentSettingsUpdate,
+  type AgentSettingsEffect,
+  type AgentSettingsMutation,
+  type AgentSettingsMutationResult,
+  type AgentSettingsOperation,
   type AgentSettingsView,
   type AgentToolPermission,
   type AgentWorkspaceSettingsView,
   type ApiKeyStatus
 } from '@shared/contract';
-import { agentProviderIdSchema, agentRoutingStrategySchema, agentSettingsUpdateSchema } from '@shared/schemas';
+import { agentProviderIdSchema, agentRoutingStrategySchema, agentSettingsMutationSchema } from '@shared/schemas';
 import type { SecretCipher } from './secret-cipher';
 
 const encryptedApiKeySchema = z.string().min(1).max(32_768).nullable();
@@ -45,16 +47,8 @@ const persistedWorkspaceSchema = z.object({
   rootPath: absoluteWorkspacePathSchema,
   access: z.enum(['read', 'write']),
   pinned: z.literal(true).optional(),
-  archivedAt: z.string().datetime().optional(),
-  purgeAfter: z.string().datetime().optional(),
-  purgedAt: z.string().datetime().optional()
+  archivedAt: z.string().datetime().optional()
 }).strict().superRefine((workspace, context) => {
-  if (!workspace.archivedAt && (workspace.purgeAfter || workspace.purgedAt)) {
-    context.addIssue({ code: 'custom', message: 'Workspace cleanup metadata requires archivedAt.' });
-  }
-  if (workspace.purgeAfter && workspace.purgedAt) {
-    context.addIssue({ code: 'custom', message: 'A workspace cannot be pending and completed cleanup at the same time.' });
-  }
   if (workspace.archivedAt && workspace.pinned) {
     context.addIssue({ code: 'custom', message: 'An archived workspace cannot remain pinned.' });
   }
@@ -74,7 +68,8 @@ const persistedProviderFileSchema = z.object({
   encryptedApiKey: encryptedApiKeySchema.optional()
 }).strict();
 const persistedAgentSettingsBase = {
-  schemaVersion: z.literal(2),
+  schemaVersion: z.literal(3),
+  revision: z.number().int().positive(),
   routingStrategy: agentRoutingStrategySchema,
   localModelRoots: z.array(z.string().min(1).max(32_768).refine(
     (value) => /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value)
@@ -91,8 +86,12 @@ const persistedAgentSettingsSchema = z.object({
   runtimePolicy: runtimePolicySnapshotSchema
 }).strict();
 const persistedAgentSettingsFileSchema = z.object({
-  ...persistedAgentSettingsBase,
-  schemaVersion: z.union([z.literal(1), z.literal(2)]),
+  schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+  revision: z.number().int().positive().optional(),
+  routingStrategy: agentRoutingStrategySchema,
+  localModelRoots: z.array(z.string().min(1).max(32_768).refine(
+    (value) => /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value)
+  )).max(8),
   permissionMode: z.enum(AGENT_PERMISSION_MODES).optional(),
   customPermissions: customPermissionsSchema.optional(),
   workspaceRoot: absoluteWorkspacePathSchema.optional(),
@@ -125,6 +124,7 @@ export interface RuntimeAgentPermissionProfile {
 }
 
 export interface RuntimeAgentSettings {
+  revision: number;
   routingStrategy: AgentSettingsView['routingStrategy'];
   permissionMode: AgentPermissionMode;
   permissions: RuntimeAgentPermissionProfile;
@@ -176,7 +176,8 @@ export class AgentSettingsRepository {
 
   getView(): AgentSettingsView {
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
+      revision: this.settings.revision,
       routingStrategy: this.settings.routingStrategy,
       permissionMode: this.settings.permissionMode,
       customPermissions: structuredClone(this.settings.customPermissions),
@@ -197,6 +198,7 @@ export class AgentSettingsRepository {
 
   getRuntimeSettings(): RuntimeAgentSettings {
     return {
+      revision: this.settings.revision,
       routingStrategy: this.settings.routingStrategy,
       permissionMode: this.settings.permissionMode,
       permissions: resolveRuntimePermissionProfile(this.settings.permissionMode, this.settings.customPermissions),
@@ -228,45 +230,52 @@ export class AgentSettingsRepository {
     return this.getView();
   }
 
-  async save(input: AgentSettingsUpdate): Promise<AgentSettingsView> {
-    const update = agentSettingsUpdateSchema.parse(input);
-    await this.commitSettings((current) => {
-      const next = structuredClone(current);
-      next.routingStrategy = update.routingStrategy;
-      next.permissionMode = update.permissionMode;
-      next.customPermissions = structuredClone(update.customPermissions);
-      next.workspaceRoot = update.workspaceRoot;
-      next.workspaceAccess = workspaceAccessFor(update.permissionMode, update.customPermissions);
-      next.workspaces = normalizeWorkspaceCatalog(update.workspaceRoot, next.workspaceAccess, next.workspaces);
-      next.localModelRoots = [...new Set(update.localModelRoots)];
-      if (update.runtimePolicy) next.runtimePolicy = structuredClone(update.runtimePolicy);
-      for (const id of AGENT_PROVIDER_IDS) {
-        const source = update.providers[id];
-        const target = next.providers[id];
-        target.enabled = source.enabled;
-        target.baseUrl = source.baseUrl;
-        target.model = source.model;
-        target.inference = structuredClone(source.inference);
-        if (source.clearApiKey) target.encryptedApiKey = null;
-        else if (source.apiKey) target.encryptedApiKey = this.cipher.encrypt(source.apiKey);
-      }
-      return next;
-    });
-    return this.getView();
-  }
-
-  async updateWorkspaceRoot(rootPath: string): Promise<AgentSettingsView> {
-    const workspaceRoot = agentSettingsUpdateSchema.shape.workspaceRoot.parse(rootPath);
-    await this.commitSettings((current) => ({
-      ...current,
-      workspaceRoot,
-      workspaces: normalizeWorkspaceCatalog(workspaceRoot, current.workspaceAccess, current.workspaces)
-    }));
-    return this.getView();
+  async mutate(input: AgentSettingsMutation): Promise<AgentSettingsMutationResult> {
+    const mutation = agentSettingsMutationSchema.parse(input);
+    let result: AgentSettingsMutationResult | undefined;
+    const operation = this.writeQueue
+      .catch(() => undefined)
+      .then(async () => {
+        if (mutation.expectedRevision !== this.settings.revision) {
+          result = {
+            ok: false,
+            settings: this.getView(),
+            error: {
+              code: 'settings_revision_conflict',
+              message: `设置版本 ${mutation.expectedRevision} 已过期；当前版本为 ${this.settings.revision}。`,
+              expectedRevision: mutation.expectedRevision,
+              currentRevision: this.settings.revision
+            }
+          };
+          return;
+        }
+        const effect = effectForSettingsOperations(mutation.operations);
+        const mutated = applySettingsOperations(
+          structuredClone(this.settings),
+          mutation.operations,
+          this.cipher
+        );
+        if (samePersistedSettings(mutated, this.settings)) {
+          result = { ok: true, settings: this.getView(), effect: 'hot_applied' };
+          return;
+        }
+        const next = persistedAgentSettingsSchema.parse({
+          ...mutated,
+          schemaVersion: 3,
+          revision: this.settings.revision + 1
+        });
+        await this.writeSnapshot(next);
+        this.settings = next;
+        result = { ok: true, settings: this.getView(), effect };
+      });
+    this.writeQueue = operation;
+    await operation;
+    if (!result) throw new Error('Settings mutation completed without a result.');
+    return result;
   }
 
   async addWorkspaceRoot(rootPath: string): Promise<AddWorkspaceResult> {
-    const normalizedRoot = resolve(agentSettingsUpdateSchema.shape.workspaceRoot.parse(rootPath));
+    const normalizedRoot = resolve(absoluteWorkspacePathSchema.parse(rootPath));
     let added = false;
     let workspace: AgentWorkspaceSettingsView | undefined;
     await this.commitSettings((current) => {
@@ -309,54 +318,18 @@ export class AgentSettingsRepository {
   ): Promise<AgentSettingsView> {
     if (workspaceId === 'primary') throw new Error('默认会话目录不能归档。');
     const archivedAtIso = archivedAt.toISOString();
-    const purgeAfter = new Date(archivedAt.getTime() + WORKSPACE_ARCHIVE_RETENTION_MS).toISOString();
     await this.commitSettings((current) => updateWorkspace(current, workspaceId, (workspace) => {
       if (workspace.archivedAt) return workspace;
-      const { pinned: _pinned, purgedAt: _purgedAt, ...rest } = workspace;
-      return { ...rest, archivedAt: archivedAtIso, purgeAfter };
+      const { pinned: _pinned, ...rest } = workspace;
+      return { ...rest, archivedAt: archivedAtIso };
     }));
     return this.getView();
   }
 
   async restoreWorkspace(workspaceId: string): Promise<AgentSettingsView> {
     await this.commitSettings((current) => updateWorkspace(current, workspaceId, (workspace) => {
-      const {
-        archivedAt: _archivedAt,
-        purgeAfter: _purgeAfter,
-        purgedAt: _purgedAt,
-        ...active
-      } = workspace;
+      const { archivedAt: _archivedAt, ...active } = workspace;
       return active;
-    }));
-    return this.getView();
-  }
-
-  dueArchivedWorkspaceIds(now = new Date()): string[] {
-    const timestamp = now.getTime();
-    return this.settings.workspaces
-      .filter((workspace) => workspace.archivedAt
-        && workspace.purgeAfter
-        && !workspace.purgedAt
-        && Date.parse(workspace.purgeAfter) <= timestamp)
-      .map((workspace) => workspace.workspaceId);
-  }
-
-  nextArchivedWorkspacePurgeAt(): string | null {
-    return this.settings.workspaces
-      .flatMap((workspace) => workspace.archivedAt && workspace.purgeAfter && !workspace.purgedAt
-        ? [workspace.purgeAfter]
-        : [])
-      .sort()[0] ?? null;
-  }
-
-  async markWorkspacePurged(workspaceId: string, purgedAt = new Date()): Promise<AgentSettingsView> {
-    await this.commitSettings((current) => updateWorkspace(current, workspaceId, (workspace) => {
-      if (!workspace.archivedAt || !workspace.purgeAfter || workspace.purgedAt) return workspace;
-      if (Date.parse(workspace.purgeAfter) > purgedAt.getTime()) {
-        throw new Error('工作区尚未达到永久清理时间。');
-      }
-      const { purgeAfter: _purgeAfter, ...archived } = workspace;
-      return { ...archived, purgedAt: purgedAt.toISOString() };
     }));
     return this.getView();
   }
@@ -421,7 +394,13 @@ export class AgentSettingsRepository {
     const operation = this.writeQueue
       .catch(() => undefined)
       .then(async () => {
-        const next = persistedAgentSettingsSchema.parse(mutator(structuredClone(this.settings)));
+        const mutated = mutator(structuredClone(this.settings));
+        if (samePersistedSettings(mutated, this.settings)) return;
+        const next = persistedAgentSettingsSchema.parse({
+          ...mutated,
+          schemaVersion: 3,
+          revision: this.settings.revision + 1
+        });
         await this.writeSnapshot(next);
         this.settings = next;
       });
@@ -451,6 +430,79 @@ export class AgentSettingsRepository {
   }
 }
 
+export function effectForSettingsOperations(
+  operations: readonly AgentSettingsOperation[]
+): AgentSettingsEffect {
+  let effect: AgentSettingsEffect = 'hot_applied';
+  for (const operation of operations) {
+    const operationEffect: AgentSettingsEffect = operation.kind === 'permissions.set'
+      || operation.kind === 'routing.set'
+      ? 'reload_scheduled'
+      : 'restart_required';
+    if (operationEffect === 'restart_required') return operationEffect;
+    if (operationEffect === 'reload_scheduled') effect = operationEffect;
+  }
+  return effect;
+}
+
+function applySettingsOperations(
+  current: PersistedAgentSettings,
+  operations: readonly AgentSettingsOperation[],
+  cipher: SecretCipher
+): PersistedAgentSettings {
+  const next = structuredClone(current);
+  for (const operation of operations) {
+    switch (operation.kind) {
+      case 'permissions.set': {
+        next.permissionMode = operation.mode;
+        if (operation.customPermissions) {
+          next.customPermissions = structuredClone(operation.customPermissions);
+        }
+        next.workspaceAccess = workspaceAccessFor(next.permissionMode, next.customPermissions);
+        next.workspaces = normalizeWorkspaceCatalog(
+          next.workspaceRoot,
+          next.workspaceAccess,
+          next.workspaces
+        );
+        break;
+      }
+      case 'routing.set':
+        next.routingStrategy = operation.strategy;
+        break;
+      case 'modelRoots.replace':
+        next.localModelRoots = [...new Set(operation.roots)];
+        break;
+      case 'provider.update': {
+        const target = next.providers[operation.providerId];
+        const patch = operation.patch;
+        if (patch.enabled !== undefined) target.enabled = patch.enabled;
+        if (patch.baseUrl !== undefined) target.baseUrl = patch.baseUrl;
+        if (patch.model !== undefined) target.model = patch.model;
+        if (patch.inference !== undefined) target.inference = structuredClone(patch.inference);
+        if (patch.clearApiKey) target.encryptedApiKey = null;
+        else if (patch.apiKey) target.encryptedApiKey = cipher.encrypt(patch.apiKey);
+        break;
+      }
+      case 'runtimePolicy.replace':
+        next.runtimePolicy = structuredClone(operation.policy);
+        break;
+      case 'workspace.select':
+        next.workspaceRoot = resolve(operation.rootPath);
+        next.workspaces = normalizeWorkspaceCatalog(
+          next.workspaceRoot,
+          next.workspaceAccess,
+          next.workspaces
+        );
+        break;
+    }
+  }
+  return next;
+}
+
+function samePersistedSettings(left: PersistedAgentSettings, right: PersistedAgentSettings): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function createDefaultAgentSettings(defaultWorkspaceRoot: string): PersistedAgentSettings {
   const customPermissions: AgentCustomPermissions = {
     approvalPolicy: 'risk-based',
@@ -458,7 +510,8 @@ function createDefaultAgentSettings(defaultWorkspaceRoot: string): PersistedAgen
     allowedPermissions: [...AGENT_TOOL_PERMISSIONS]
   };
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
+    revision: 1,
     routingStrategy: 'cloud-first',
     permissionMode: 'request',
     customPermissions,
@@ -496,7 +549,8 @@ function parsePersistedAgentSettings(input: unknown, defaultWorkspaceRoot: strin
   return persistedAgentSettingsSchema.parse({
     ...defaults,
     ...parsed,
-    schemaVersion: 2,
+    schemaVersion: 3,
+    revision: parsed.revision ?? 1,
     permissionMode,
     customPermissions,
     workspaceRoot,
@@ -520,6 +574,7 @@ function parsePersistedAgentSettings(input: unknown, defaultWorkspaceRoot: strin
 function toTomlDocument(settings: PersistedAgentSettings): TomlTable {
   const document = {
     schemaVersion: settings.schemaVersion,
+    revision: settings.revision,
     routingStrategy: settings.routingStrategy,
     permissionMode: settings.permissionMode,
     workspaceRoot: settings.workspaceRoot,
@@ -602,13 +657,11 @@ function normalizeWorkspaceCatalog(
 
 function workspaceLifecycleMetadata(
   workspace: AgentWorkspaceSettingsView | undefined
-): Pick<AgentWorkspaceSettingsView, 'pinned' | 'archivedAt' | 'purgeAfter' | 'purgedAt'> {
+): Pick<AgentWorkspaceSettingsView, 'pinned' | 'archivedAt'> {
   if (!workspace) return {};
   return {
     ...(workspace.pinned ? { pinned: true } : {}),
-    ...(workspace.archivedAt ? { archivedAt: workspace.archivedAt } : {}),
-    ...(workspace.purgeAfter ? { purgeAfter: workspace.purgeAfter } : {}),
-    ...(workspace.purgedAt ? { purgedAt: workspace.purgedAt } : {})
+    ...(workspace.archivedAt ? { archivedAt: workspace.archivedAt } : {})
   };
 }
 

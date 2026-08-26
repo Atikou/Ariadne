@@ -1,3 +1,8 @@
-import { NodeIpcRuntimeHost } from '../transport/NodeIpcRuntimeHost.js';
+import { createRuntimeKernelApplicationFactory } from '../application/RuntimeKernelApplication.js';
+import { createNodeIpcRuntimeHost } from '../composition/createNodeIpcRuntimeHost.js';
+import { createAgentProcessSandboxFactory } from './createAgentProcessSandboxFactory.js';
 
-new NodeIpcRuntimeHost().start();
+createNodeIpcRuntimeHost(
+  createRuntimeKernelApplicationFactory(),
+  createAgentProcessSandboxFactory()
+).start();

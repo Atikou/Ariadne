@@ -1,5 +1,7 @@
 import type { ModelClient } from "../model/types.js";
 
+const MODEL_AVAILABILITY_PROBE_REJECTED_REASON = "client.isAvailable() rejected";
+
 export interface ModelAvailabilityRecord {
   modelId: string;
   available: boolean;
@@ -87,6 +89,7 @@ export class ModelAvailabilityRegistry {
       .then((available) => available
         ? this.markAvailable(modelId)
         : this.markUnavailable(modelId, "client.isAvailable() returned false"))
+      .catch(() => this.markUnavailable(modelId, MODEL_AVAILABILITY_PROBE_REJECTED_REASON))
       .finally(() => {
         if (this.inFlight.get(modelId) === probe) this.inFlight.delete(modelId);
       });

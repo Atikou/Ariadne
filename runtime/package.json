@@ -16,7 +16,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/write-build-manifest.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --maxWorkers=4",
     "start": "node dist/entry/runtime-process.js",
     "headless": "node dist/entry/headless.js",
     "dev": "tsx src/cli/main.ts",
@@ -29,6 +29,7 @@
     "storage:cleanup": "tsx src/cli/storage.ts cleanup"
   },
   "dependencies": {
+    "@ariadne/agent-core": "file:../packages/agent-core",
     "@ariadne/protocol": "file:../packages/protocol",
     "@lancedb/lancedb": "^0.30.0",
     "@modelcontextprotocol/sdk": "^1.29.0",

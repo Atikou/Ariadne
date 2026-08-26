@@ -1,5 +1,5 @@
 import type { RunStatus } from "../core/runTypes.js";
-import type { AgentStopReason } from "./RunPolicyTypes.js";
+import type { AgentStopReason } from "./RunPolicyPrimitives.js";
 
 export type AgentTaskPersistenceStatus = "done" | "failed" | "blocked" | "cancelled";
 export type AgentTimelineOutcome = "success" | "partial" | "failed" | "cancelled" | "waiting";

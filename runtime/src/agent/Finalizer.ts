@@ -10,9 +10,9 @@ import { BudgetManager, renderBudget } from "./BudgetManager.js";
 
 import { defaultWorkflowPlanner, shouldRunAgentWorkflow } from "./WorkflowPlanner.js";
 
-import type {
+import type { AgentExecutionMeta } from "./AgentExecutionMetaContracts.js";
 
-  AgentExecutionMeta,
+import type {
 
   AgentRunMode,
 
@@ -22,7 +22,7 @@ import type {
 
   RunBudgetKey,
 
-} from "./RunPolicyTypes.js";
+} from "./RunPolicyPrimitives.js";
 
 import type { AgentToolStep } from "./toolStep.js";
 

@@ -1,70 +1,22 @@
 import type { AgentIntentType } from "../IntentTypes.js";
-import type { AgentRunMode } from "../RunPolicyTypes.js";
-
-export type SideEffectKind = "read" | "write" | "shell";
-
-export type CompletionEvidenceKind = "write_readback" | "tool_success" | "manual";
-
-/**
- * 上层计划/任务传入的结构化验收条件。
- * description 只用于展示；FinalGuard 只按 evidenceKind/toolNames 裁决，绝不解析自然语言。
- */
-export interface CompletionCriterionInput {
-  id: string;
-  description: string;
-  evidenceKind: CompletionEvidenceKind;
-  toolNames?: string[];
-  /** 可信计划编译器绑定的工具输入子集；运行时工具输入必须逐字段匹配。 */
-  expectedInputSubset?: Record<string, unknown>;
-  /** 写入验收对应的目标产物路径。 */
-  targetPath?: string;
-  afterLastWrite?: boolean;
-  required?: boolean;
-}
-
-/** 仅限进程内可信调用方使用，不属于公开 Agent HTTP body。 */
-export interface AgentCompletionContext {
-  completionCriteria?: CompletionCriterionInput[];
-}
-
-export type CompletionRequirement =
-  | {
-      id: string;
-      kind: "side_effect";
-      sideEffect: SideEffectKind;
-      description: string;
-      source: "routing" | "intent" | "workflow";
-    }
-  | {
-      id: string;
-      kind: "write_verification";
-      description: string;
-      source: "workflow";
-    }
-  | {
-      id: string;
-      kind: "acceptance";
-      description: string;
-      evidenceKind: CompletionEvidenceKind;
-      toolNames: string[];
-      expectedInputSubset?: Record<string, unknown>;
-      targetPath?: string;
-      afterLastWrite: boolean;
-      source: "plan" | "task";
-    };
-
-export interface TaskCompletionContract {
-  requiresSideEffect: boolean;
-  requiredSideEffects: SideEffectKind[];
-  source: "routing" | "intent";
-  requirements: CompletionRequirement[];
-}
-
-export type PersistedTaskCompletionContract = Pick<
+import type { AgentRunMode } from "../RunPolicyPrimitives.js";
+import type {
+  CompletionCriterionInput,
+  CompletionRequirement,
+  PersistedTaskCompletionContract,
+  SideEffectKind,
   TaskCompletionContract,
-  "requiresSideEffect" | "requiredSideEffects"
-> &
-  Partial<Pick<TaskCompletionContract, "source" | "requirements">>;
+} from "./CompletionContracts.js";
+
+export type {
+  AgentCompletionContext,
+  CompletionCriterionInput,
+  CompletionEvidenceKind,
+  CompletionRequirement,
+  PersistedTaskCompletionContract,
+  SideEffectKind,
+  TaskCompletionContract,
+} from "./CompletionContracts.js";
 
 /** Hydrates contracts saved before evidence requirements were introduced. */
 export function normalizeTaskCompletionContract(

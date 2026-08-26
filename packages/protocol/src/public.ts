@@ -5,7 +5,21 @@ import {
   nonEmptyIdSchema,
   resourceReferenceSchema
 } from './common.js';
+import {
+  PUBLIC_DECISION_ACTION_CONTRACT_VERSION,
+  PUBLIC_PROJECTION_CONTRACT_VERSION,
+  publicDecisionActionTokenV1Schema,
+  publicDecisionChoiceV3Schema,
+  publicProjectionCanonicalIdSchema,
+  publicProjectionFeatureV3Schema,
+  publicProjectionReadBatchV3Schema,
+  publicProjectionReadRequestV3Schema,
+  publicProjectionSnapshotV3Schema
+} from './public/projection-v3.js';
+export * from './public/projection-v3.js';
+export * from './public/decision-action-v1.js';
 export type { JsonValue } from './common.js';
+export { ARIADNE_RUNTIME_PROTOCOL_VERSION } from './common.js';
 
 export const runtimeAvailabilitySchema = z.enum([
   'stopped',
@@ -36,6 +50,9 @@ export const runtimeCapabilitySchema = z.enum([
   'scheduler',
   'resources',
   'memory.manage',
+  'mcp.tools',
+  'skills.instructions',
+  'hooks.run-pre',
   'browser.web'
 ]);
 
@@ -620,7 +637,6 @@ export const taskCheckpointSchema = z.object({
 export type TaskCheckpoint = z.infer<typeof taskCheckpointSchema>;
 
 export const runtimeEventSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('runtime.status.changed'), status: runtimeStatusSchema }).strict(),
   z.object({
     kind: z.literal('companion.reasoning.delta'),
     runId: nonEmptyIdSchema,
@@ -642,6 +658,10 @@ export const runtimeEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('run.activity'), activity: runActivitySchema }).strict(),
   z.object({ kind: z.literal('permission.changed'), request: permissionRequestSchema }).strict(),
   z.object({ kind: z.literal('planHandoff.changed'), handoff: planHandoffSchema }).strict(),
+  z.object({
+    kind: z.literal('projection.changed'),
+    feature: publicProjectionFeatureV3Schema
+  }).strict(),
   z.object({ kind: z.literal('trace.appended'), entry: traceEntrySchema }).strict()
 ]);
 export type RuntimeEvent = z.infer<typeof runtimeEventSchema>;
@@ -652,12 +672,12 @@ export const runtimeEventEnvelopeSchema = z
     cursor: z.number().int().positive(),
     schemaVersion: z.literal('2.0'),
     aggregateType: z.enum([
-      'runtime',
       'run',
       'companion',
       'permission',
       'plan_handoff',
       'proposal',
+      'projection',
       'trace'
     ]),
     aggregateId: nonEmptyIdSchema,
@@ -684,215 +704,107 @@ export type RuntimeSnapshot = z.infer<typeof runtimeSnapshotSchema>;
 
 const emptyCommand = <T extends string>(kind: T) => z.object({ kind: z.literal(kind) }).strict();
 
+export const publicDecisionResolutionActionV3Schema = z.object({
+  contractVersion: z.literal(PUBLIC_DECISION_ACTION_CONTRACT_VERSION),
+  actionToken: publicDecisionActionTokenV1Schema,
+  choice: publicDecisionChoiceV3Schema
+}).strict();
+export type PublicDecisionResolutionActionV3 = z.infer<
+  typeof publicDecisionResolutionActionV3Schema
+>;
+
+export const conversationMessageExecutionV3Schema = z.object({
+  mode: z.enum(['agent', 'plan']),
+  modelId: publicProjectionCanonicalIdSchema.optional(),
+  inference: modelInferenceOptionsSchema.optional(),
+  routingStrategy: chatRoutingStrategySchema.optional()
+}).strict();
+export type ConversationMessageExecutionV3 = z.infer<
+  typeof conversationMessageExecutionV3Schema
+>;
+
 export const runtimeCommandSchema = z.discriminatedUnion('kind', [
   emptyCommand('runtime.status.get'),
-  emptyCommand('runtime.snapshot.get'),
   z.object({
-    kind: z.literal('events.replay'),
-    afterCursor: z.number().int().nonnegative(),
-    limit: z.number().int().min(1).max(2_000).default(200)
+    kind: z.literal('projection.snapshot.get'),
+    contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION)
   }).strict(),
-  emptyCommand('models.list'),
-  z.object({ kind: z.literal('models.check'), modelId: nonEmptyIdSchema.optional() }).strict(),
-  emptyCommand('companion.sessions.list'),
   z.object({
-    kind: z.literal('companion.sessions.create'),
-    workspaceId: nonEmptyIdSchema.optional(),
-    title: z.string().trim().min(1).max(512).optional()
+    kind: z.literal('projection.commits.read'),
+    request: publicProjectionReadRequestV3Schema
   }).strict(),
-  z.object({ kind: z.literal('companion.sessions.rename'), sessionId: nonEmptyIdSchema, title: z.string().trim().min(1).max(512) }).strict(),
-  z.object({ kind: z.literal('companion.sessions.delete'), sessionId: nonEmptyIdSchema }).strict(),
-  z.object({ kind: z.literal('companion.workspaces.purge'), workspaceId: nonEmptyIdSchema }).strict(),
-  z.object({ kind: z.literal('companion.messages.list'), sessionId: nonEmptyIdSchema, limit: z.number().int().min(1).max(1_000).default(200) }).strict(),
   z.object({
-    kind: z.literal('companion.chat.start'),
-    clientMessageId: nonEmptyIdSchema,
-    sessionId: nonEmptyIdSchema.optional(),
-    workspaceId: nonEmptyIdSchema.optional(),
-    message: z.string().min(1).max(32_000).refine(
+    kind: z.literal('conversation.session.create.v3'),
+    contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
+    sessionId: publicProjectionCanonicalIdSchema,
+    workspaceId: publicProjectionCanonicalIdSchema
+  }).strict(),
+  z.object({
+    kind: z.literal('conversation.message.accept.v3'),
+    contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
+    sessionId: publicProjectionCanonicalIdSchema,
+    workspaceId: publicProjectionCanonicalIdSchema,
+    expectedSessionVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    messageId: publicProjectionCanonicalIdSchema,
+    content: z.string().min(1).max(100_000).refine(
       (value) => value.trim().length > 0,
-      '消息不能只包含空白字符。'
+      'Conversation message cannot contain only whitespace.'
     ),
-    modelId: nonEmptyIdSchema.optional(),
-    inference: modelInferenceOptionsSchema.optional(),
-    routingStrategy: chatRoutingStrategySchema.optional(),
-    agentMode: z.literal('plan').optional(),
-    resources: z.array(resourceReferenceSchema).max(16).default([])
-  }).strict(),
-  z.object({ kind: z.literal('companion.chat.cancel'), runId: nonEmptyIdSchema }).strict(),
-  emptyCommand('agent.proposals.list'),
-  z.object({
-    kind: z.literal('agent.proposals.respond'),
-    proposalId: nonEmptyIdSchema,
-    decision: z.enum(['approve_once', 'allow_session_read_only', 'reject']),
-    allowedCapabilities: z.array(agentCapabilitySchema).min(1).max(4).optional(),
-    workspaceId: nonEmptyIdSchema.optional(),
-    workspaceAccess: workspaceAccessModeSchema.optional()
-  }).strict().superRefine((input, context) => {
-    if (input.decision === 'reject' && (input.allowedCapabilities || input.workspaceId || input.workspaceAccess)) {
-      context.addIssue({ code: 'custom', message: '拒绝提案时不能附带授权能力或工作区。' });
-    }
-    if (input.decision === 'allow_session_read_only' && input.allowedCapabilities) {
-      context.addIssue({ code: 'custom', message: '会话只读授权固定为 file-read。', path: ['allowedCapabilities'] });
-    }
-  }),
-  z.object({ kind: z.literal('runs.list'), sessionId: nonEmptyIdSchema.optional(), status: runStatusSchema.optional() }).strict(),
-  z.object({ kind: z.literal('runs.get'), runId: nonEmptyIdSchema }).strict(),
-  z.object({ kind: z.literal('runActivities.get'), runId: nonEmptyIdSchema }).strict(),
-  z.object({
-    kind: z.literal('runActivityDetails.get'),
-    runId: nonEmptyIdSchema,
-    activityId: nonEmptyIdSchema
-  }).strict(),
-  z.object({ kind: z.literal('runs.cancel'), runId: nonEmptyIdSchema }).strict(),
-  z.object({
-    kind: z.literal('runs.recover'),
-    runId: nonEmptyIdSchema,
-    expectedAggregateVersion: z.number().int().positive(),
-    decision: z.enum(['resume', 'cancel', 'mark_failed'])
+    execution: conversationMessageExecutionV3Schema.optional()
   }).strict(),
   z.object({
-    kind: z.literal('runs.resume'),
-    runId: nonEmptyIdSchema,
-    expectedAggregateVersion: z.number().int().positive(),
-    budget: runBudgetSchema.partial().optional()
-  }).strict(),
-  emptyCommand('permissions.list'),
-  z.object({
-    kind: z.literal('permissions.respond'),
-    requestId: nonEmptyIdSchema,
-    approvalVersion: nonEmptyIdSchema,
-    decision: z.enum(['allow_once', 'allow_session', 'allow_project', 'allow_workspace', 'deny']),
-    approvedItemIds: z.array(nonEmptyIdSchema).max(128)
-  }).strict(),
-  z.object({ kind: z.literal('permissions.resume'), requestId: nonEmptyIdSchema }).strict(),
-  emptyCommand('planHandoffs.list'),
-  z.object({ kind: z.literal('planHandoffs.respond'), handoffId: nonEmptyIdSchema, decision: z.enum(['approve', 'reject']) }).strict(),
-  z.object({ kind: z.literal('planHandoffs.resume'), handoffId: nonEmptyIdSchema }).strict(),
-  z.object({
-    kind: z.literal('resources.list'),
-    ownerType: z.string().trim().min(1).max(128).optional(),
-    ownerId: nonEmptyIdSchema.optional(),
-    limit: z.number().int().min(1).max(2_000).default(200)
-  }).strict(),
-  z.object({ kind: z.literal('resources.get'), resourceId: nonEmptyIdSchema }).strict(),
-  z.object({
-    kind: z.literal('resources.update'),
-    resourceId: nonEmptyIdSchema,
-    name: z.string().trim().min(1).max(512).optional(),
-    lifecycle: z.enum(['temporary', 'session', 'run', 'persistent']).optional(),
-    sensitivity: z.enum(['public', 'workspace', 'sensitive', 'secret']).optional(),
-    provenanceSummary: z.string().trim().min(1).max(1_024).nullable().optional(),
-    expiresAt: isoDateTimeSchema.nullable().optional()
-  }).strict().refine(
-    (input) => Object.keys(input).some((key) => key !== 'kind' && key !== 'resourceId'),
-    { message: 'At least one resource field must be updated.' }
-  ),
-  z.object({ kind: z.literal('resources.delete'), resourceId: nonEmptyIdSchema }).strict(),
-  z.object({
-    kind: z.literal('memories.list'),
-    scope: z.enum(['global', 'session', 'project', 'task']).optional(),
-    scopeId: nonEmptyIdSchema.optional(),
-    lifecycleState: z.enum(['candidate', 'active', 'rejected', 'superseded', 'expired']).optional(),
-    limit: z.number().int().min(1).max(2_000).default(200)
-  }).strict(),
-  z.object({ kind: z.literal('memories.get'), memoryId: nonEmptyIdSchema }).strict(),
-  z.object({
-    kind: z.literal('memories.update'),
-    memoryId: nonEmptyIdSchema,
-    value: z.string().min(1).max(200_000).optional(),
-    summary: z.string().max(4_096).nullable().optional(),
-    importance: z.number().min(0).max(1).optional(),
-    confidence: z.number().min(0).max(1).optional(),
-    lifecycleState: z.enum(['candidate', 'active', 'rejected', 'expired']).optional(),
-    sensitivity: z.enum(['public', 'workspace', 'sensitive']).optional(),
-    retentionUntil: isoDateTimeSchema.nullable().optional()
-  }).strict().superRefine((input, context) => {
-    const fields = Object.keys(input).filter((key) => key !== 'kind' && key !== 'memoryId');
-    if (fields.length === 0) {
-      context.addIssue({ code: 'custom', message: 'At least one memory field must be updated.' });
-    }
-    const contentFields = ['value', 'summary', 'importance', 'confidence', 'sensitivity', 'retentionUntil'];
-    if (
-      contentFields.some((field) => field in input)
-      && input.lifecycleState
-      && input.lifecycleState !== 'active'
-    ) {
-      context.addIssue({
-        code: 'custom',
-        path: ['lifecycleState'],
-        message: 'Edited memory content must create an active replacement.'
-      });
-    }
-  }),
-  z.object({ kind: z.literal('memories.delete'), memoryId: nonEmptyIdSchema }).strict(),
-  z.object({ kind: z.literal('taskCheckpoints.list'), runId: nonEmptyIdSchema }).strict(),
-  z.object({
-    kind: z.literal('taskCheckpoints.get'),
-    runId: nonEmptyIdSchema,
-    checkpointId: nonEmptyIdSchema
+    kind: z.literal('agent.decision.resolve.v3'),
+    contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
+    runId: publicProjectionCanonicalIdSchema,
+    decisionId: publicProjectionCanonicalIdSchema,
+    action: publicDecisionResolutionActionV3Schema
   }).strict(),
   z.object({
-    kind: z.literal('taskCheckpoints.compare'),
-    runId: nonEmptyIdSchema,
-    checkpointId: nonEmptyIdSchema
-  }).strict(),
-  z.object({
-    kind: z.literal('taskCheckpoints.restore'),
-    runId: nonEmptyIdSchema,
-    checkpointId: nonEmptyIdSchema
-  }).strict(),
-  z.object({ kind: z.literal('trace.list'), runId: nonEmptyIdSchema.optional(), limit: z.number().int().min(1).max(2_000).default(200) }).strict()
+    kind: z.literal('agent.run.cancel.v3'),
+    contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
+    runId: publicProjectionCanonicalIdSchema,
+    expectedVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    occurredAt: isoDateTimeSchema,
+    reason: z.literal('user_requested')
+  }).strict()
 ]);
 
 export type RuntimeCommand = z.infer<typeof runtimeCommandSchema>;
 
 export const runtimeResultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('runtime.status'), status: runtimeStatusSchema }).strict(),
-  z.object({ kind: z.literal('runtime.snapshot'), snapshot: runtimeSnapshotSchema }).strict(),
   z.object({
-    kind: z.literal('events.replay'),
-    events: z.array(runtimeEventEnvelopeSchema),
-    nextCursor: z.number().int().nonnegative()
+    kind: z.literal('projection.snapshot'),
+    snapshot: publicProjectionSnapshotV3Schema
   }).strict(),
-  z.object({ kind: z.literal('models.catalog'), models: z.array(modelSummarySchema) }).strict(),
-  z.object({ kind: z.literal('companion.sessions'), sessions: z.array(conversationSessionSchema) }).strict(),
-  z.object({ kind: z.literal('companion.session'), session: conversationSessionSchema }).strict(),
   z.object({
-    kind: z.literal('companion.workspace.purged'),
-    workspaceId: nonEmptyIdSchema,
-    deletedSessions: z.number().int().nonnegative(),
-    deletedAgentContexts: z.number().int().nonnegative()
+    kind: z.literal('projection.commits'),
+    batch: publicProjectionReadBatchV3Schema
   }).strict(),
-  z.object({ kind: z.literal('companion.messages'), messages: z.array(companionMessageSchema) }).strict(),
   z.object({
-    kind: z.literal('companion.chat.accepted'),
-    runId: nonEmptyIdSchema,
-    sessionId: nonEmptyIdSchema,
-    executionMode: z.enum(['companion', 'agent-plan'])
+    kind: z.literal('conversation.session.created.v3'),
+    sessionId: publicProjectionCanonicalIdSchema,
+    version: z.literal(1)
   }).strict(),
-  z.object({ kind: z.literal('agent.proposals'), proposals: z.array(agentProposalSchema) }).strict(),
-  z.object({ kind: z.literal('agent.proposal'), proposal: agentProposalSchema }).strict(),
-  z.object({ kind: z.literal('runs'), runs: z.array(runSummarySchema) }).strict(),
-  z.object({ kind: z.literal('run'), run: runSummarySchema }).strict(),
-  z.object({ kind: z.literal('runActivityGraph'), graph: runActivityGraphSchema }).strict(),
-  z.object({ kind: z.literal('runActivityDetail'), detail: runActivityDetailSchema }).strict(),
-  z.object({ kind: z.literal('permissions'), requests: z.array(permissionRequestSchema) }).strict(),
-  z.object({ kind: z.literal('permission'), request: permissionRequestSchema }).strict(),
-  z.object({ kind: z.literal('planHandoffs'), handoffs: z.array(planHandoffSchema) }).strict(),
-  z.object({ kind: z.literal('planHandoff'), handoff: planHandoffSchema }).strict(),
-  z.object({ kind: z.literal('resources'), resources: z.array(resourceRecordSchema) }).strict(),
-  z.object({ kind: z.literal('resource'), resource: resourceRecordSchema }).strict(),
-  z.object({ kind: z.literal('memories'), memories: z.array(memoryRecordSchema) }).strict(),
-  z.object({ kind: z.literal('memory'), memory: memoryRecordSchema }).strict(),
-  z.object({ kind: z.literal('taskCheckpoints'), checkpoints: z.array(taskCheckpointSchema) }).strict(),
-  z.object({ kind: z.literal('taskCheckpoint'), checkpoint: taskCheckpointSchema }).strict(),
   z.object({
-    kind: z.literal('taskCheckpointRestore'),
-    source: taskCheckpointSchema,
-    restore: taskCheckpointSchema
+    kind: z.literal('conversation.message.accepted.v3'),
+    sessionId: publicProjectionCanonicalIdSchema,
+    sessionVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    messageId: publicProjectionCanonicalIdSchema,
+    messageVersion: z.literal(1),
+    sagaId: publicProjectionCanonicalIdSchema
   }).strict(),
-  z.object({ kind: z.literal('trace'), entries: z.array(traceEntrySchema) }).strict(),
+  z.object({
+    kind: z.literal('agent.decision.resolved.v3'),
+    runId: publicProjectionCanonicalIdSchema,
+    decisionId: publicProjectionCanonicalIdSchema,
+    runVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
+  }).strict(),
+  z.object({
+    kind: z.literal('agent.run.cancelled.v3'),
+    runId: publicProjectionCanonicalIdSchema,
+    runVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
+  }).strict(),
   z.object({ kind: z.literal('acknowledged') }).strict()
 ]);
 

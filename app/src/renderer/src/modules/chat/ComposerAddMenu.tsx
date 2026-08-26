@@ -9,17 +9,9 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  FileText,
-  FileType2,
   Check,
   Lightbulb,
-  PanelsTopLeft,
-  Paperclip,
   Plus,
-  Presentation,
-  Shapes,
-  Table2,
-  Target
 } from 'lucide-react';
 
 interface AddMenuItem {
@@ -27,8 +19,6 @@ interface AddMenuItem {
   label: string;
   description?: string;
   icon: ReactNode;
-  tone?: 'documents' | 'pdf' | 'spreadsheets' | 'presentations' | 'templates' | 'sites';
-  highlighted?: boolean;
   active?: boolean;
   disabled?: boolean;
 }
@@ -41,18 +31,7 @@ interface AddMenuLayout {
 }
 
 const addItems: readonly AddMenuItem[] = [
-  { id: 'files', label: '文件和文件夹', icon: <Paperclip size={18} />, highlighted: true },
-  { id: 'goal', label: '目标', description: '设置要持续追求的目标', icon: <Target size={18} /> },
   { id: 'plan', label: '计划模式', description: '开启计划模式', icon: <Lightbulb size={18} /> }
-];
-
-const pluginItems: readonly AddMenuItem[] = [
-  { id: 'documents', label: 'Documents', description: 'Create and edit document artifacts', icon: <FileText size={17} />, tone: 'documents' },
-  { id: 'pdf', label: 'PDF', description: 'Read, create, and verify PDF files', icon: <FileType2 size={17} />, tone: 'pdf' },
-  { id: 'spreadsheets', label: 'Spreadsheets', description: 'Create and edit spreadsheet files', icon: <Table2 size={17} />, tone: 'spreadsheets' },
-  { id: 'presentations', label: 'Presentations', description: 'Create and edit presentations', icon: <Presentation size={17} />, tone: 'presentations' },
-  { id: 'template-creator', label: 'Template Creator', description: 'Create or update reusable templates from reference content', icon: <Shapes size={17} />, tone: 'templates' },
-  { id: 'sites', label: 'Sites', description: 'Build and deploy websites with Sites', icon: <PanelsTopLeft size={17} />, tone: 'sites' }
 ];
 
 export function ComposerAddMenu({
@@ -167,7 +146,6 @@ export function ComposerAddMenu({
               window.requestAnimationFrame(() => triggerRef.current?.focus());
             }}
           />
-          <ComposerAddMenuSection title="插件" items={pluginItems} />
         </div>
       )
     : null;
@@ -219,17 +197,13 @@ function ComposerAddMenuSection({
             key={item.id}
             type="button"
             role="menuitem"
-            className={`composer-add-item${item.highlighted ? ' is-highlighted' : ''}${item.active ? ' is-active' : ''}`}
+            className={`composer-add-item${item.active ? ' is-active' : ''}`}
             disabled={item.disabled}
-            aria-label={item.id === 'plan' ? item.label : `${item.label}（功能展示）`}
-            {...(item.id === 'plan'
-              ? {
-                  'aria-pressed': item.active === true,
-                  onClick: () => onSelect?.(item)
-                }
-              : {})}
+            aria-label={item.label}
+            aria-pressed={item.active === true}
+            onClick={() => onSelect?.(item)}
           >
-            <span className={`composer-add-item-icon${item.tone ? ` is-${item.tone}` : ''}`} aria-hidden="true">
+            <span className="composer-add-item-icon" aria-hidden="true">
               {item.icon}
             </span>
             <span className="composer-add-item-copy">

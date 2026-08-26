@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -24,17 +25,14 @@ describe('RuntimeSupervisor', () => {
     supervisor.onStatus((status) => statuses.push(status.availability));
 
     await supervisor.start();
-    const created = await supervisor.request({
-      kind: 'companion.sessions.create',
-      title: 'Desktop host integration'
+    const snapshot = await supervisor.request({
+      kind: 'projection.snapshot.get',
+      contractVersion: '3.0'
     });
-    expect(created).toMatchObject({
-      kind: 'companion.session',
-      session: { title: 'Desktop host integration' }
-    });
+    expect(snapshot).toMatchObject({ kind: 'projection.snapshot' });
     expect(supervisor.getStatus()).toMatchObject({
       availability: 'ready',
-      protocolVersion: '2.0'
+      protocolVersion: '3.0'
     });
     expect(statuses).toContain('starting');
     expect(statuses).toContain('ready');
@@ -72,14 +70,75 @@ describe('RuntimeSupervisor', () => {
     supervisor.onStatus((status) => statuses.push(status.availability));
     await supervisor.start();
 
-    await expect(supervisor.request({ kind: 'runtime.status.get' })).rejects.toMatchObject({
-      code: 'runtime_exited'
+    await expect(supervisor.request(
+      { kind: 'runtime.status.get' },
+      { commandId: 'command-crash' }
+    )).rejects.toMatchObject({
+      code: 'command_outcome_uncertain',
+      retryable: false,
+      correlationId: 'command-crash'
     });
     await waitUntil(() => statuses.filter((status) => status === 'ready').length === 2);
 
     expect(statuses).toContain('crashed');
     expect(statuses).toContain('restarting');
     expect(supervisor.getStatus().availability).toBe('ready');
+  }, 15_000);
+
+  it('does not send a request cancelled while the Runtime handshake is pending', async () => {
+    const runtimeEntry = path.resolve(process.cwd(), 'tests', 'fixtures', 'runtime-fixture.cjs');
+    const options = createSupervisorOptions(runtimeEntry, {
+      ...process.env,
+      ARIADNE_TEST_RUNTIME_BEHAVIOR: 'delayed_ready_abort_gate'
+    }, []);
+    const supervisor = new RuntimeSupervisor(options);
+    supervisors.push(supervisor);
+    const controller = new AbortController();
+
+    const result = supervisor.request(
+      { kind: 'runtime.status.get' },
+      {
+        commandId: 'command-cancel-during-start',
+        signal: controller.signal
+      }
+    );
+    setTimeout(() => controller.abort(), 20);
+
+    await expect(result).rejects.toMatchObject({
+      code: 'runtime_request_cancelled',
+      retryable: false,
+      correlationId: 'command-cancel-during-start'
+    });
+    await expect(supervisor.request(
+      { kind: 'runtime.status.get' },
+      { commandId: 'command-after-start-cancel' }
+    )).resolves.toMatchObject({ kind: 'runtime.status' });
+  }, 15_000);
+
+  it('uses a stable command id and sends an explicit cancel when a request deadline expires', async () => {
+    const runtimeEntry = path.resolve(process.cwd(), 'tests', 'fixtures', 'runtime-fixture.cjs');
+    const options = createSupervisorOptions(runtimeEntry, {
+      ...process.env,
+      ARIADNE_TEST_RUNTIME_BEHAVIOR: 'cancel_gate'
+    }, []);
+    options.requestTimeoutMs = 30;
+    const supervisor = new RuntimeSupervisor(options);
+    supervisors.push(supervisor);
+    await supervisor.start();
+
+    await expect(supervisor.request(
+      { kind: 'runtime.status.get' },
+      { commandId: 'command-timeout' }
+    )).rejects.toMatchObject({
+      code: 'runtime_request_timeout',
+      correlationId: 'command-timeout'
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await expect(supervisor.request(
+      { kind: 'runtime.status.get' },
+      { commandId: 'command-after-cancel', timeoutMs: 1_000 }
+    )).resolves.toMatchObject({ kind: 'runtime.status' });
   }, 15_000);
 
   it('restarts the same supervised boundary when Agent settings change', async () => {
@@ -230,13 +289,55 @@ describe('RuntimeSupervisor', () => {
       expect(supervisor.getStatus().availability).toBe('ready');
       expect(observedStatuses).toContain('ready');
       await vi.waitFor(() => {
-        expect(observedEvents).toContain('runtime.status.changed');
+        expect(observedEvents).toContain('trace.appended');
       });
       expect(consoleError).toHaveBeenCalled();
     } finally {
       consoleError.mockRestore();
     }
   }, 15_000);
+
+  it('discards queued events from an old Runtime epoch after restart', async () => {
+    const runtimeEntry = path.resolve(process.cwd(), 'tests', 'fixtures', 'runtime-fixture.cjs');
+    const supervisor = new RuntimeSupervisor(
+      createSupervisorOptions(runtimeEntry, process.env, [])
+    );
+    supervisors.push(supervisor);
+    const oldChild = {};
+    const newChild = {};
+    const internals = supervisor as unknown as {
+      child: object | null;
+      runtimeInstanceId: string | null;
+      lastEventCursor: number;
+      eventDeliveryQueue: Promise<void>;
+      handleMessage(child: object, raw: unknown): void;
+    };
+    internals.child = oldChild;
+    internals.runtimeInstanceId = '11111111-1111-4111-8111-111111111111';
+    internals.lastEventCursor = 1;
+    const observed: string[] = [];
+    supervisor.onEvent((event) => observed.push(event.eventId));
+
+    internals.handleMessage(
+      oldChild,
+      runtimeEventMessage('11111111-1111-4111-8111-111111111111', 3, 'old-event-3')
+    );
+    const oldEpochQueue = internals.eventDeliveryQueue;
+    internals.child = newChild;
+    internals.runtimeInstanceId = '22222222-2222-4222-8222-222222222222';
+    internals.lastEventCursor = 0;
+    internals.eventDeliveryQueue = Promise.resolve();
+    internals.handleMessage(
+      newChild,
+      runtimeEventMessage('22222222-2222-4222-8222-222222222222', 1, 'new-event-1')
+    );
+    await internals.eventDeliveryQueue;
+
+    await oldEpochQueue;
+
+    expect(observed).toEqual(['new-event-1']);
+    expect(internals.lastEventCursor).toBe(1);
+  });
 
   it('resets the consecutive-crash budget after a stable ready interval', async () => {
     const runtimeEntry = path.resolve(process.cwd(), 'tests', 'fixtures', 'runtime-fixture.cjs');
@@ -251,16 +352,89 @@ describe('RuntimeSupervisor', () => {
     supervisor.onStatus((status) => statuses.push(status.availability));
     await supervisor.start();
 
-    await expect(supervisor.request({ kind: 'runtime.status.get' })).rejects.toMatchObject({ code: 'runtime_exited' });
+    await expect(supervisor.request({ kind: 'runtime.status.get' })).rejects.toMatchObject({
+      code: 'command_outcome_uncertain',
+      retryable: false
+    });
     await waitUntil(() => statuses.filter((status) => status === 'ready').length === 2);
     await new Promise((resolve) => setTimeout(resolve, 60));
-    await expect(supervisor.request({ kind: 'runtime.status.get' })).rejects.toMatchObject({ code: 'runtime_exited' });
+    await expect(supervisor.request({ kind: 'runtime.status.get' })).rejects.toMatchObject({
+      code: 'command_outcome_uncertain',
+      retryable: false
+    });
     await waitUntil(() => statuses.filter((status) => status === 'ready').length === 3);
 
     expect(supervisor.getStatus().availability).toBe('ready');
     expect(statuses).not.toContain('disabled');
   }, 15_000);
+
+  it('blocks replacement when termination does not produce a confirmed child exit', async () => {
+    const runtimeEntry = path.resolve(process.cwd(), 'tests', 'fixtures', 'runtime-fixture.cjs');
+    const options = createSupervisorOptions(runtimeEntry, process.env, []);
+    options.shutdownTimeoutMs = 40;
+    const supervisor = new RuntimeSupervisor(options);
+    const child = Object.assign(new EventEmitter(), {
+      connected: true,
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      kill: vi.fn(() => false),
+      send: vi.fn((_message: unknown, callback: (error: Error | null) => void) => callback(null))
+    });
+    const internals = supervisor as unknown as {
+      child: typeof child | null;
+      runtimeInstanceId: string | null;
+      currentStatus: { availability: string };
+    };
+    internals.child = child;
+    internals.runtimeInstanceId = '11111111-1111-4111-8111-111111111111';
+    internals.currentStatus = {
+      availability: 'ready',
+      capabilities: [],
+      observedAt: new Date().toISOString()
+    } as never;
+
+    await expect(supervisor.restart(options)).rejects.toMatchObject({
+      code: 'runtime_process_exit_timeout',
+      retryable: false
+    });
+
+    expect(child.kill).toHaveBeenCalled();
+    expect(internals.child).toBe(child);
+    expect(supervisor.getStatus()).toMatchObject({
+      availability: 'crashed',
+      detail: expect.stringContaining('replacement is blocked')
+    });
+    internals.child = null;
+  });
 });
+
+function runtimeEventMessage(runtimeInstanceId: string, cursor: number, eventId: string) {
+  return {
+    protocol: 'ariadne_runtime',
+    protocolVersion: '3.0',
+    runtimeInstanceId,
+    type: 'event',
+    event: {
+      eventId,
+      cursor,
+      schemaVersion: '2.0',
+      aggregateType: 'trace',
+      aggregateId: eventId,
+      aggregateVersion: cursor,
+      occurredAt: new Date().toISOString(),
+      event: {
+        kind: 'trace.appended',
+        entry: {
+          traceId: eventId,
+          level: 'info',
+          category: 'supervisor-test',
+          message: 'Runtime event delivery test.',
+          occurredAt: new Date().toISOString()
+        }
+      }
+    }
+  } as const;
+}
 
 function createSupervisor(
   runtimeEntry: string,
@@ -307,6 +481,11 @@ function createSupervisorOptions(
       sandboxMode: 'workspace-write',
       allowedPermissions: ['read', 'write', 'shell', 'network', 'dangerous']
     },
+    agentAdmissionAuthoritySource: {
+      sourceVersion: 1,
+      status: 'disabled',
+      reason: 'not_configured'
+    },
     runtimePolicy: createDefaultRuntimePolicySnapshot(),
     workspaces: [{
       workspaceId: 'test',
@@ -321,7 +500,7 @@ function createSupervisorOptions(
     executablePath: process.execPath,
     environment,
     restartDelaysMs,
-    handshakeTimeoutMs: 5_000,
+    handshakeTimeoutMs: 15_000,
     requestTimeoutMs: 5_000,
     shutdownTimeoutMs: 2_000
   };

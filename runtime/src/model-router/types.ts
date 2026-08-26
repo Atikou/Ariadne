@@ -1,5 +1,3 @@
-import type { ModelDeclaredCapabilities, ModelPrivacyPolicy } from "./model-capability-profile.js";
-
 export const TASK_TYPE_VALUES = [
   "casual_chat",
   "companion_chat",
@@ -58,6 +56,36 @@ export type ModelRole = "primary" | "draft" | "review" | "final";
 export type QualityMode = "fast" | "balanced" | "deep";
 
 export type RiskLevel = "low" | "medium" | "high";
+
+/** Stable capability vocabulary owned by the router contract layer. */
+export interface ModelDeclaredCapabilities {
+  text: boolean;
+  image: boolean;
+  audio: boolean;
+  video: boolean;
+  file: boolean;
+  code: boolean;
+  architecture: boolean;
+  toolCalling: boolean;
+  jsonMode: boolean;
+  longContext: boolean;
+  ocr: boolean;
+  uiScreenshot: boolean;
+  chartUnderstanding: boolean;
+  diagramUnderstanding: boolean;
+  spatialReasoning: boolean;
+  imageGeneration: boolean;
+  imageEditing: boolean;
+}
+
+export interface ModelPrivacyPolicy {
+  local: boolean;
+  remote: boolean;
+  /** 是否允许接收 sensitive=true 任务（仍须 location 匹配）。 */
+  allowSensitive: boolean;
+}
+
+export type DeclaredCapabilityKey = keyof ModelDeclaredCapabilities;
 
 export interface ModelProfile {
   id: string;

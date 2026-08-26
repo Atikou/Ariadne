@@ -6,7 +6,7 @@ import {
 import { AgentHandoffStateCenter } from "../assistant/AgentHandoffStateCenter.js";
 import type { WorkspaceCatalog } from "../config/workspaceCatalog.js";
 import type { LoopChatFn } from "../agent/AgentLoop.js";
-import type { UserPermissionPolicy } from "../agent/RunPolicyTypes.js";
+import type { UserPermissionPolicy } from "../agent/RunPolicyPrimitives.js";
 import type { ContextManager } from "../context/ContextManager.js";
 import type { ToolPermission } from "../core/permissions.js";
 import type { Orchestrator } from "../orchestrator/Orchestrator.js";

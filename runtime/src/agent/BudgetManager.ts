@@ -1,6 +1,6 @@
 import type { ToolPermission } from "../core/permissions.js";
 import type { AgentToolStep } from "./toolStep.js";
-import type { RunBudget, RunBudgetKey, RunBudgetUsage } from "./RunPolicyTypes.js";
+import type { RunBudget, RunBudgetKey, RunBudgetUsage } from "./RunPolicyPrimitives.js";
 import { countToolOutcomeUsage, isSuccessfulToolStep } from "./toolStepOutcome.js";
 
 export interface BudgetCheckInput {

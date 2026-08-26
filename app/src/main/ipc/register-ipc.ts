@@ -9,16 +9,19 @@ import {
   type WebContents
 } from 'electron';
 import { Buffer } from 'node:buffer';
-import { runtimeCommandSchema, runtimeEventEnvelopeSchema } from '@ariadne/protocol/public';
+import { randomUUID } from 'node:crypto';
+import { runtimeEventEnvelopeSchema, runtimeStatusSchema } from '@ariadne/protocol/public';
+import { ZodError } from 'zod';
 import { IPC_CHANNELS } from '@shared/ipc';
 import {
-  agentSettingsUpdateSchema,
+  agentSettingsMutationSchema,
   agentWorkspacePinUpdateSchema,
   agentWorkspaceRequestSchema,
   clipboardWriteRequestSchema,
   closeTerminalRequestSchema,
   createTerminalSessionRequestSchema,
   resizeTerminalRequestSchema,
+  runtimeDesktopRequestSchema,
   saveLayoutRequestSchema,
   showWindowRequestSchema,
   titleBarThemeSchema,
@@ -27,11 +30,14 @@ import {
   writeTerminalRequestSchema
 } from '@shared/schemas';
 import type {
-  AgentSettingsUpdate,
+  AgentSettingsMutation,
+  AgentSettingsMutationResult,
   AgentSettingsView,
   AgentWorkspacePinUpdate,
   AgentWorkspaceRequest,
   OpenWorkspaceResult,
+  PublicError,
+  Result,
   UserPreferences
 } from '@shared/contract';
 import type { AgentSettingsRepository } from '../persistence/agent-settings-repository';
@@ -40,14 +46,14 @@ import type { SystemCapabilityCatalog } from '../services/system-capabilities';
 import type { TerminalSessionService } from '../services/terminal-service';
 import type { WorkspaceFileService } from '../services/workspace-file-service';
 import type { MainWindowController } from '../windows/main-window';
-import type { RuntimeSupervisor } from '../runtime/runtime-supervisor';
+import { RuntimeRequestError, type RuntimeSupervisor } from '../runtime/runtime-supervisor';
 
 const MAX_LAYOUT_BYTES = 2 * 1024 * 1024;
 
 interface IpcDependencies {
   getWindow(): BrowserWindow | null;
   agentSettings: AgentSettingsRepository;
-  updateAgentSettings(settings: AgentSettingsUpdate): Promise<AgentSettingsView>;
+  applyAgentSettings(mutation: AgentSettingsMutation): Promise<AgentSettingsMutationResult>;
   setWorkspacePinned(request: AgentWorkspacePinUpdate): Promise<AgentSettingsView>;
   archiveWorkspace(request: AgentWorkspaceRequest): Promise<AgentSettingsView>;
   restoreWorkspace(request: AgentWorkspaceRequest): Promise<AgentSettingsView>;
@@ -83,15 +89,21 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
       renderer.send(IPC_CHANNELS.runtimeEvent, parsed);
     }
   });
+  const removeRuntimeStatuses = dependencies.runtime.onStatus((status) => {
+    const parsed = runtimeStatusSchema.parse(status);
+    for (const renderer of dependencies.mainWindow.getPrivilegedRendererContents()) {
+      renderer.send(IPC_CHANNELS.runtimeStatusChanged, parsed);
+    }
+  });
 
   ipcMain.handle(IPC_CHANNELS.agentSettingsLoad, (event) => {
     trusted(event);
     return dependencies.agentSettings.getView();
   });
 
-  ipcMain.handle(IPC_CHANNELS.agentSettingsUpdate, async (event, input: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.agentSettingsApply, async (event, input: unknown) => {
     trusted(event);
-    return dependencies.updateAgentSettings(agentSettingsUpdateSchema.parse(input));
+    return dependencies.applyAgentSettings(agentSettingsMutationSchema.parse(input));
   });
 
   ipcMain.handle(IPC_CHANNELS.agentWorkspacePinUpdate, async (event, input: unknown) => {
@@ -146,13 +158,28 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
   });
 
   ipcMain.handle(IPC_CHANNELS.runtimeStatus, (event) => {
-    trusted(event);
-    return dependencies.runtime.getStatus();
+    try {
+      trusted(event);
+      return { ok: true, value: dependencies.runtime.getStatus() };
+    } catch (error) {
+      return runtimeIpcFailure(error);
+    }
   });
 
   ipcMain.handle(IPC_CHANNELS.runtimeRequest, async (event, input: unknown) => {
-    trusted(event);
-    return dependencies.runtime.request(runtimeCommandSchema.parse(input));
+    try {
+      trusted(event);
+      const request = runtimeDesktopRequestSchema.parse(input);
+      return {
+        ok: true,
+        value: await dependencies.runtime.request(
+          request.command,
+          request.commandId ? { commandId: request.commandId } : {}
+        )
+      };
+    } catch (error) {
+      return runtimeIpcFailure(error);
+    }
   });
 
   ipcMain.handle(IPC_CHANNELS.systemCapabilityStatuses, async (event) => {
@@ -219,6 +246,7 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
 
   return () => {
     removeRuntimeEvents();
+    removeRuntimeStatuses();
     ipcMain.removeListener(IPC_CHANNELS.terminalWrite, terminalWriteListener);
     ipcMain.removeListener(IPC_CHANNELS.terminalResize, terminalResizeListener);
     ipcMain.removeListener(IPC_CHANNELS.terminalClose, terminalCloseListener);
@@ -237,6 +265,37 @@ function assertTrustedSender(
   if (!trustedSender || event.senderFrame !== trustedSender.mainFrame) {
     throw new Error('Rejected IPC from an untrusted sender.');
   }
+}
+
+function runtimeIpcFailure(error: unknown): Result<never> {
+  let publicError: PublicError;
+  if (error instanceof RuntimeRequestError) {
+    publicError = {
+      code: error.code,
+      message: error.message.slice(0, 4_096),
+      retryable: error.retryable,
+      correlationId: error.correlationId,
+      ...(error.details ? { details: [...error.details] } : {})
+    };
+  } else if (error instanceof ZodError) {
+    publicError = {
+      code: 'invalid_runtime_command',
+      message: 'The Runtime command does not match the public desktop contract.',
+      retryable: false,
+      correlationId: randomUUID(),
+      details: error.issues.slice(0, 64).map((issue) => (
+        `${issue.path.join('.') || 'command'}: ${issue.message}`.slice(0, 1_024)
+      ))
+    };
+  } else {
+    publicError = {
+      code: 'runtime_ipc_failed',
+      message: 'The Runtime desktop request failed before an outcome was available.',
+      retryable: false,
+      correlationId: randomUUID()
+    };
+  }
+  return { ok: false, error: publicError };
 }
 
 function createValidatedTerminalListener<T>(

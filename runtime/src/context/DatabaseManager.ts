@@ -13,6 +13,7 @@ import {
   MEMORY_DB_MIGRATIONS,
   MEMORY_DB_SCHEMA_VERSION,
 } from "./memoryDbMigrations.js";
+import { preflightMemoryControlShadowsAtDatabasePath } from "../adapters/persistence/memoryControlShadowRetirement.js";
 
 /**
  * SQLite 存储层（Node 内置 node:sqlite，含 FTS5）。
@@ -26,23 +27,35 @@ export class DatabaseManager {
   private readonly db: DatabaseSync;
 
   constructor(dataDir: string) {
-    const agentData = path.join(dataDir, "agent_data");
+    const agentData = path.resolve(dataDir, "agent_data");
+    this.dbPath = path.join(agentData, "memory.db");
+    this.filesDir = path.join(agentData, "files");
+
+    preflightMemoryControlShadowsAtDatabasePath(this.dbPath);
+
     mkdirSync(agentData, { recursive: true });
     mkdirSync(path.join(agentData, "files"), { recursive: true });
     mkdirSync(path.join(agentData, "lancedb"), { recursive: true });
     mkdirSync(path.join(agentData, "logs", "messages"), { recursive: true });
 
-    this.dbPath = path.join(agentData, "memory.db");
-    this.filesDir = path.join(agentData, "files");
     this.db = new DatabaseSync(this.dbPath);
-    assertDatabaseVersionSupported(this.db, MEMORY_DB_SCHEMA_VERSION);
-    this.db.exec("PRAGMA journal_mode = WAL;");
-    this.db.exec("PRAGMA foreign_keys = ON;");
-    const { version } = applySqliteMigrations(this.db, MEMORY_DB_MIGRATIONS);
-    this.schemaVersion = version;
-    this.schemaInfo = getSchemaInfo(this.db);
-    if (version !== MEMORY_DB_SCHEMA_VERSION) {
-      throw new Error(`memory.db schema 版本异常：期望 ${MEMORY_DB_SCHEMA_VERSION}，实际 ${version}`);
+    try {
+      assertDatabaseVersionSupported(this.db, MEMORY_DB_SCHEMA_VERSION);
+      this.db.exec("PRAGMA journal_mode = WAL;");
+      this.db.exec("PRAGMA foreign_keys = ON;");
+      const { version } = applySqliteMigrations(this.db, MEMORY_DB_MIGRATIONS);
+      this.schemaVersion = version;
+      this.schemaInfo = getSchemaInfo(this.db);
+      if (version !== MEMORY_DB_SCHEMA_VERSION) {
+        throw new Error(`memory.db schema 版本异常：期望 ${MEMORY_DB_SCHEMA_VERSION}，实际 ${version}`);
+      }
+    } catch (error) {
+      try {
+        this.db.close();
+      } catch {
+        // Preserve the startup failure; close is best-effort on a failed constructor.
+      }
+      throw error;
     }
   }
 

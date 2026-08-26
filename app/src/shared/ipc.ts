@@ -1,6 +1,6 @@
 export const IPC_CHANNELS = {
   agentSettingsLoad: 'ariadne:agent-settings:load',
-  agentSettingsUpdate: 'ariadne:agent-settings:update',
+  agentSettingsApply: 'ariadne:agent-settings:apply',
   agentWorkspacePinUpdate: 'ariadne:agent-workspace:pin-update',
   agentWorkspaceArchive: 'ariadne:agent-workspace:archive',
   agentWorkspaceRestore: 'ariadne:agent-workspace:restore',
@@ -11,6 +11,7 @@ export const IPC_CHANNELS = {
   preferencesLoad: 'ariadne:preferences:load',
   preferencesUpdate: 'ariadne:preferences:update',
   runtimeStatus: 'ariadne:runtime:status',
+  runtimeStatusChanged: 'ariadne:runtime:status-changed',
   runtimeRequest: 'ariadne:runtime:request',
   runtimeEvent: 'ariadne:runtime:event',
   systemCapabilityStatuses: 'ariadne:system:capability-statuses',

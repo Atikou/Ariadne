@@ -1,14 +1,18 @@
 # Ariadne Runtime 独立性审计
 
-## 架构结论
+> 最近核对：2026-08-26
 
-Ariadne 是单独维护、单独构建和单独发布的项目。桌面端唯一运行链路为：
+## 结论
+
+桌面生产链路为：
 
 ```text
-Renderer → 最小化 Preload → Electron Main → Node IPC → Ariadne Runtime
+Renderer -> fixed Preload -> Electron Main -> Node IPC -> Ariadne Runtime
 ```
 
-Runtime 的 Agent、模型、上下文、工具、权限、计划、记忆、调度、SubAgent、存储和沙箱逻辑都属于 Ariadne 自身源码。构建、测试和发布只使用当前 monorepo workspace 与固定打包资产。
+当前自动审计通过：没有 Runtime server/public 目录、入站 HTTP 指标、仓库外 `file:` 依赖或根发布脚本外部路径。生产文件数量以命令输出为准。
+
+这个结论只说明 Runtime 的源码、依赖和进程边界独立。它不说明目录中的每项能力都已接入 v3，也不证明真实模型、Tool、SubAgent、Memory、Scheduler 或发布包已经验收。
 
 ## 自动审计
 
@@ -16,23 +20,22 @@ Runtime 的 Agent、模型、上下文、工具、权限、计划、记忆、调
 npm.cmd run audit:runtime-independence
 ```
 
-审计会 fail-closed 检查：
+审计 fail closed 检查：
 
-- 所有 `file:` 依赖仍位于 Ariadne 项目根内；
-- 根级发布脚本不引用项目根之外的相对路径或绝对路径；
-- Runtime 不包含入站 HTTP Server、端口监听、`runtime/src/server` 或 `runtime/public`；
-- 审计只读取当前 Ariadne 工作区。
-
-机器可读 JSON 直接写到标准输出，`ok=false` 时命令返回非零状态。
+- workspace 与 `file:` 依赖不越出仓库；
+- 根构建/发布脚本不引用仓库外实现；
+- Runtime 不创建入站 HTTP Server、不监听端口；
+- 不存在 `runtime/src/server` 或 `runtime/public` 生产入口；
+- 当前 Runtime 入口不依赖外部 Agent 源码。
 
 ## 审计边界
 
-独立性审计只证明生产依赖、根发布脚本和 Runtime 入口满足当前工作区边界，不能替代：
+该命令不替代：
 
-- Protocol、Runtime、App 全量测试和生产构建；
-- Electron 真实窗口与 Runtime 子进程冒烟；
-- 权限、工具、计划、取消、恢复及数据一致性回归；
-- 原生沙箱和应用签名验证；
-- Transformers Runtime、真实模型、安装升级及回滚验收。
+- `npm.cmd run typecheck` 与 `npm.cmd test`；
+- `npm.cmd run check:architecture`；
+- 真实 Electron Agent smoke（direct、Tool、Decision、Cancel 与 Runtime 恢复）；
+- Live Provider、本地模型、Browser/MCP 与正式签名 Sandbox helper 验收；
+- Sandbox helper、模型资产、安装器和 Authenticode 验收。
 
-这些验证仍由 `npm.cmd test`、`npm.cmd run test:electron` 和 `npm.cmd run verify:release` 分层完成。
+完整分层见 [验证说明](verification.md)。

@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 
-import { AgentLoop, type LoopChatFn } from "../agent/AgentLoop.js";
+import type { LoopChatFn } from "../model-router/agent-chat-types.js";
 import { AgentToolActivityTracker } from "../agent/AgentToolActivityTracker.js";
 import type { AgentToolStep } from "../agent/toolStep.js";
 import { resolveAgentRunOutcome } from "../agent/AgentRunOutcome.js";
 import type { ToolPermission } from "../core/permissions.js";
-import type { RunBudget } from "../agent/RunPolicyTypes.js";
+import type { RunBudget } from "../agent/RunPolicyPrimitives.js";
 import type { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { TraceLogger } from "../trace/TraceLogger.js";
 import type { NotificationQueue } from "../background/NotificationQueue.js";
@@ -39,9 +39,11 @@ import {
   type SubAgentWorkspaceSession,
 } from "./SubAgentWorkspaceManager.js";
 import type { HookManager } from "../hooks/HookManager.js";
+import type { SubAgentRunnerFactoryPort } from "./SubAgentRunnerPorts.js";
 
 export interface SubAgentRunnerDeps {
   chat: LoopChatFn;
+  agentRunnerFactory: SubAgentRunnerFactoryPort;
   createChatForDelegatedTask?: (
     task: DelegatedTask,
     ctx: {
@@ -307,7 +309,7 @@ export class SubAgentRunner {
         })
       : undefined;
 
-    const loop = new AgentLoop({
+    const runner = this.deps.agentRunnerFactory.create({
       chat,
       registry: this.deps.registry,
       workspaceRoot,
@@ -341,7 +343,7 @@ export class SubAgentRunner {
     let error: string | undefined;
 
     try {
-      const result = await raceTimeout(loop.run(userContent, systemExtra), timeoutMs, signal);
+      const result = await raceTimeout(runner.run(userContent, systemExtra), timeoutMs, signal);
       answer = result.answer;
       steps = result.steps;
       iterations = result.iterations;

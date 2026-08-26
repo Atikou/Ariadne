@@ -15,6 +15,19 @@ import {
   modelInferenceProfileSchema
 } from './public.js';
 import { runtimePolicySnapshotSchema } from './settings.js';
+import { agentAdmissionAuthoritySourceSchema } from './host/agent-admission-authority-source.js';
+
+export {
+  agentAdmissionAuthoritySourceManifestSchema,
+  agentAdmissionAuthoritySourceSchema,
+  agentAdmissionRootBudgetDeadlinePolicySchema,
+  agentAdmissionRootBudgetVectorSchema,
+  type AgentAdmissionAuthoritySource,
+  type AgentAdmissionAuthoritySourceManifest,
+  type AgentAdmissionRootBudgetDeadlinePolicy,
+  type AgentAdmissionRootBudgetVector
+} from './host/agent-admission-authority-source.js';
+export * from './host/first-party-agent-tool-catalog.js';
 
 export {
   ARIADNE_RUNTIME_PROTOCOL,
@@ -30,6 +43,60 @@ const envelopeFields = {
 };
 
 export const runtimeBuildFingerprintSchema = z.string().regex(/^[a-f0-9]{64}$/);
+
+/**
+ * Accepts one lexical, absolute path identity without consulting the local
+ * filesystem. Both Windows and POSIX forms are recognized because Main and
+ * Runtime can validate bootstrap fixtures on a different host platform.
+ */
+export function isCanonicalAbsoluteDataRoot(value: string): boolean {
+  if (value.length === 0 || value !== value.trim() || /[\u0000-\u001f\u007f]/u.test(value)) {
+    return false;
+  }
+
+  if (value.startsWith('/')) {
+    if (value === '/') return true;
+    if (value.endsWith('/') || value.includes('//')) return false;
+    return value.slice(1).split('/').every((segment) => segment !== '.' && segment !== '..');
+  }
+
+  if (/^[A-Za-z]:\\/u.test(value)) {
+    if (value.length === 3) return true;
+    if (value.endsWith('\\') || value.includes('/') || value.slice(3).includes('\\\\')) {
+      return false;
+    }
+    return value.slice(3).split('\\').every(isCanonicalWindowsPathSegment);
+  }
+
+  if (value.startsWith('\\\\')) {
+    if (value.endsWith('\\') || value.includes('/') || value.slice(2).includes('\\\\')) {
+      return false;
+    }
+    const segments = value.slice(2).split('\\');
+    return segments.length >= 2 && segments.every(isCanonicalWindowsPathSegment);
+  }
+
+  return false;
+}
+
+export function assertCanonicalAbsoluteDataRoot(value: string): void {
+  if (!isCanonicalAbsoluteDataRoot(value)) {
+    throw new Error('runtime_bootstrap_data_root_not_canonical_absolute');
+  }
+}
+
+const canonicalAbsoluteDataRootSchema = z.string().min(1).max(32_768).refine(
+  isCanonicalAbsoluteDataRoot,
+  'Runtime dataRoot must be a canonical absolute Windows or POSIX path.'
+);
+
+function isCanonicalWindowsPathSegment(segment: string): boolean {
+  return segment.length > 0
+    && segment !== '.'
+    && segment !== '..'
+    && !/[<>:"|?*]/u.test(segment)
+    && !/[ .]$/u.test(segment);
+}
 
 export const runtimeBuildManifestSchema = z.object({
   schemaVersion: z.literal(1),
@@ -76,7 +143,7 @@ export const runtimeBootstrapSchema = z
     runtimeVersion: z.string().trim().min(1).max(64),
     runtimeBuildFingerprint: runtimeBuildFingerprintSchema,
     installRoot: z.string().trim().min(1).max(32_768),
-    dataRoot: z.string().trim().min(1).max(32_768),
+    dataRoot: canonicalAbsoluteDataRootSchema,
     modelRoots: z.array(z.string().trim().min(1).max(32_768)).max(16),
     modelProviders: z.array(modelProviderBootstrapSchema).max(16).optional(),
     routingStrategy: z.enum([
@@ -86,6 +153,7 @@ export const runtimeBootstrapSchema = z
       'quality-first'
     ]).optional(),
     agentPermissions: agentPermissionsBootstrapSchema.optional(),
+    agentAdmissionAuthoritySource: agentAdmissionAuthoritySourceSchema,
     runtimePolicy: runtimePolicySnapshotSchema,
     profile: z.string().trim().min(1).max(128),
     workspaces: z.array(workspaceBootstrapSchema).min(1).max(32),
@@ -109,7 +177,12 @@ export const runtimeRequestSchema = z
   .object({
     ...envelopeFields,
     type: z.literal('request'),
+    // A transport attempt gets a new requestId. Retries retain commandId so
+    // the Runtime can resolve one logical command idempotently.
     requestId: nonEmptyIdSchema,
+    commandId: nonEmptyIdSchema,
+    // Absolute deadlines remain meaningful across process and IPC boundaries.
+    deadlineAt: isoDateTimeSchema,
     command: runtimeCommandSchema
   })
   .strict();
@@ -119,6 +192,7 @@ export const runtimeErrorSchema = z
     code: z.string().regex(/^[a-z][a-z0-9_]{1,127}$/),
     message: z.string().trim().min(1).max(4_096),
     retryable: z.boolean(),
+    correlationId: nonEmptyIdSchema,
     details: z.array(z.string().max(1_024)).max(16).optional()
   })
   .strict();
@@ -128,10 +202,33 @@ export const runtimeResponseSchema = z
     ...envelopeFields,
     type: z.literal('response'),
     requestId: nonEmptyIdSchema,
+    commandId: nonEmptyIdSchema,
     outcome: z.discriminatedUnion('ok', [
       z.object({ ok: z.literal(true), result: runtimeResultSchema }).strict(),
       z.object({ ok: z.literal(false), error: runtimeErrorSchema }).strict()
     ])
+  })
+  .strict();
+
+export const runtimeCancelSchema = z
+  .object({
+    ...envelopeFields,
+    type: z.literal('cancel'),
+    cancelRequestId: nonEmptyIdSchema,
+    targetRequestId: nonEmptyIdSchema,
+    commandId: nonEmptyIdSchema,
+    reason: z.enum(['caller_cancelled', 'deadline_exceeded', 'runtime_shutdown'])
+  })
+  .strict();
+
+export const runtimeCancelAcknowledgedSchema = z
+  .object({
+    ...envelopeFields,
+    type: z.literal('cancel_acknowledged'),
+    cancelRequestId: nonEmptyIdSchema,
+    targetRequestId: nonEmptyIdSchema,
+    commandId: nonEmptyIdSchema,
+    status: z.enum(['accepted', 'not_found', 'already_settled', 'attempt_mismatch'])
   })
   .strict();
 
@@ -149,7 +246,7 @@ export const runtimeShutdownSchema = z
     type: z.literal('shutdown'),
     requestId: nonEmptyIdSchema,
     reason: z.enum(['app_quit', 'restart', 'upgrade', 'user_request']),
-    deadlineMs: z.number().int().min(1_000).max(60_000)
+    deadlineAt: isoDateTimeSchema
   })
   .strict();
 
@@ -244,6 +341,57 @@ export const mcpRemoteCapabilityOperationSchema = z.discriminatedUnion('kind', [
   }).strict()
 ]);
 
+export const agentPersistenceCapabilityOperationSchema = z.object({
+  kind: z.literal('agent.persistence.keyring.read')
+}).strict();
+
+export const agentPersistenceKeyIdSchema = z.string().regex(
+  /^agent-key-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+);
+
+const agentPersistenceKeyMaterialSchema = z.string().regex(
+  /^[A-Za-z0-9+/]{43}=$/u
+);
+
+export const agentPersistenceKeyRingSchema = z.object({
+  schemaVersion: z.literal(1),
+  runtimeInstanceId: runtimeInstanceIdSchema,
+  generation: z.number().int().positive().safe(),
+  activeKeyId: agentPersistenceKeyIdSchema,
+  keys: z.array(z.object({
+    keyId: agentPersistenceKeyIdSchema,
+    keyMaterialBase64: agentPersistenceKeyMaterialSchema
+  }).strict()).min(1).max(32)
+}).strict().superRefine((ring, context) => {
+  const keyIds = new Set<string>();
+  const keyMaterials = new Set<string>();
+  for (const [index, key] of ring.keys.entries()) {
+    if (keyIds.has(key.keyId)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['keys', index, 'keyId'],
+        message: 'Agent persistence key ids must be unique.'
+      });
+    }
+    if (keyMaterials.has(key.keyMaterialBase64)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['keys', index, 'keyMaterialBase64'],
+        message: 'Agent persistence key material must be unique.'
+      });
+    }
+    keyIds.add(key.keyId);
+    keyMaterials.add(key.keyMaterialBase64);
+  }
+  if (!keyIds.has(ring.activeKeyId)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['activeKeyId'],
+      message: 'The active Agent persistence key must be present.'
+    });
+  }
+});
+
 export const runtimeCapabilityRequestSchema = z.discriminatedUnion('capability', [
   z.object({
     ...envelopeFields,
@@ -258,6 +406,13 @@ export const runtimeCapabilityRequestSchema = z.discriminatedUnion('capability',
     requestId: nonEmptyIdSchema,
     capability: z.literal('mcp_remote'),
     operation: mcpRemoteCapabilityOperationSchema
+  }).strict(),
+  z.object({
+    ...envelopeFields,
+    type: z.literal('capability_request'),
+    requestId: nonEmptyIdSchema,
+    capability: z.literal('agent_persistence'),
+    operation: agentPersistenceCapabilityOperationSchema
   }).strict()
 ]);
 
@@ -274,6 +429,7 @@ export const hostCapabilityResponseSchema = z.object({
 export const hostToRuntimeMessageSchema = z.discriminatedUnion('type', [
   runtimeBootstrapSchema,
   runtimeRequestSchema,
+  runtimeCancelSchema,
   runtimeShutdownSchema,
   hostCapabilityResponseSchema
 ]);
@@ -281,6 +437,7 @@ export const hostToRuntimeMessageSchema = z.discriminatedUnion('type', [
 export const runtimeToHostMessageSchema = z.discriminatedUnion('type', [
   runtimeReadySchema,
   runtimeResponseSchema,
+  runtimeCancelAcknowledgedSchema,
   runtimeEventMessageSchema,
   runtimeShutdownCompleteSchema,
   runtimeCapabilityRequestSchema
@@ -293,6 +450,8 @@ export type AgentPermissionsBootstrap = z.infer<typeof agentPermissionsBootstrap
 export type RuntimeReady = z.infer<typeof runtimeReadySchema>;
 export type RuntimeRequest = z.infer<typeof runtimeRequestSchema>;
 export type RuntimeResponse = z.infer<typeof runtimeResponseSchema>;
+export type RuntimeCancel = z.infer<typeof runtimeCancelSchema>;
+export type RuntimeCancelAcknowledged = z.infer<typeof runtimeCancelAcknowledgedSchema>;
 export type RuntimeEventMessage = z.infer<typeof runtimeEventMessageSchema>;
 export type RuntimeShutdown = z.infer<typeof runtimeShutdownSchema>;
 export type RuntimeShutdownComplete = z.infer<typeof runtimeShutdownCompleteSchema>;
@@ -300,7 +459,14 @@ export type RuntimeCapabilityRequest = z.infer<typeof runtimeCapabilityRequestSc
 export type HostCapabilityResponse = z.infer<typeof hostCapabilityResponseSchema>;
 export type BrowserCapabilityOperation = z.infer<typeof browserCapabilityOperationSchema>;
 export type McpRemoteCapabilityOperation = z.infer<typeof mcpRemoteCapabilityOperationSchema>;
-export type HostCapabilityOperation = BrowserCapabilityOperation | McpRemoteCapabilityOperation;
+export type AgentPersistenceCapabilityOperation = z.infer<
+  typeof agentPersistenceCapabilityOperationSchema
+>;
+export type AgentPersistenceKeyRing = z.infer<typeof agentPersistenceKeyRingSchema>;
+export type HostCapabilityOperation =
+  | BrowserCapabilityOperation
+  | McpRemoteCapabilityOperation
+  | AgentPersistenceCapabilityOperation;
 export type HostToRuntimeMessage = z.infer<typeof hostToRuntimeMessageSchema>;
 export type RuntimeToHostMessage = z.infer<typeof runtimeToHostMessageSchema>;
 

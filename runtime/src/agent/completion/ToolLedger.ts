@@ -1,46 +1,13 @@
 import type { ToolPermission } from "../../core/permissions.js";
 import type { AgentToolStep } from "../toolStep.js";
 import { isSuccessfulToolStep } from "../toolStepOutcome.js";
+import type { ToolLedger, ToolLedgerSummary } from "./ToolLedgerContracts.js";
 
-export interface ToolLedgerEntry {
-  toolCallId?: string;
-  toolName: string;
-  permission?: ToolPermission;
-  permissionBucket?: "read" | "write" | "shell";
-  attempted: boolean;
-  executed: boolean;
-  blocked: boolean;
-  blockReasonKind?: AgentToolStep["blockedReasonKind"];
-  outcomeKind?: string;
-  successful: boolean;
-  workspaceScopeId?: string;
-  matchedRoot?: string;
-  crossWorkspace?: boolean;
-  grantId?: string;
-  permissionSource?: string;
-  pathRisk?: string;
-  verification?: AgentToolStep["verification"];
-}
-
-export interface ToolLedger {
-  attemptedShellCalls: number;
-  blockedShellCalls: number;
-  successfulShellCalls: number;
-  failedShellCalls: number;
-  attemptedWriteCalls: number;
-  blockedWriteCalls: number;
-  successfulWriteCalls: number;
-  failedWriteCalls: number;
-  attemptedReadCalls: number;
-  blockedReadCalls: number;
-  successfulReadCalls: number;
-  crossWorkspaceCalls: number;
-  successfulCrossWorkspaceCalls: number;
-  blockedCrossWorkspaceCalls: number;
-  rootsTouched: string[];
-  sensitivePathCalls: number;
-  entries: ToolLedgerEntry[];
-}
+export type {
+  ToolLedger,
+  ToolLedgerEntry,
+  ToolLedgerSummary,
+} from "./ToolLedgerContracts.js";
 
 function permissionOf(step: AgentToolStep): ToolPermission | undefined {
   if (step.permission) return step.permission;
@@ -143,22 +110,7 @@ export function buildToolLedger(steps: AgentToolStep[]): ToolLedger {
 }
 
 /** executionMeta / API 用的精简 ToolLedger 摘要。 */
-export function toolLedgerToSummary(ledger: ToolLedger): {
-  attemptedReadCalls: number;
-  blockedReadCalls: number;
-  successfulReadCalls: number;
-  attemptedShellCalls: number;
-  blockedShellCalls: number;
-  successfulShellCalls: number;
-  attemptedWriteCalls: number;
-  blockedWriteCalls: number;
-  successfulWriteCalls: number;
-  crossWorkspaceCalls: number;
-  successfulCrossWorkspaceCalls: number;
-  blockedCrossWorkspaceCalls: number;
-  rootsTouched: string[];
-  sensitivePathCalls: number;
-} {
+export function toolLedgerToSummary(ledger: ToolLedger): ToolLedgerSummary {
   return {
     attemptedReadCalls: ledger.attemptedReadCalls,
     blockedReadCalls: ledger.blockedReadCalls,

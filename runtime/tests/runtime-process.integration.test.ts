@@ -12,9 +12,18 @@ import {
   type RuntimeBootstrap,
   type RuntimeToHostMessage
 } from '@ariadne/protocol/host';
-import type { RuntimeCommand } from '@ariadne/protocol/public';
+import {
+  PUBLIC_PROJECTION_CONTRACT_VERSION,
+  type PublicModelProjectionV3,
+  type RuntimeCommand
+} from '@ariadne/protocol/public';
 import { createDefaultRuntimePolicySnapshot } from '@ariadne/protocol/settings';
 import { afterEach, describe, expect, it } from 'vitest';
+
+import { AGENT_CONTROL_DB_SCHEMA_VERSION } from '../src/adapters/persistence/agentControlDbSchema.js';
+import { CONVERSATION_DB_SCHEMA_VERSION } from '../src/adapters/persistence/ConversationDbSchema.js';
+import { PUBLIC_PROJECTION_DB_SCHEMA_VERSION } from '../src/adapters/persistence/PublicProjectionDbSchema.js';
+import { RUNTIME_COMMAND_DB_SCHEMA_VERSION } from '../src/adapters/persistence/runtimeCommandDbMigrations.js';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const runtimeEntry = path.join(packageRoot, 'dist', 'entry', 'runtime-process.js');
@@ -30,9 +39,10 @@ afterEach(async () => {
 });
 
 describe('portless Runtime process', () => {
-  it('handshakes, persists a Companion session, and shuts down through Node IPC', async () => {
+  it('handshakes, persists a v3 Conversation session, and shuts down through Node IPC', async () => {
     const child = startChild();
-    const inbox = createInbox(child);
+    const stderr = collectStderr(child);
+    const inbox = createInbox(child, stderr);
     const bootstrap = createBootstrap();
     child.send(bootstrap);
 
@@ -41,9 +51,14 @@ describe('portless Runtime process', () => {
     );
     expect(ready.type).toBe('ready');
     if (ready.type !== 'ready') throw new Error('unreachable');
-    expect(ready.capabilities).toContain('companion.chat');
+    expect(ready.capabilities).toContain('agent.tools');
     expect(ready.capabilities).toContain('companion.agent-plan');
-    expect(ready.storageSchemas).toMatchObject({ memory: 42, companion: 9, tools: 2 });
+    expect(ready.storageSchemas).toEqual({
+      runtimeCommand: RUNTIME_COMMAND_DB_SCHEMA_VERSION,
+      agentControl: AGENT_CONTROL_DB_SCHEMA_VERSION,
+      conversation: CONVERSATION_DB_SCHEMA_VERSION,
+      publicProjection: PUBLIC_PROJECTION_DB_SCHEMA_VERSION
+    });
 
     child.send(request(bootstrap, 'status-1', { kind: 'runtime.status.get' }));
     const status = await inbox.nextResponse('status-1');
@@ -52,56 +67,96 @@ describe('portless Runtime process', () => {
       result: { kind: 'runtime.status', status: { availability: 'ready' } }
     });
 
+    let projectedModel: PublicModelProjectionV3 | undefined;
+    let serializedProjection = '';
+    const modelDeadline = Date.now() + 10_000;
+    let projectionAttempt = 0;
+    while (Date.now() < modelDeadline) {
+      projectionAttempt += 1;
+      const requestId = `projection-model-${String(projectionAttempt)}`;
+      child.send(request(bootstrap, requestId, {
+        kind: 'projection.snapshot.get',
+        contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION
+      }));
+      const response = await inbox.nextResponse(requestId);
+      serializedProjection = JSON.stringify(response.outcome);
+      if (
+        response.outcome.ok
+        && response.outcome.result.kind === 'projection.snapshot'
+      ) {
+        projectedModel = response.outcome.result.snapshot.models.find(
+          (model) => model.modelId === 'runtime-process-test-model'
+        );
+        if (projectedModel?.availability === 'ready') break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(projectedModel).toMatchObject({
+      modelId: 'runtime-process-test-model',
+      label: 'runtime-process-test-model',
+      location: 'remote',
+      availability: 'ready',
+      supportsVision: false
+    });
+    expect(projectedModel?.version).toBeGreaterThan(0);
+    expect(serializedProjection).not.toContain('runtime-process-test-key');
+    expect(serializedProjection).not.toContain('ARIADNE_RUNTIME_PROCESS_TEST_KEY');
+    expect(serializedProjection).not.toContain('https://127.0.0.1:1/v1');
+    const modelWake = await inbox.next(
+      (message): message is Extract<RuntimeToHostMessage, { type: 'event' }> =>
+        message.type === 'event'
+        && message.event.event.kind === 'projection.changed'
+        && message.event.event.feature === 'models'
+    );
+    expect(modelWake.event).toMatchObject({
+      aggregateType: 'projection',
+      aggregateId: 'model-catalog',
+      event: { kind: 'projection.changed', feature: 'models' }
+    });
+    const serializedWake = JSON.stringify(modelWake);
+    expect(serializedWake).not.toContain('runtime-process-test-key');
+    expect(serializedWake).not.toContain('https://127.0.0.1:1/v1');
+
+    const sessionId = 'ipc-integration-session';
     child.send(request(bootstrap, 'session-create', {
-      kind: 'companion.sessions.create',
-      workspaceId: 'secondary',
-      title: 'IPC integration'
+      kind: 'conversation.session.create.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      sessionId,
+      workspaceId: 'secondary'
     }));
     const created = await inbox.nextResponse('session-create');
     expect(created.outcome).toMatchObject({
       ok: true,
       result: {
-        kind: 'companion.session',
-        session: { title: 'IPC integration', workspaceId: 'secondary' }
+        kind: 'conversation.session.created.v3',
+        sessionId,
+        version: 1
       }
     });
 
-    child.send(request(bootstrap, 'session-list', { kind: 'companion.sessions.list' }));
+    child.send(request(bootstrap, 'session-list', {
+      kind: 'projection.snapshot.get',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION
+    }));
     const listed = await inbox.nextResponse('session-list');
     expect(listed.outcome.ok).toBe(true);
-    if (!listed.outcome.ok || listed.outcome.result.kind !== 'companion.sessions') {
+    if (!listed.outcome.ok || listed.outcome.result.kind !== 'projection.snapshot') {
       throw new Error('unexpected session list result');
     }
-    expect(listed.outcome.result.sessions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ title: 'IPC integration', workspaceId: 'secondary' })
+    expect(listed.outcome.result.snapshot.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId, workspaceId: 'secondary' })
     ]));
 
     child.send(request(bootstrap, 'session-create-invalid-workspace', {
-      kind: 'companion.sessions.create',
+      kind: 'conversation.session.create.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      sessionId: 'invalid-workspace-session',
       workspaceId: 'untrusted'
     }));
     const rejected = await inbox.nextResponse('session-create-invalid-workspace');
     expect(rejected.outcome).toMatchObject({
       ok: false,
       error: { code: 'workspace_not_authorized' }
-    });
-
-    child.send(request(bootstrap, 'plan-chat-start', {
-      kind: 'companion.chat.start',
-      clientMessageId: 'plan-chat-user',
-      workspaceId: 'primary',
-      modelId: 'cloud-openai',
-      message: 'Create a read-only implementation plan',
-      agentMode: 'plan',
-      resources: []
-    }));
-    const planAccepted = await inbox.nextResponse('plan-chat-start');
-    expect(planAccepted.outcome, JSON.stringify(planAccepted.outcome)).toMatchObject({
-      ok: true,
-      result: {
-        kind: 'companion.chat.accepted',
-        executionMode: 'agent-plan'
-      }
     });
 
     const exit = waitForExit(child);
@@ -112,7 +167,7 @@ describe('portless Runtime process', () => {
       type: 'shutdown',
       requestId: 'shutdown-1',
       reason: 'user_request',
-      deadlineMs: 10_000
+      deadlineAt: new Date(Date.now() + 10_000).toISOString()
     });
     const shutdown = await inbox.next(
       (message): message is Extract<RuntimeToHostMessage, { type: 'shutdown_complete' }> =>
@@ -187,6 +242,11 @@ function createBootstrap(): RuntimeBootstrap {
       model: 'runtime-process-test-model',
       inference: {}
     }],
+    agentAdmissionAuthoritySource: {
+      sourceVersion: 1,
+      status: 'disabled',
+      reason: 'not_configured'
+    },
     runtimePolicy: createDefaultRuntimePolicySnapshot(),
     profile: 'default',
     workspaces: [
@@ -228,11 +288,13 @@ function request(
     runtimeInstanceId: bootstrap.runtimeInstanceId,
     type: 'request' as const,
     requestId,
+    commandId: requestId,
+    deadlineAt: new Date(Date.now() + 30_000).toISOString(),
     command
   };
 }
 
-function createInbox(child: ChildProcess) {
+function createInbox(child: ChildProcess, stderr: () => string = () => '') {
   const messages: RuntimeToHostMessage[] = [];
   const waiters = new Set<() => void>();
   child.on('message', (raw) => {
@@ -260,7 +322,12 @@ function createInbox(child: ChildProcess) {
         waiters.add(wake);
       });
     }
-    throw new Error('runtime message timeout');
+    const diagnostic = stderr().trim();
+    throw new Error(
+      diagnostic.length > 0
+        ? `runtime message timeout: ${diagnostic}`
+        : 'runtime message timeout'
+    );
   };
 
   return {

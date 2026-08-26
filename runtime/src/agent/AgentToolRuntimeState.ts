@@ -11,14 +11,14 @@ import {
 } from "./AgentPausedRunSnapshot.js";
 import type { PausedRunRuntimeState } from "./PausedRunStore.js";
 import type { AgentModelTurnMetric } from "./AgentRunUsageSummary.js";
+import type { RunPolicy } from "./RunPolicyContracts.js";
 import type {
   AgentWorkflowDebugAnalysis,
   AgentWorkflowDebugFix,
   AgentWorkflowProposal,
   AgentWorkflowRefactorPlan,
   AgentWorkflowWritePhase,
-  RunPolicy,
-} from "./RunPolicyTypes.js";
+} from "./WorkflowExecutionContracts.js";
 import {
   normalizeCompletionCriteria,
   type CompletionCriterionInput,

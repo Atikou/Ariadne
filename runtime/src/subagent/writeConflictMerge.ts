@@ -1,7 +1,12 @@
 import type { AgentToolStep } from "../agent/toolStep.js";
-import type { SubAgentRunResult, SubAgentWriteConflict } from "./types.js";
+import type { SubAgentRunResult } from "./types.js";
+import {
+  normalizeRelPath,
+  type SubAgentWriteConflict,
+} from "./writeConflictContracts.js";
 
-export type { SubAgentWriteConflict };
+export { normalizeRelPath } from "./writeConflictContracts.js";
+export type { SubAgentWriteConflict } from "./writeConflictContracts.js";
 
 const WRITE_TOOLS = new Set(["write_file", "apply_patch"]);
 
@@ -49,8 +54,4 @@ export function detectWriteConflicts(results: SubAgentRunResult[]): SubAgentWrit
     });
   }
   return conflicts;
-}
-
-export function normalizeRelPath(path: string): string {
-  return path.replace(/\\/g, "/").replace(/^\.\//, "");
 }

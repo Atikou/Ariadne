@@ -19,13 +19,15 @@ import type { RunToolResultCache } from "./recovery/RunToolResultCache.js";
 import type {
   AgentExecutionStage,
   AgentRunMode,
+  PlanExecutionVariant,
+  UserPermissionPolicy,
+} from "./RunPolicyPrimitives.js";
+import type {
   AgentWorkflowDebugAnalysis,
   AgentWorkflowInternalPlan,
   AgentWorkflowProposal,
   AgentWorkflowRefactorPlan,
-  PlanExecutionVariant,
-  UserPermissionPolicy,
-} from "./RunPolicyTypes.js";
+} from "./WorkflowExecutionContracts.js";
 import type { AgentToolStep } from "./toolStep.js";
 import type { CompletionCriterionInput } from "./completion/TaskCompletionContract.js";
 import type { AgentPlanContract } from "../plan/AgentPlanContract.js";

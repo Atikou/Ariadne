@@ -19,14 +19,14 @@ describe('workspace archive UI contract', () => {
     expect(sidebar).not.toContain('sessions.length');
     expect(sidebar).not.toContain('workspace-conversation-list');
     expect(settings).toContain('已归档工作区');
-    expect(settings).toContain('归档后保留 7 天');
+    expect(settings).toContain('归档只会从侧栏隐藏工作区，不会删除会话数据；可随时恢复。');
     expect(settings).toContain('services.conversationNavigation.restoreWorkspace(workspaceId)');
     expect(styles).toMatch(/\.archived-workspace-card\s*\{/);
     expect(preload).toContain('agentWorkspaceArchive');
     expect(preload).toContain('agentWorkspaceRestore');
     expect(preload).toContain('agentWorkspacesChanged');
-    expect(application).toContain("kind: 'companion.workspaces.purge'");
-    expect(application).toContain('markWorkspacePurged(workspaceId)');
-    expect(application).toContain('scheduleArchivedWorkspaceCleanup(60_000)');
+    expect(application).not.toContain("kind: 'companion.workspaces.purge'");
+    expect(application).not.toContain('markWorkspacePurged(workspaceId)');
+    expect(application).not.toContain('scheduleArchivedWorkspaceCleanup(60_000)');
   });
 });

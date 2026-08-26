@@ -95,6 +95,11 @@ function bootstrap(
     installRoot: packageRoot,
     dataRoot,
     modelRoots: [],
+    agentAdmissionAuthoritySource: {
+      sourceVersion: 1,
+      status: 'disabled',
+      reason: 'not_configured'
+    },
     runtimePolicy: createDefaultRuntimePolicySnapshot(),
     profile: 'default',
     workspaces: [{ workspaceId: 'primary', label: 'Workspace', rootPath: workspaceRoot, access }],

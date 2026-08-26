@@ -10,6 +10,7 @@ export interface AgentActivityRecorded {
 
 export interface AppEventMap {
   'agent:activity-recorded': AgentActivityRecorded;
+  'chat:new-draft-requested': { workspaceId: string | null };
   'chat:workspace-access-changed': WorkspaceAccessMode;
   'module:open': string;
   'session-activity:select-run': { runId: string; activityId?: string };

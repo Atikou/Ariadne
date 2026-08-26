@@ -13,6 +13,7 @@ import type {
 
 const DEFAULT_POLL_INTERVAL_MS = 50;
 const DEFAULT_PAGE_SIZE = 500;
+const DEFAULT_LIVE_CONSUMER_ID = "runtime-live-projection";
 
 export type RuntimeEventEnvelopeSink = (event: RuntimeEventEnvelope) => void;
 
@@ -27,12 +28,17 @@ export class RuntimeEventDispatcher {
     private readonly journal: DomainEventJournal,
     private readonly sink: RuntimeEventEnvelopeSink,
     private readonly pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
+    private readonly runProjector: (run: RunAggregate) => ReturnType<typeof projectRun> = projectRun,
+    private readonly consumerId = DEFAULT_LIVE_CONSUMER_ID,
   ) {}
 
   start(): void {
     if (this.running) return;
     this.running = true;
-    this.cursor = this.journal.currentCursor();
+    this.cursor = this.journal.initializeConsumer(
+      this.consumerId,
+      this.journal.currentCursor(),
+    );
     this.timer = setInterval(() => {
       void this.flush();
     }, this.pollIntervalMs);
@@ -60,7 +66,7 @@ export class RuntimeEventDispatcher {
   replay(afterCursor: number, limit: number): RuntimeEventEnvelope[] {
     return this.journal
       .replay({ afterCursor, limit })
-      .map((event) => projectEnvelope(event));
+      .map((event) => projectEnvelope(event, this.runProjector));
   }
 
   currentCursor(): number {
@@ -80,6 +86,7 @@ export class RuntimeEventDispatcher {
       if (page.length === 0) return;
       for (const envelope of page) {
         this.sink(envelope);
+        this.journal.acknowledge(this.consumerId, envelope.cursor);
         this.cursor = envelope.cursor;
       }
       if (page.length < DEFAULT_PAGE_SIZE) return;
@@ -88,9 +95,12 @@ export class RuntimeEventDispatcher {
   }
 }
 
-function projectEnvelope(persisted: PersistedDomainEvent): RuntimeEventEnvelope {
+function projectEnvelope(
+  persisted: PersistedDomainEvent,
+  runProjector: (run: RunAggregate) => ReturnType<typeof projectRun>,
+): RuntimeEventEnvelope {
   const event = persisted.aggregateType === "run"
-    ? projectRunDomainEvent(persisted.event)
+    ? projectRunDomainEvent(persisted.event, runProjector)
     : runtimeEventSchema.parse(persisted.event);
   return runtimeEventEnvelopeSchema.parse({
     eventId: persisted.eventId,
@@ -106,11 +116,18 @@ function projectEnvelope(persisted: PersistedDomainEvent): RuntimeEventEnvelope 
   });
 }
 
-function projectRunDomainEvent(value: unknown) {
+function projectRunDomainEvent(
+  value: unknown,
+  runProjector: (run: RunAggregate) => ReturnType<typeof projectRun>,
+) {
+  const publicEvent = runtimeEventSchema.safeParse(value);
+  if (publicEvent.success && publicEvent.data.kind === "run.changed") {
+    return publicEvent.data;
+  }
   const payload = value as { run?: RunAggregate };
   if (!payload.run) throw new Error("run_domain_event_missing_aggregate");
   return {
     kind: "run.changed" as const,
-    run: projectRun(payload.run),
+    run: runProjector(payload.run),
   };
 }

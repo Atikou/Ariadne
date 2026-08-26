@@ -64,12 +64,17 @@ describe('Ariadne desktop architecture boundary', () => {
 
   it('keeps Renderer isolated behind the fixed Preload bridge', async () => {
     const preload = await readFile(join(process.cwd(), 'src', 'preload', 'index.ts'), 'utf8');
+    const buildConfig = await readFile(
+      join(process.cwd(), 'electron.vite.config.ts'),
+      'utf8'
+    );
     const mainIpc = await readFile(join(process.cwd(), 'src', 'main', 'ipc', 'register-ipc.ts'), 'utf8');
     const html = await readFile(join(process.cwd(), 'src', 'renderer', 'index.html'), 'utf8');
     expect(preload).not.toMatch(/\bfetch\s*\(|\b(?:baseUrl|port|token)\b/i);
     expect(preload).not.toMatch(/@ariadne\/protocol\/host|child_process|node:child_process/);
     expect(preload).toContain('runtime:');
     expect(preload).toContain('getStatus:');
+    expect(preload).toContain('onStatus:');
     expect(preload).toContain('request:');
     expect(preload).toContain('onEvent:');
     expect(preload).toContain('openDirectory:');
@@ -77,6 +82,23 @@ describe('Ariadne desktop architecture boundary', () => {
     expect(mainIpc).toContain('dialog.showOpenDialog');
     expect(mainIpc).toContain("properties: ['openDirectory']");
     expect(html).toContain("connect-src 'self'");
+    expect(buildConfig).toMatch(
+      /preload:\s*\{[\s\S]*?build:\s*\{[\s\S]*?externalizeDeps:\s*false/
+    );
+  });
+
+  it('uses the v3 Projection as the Electron smoke model oracle', async () => {
+    const smoke = await readFile(
+      join(process.cwd(), 'src', 'main', 'smoke', 'electron-smoke.ts'),
+      'utf8'
+    );
+
+    expect(smoke).toContain("kind: 'projection.snapshot.get'");
+    expect(smoke).toContain('configuredModelMislabelAbsent');
+    expect(smoke).toContain('runtimeStatusConsistent');
+    expect(smoke).toContain('conversationContextMenuVisible');
+    expect(smoke).toContain("document.querySelectorAll('[data-runtime-availability]')");
+    expect(smoke).not.toContain("kind: 'models.list'");
   });
 
   it('requires an authorized workspace identity for file and terminal capabilities', async () => {

@@ -7,7 +7,6 @@
 
 import type { ModelInferenceOptions } from "@ariadne/protocol/public";
 import type { ContentEnvelope } from "../core/ContentEnvelope.js";
-import type { TokenCounter } from "./TokenCounter.js";
 
 export type ModelLocation = "local" | "remote";
 export type ModelToolCallCapability = "native" | "unsupported";
@@ -64,6 +63,26 @@ export interface ChatRequest {
   onToken?: (delta: string) => void;
   /** 流式输出时每收到一段 Provider 明确返回的推理文本或推理摘要回调。 */
   onReasoningToken?: (delta: string) => void;
+}
+
+export interface TokenCount {
+  tokens: number;
+  exact: boolean;
+  method: "model_tokenizer" | "provider_profile_conservative";
+  tokenizer: string;
+}
+
+/**
+ * Token accounting is part of the model boundary, not a dependency on one
+ * concrete counter implementation.
+ */
+export interface TokenCounter {
+  readonly profile: string;
+  readonly exact: boolean;
+  countText(text: string): Promise<TokenCount>;
+  countMessages(messages: readonly ChatMessage[]): Promise<TokenCount>;
+  countTools(tools: readonly ModelToolSpec[]): Promise<TokenCount>;
+  countRequest(request: Pick<ChatRequest, "messages" | "tools">): Promise<TokenCount>;
 }
 
 export interface ModelResponse {

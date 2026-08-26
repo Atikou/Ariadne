@@ -1,5 +1,5 @@
 import { intentForExplicitMode, runModeForIntent } from "../intentPatterns.js";
-import { parseRunModeValue } from "../RunPolicyTypes.js";
+import { parseRunModeValue } from "../RunPolicyPrimitives.js";
 import type { ModelTaskType } from "../../model/taskType.js";
 import type { TaskContext } from "../task/TaskContext.js";
 import { AIIntentClassifier } from "./AIIntentClassifier.js";

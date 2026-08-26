@@ -2,11 +2,16 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { RuntimeEventEnvelope } from '@ariadne/protocol/public';
 import type { AriadneApi, TerminalDataEvent, TerminalExitEvent } from '@shared/contract';
 import { IPC_CHANNELS } from '@shared/ipc';
+import {
+  runtimeRequestResultSchema,
+  runtimeStatusResultSchema
+} from '@shared/schemas';
+import { runtimeStatusSchema } from '@ariadne/protocol/public';
 
 const api: AriadneApi = {
   agentSettings: {
     load: () => ipcRenderer.invoke(IPC_CHANNELS.agentSettingsLoad),
-    update: (settings) => ipcRenderer.invoke(IPC_CHANNELS.agentSettingsUpdate, settings),
+    apply: (mutation) => ipcRenderer.invoke(IPC_CHANNELS.agentSettingsApply, mutation),
     setWorkspacePinned: (request) => ipcRenderer.invoke(IPC_CHANNELS.agentWorkspacePinUpdate, request),
     archiveWorkspace: (request) => ipcRenderer.invoke(IPC_CHANNELS.agentWorkspaceArchive, request),
     restoreWorkspace: (request) => ipcRenderer.invoke(IPC_CHANNELS.agentWorkspaceRestore, request),
@@ -24,8 +29,19 @@ const api: AriadneApi = {
     update: (preferences) => ipcRenderer.invoke(IPC_CHANNELS.preferencesUpdate, preferences)
   },
   runtime: {
-    getStatus: () => ipcRenderer.invoke(IPC_CHANNELS.runtimeStatus),
-    request: (command) => ipcRenderer.invoke(IPC_CHANNELS.runtimeRequest, command),
+    getStatus: async () => runtimeStatusResultSchema.parse(
+      await ipcRenderer.invoke(IPC_CHANNELS.runtimeStatus)
+    ),
+    onStatus: (listener) => subscribe<unknown>(
+      IPC_CHANNELS.runtimeStatusChanged,
+      (status) => listener(runtimeStatusSchema.parse(status))
+    ),
+    request: async (command, options) => runtimeRequestResultSchema.parse(
+      await ipcRenderer.invoke(IPC_CHANNELS.runtimeRequest, {
+        command,
+        ...(options?.commandId ? { commandId: options.commandId } : {})
+      })
+    ),
     onEvent: (listener) => subscribe<RuntimeEventEnvelope>(IPC_CHANNELS.runtimeEvent, listener)
   },
   system: {

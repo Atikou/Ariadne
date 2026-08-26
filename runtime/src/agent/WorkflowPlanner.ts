@@ -1,5 +1,11 @@
 import type { AgentIntentType } from "./IntentTypes.js";
-import type { AgentRunMode } from "./RunPolicyTypes.js";
+import type { AgentRunMode } from "./RunPolicyPrimitives.js";
+import {
+  WORKFLOW_TOOL_NAMES,
+  type AgentWorkflowId,
+  type WorkflowPlan,
+  type WorkflowToolName,
+} from "./WorkflowPlanningContracts.js";
 import {
   asksForAnalysis,
   explicitNoWorkflow,
@@ -11,30 +17,12 @@ import {
   wantsRefactor,
 } from "./intentPatterns.js";
 
-/** Deterministic read-only workflow tools that can run before the model turn. */
-export const WORKFLOW_TOOL_NAMES = [
-  "project_scan",
-  "locate_relevant_files",
-  "context_pack",
-] as const;
-
-export type WorkflowToolName = (typeof WORKFLOW_TOOL_NAMES)[number];
-
-export type AgentWorkflowId =
-  | "plan_prescan"
-  | "implement_locate"
-  | "edit_locate"
-  | "debug_locate"
-  | "generate_file_locate"
-  | "refactor_locate";
-
-export interface WorkflowPlan {
-  id: AgentWorkflowId;
-  reason: string;
-  steps: readonly WorkflowToolName[];
-  contextHeader: string;
-  contextHint: string;
-}
+export { WORKFLOW_TOOL_NAMES } from "./WorkflowPlanningContracts.js";
+export type {
+  AgentWorkflowId,
+  WorkflowPlan,
+  WorkflowToolName,
+} from "./WorkflowPlanningContracts.js";
 
 export { hasProjectScope, hasTargetHint } from "./intentPatterns.js";
 

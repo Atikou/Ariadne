@@ -1,4 +1,4 @@
-import type { UserPermissionPolicy } from "../agent/RunPolicyTypes.js";
+import type { UserPermissionPolicy } from "../agent/RunPolicyPrimitives.js";
 import { permissionsForPolicy } from "../agent/WorkflowCapability.js";
 import { extractMessageContinuationSignals } from "../agent/routing/MessageSignalExtractor.js";
 import type { ToolPermission } from "../core/permissions.js";

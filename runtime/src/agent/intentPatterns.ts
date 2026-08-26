@@ -6,7 +6,7 @@
  * INTENT_EDIT vs WORKFLOW_EDIT），避免合并后改变行为。
  */
 import type { AgentIntentType } from "./IntentTypes.js";
-import type { AgentRunMode } from "./RunPolicyTypes.js";
+import type { AgentRunMode } from "./RunPolicyPrimitives.js";
 
 // ── IntentRouter：意图分类（Unicode 正则，优先于 ASCII hasAny 兜底） ──────────
 

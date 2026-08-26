@@ -1,8 +1,11 @@
 import { AgentLoop, type AgentLoopOptions } from "../agent/AgentLoop.js";
 import type {
   AgentExecutionEngineFactory,
-  AgentExecutionEngineKind,
-} from "./AgentExecutionEngine.js";
+} from "./AgentExecutionEngineContracts.js";
+import type { AgentExecutionEngineKind } from "./AgentExecutionIdentity.js";
+import type { AgentLoopCreationRequest } from "./AgentLoopCreationContracts.js";
+
+export type { AgentLoopCreationRequest } from "./AgentLoopCreationContracts.js";
 
 export interface AgentLoopFactoryDeps {
   workspaceRoot: string;
@@ -28,33 +31,6 @@ export interface AgentLoopFactoryDeps {
   shellPolicy?: AgentLoopOptions["shellPolicy"];
   networkPolicy?: AgentLoopOptions["networkPolicy"];
   resolveInstructions?: AgentLoopOptions["resolveInstructions"];
-}
-
-export interface AgentLoopCreationRequest {
-  chat: AgentLoopOptions["chat"];
-  runId: string;
-  sessionId?: string;
-  taskId?: string;
-  projectId: string;
-  persistContext: boolean;
-  autoConfirm?: AgentLoopOptions["autoConfirm"];
-  sensitive?: AgentLoopOptions["sensitive"];
-  taskType?: AgentLoopOptions["taskType"];
-  policy?: AgentLoopOptions["policy"];
-  allowedPermissions?: AgentLoopOptions["allowedPermissions"];
-  runGrantedPermissions?: AgentLoopOptions["runGrantedPermissions"];
-  handoffAuthorization?: AgentLoopOptions["handoffAuthorization"];
-  resumeState?: AgentLoopOptions["resumeState"];
-  pausedRun?: AgentLoopOptions["pausedRun"];
-  scopedGrants?: AgentLoopOptions["scopedGrants"];
-  pauseOnPermissionRequest?: AgentLoopOptions["pauseOnPermissionRequest"];
-  onStep?: AgentLoopOptions["onStep"];
-  onModelTurn?: AgentLoopOptions["onModelTurn"];
-  onToken?: AgentLoopOptions["onToken"];
-  signal?: AgentLoopOptions["signal"];
-  timeline?: AgentLoopOptions["timeline"];
-  skipPlanHandoff?: AgentLoopOptions["skipPlanHandoff"];
-  completionCriteria?: AgentLoopOptions["completionCriteria"];
 }
 
 export class AgentLoopFactory implements AgentExecutionEngineFactory {

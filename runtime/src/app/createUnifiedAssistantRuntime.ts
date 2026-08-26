@@ -1,12 +1,13 @@
 import type { WorkspaceCatalog } from "../config/workspaceCatalog.js";
 import type { LoopChatFn } from "../agent/AgentLoop.js";
-import type { UserPermissionPolicy } from "../agent/RunPolicyTypes.js";
+import type { UserPermissionPolicy } from "../agent/RunPolicyPrimitives.js";
 import { CompanionService, type CompanionServiceDeps } from "../companion/CompanionService.js";
 import type { ContextManager } from "../context/ContextManager.js";
 import type { Orchestrator } from "../orchestrator/Orchestrator.js";
 import type { TraceLogger } from "../trace/TraceLogger.js";
 import { createAgentHandoffRuntime } from "./createAgentHandoffRuntime.js";
 import { UnifiedAssistantHandoffService } from "./UnifiedAssistantHandoffService.js";
+import type { StartupRecoveryCoordinator } from "./StartupRecoveryCoordinator.js";
 
 export function createUnifiedAssistantRuntime(input: {
   projectRoot: string;
@@ -19,6 +20,7 @@ export function createUnifiedAssistantRuntime(input: {
   makeChatFn: (forceClient?: string) => LoopChatFn;
   permissionPolicy?: UserPermissionPolicy;
   browserAvailable?: () => boolean;
+  startupRecovery: StartupRecoveryCoordinator;
 }) {
   const agentHandoffCoordinator = createAgentHandoffRuntime(input);
   let companionService: CompanionService | undefined;
@@ -59,8 +61,26 @@ export function createUnifiedAssistantRuntime(input: {
     trace: input.trace,
   });
   companionService.start();
-  void unifiedAssistantHandoffService.recoverInterruptedCompanionSessionDeletions()
-    .then((deletionRecovery) => {
+  input.startupRecovery.register({
+    name: "companion_session_deletion",
+    run: async (signal) => {
+      let deletionRecovery: Awaited<ReturnType<
+        UnifiedAssistantHandoffService["recoverInterruptedCompanionSessionDeletions"]
+      >>;
+      try {
+        deletionRecovery = await unifiedAssistantHandoffService
+          .recoverInterruptedCompanionSessionDeletions(signal);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        input.trace.write({
+          type: "companion_session_deletion_recovery",
+          restored: 0,
+          completed: 0,
+          failed: 1,
+          persistenceInvalid: true,
+        });
+        throw error;
+      }
       if (
         deletionRecovery.restored > 0
         || deletionRecovery.completed > 0
@@ -71,16 +91,11 @@ export function createUnifiedAssistantRuntime(input: {
           ...deletionRecovery,
         });
       }
-    })
-    .catch(() => {
-      input.trace.write({
-        type: "companion_session_deletion_recovery",
-        restored: 0,
-        completed: 0,
-        failed: 1,
-        persistenceInvalid: true,
-      });
-    });
+      if (deletionRecovery.failed > 0) {
+        throw new Error("companion_session_deletion_recovery_incomplete");
+      }
+    },
+  });
   return {
     agentHandoffCoordinator,
     companionService,

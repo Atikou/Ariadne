@@ -1,5 +1,5 @@
 import type { ToolPermission } from "../core/permissions.js";
-import type { AgentIntentType, AgentWorkflowType } from "./IntentTypes.js";
+import type { CapabilityEscalation } from "./CapabilityEscalationContracts.js";
 import {
   capabilitiesToPermissions,
   workflowCapabilitiesFromRoute,
@@ -11,23 +11,10 @@ import {
   type WorkflowRouteResult,
 } from "./WorkflowRouter.js";
 
-export interface CapabilityEscalation {
-  fromWorkflow: AgentWorkflowType;
-  fromIntent: AgentIntentType;
-  toWorkflow: AgentWorkflowType;
-  toIntent: AgentIntentType;
-  requestedTool: string;
-  requestedPermission: ToolPermission;
-  currentExpectedSideEffects: ToolPermission[];
-  targetSideEffects: ToolPermission[];
-  canEscalate: boolean;
-  reason: string;
-}
-
-export interface CapabilityEscalationRecord extends CapabilityEscalation {
-  iteration: number;
-  applied: boolean;
-}
+export type {
+  CapabilityEscalation,
+  CapabilityEscalationRecord,
+} from "./CapabilityEscalationContracts.js";
 
 /** 工作流默认预期副作用（用于 escalation 判断，非硬权限）。 */
 export function expectedSideEffectsFromRoute(

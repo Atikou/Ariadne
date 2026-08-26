@@ -1,5 +1,5 @@
 import type { AgentIntentType } from "./IntentTypes.js";
-import type { AgentWorkflowVerificationRecord } from "./RunPolicyTypes.js";
+import type { AgentWorkflowVerificationRecord } from "./WorkflowExecutionContracts.js";
 import type { AgentToolStep } from "./toolStep.js";
 
 export interface EditVerificationWorkflowInput {

@@ -1,249 +1,226 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-24",
+  "generatedAt": "2026-08-26",
   "statusValues": [
     "verified",
     "partial",
     "not_accepted",
     "not_applicable"
   ],
+  "currentGate": {
+    "status": "verified",
+    "reason": "deterministic_electron_agent_smoke_passed",
+    "source": "artifacts/electron-runtime-smoke/electron-runtime-smoke.json"
+  },
   "rows": [
     {
-      "module": "protocol-2.0",
+      "module": "protocol-and-public-projection-v3",
       "source": [
-        "packages/protocol/src"
+        "packages/protocol/src/common.ts",
+        "packages/protocol/src/public.ts",
+        "packages/protocol/src/public/projection-v3.ts"
       ],
       "unit": "verified",
       "integration": "verified",
       "realModel": "not_applicable",
       "realWindow": "verified",
       "realMachine": "not_accepted",
-      "notes": "Strict Public/Host/Headless envelopes, snapshot, replay cursor, Resource, Memory and Task Checkpoint commands."
+      "notes": "Protocol 3.0 and the v3 projection command surface are directly covered. Clean-machine compatibility remains a release acceptance item."
     },
     {
-      "module": "run-aggregate-and-outbox",
+      "module": "runtime-ingress-command-journal-and-lifecycle",
       "source": [
-        "runtime/src/run",
-        "runtime/src/events"
+        "runtime/src/composition/ComposedRuntimeIngress.ts",
+        "runtime/src/adapters/persistence/SqliteRuntimeCommandJournal.ts",
+        "runtime/src/transport/NodeIpcRuntimeHost.ts"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_applicable",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
+      "notes": "Command identity, replay, readiness, shutdown and real Electron child-process startup are covered; clean-machine crash acceptance is pending."
+    },
+    {
+      "module": "conversation-authority-and-handoff",
+      "source": [
+        "runtime/src/adapters/persistence/SqliteConversationRunHandoffUnitOfWork.ts",
+        "runtime/src/composition/ConversationAgentHandoffCoordinator.ts",
+        "runtime/src/projection/ConversationPublicProjectionPublisher.ts"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_applicable",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
+      "notes": "Session and Message authority, handoff persistence and v3 projection are covered; cross-version migration on a clean machine is pending."
+    },
+    {
+      "module": "agent-control-domain-and-persistence",
+      "source": [
+        "packages/agent-core/src",
+        "runtime/src/adapters/persistence/SqliteAgentRunUnitOfWork.ts",
+        "runtime/src/composition/DefaultAgentControlRuntimeFactory.ts"
       ],
       "unit": "verified",
       "integration": "verified",
       "realModel": "not_accepted",
       "realWindow": "verified",
       "realMachine": "not_accepted",
-      "notes": "Typed commands, optimistic aggregate version, checkpoints, transactional outbox and idempotent replay."
+      "notes": "Run, Turn, Attempt, Decision, Effect and recovery invariants have automated coverage. The real Electron smoke executes Agent Runs through the production public path, including cancel and three Runtime hard-kill recovery boundaries. Live external models and clean-machine acceptance remain pending."
     },
     {
-      "module": "tool-contract-and-agent-action",
+      "module": "production-agent-execution-pipeline",
       "source": [
-        "runtime/src/tools",
-        "runtime/src/agent/AgentActionAdmission.ts",
-        "runtime/src/agent/ToolConcurrencyPlanner.ts"
+        "runtime/src/composition/ProductionAgentControlExecutionPipelineFactory.ts",
+        "runtime/src/composition/AgentRunWorkScheduler.ts",
+        "runtime/src/adapters/model/ProductionExactAgentModelInferenceGateway.ts"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_accepted",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
+      "notes": "A process-external deterministic HTTPS OpenAI-compatible Provider fixture drives the production inference adapter in a real Electron window. Direct response, Tool continuation, cancel and restart recovery are accepted; a live external Provider is not."
+    },
+    {
+      "module": "first-party-tools-permissions-and-sandbox",
+      "source": [
+        "runtime/src/composition/FirstPartyAgentToolCatalog.ts",
+        "runtime/src/adapters/tool/ImmutableAgentToolCatalog.ts",
+        "runtime/src/control/run/AgentDecisionAuthorityService.ts",
+        "runtime/src/sandbox"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_accepted",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
+      "notes": "The real window executes pinned workspace read/write tools and proves allow-before-effect, one allowed write and deny-without-effect. Signed-helper behavior and other Decision families remain pending."
+    },
+    {
+      "module": "model-catalog-and-inference-gateway",
+      "source": [
+        "runtime/src/application/RuntimeKernelApplication.ts",
+        "runtime/src/application/RuntimeKernelModelInferenceGateway.ts",
+        "runtime/src/adapters/model/ProductionExactAgentModelInferenceGateway.ts"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_accepted",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
+      "notes": "The real window configures the deterministic HTTPS Provider through Settings, executes inference and continuation, and proves request abort on cancel and Runtime death. Remote/live and local models remain unaccepted."
+    },
+    {
+      "module": "public-projection-and-renderer-cache",
+      "source": [
+        "runtime/src/adapters/persistence/SqlitePublicProjectionStore.ts",
+        "runtime/src/projection",
+        "app/src/renderer/src/core/runtime/projection"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_applicable",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
+      "notes": "Snapshot, commit replay, Conversation and Model projection are covered in the real Electron smoke. Diagnostics publishing is a separate unaccepted capability."
+    },
+    {
+      "module": "browser-and-mcp-tools",
+      "source": [
+        "app/src/main/services/browser-service.ts",
+        "runtime/src/adapters/mcp/ProductionMcpAgentClient.ts",
+        "runtime/src/composition/FirstPartyAgentToolCatalog.ts"
       ],
       "unit": "verified",
       "integration": "verified",
       "realModel": "not_accepted",
       "realWindow": "not_accepted",
       "realMachine": "not_accepted",
-      "notes": "Zod 4 is the contract source. Native tools and text fallback normalize to AgentAction. Real Provider qualification remains pending."
+      "notes": "Adapters and capability restrictions are automated. Real navigation, download, OAuth, STDIO server and signed sandbox-helper acceptance are pending."
     },
     {
-      "module": "tool-checkpoint-and-recovery",
+      "module": "skills-and-run-pre-hook",
       "source": [
-        "runtime/src/run/RunToolCheckpointCoordinator.ts",
-        "runtime/src/app/startupRecovery.ts"
+        "runtime/src/adapters/instructions/ProductionInstructionRegistry.ts",
+        "runtime/src/composition/ConfiguredAgentAdmissionHookPolicy.ts"
       ],
       "unit": "verified",
       "integration": "verified",
       "realModel": "not_accepted",
       "realWindow": "not_accepted",
       "realMachine": "not_accepted",
-      "notes": "Intent/start/result ledger and recovery_required handling are automated; forced-kill acceptance with real side effects is pending."
+      "notes": "Admission instruction assembly and run.pre policy are connected. Progressive Skill loading and other Hook lifecycle events are not connected to v3."
     },
     {
-      "module": "content-authority-and-egress",
-      "source": [
-        "runtime/src/core/ContentEnvelope.ts",
-        "runtime/src/security"
-      ],
-      "unit": "verified",
-      "integration": "verified",
-      "realModel": "not_accepted",
-      "realWindow": "not_accepted",
-      "realMachine": "not_accepted",
-      "notes": "Files, web, command output, diffs, MCP and SubAgent content remain data; secret egress is denied."
-    },
-    {
-      "module": "eval-harness",
-      "source": [
-        "runtime/src/eval"
-      ],
-      "unit": "verified",
-      "integration": "verified",
-      "realModel": "not_accepted",
-      "realWindow": "not_applicable",
-      "realMachine": "not_accepted",
-      "notes": "Eleven isolated scenarios exist. Provider/model success-rate, cost and tool-count evidence is pending."
-    },
-    {
-      "module": "context-token-summary-memory",
+      "module": "context-memory-and-embedding",
       "source": [
         "runtime/src/context",
-        "runtime/src/model/TokenCounter.ts"
-      ],
-      "unit": "verified",
-      "integration": "verified",
-      "realModel": "not_accepted",
-      "realWindow": "not_accepted",
-      "realMachine": "not_accepted",
-      "notes": "Exact local tokenizer, conservative remote counter, skip-capable packing, strict summaries and governed editable memory."
-    },
-    {
-      "module": "local-embedding",
-      "source": [
-        "runtime/src/context/EmbeddingService.ts",
         "runtime/config/embedding-models.json"
       ],
       "unit": "verified",
       "integration": "partial",
       "realModel": "not_accepted",
-      "realWindow": "not_applicable",
-      "realMachine": "not_accepted",
-      "notes": "GGUF integration and pinned BGE-M3 manifest are tested; model weights are external and not present in repository acceptance."
-    },
-    {
-      "module": "code-intelligence-and-repo-map",
-      "source": [
-        "runtime/src/context/LspCodeIntelligenceProvider.ts",
-        "runtime/src/context/TreeSitterWasmIntelligenceProvider.ts",
-        "runtime/src/context/ProjectIndex.ts"
-      ],
-      "unit": "verified",
-      "integration": "verified",
-      "realModel": "not_applicable",
-      "realWindow": "not_applicable",
-      "realMachine": "not_accepted",
-      "notes": "TS/JS, JSON/Markdown, Python and C# fixtures, fake LSP and Tree-sitter fallback are covered."
-    },
-    {
-      "module": "mcp",
-      "source": [
-        "packages/protocol/src/host.ts",
-        "runtime/src/mcp",
-        "runtime/src/sandbox",
-        "app/src/main/runtime/mcp-remote-service.ts",
-        "app/src/main/persistence/mcp-oauth-credential-vault.ts"
-      ],
-      "unit": "verified",
-      "integration": "verified",
-      "realModel": "not_applicable",
       "realWindow": "not_accepted",
       "realMachine": "not_accepted",
-      "notes": "Official transports, ToolContract adaptation, native sandbox process leases, Main-owned Streamable HTTP, encrypted OAuth/PKCE state and authorization denial are automated. Signed-helper STDIO and real OAuth server acceptance remain pending."
+      "notes": "Token, summary, memory, repo-map and embedding components have isolated evidence, but no complete v3 admission/inference consumer or actual model asset acceptance exists."
     },
     {
-      "module": "skills-and-hooks",
+      "module": "subagent-background-and-scheduler",
       "source": [
-        "runtime/src/skills",
-        "runtime/src/hooks"
+        "runtime/src/subagent",
+        "runtime/src/background",
+        "runtime/src/scheduler"
       ],
       "unit": "verified",
-      "integration": "verified",
+      "integration": "partial",
       "realModel": "not_accepted",
-      "realWindow": "not_applicable",
-      "realMachine": "not_accepted",
-      "notes": "Instruction hierarchy and durable session/run/model/tool/subagent/stop lifecycle hooks are connected. Skill scripts receive no extra authority."
-    },
-    {
-      "module": "resource-registry",
-      "source": [
-        "runtime/src/resources"
-      ],
-      "unit": "verified",
-      "integration": "verified",
-      "realModel": "not_applicable",
-      "realWindow": "verified",
-      "realMachine": "not_accepted",
-      "notes": "Content addressed storage, opaque public IDs, metadata update and deletion are covered."
-    },
-    {
-      "module": "browser-service",
-      "source": [
-        "app/src/main/services/browser-service.ts",
-        "runtime/src/tools/browserTools.ts"
-      ],
-      "unit": "verified",
-      "integration": "verified",
-      "realModel": "not_accepted",
-      "realWindow": "partial",
-      "realMachine": "not_accepted",
-      "notes": "Main-owned isolated WebContentsView health and dynamic capability registration are verified. Real HTTPS navigation, redirect, input and download acceptance is pending."
-    },
-    {
-      "module": "headless-ndjson",
-      "source": [
-        "runtime/src/transport/HeadlessRuntimeHost.ts",
-        "runtime/src/entry/headless.ts"
-      ],
-      "unit": "verified",
-      "integration": "verified",
-      "realModel": "not_accepted",
-      "realWindow": "not_applicable",
-      "realMachine": "not_accepted",
-      "notes": "Real child process, cursor reconnect, shutdown and --once behavior are covered."
-    },
-    {
-      "module": "task-compare-restore",
-      "source": [
-        "runtime/src/orchestrator/TaskCheckpointService.ts",
-        "runtime/src/orchestrator/TaskRollback.ts"
-      ],
-      "unit": "verified",
-      "integration": "verified",
-      "realModel": "not_applicable",
       "realWindow": "not_accepted",
       "realMachine": "not_accepted",
-      "notes": "Ledger-scoped files, hash conflicts and reversible restore checkpoints are covered."
+      "notes": "Source and isolated tests exist. v3 model directives, public commands, projection, Renderer consumers and restart semantics are not a product capability."
     },
     {
-      "module": "provider-resilience-and-telemetry",
+      "module": "diagnostics-telemetry-and-provider-resilience",
       "source": [
+        "runtime/src/telemetry",
         "runtime/src/model/ProviderResilience.ts",
-        "runtime/src/telemetry"
+        "runtime/src/adapters/persistence/SqlitePublicProjectionStore.ts"
       ],
       "unit": "verified",
+      "integration": "partial",
+      "realModel": "not_accepted",
+      "realWindow": "not_accepted",
+      "realMachine": "not_accepted",
+      "notes": "Schemas and isolated components exist. The v3 inference gateway does not consume the full resilience policy and there is no production Diagnostics publisher or complete telemetry lifecycle."
+    },
+    {
+      "module": "electron-agent-recovery-smoke",
+      "source": [
+        "app/src/main/smoke/electron-smoke.ts",
+        "scripts/electron-smoke.ps1",
+        "scripts/electron-smoke-provider.mjs",
+        "scripts/electron-smoke-boundary-watcher.mjs"
+      ],
+      "unit": "not_applicable",
       "integration": "verified",
       "realModel": "not_accepted",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
+      "notes": "Real Electron Agent gate covers direct terminal output, read continuation, write allow/deny, in-flight cancel, and hard kills at inference-started, effect-started and projection-pending. Exact trace is 11 Provider requests, 9 responses and 2 aborts, with no duplicate file effect."
+    },
+    {
+      "module": "architecture-and-runtime-independence",
+      "source": [
+        "scripts/check-architecture.mjs",
+        "scripts/audit-runtime-independence.mjs"
+      ],
+      "unit": "not_applicable",
+      "integration": "verified",
+      "realModel": "not_applicable",
       "realWindow": "not_applicable",
-      "realMachine": "not_accepted",
-      "notes": "Retry-After, backoff, limits, circuit, first-token boundary, endpoint allowlist and attribute redaction are covered."
-    },
-    {
-      "module": "database-migration",
-      "source": [
-        "runtime/src/storage/sqliteMigration.ts",
-        "runtime/config/schema-compatibility.json"
-      ],
-      "unit": "verified",
-      "integration": "verified",
-      "realModel": "not_applicable",
-      "realWindow": "verified",
-      "realMachine": "not_accepted",
-      "notes": "Pre-migration backup, atomic rollback and newer-schema rejection are covered. N-1 package upgrade/downgrade acceptance is pending."
-    },
-    {
-      "module": "runtime-policy-settings",
-      "source": [
-        "packages/protocol/src/settings.ts",
-        "app/src/main/persistence/agent-settings-repository.ts",
-        "app/src/main/runtime/runtime-configuration.ts"
-      ],
-      "unit": "verified",
-      "integration": "verified",
-      "realModel": "not_applicable",
-      "realWindow": "verified",
-      "realMachine": "not_accepted",
-      "notes": "Schema 2 persists and bootstraps non-secret MCP, Skills, Hooks, Browser, telemetry, resilience and Embedding policy. OAuth exchange is Main-owned and settings carry only opaque credential references."
+      "realMachine": "not_applicable",
+      "notes": "Current dependency graph and repository/runtime boundary checks pass. These structural gates do not imply feature acceptance."
     },
     {
       "module": "windows-release",
@@ -256,9 +233,9 @@
       "unit": "verified",
       "integration": "partial",
       "realModel": "not_accepted",
-      "realWindow": "verified",
+      "realWindow": "not_accepted",
       "realMachine": "not_accepted",
-      "notes": "Static installer and fail-closed signing gates are verified. Signed package install, upgrade, rollback, downgrade and uninstall require a clean Windows machine."
+      "notes": "Static installer, asset and signing gates exist. Signed install, upgrade, rollback, downgrade and uninstall on a clean Windows machine are pending."
     }
   ]
 }

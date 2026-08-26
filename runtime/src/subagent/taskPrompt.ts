@@ -1,5 +1,5 @@
 import type { NormalizedDelegatedTask } from "./delegatedTask.js";
-import type { RunBudget } from "../agent/RunPolicyTypes.js";
+import type { RunBudget } from "../agent/RunPolicyPrimitives.js";
 
 /** 由任务包生成子 Agent 系统提示（非固定人格角色）。 */
 export function buildDelegatedTaskSystemPrompt(

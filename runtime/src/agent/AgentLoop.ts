@@ -3,13 +3,14 @@ import type { NotificationQueue } from "../background/NotificationQueue.js";
 import type { ContextManager } from "../context/ContextManager.js";
 import type { ModelTaskType } from "../model/taskType.js";
 import type { ChatMessage } from "../model/types.js";
-import type { AgentPromptStrategySummary, AgentRouterDecisionSummary, AgentRoutingMeta } from "../model-router/agent-routing-summary.js";
+import type { AgentRoutingMeta } from "../model-router/agent-routing-summary.js";
 import type { LoopChatFn, LoopChatResponse } from "../model-router/agent-chat-types.js";
 import type { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { TraceLogger } from "../trace/TraceLogger.js";
 import type { ProcessSandbox } from "../sandbox/ProcessSandbox.js";
 import type { RunAggregateRepository } from "../run/RunAggregateRepository.js";
 import { parseAction, type ToolAction } from "./AgentActionParser.js";
+import type { AgentRunResult } from "./AgentRunResultContracts.js";
 import { buildAgentSystemPrompt } from "./AgentSystemPromptBuilder.js";
 import { buildWorkflowCapabilityHint } from "./AgentWorkflowCapabilityHint.js";
 import type { PausedRunRuntimeState } from "./PausedRunStore.js";
@@ -68,16 +69,16 @@ import {
   type AgentRuntimeServices,
 } from "./AgentRuntimeServices.js";
 import type { SessionTaskManager } from "./task/SessionTaskManager.js";
+import type { AgentExecutionMeta } from "./AgentExecutionMetaContracts.js";
+import type { RunPolicy } from "./RunPolicyContracts.js";
 import {
-  type AgentExecutionMeta,
   type AgentRunMode,
   type AgentStopReason,
-  type AgentWorkflowInternalPlan,
-  type AgentWorkflowSwitch,
   type RunBudget,
   type RunBudgetKey,
-  type RunPolicy,
-} from "./RunPolicyTypes.js";
+} from "./RunPolicyPrimitives.js";
+import type { AgentWorkflowInternalPlan } from "./WorkflowExecutionContracts.js";
+import type { AgentWorkflowSwitch } from "./WorkflowStateContracts.js";
 import type { RunStateStore } from "../orchestrator/RunStateStore.js";
 import type { ProjectIndex } from "../context/ProjectIndex.js";
 import type { RunState } from "../orchestrator/runStateTypes.js";
@@ -102,37 +103,7 @@ import {
 import { bootstrapAgentRunSession } from "./AgentRunBootstrap.js";
 import { runAgentReactLoop, type AgentReactLoopContext } from "./AgentReactLoopRunner.js";
 
-export interface AgentRunResult {
-  answer: string;
-  steps: AgentToolStep[];
-  iterations: number;
-  /** 本轮运行预算耗尽时为 true。 */
-  reachedLimit: boolean;
-  /** 等待用户权限确认时为 true。 */
-  awaitingPermission?: boolean;
-  /** 等待计划交接批准时为 true。 */
-  awaitingPlanHandoff?: boolean;
-  /** 固定 JSON 权限申请（工具级 JIT）。 */
-  permissionRequest?: PermissionRequestPayload;
-  /** 计划→执行交接（与 permissionRequest 分离）。 */
-  planHandoff?: PlanHandoffPayload;
-  /** 计划模式产生的结构化、版本化契约；澄清态与待确认态均由此表达。 */
-  agentPlan?: AgentPlanContract;
-  /** 已批准计划的逐步骤执行证据。 */
-  agentPlanExecutionReport?: AgentPlanExecutionReport;
-  /** 本次运行实际生效的模式、预算、调用计数与停止原因。 */
-  executionMeta: AgentExecutionMeta;
-  /** 首轮模型调用的 Smart 路由摘要（默认 Smart 路径；显式 clientName 时省略）。 */
-  routerDecision?: AgentRouterDecisionSummary;
-  /** 首轮模型调用的提示策略（temperature/风格/hints）。 */
-  promptStrategy?: AgentPromptStrategySummary;
-  /** 本轮在安全点消费的系统通知（如后台任务完成）。 */
-  notifications?: AgentNotification[];
-  /** M6：持久化会话 id（启用 ContextManager 时返回）。 */
-  sessionId?: string;
-  /** M6：本轮是否触发了历史压缩。 */
-  compressed?: boolean;
-}
+export type { AgentRunResult } from "./AgentRunResultContracts.js";
 
 export interface AgentLoopOptions {
   chat: LoopChatFn;

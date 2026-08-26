@@ -10,8 +10,8 @@ import path from "node:path";
 import { readTraceSegmentUtf8 } from "../util/traceSegmentIo.js";
 import type { TraceQueryFilter } from "./traceReplayTypes.js";
 import { ACTIVE_REL, resolveTracePaths, toAbsoluteSegment } from "./tracePaths.js";
+import type { TraceEvent } from "./TraceEvent.js";
 import type { TraceIndexStore } from "./TraceIndexStore.js";
-import type { TraceEvent } from "./TraceLogger.js";
 
 export interface TraceCatalog {
   tracesDir: string;

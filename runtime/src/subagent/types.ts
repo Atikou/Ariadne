@@ -1,6 +1,9 @@
 import type { AgentToolStep } from "../agent/toolStep.js";
 import type { ToolPermission } from "../core/permissions.js";
-import type { WriteFilePickStrategy } from "./writeFileVersionPick.js";
+import type {
+  SubAgentWriteConflict,
+  WriteFilePickStrategy,
+} from "./writeConflictContracts.js";
 import type { DelegatedTask, SubAgentStructuredResult } from "./delegatedTask.js";
 import type { ExecutionRoute } from "./executionRoute.js";
 
@@ -99,12 +102,7 @@ export interface SubAgentConflict {
   reason: string;
 }
 
-export interface SubAgentWriteConflict {
-  path: string;
-  taskIds: string[];
-  changeIds: string[];
-  reason: string;
-}
+export type { SubAgentWriteConflict } from "./writeConflictContracts.js";
 
 export interface SubAgentArbitration {
   applied: boolean;

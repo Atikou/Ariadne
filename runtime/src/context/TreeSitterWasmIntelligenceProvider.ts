@@ -10,7 +10,7 @@ import {
 import type {
   CodeAnalysis,
   CodeIntelligenceProvider,
-} from "./CodeIntelligenceService.js";
+} from "./CodeIntelligenceContracts.js";
 import type { ProjectSymbolRecord } from "./projectIndexTypes.js";
 
 const require = createRequire(import.meta.url);

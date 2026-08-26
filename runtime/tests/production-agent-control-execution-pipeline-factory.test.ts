@@ -1,0 +1,1082 @@
+import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import type {
+  AgentAdmissionAuthoritySource,
+  RuntimeBootstrap
+} from '@ariadne/protocol/host';
+import { PUBLIC_PROJECTION_CONTRACT_VERSION } from '@ariadne/protocol/public';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  SqliteAgentRunUnitOfWork
+} from '../src/adapters/persistence/SqliteAgentRunUnitOfWork.js';
+import {
+  SqliteConversationRunHandoffUnitOfWork
+} from '../src/adapters/persistence/SqliteConversationRunHandoffUnitOfWork.js';
+import {
+  SqlitePublicProjectionStore
+} from '../src/adapters/persistence/SqlitePublicProjectionStore.js';
+import {
+  compileTrustedAgentToolCatalog,
+  type TrustedAgentToolCatalogSnapshot
+} from '../src/adapters/tool/TrustedAgentToolCatalogCompiler.js';
+import {
+  ComposedAgentControlRuntime,
+  DefaultAgentControlRuntimeFactory
+} from '../src/composition/DefaultAgentControlRuntimeFactory.js';
+import {
+  AgentControlConversationMessageAdmissionError,
+  ProductionAgentControlExecutionPipelineFactory,
+  type AgentControlExecutionPipeline
+} from '../src/composition/ProductionAgentControlExecutionPipelineFactory.js';
+import type {
+  AgentToolContractDocumentV1,
+  AgentToolExecutableImplementationV1
+} from '../src/control/ports/AgentToolExecution.js';
+import type { RuntimeCommandEnvelope } from '../src/ingress/RuntimeIngress.js';
+import { createShutdownContext } from '../src/ingress/ShutdownContext.js';
+
+const roots: string[] = [];
+const NOW = Date.parse('2026-01-01T00:00:00.000Z');
+const DEADLINE = '2099-01-01T00:00:00.000Z';
+const PROVIDER_SECRET = 'pipeline-test-secret';
+
+afterEach(() => {
+  for (const root of roots.splice(0)) {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+describe('ProductionAgentControlExecutionPipelineFactory', () => {
+  it('represents disabled first-party authority as no execution pipeline', async () => {
+    await withStores(async ({ unitOfWork, conversation }) => {
+      const result = await factory([]).create({
+        unitOfWork,
+        conversation,
+        agentAdmissionAuthoritySource: disabledSource(),
+        modelProviders: []
+      });
+
+      expect(result).toBeNull();
+    });
+  });
+
+  it('fails Runtime construction when enabled authority lacks its exact Catalog', async () => {
+    const catalog = trustedCatalog();
+    await withStores(async ({ unitOfWork, conversation }) => {
+      await expect(factory([]).create({
+        unitOfWork,
+        conversation,
+        agentAdmissionAuthoritySource: enabledSource(catalog),
+        modelProviders: [provider()]
+      })).rejects.toMatchObject({
+        code: 'AGENT_EXECUTION_TOOL_CATALOG_MISSING'
+      });
+    });
+  });
+
+  it('lets the default composition release every owner fence after pipeline construction fails', async () => {
+    const root = createRoot();
+    const catalog = trustedCatalog();
+    const controlFactory = new DefaultAgentControlRuntimeFactory({}, factory([]));
+
+    await expect(controlFactory.create({
+      dataRoot: root,
+      production: false,
+      runtimeInstanceId: '00000000-0000-4000-8000-000000000041',
+      agentAdmissionAuthoritySource: enabledSource(catalog),
+      modelProviders: [provider()],
+      hostCapabilities: {
+        request: async () => { throw new Error('development_keyring_not_expected'); }
+      }
+    })).rejects.toMatchObject({ code: 'AGENT_EXECUTION_TOOL_CATALOG_MISSING' });
+
+    const unitOfWork = new SqliteAgentRunUnitOfWork(root);
+    const conversation = new SqliteConversationRunHandoffUnitOfWork(root);
+    const publicProjection = new SqlitePublicProjectionStore(root);
+    const context = createShutdownContext(Date.now() + 5_000);
+    try {
+      await publicProjection.close(context);
+      await conversation.close(context);
+      await unitOfWork.close(context);
+    } finally {
+      context.dispose();
+    }
+  });
+
+  it('gates expired, unbound, and unknown Workspace admission before any write', async () => {
+    const catalog = trustedCatalog();
+    await withStores(async ({ unitOfWork, conversation }) => {
+      const expired = requirePipeline(await factory([catalog], {
+        now: () => NOW,
+        credentials: { EXACT_KEY: PROVIDER_SECRET }
+      }).create({
+        unitOfWork,
+        conversation,
+        agentAdmissionAuthoritySource: enabledSource(catalog, {
+          deadlineAt: '2025-01-01T00:00:00.000Z'
+        }),
+        modelProviders: [provider()]
+      }));
+      expectAdmissionFailure(
+        () => expired.assertConversationMessageAdmission('workspace-v3'),
+        'authority_expired'
+      );
+
+      const unbound = requirePipeline(await factory([catalog], {
+        now: () => NOW,
+        credentials: {}
+      }).create({
+        unitOfWork,
+        conversation,
+        agentAdmissionAuthoritySource: enabledSource(catalog),
+        modelProviders: [provider()]
+      }));
+      expectAdmissionFailure(
+        () => unbound.assertConversationMessageAdmission('workspace-v3'),
+        'model_binding_unavailable'
+      );
+      expectAdmissionFailure(
+        () => unbound.assertConversationMessageAdmission('workspace-unknown'),
+        'workspace_authority_missing'
+      );
+    });
+  });
+
+  it('rejects expired Workspace admission through Control before persisting a Message', async () => {
+    const catalog = trustedCatalog();
+    const harness = await createHarness(
+      catalog,
+      enabledSource(catalog, { deadlineAt: '2025-01-01T00:00:00.000Z' })
+    );
+    try {
+      await harness.runtime.start();
+      await createSession(harness.runtime);
+      const result = await harness.runtime.executeOwnedCommand(
+        messageEnvelope('message-expired')
+      );
+
+      expect(result).toMatchObject({
+        settlement: 'completed',
+        outcome: {
+          ok: false,
+          error: { code: 'agent_execution_unavailable', retryable: false }
+        }
+      });
+      await expect(harness.conversation.authorityTransaction(
+        (transaction) => transaction.loadMessageHead('message-expired')
+      )).resolves.toBeNull();
+      await expect(harness.conversation.countPendingHandoffOutbox()).resolves.toBe(0);
+    } finally {
+      await harness.runtime.shutdown(createShutdownContext(Date.now() + 5_000));
+    }
+  });
+
+  it('runs accepted Conversation work through durable Handoff, exact Provider I/O, and settlement', async () => {
+    const catalog = trustedCatalog();
+    let admissionNow = NOW;
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(
+      JSON.stringify({
+        model: 'model-v3',
+        choices: [{
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: JSON.stringify({
+              protocol: 'ariadne.agent-directive.v3',
+              directive: { kind: 'respond', content: 'completed by pure v3' }
+            })
+          }
+        }]
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } }
+    ));
+    const harness = await createHarness(
+      catalog,
+      enabledSource(catalog),
+      fetch,
+      () => admissionNow
+    );
+    try {
+      await harness.runtime.start();
+      await createSession(harness.runtime);
+      const acceptedEnvelope = messageEnvelope('message-e2e');
+      const accepted = await harness.runtime.executeOwnedCommand(acceptedEnvelope);
+      expect(accepted).toMatchObject({
+        settlement: 'completed',
+        outcome: {
+          ok: true,
+          result: { kind: 'conversation.message.accepted.v3' }
+        }
+      });
+      const sagaId = requireAcceptedSagaId(accepted);
+      await expect.poll(
+        () => harness.conversation.countPendingHandoffOutbox(),
+        { timeout: 2_000, interval: 5 }
+      ).toBe(0);
+      admissionNow = Date.parse('2100-01-01T00:00:00.000Z');
+      await expect(harness.runtime.executeOwnedCommand(acceptedEnvelope))
+        .resolves.toEqual(accepted);
+      await harness.pipeline.executionScheduler.drainOnce();
+
+      const saga = await harness.conversation.transaction(
+        (transaction) => transaction.loadSaga(sagaId)
+      );
+      expect(saga?.stage.kind).toBe('agent_run_linked');
+      if (saga?.stage.kind !== 'agent_run_linked') {
+        throw new Error('pipeline_test_run_not_linked');
+      }
+      const run = await harness.unitOfWork.transaction(
+        (transaction) => transaction.loadRun(saga.stage.runId)
+      );
+      expect(run).toMatchObject({
+        runId: saga.stage.runId,
+        state: { status: 'completed' },
+        turns: [{ attempts: [{ state: { status: 'succeeded' } }] }]
+      });
+      await expect(harness.unitOfWork.listExecutionIntentRecovery({ limit: 10 }))
+        .resolves.toEqual({ items: [] });
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const [url, init] = fetch.mock.calls[0]!;
+      expect(url).toBe('https://provider.example/v1/chat/completions');
+      expect(new Headers(init?.headers).get('authorization'))
+        .toBe(`Bearer ${PROVIDER_SECRET}`);
+    } finally {
+      await harness.runtime.shutdown(createShutdownContext(Date.now() + 5_000));
+    }
+  });
+
+  it('runs plan mode through one attenuated read-only binding before Provider I/O', async () => {
+    const catalog = trustedPlanCatalog();
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => providerResponse({
+      protocol: 'ariadne.agent-directive.v3',
+      directive: {
+        kind: 'propose_plan',
+        plan: {
+          summary: 'Build a layered animated star field.',
+          impactSummary: 'Approval permits the later workspace implementation.',
+          steps: [{
+            title: 'Implement the star field',
+            summary: 'Create and verify the layered canvas animation.',
+            impact: 'workspace_change'
+          }]
+        }
+      }
+    }));
+    const harness = await createHarness(
+      catalog,
+      enabledPlanSource(catalog),
+      fetch
+    );
+    try {
+      await harness.runtime.start();
+      await createSession(harness.runtime);
+      const accepted = await harness.runtime.executeOwnedCommand(
+        messageEnvelope('message-plan-e2e', 'plan')
+      );
+      const sagaId = requireAcceptedSagaId(accepted);
+      await expect.poll(
+        () => harness.conversation.countPendingHandoffOutbox(),
+        { timeout: 2_000, interval: 5 }
+      ).toBe(0);
+
+      const saga = await harness.conversation.transaction(
+        (transaction) => transaction.loadSaga(sagaId)
+      );
+      if (saga?.stage.kind !== 'agent_run_linked') {
+        throw new Error('pipeline_plan_run_not_linked');
+      }
+      const admitted = await harness.unitOfWork.transaction(
+        (transaction) => transaction.loadRun(saga.stage.runId)
+      );
+      expect(admitted?.binding).toMatchObject({
+        workspace: { access: 'read' },
+        capabilities: [{ capabilityId: 'workspace.read' }],
+        toolCatalog: {
+          allowedToolNames: ['workspace.list_files', 'workspace.read_file']
+        },
+        budget: { vector: { writeCalls: 0, shellCalls: 0 } }
+      });
+
+      await harness.pipeline.executionScheduler.drainOnce();
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const body = JSON.stringify(requestBody(fetch.mock.calls[0]?.[1]));
+      expect(body).toContain('Plan mode is read-only');
+      expect(body).toContain('workspace.list_files');
+      expect(body).toContain('workspace.read_file');
+      expect(body).not.toContain('workspace.write_file');
+      const waiting = await harness.unitOfWork.transaction(
+        (transaction) => transaction.loadRun(saga.stage.runId)
+      );
+      expect(waiting).toMatchObject({
+        binding: {
+          bindingVersion: 4,
+          executionProfile: { mode: 'plan' }
+        },
+        state: {
+          status: 'waiting',
+          reason: 'plan_approval',
+          decision: { kind: 'plan' }
+        }
+      });
+      if (
+        waiting?.state.status !== 'waiting'
+        || waiting.state.decision.kind !== 'plan'
+      ) throw new Error('pipeline_plan_decision_missing');
+      const decision = waiting.state.decision;
+      await expect(harness.unitOfWork.transaction(async (transaction) => (
+        transaction.loadPlanVersion?.({
+          planId: decision.planId,
+          version: decision.planVersion,
+          contentHash: decision.planHash
+        }) ?? null
+      ))).resolves.toMatchObject({
+        runId: waiting.runId,
+        payload: {
+          publicPresentation: {
+            summary: 'Build a layered animated star field.'
+          }
+        }
+      });
+    } finally {
+      await harness.runtime.shutdown(createShutdownContext(Date.now() + 5_000));
+    }
+  });
+
+  it('terminalizes an unstartable plan as one assistant failure without calling Provider', async () => {
+    const catalog = trustedPlanCatalog();
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const source = enabledPlanSource(catalog);
+    const manifest = source.manifests[0]!;
+    manifest.capabilityGrant.capabilities = [
+      { capabilityId: 'workspace.write', scopeIds: ['workspace.root'] }
+    ];
+    manifest.toolCatalog.allowedToolNames = ['workspace.write_file'];
+    const harness = await createHarness(catalog, source, fetch);
+    try {
+      await harness.runtime.start();
+      await createSession(harness.runtime);
+      const accepted = await harness.runtime.executeOwnedCommand(
+        messageEnvelope('message-plan-unstartable', 'plan')
+      );
+      const sagaId = requireAcceptedSagaId(accepted);
+      await expect.poll(
+        () => harness.conversation.countPendingHandoffOutbox(),
+        { timeout: 2_000, interval: 5 }
+      ).toBe(0);
+      const saga = await harness.conversation.transaction(
+        (transaction) => transaction.loadSaga(sagaId)
+      );
+      expect(saga).toMatchObject({
+        version: 3,
+        stage: {
+          kind: 'agent_start_failed',
+          failureCode: 'agent_admission_authority_missing'
+        }
+      });
+      await expect(harness.conversation.authorityTransaction(
+        (transaction) => transaction.loadSession('session-v3')
+      )).resolves.toMatchObject({ version: 3 });
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      await harness.runtime.shutdown(createShutdownContext(Date.now() + 5_000));
+    }
+  });
+
+  it('runs one pure v3 Tool loop through durable Effect results and a causal follow-up Turn', async () => {
+    const execute = vi.fn<AgentToolExecutableImplementationV1['execute']>(
+      async (input, context) => {
+        expect(input).toEqual({ path: 'README.md' });
+        expect(context).toMatchObject({
+          toolCallId: 'workspace-read-call-v3'
+        });
+        return {
+          status: 'succeeded',
+          result: { path: 'README.md', content: 'pure Ariadne v3' }
+        };
+      }
+    );
+    const catalog = trustedCatalog({ execute });
+    let releaseFollowUp!: () => void;
+    const followUpGate = new Promise<void>((resolve) => {
+      releaseFollowUp = resolve;
+    });
+    const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
+      const call = fetch.mock.calls.length;
+      if (call === 1) {
+        return providerResponse({
+          protocol: 'ariadne.agent-directive.v3',
+          directive: {
+            kind: 'invoke_tools',
+            invocations: [{
+              toolCallId: 'workspace-read-call-v3',
+              toolName: 'workspace.read',
+              input: { path: 'README.md' },
+              scope: []
+            }]
+          }
+        });
+      }
+      if (call !== 2) throw new Error('unexpected_provider_call');
+      await followUpGate;
+      return providerResponse({
+        protocol: 'ariadne.agent-directive.v3',
+        directive: { kind: 'respond', content: 'read completed by pure v3' }
+      });
+    });
+    const harness = await createHarness(
+      catalog,
+      enabledSource(catalog, { permissionMode: 'trusted' }),
+      fetch
+    );
+    try {
+      await harness.runtime.start();
+      await createSession(harness.runtime);
+      const accepted = await harness.runtime.executeOwnedCommand(
+        messageEnvelope('message-tool-loop-e2e')
+      );
+      const sagaId = requireAcceptedSagaId(accepted);
+      await expect.poll(
+        () => harness.conversation.countPendingHandoffOutbox(),
+        { timeout: 2_000, interval: 5 }
+      ).toBe(0);
+      await harness.pipeline.executionScheduler.drainOnce();
+      const workDrain = harness.pipeline.runWorkScheduler.drainOnce();
+
+      await expect.poll(
+        () => fetch.mock.calls.length,
+        { timeout: 2_000, interval: 5 }
+      ).toBe(2);
+
+      const saga = await harness.conversation.transaction(
+        (transaction) => transaction.loadSaga(sagaId)
+      );
+      if (saga?.stage.kind !== 'agent_run_linked') {
+        throw new Error('pipeline_tool_loop_run_not_linked');
+      }
+      const active = await harness.unitOfWork.listActiveRuns({ limit: 10 });
+      const recovery = active.items.find(
+        (candidate) => candidate.run.runId === saga.stage.runId
+      );
+      if (recovery?.ready !== true || recovery.phase !== 'resumable') {
+        throw new Error('pipeline_tool_loop_result_not_recoverable');
+      }
+      const effect = recovery.run.effects[0];
+      if (effect === undefined) throw new Error('pipeline_tool_loop_effect_missing');
+      const resultReference = recovery.effectPayloads.find(
+        (reference) => reference.effectId === effect.effectId
+      );
+      if (resultReference?.hasResult !== true) {
+        throw new Error('pipeline_tool_loop_durable_result_missing');
+      }
+      await expect(harness.unitOfWork.loadEffectResult(resultReference)).resolves.toEqual({
+        path: 'README.md',
+        content: 'pure Ariadne v3'
+      });
+
+      const secondRequest = requestBody(fetch.mock.calls[1]?.[1]);
+      const messages = requireProviderMessages(secondRequest);
+      const assistantTransport = messages.at(-2);
+      const resultTransport = messages.at(-1);
+      expect(assistantTransport?.role).toBe('assistant');
+      expect(resultTransport?.role).toBe('user');
+      const assistantPayload = parseJsonText(assistantTransport?.content);
+      const resultPayload = parseJsonText(resultTransport?.content);
+      expect(assistantTransport?.content).toBe(canonicalTestJson(assistantPayload));
+      expect(resultTransport?.content).toBe(canonicalTestJson(resultPayload));
+      expect(assistantPayload).toMatchObject({
+        protocol: 'ariadne.agent-directive.v3',
+        directive: {
+          kind: 'invoke_tools',
+          invocations: [{
+            effectId: effect.effectId,
+            toolCallId: 'workspace-read-call-v3',
+            tool: { toolName: 'workspace.read' }
+          }]
+        }
+      });
+      expect(resultPayload).toEqual({
+        protocol: 'ariadne.agent-effect-results.v3',
+        sourceDirectiveDigest: recovery.run.turns[0]?.attempts[0]?.state.status === 'succeeded'
+          ? recovery.run.turns[0].attempts[0].state.directiveDigest
+          : '',
+        results: [{
+          effectId: effect.effectId,
+          toolCallId: 'workspace-read-call-v3',
+          status: 'succeeded',
+          result: { path: 'README.md', content: 'pure Ariadne v3' }
+        }]
+      });
+
+      releaseFollowUp();
+      await expect(workDrain).resolves.toMatchObject({
+        dispatchedEffects: 1,
+        continuedBatches: 1,
+        dispatchedFollowUps: 1
+      });
+      const completed = await harness.unitOfWork.transaction(
+        (transaction) => transaction.loadRun(saga.stage.runId)
+      );
+      expect(completed).toMatchObject({
+        state: { status: 'completed' },
+        effects: [{
+          effectId: effect.effectId,
+          toolCallId: 'workspace-read-call-v3',
+          state: { status: 'succeeded' }
+        }]
+      });
+      expect(completed?.turns).toHaveLength(2);
+      expect(completed?.turns[0]?.attempts[0]?.state).toMatchObject({
+        status: 'succeeded',
+        directive: { kind: 'invoke_tools' }
+      });
+      expect(completed?.turns[1]).toMatchObject({
+        intention: {
+          cause: {
+            kind: 'effect_results',
+            effectIds: [effect.effectId],
+            toolCallIds: ['workspace-read-call-v3']
+          }
+        },
+        attempts: [{
+          state: {
+            status: 'succeeded',
+            directive: {
+              kind: 'respond'
+            }
+          }
+        }]
+      });
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      releaseFollowUp();
+      await harness.runtime.shutdown(createShutdownContext(Date.now() + 5_000));
+    }
+  });
+
+  it('fails startup before Provider or Tool I/O when an active Run exact Catalog is unavailable', async () => {
+    const execute = vi.fn<AgentToolExecutableImplementationV1['execute']>(
+      async () => ({ status: 'succeeded', result: { mustNotRun: true } })
+    );
+    const originalCatalog = trustedCatalog({ execute });
+    const initialFetch = vi.fn<typeof globalThis.fetch>(async () => providerResponse({
+      protocol: 'ariadne.agent-directive.v3',
+      directive: {
+        kind: 'invoke_tools',
+        invocations: [{
+          toolCallId: 'startup-drift-call-v3',
+          toolName: 'workspace.read',
+          input: { path: 'README.md' },
+          scope: []
+        }]
+      }
+    }));
+    const harness = await createHarness(
+      originalCatalog,
+      enabledSource(originalCatalog, { permissionMode: 'trusted' }),
+      initialFetch
+    );
+    vi.spyOn(harness.pipeline.runWorkScheduler, 'wake')
+      .mockImplementation(() => undefined);
+    try {
+      await harness.runtime.start();
+      await createSession(harness.runtime);
+      const accepted = await harness.runtime.executeOwnedCommand(
+        messageEnvelope('message-startup-authority-drift')
+      );
+      const sagaId = requireAcceptedSagaId(accepted);
+      await expect.poll(
+        () => harness.conversation.countPendingHandoffOutbox(),
+        { timeout: 2_000, interval: 5 }
+      ).toBe(0);
+      await harness.pipeline.executionScheduler.drainOnce();
+      const saga = await harness.conversation.transaction(
+        (transaction) => transaction.loadSaga(sagaId)
+      );
+      if (saga?.stage.kind !== 'agent_run_linked') {
+        throw new Error('pipeline_startup_drift_run_not_linked');
+      }
+      await expect(harness.unitOfWork.transaction(
+        (transaction) => transaction.loadRun(saga.stage.runId)
+      )).resolves.toMatchObject({
+        state: { status: 'running' },
+        effects: [{ state: { status: 'authorized' } }]
+      });
+      expect(initialFetch).toHaveBeenCalledTimes(1);
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await harness.runtime.shutdown(createShutdownContext(Date.now() + 5_000));
+    }
+
+    const replacementExecute = vi.fn<AgentToolExecutableImplementationV1['execute']>(
+      async () => ({ status: 'succeeded', result: { mustNotRun: true } })
+    );
+    const replacementCatalog = trustedCatalog({
+      catalogId: 'catalog-v3-replacement',
+      revision: 4,
+      execute: replacementExecute
+    });
+    const restartFetch = vi.fn<typeof globalThis.fetch>(async () => {
+      throw new Error('startup_authority_drift_crossed_provider_boundary');
+    });
+    const unitOfWork = new SqliteAgentRunUnitOfWork(harness.dataRoot);
+    const conversation = new SqliteConversationRunHandoffUnitOfWork(harness.dataRoot);
+    const pipeline = requirePipeline(await factory([replacementCatalog], {
+      fetch: restartFetch
+    }).create({
+      unitOfWork,
+      conversation,
+      agentAdmissionAuthoritySource: enabledSource(replacementCatalog, {
+        permissionMode: 'trusted'
+      }),
+      modelProviders: [provider()]
+    }));
+    const context = createShutdownContext(Date.now() + 5_000);
+    try {
+      await expect(pipeline.runWorkScheduler.start()).rejects.toMatchObject({
+        code: 'AGENT_RUN_WORK_AUTHORITY_UNAVAILABLE',
+        reason: 'tool_catalog_unavailable'
+      });
+      expect(restartFetch).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(replacementExecute).not.toHaveBeenCalled();
+    } finally {
+      await pipeline.runWorkScheduler.shutdown(
+        new Date(context.deadlineAt).toISOString()
+      );
+      await conversation.close(context);
+      await unitOfWork.close(context);
+      context.dispose();
+    }
+  });
+});
+
+interface StoreFixture {
+  readonly unitOfWork: SqliteAgentRunUnitOfWork;
+  readonly conversation: SqliteConversationRunHandoffUnitOfWork;
+}
+
+async function withStores(
+  operation: (fixture: StoreFixture) => Promise<void>
+): Promise<void> {
+  const root = createRoot();
+  const unitOfWork = new SqliteAgentRunUnitOfWork(root);
+  const conversation = new SqliteConversationRunHandoffUnitOfWork(root);
+  const context = createShutdownContext(Date.now() + 5_000);
+  try {
+    await operation({ unitOfWork, conversation });
+  } finally {
+    await conversation.close(context);
+    await unitOfWork.close(context);
+    context.dispose();
+  }
+}
+
+function factory(
+  catalogs: readonly TrustedAgentToolCatalogSnapshot[],
+  options: {
+    readonly now?: () => number;
+    readonly credentials?: Readonly<Record<string, string | undefined>>;
+    readonly fetch?: typeof globalThis.fetch;
+  } = {}
+): ProductionAgentControlExecutionPipelineFactory {
+  return new ProductionAgentControlExecutionPipelineFactory({
+    toolCatalogSnapshots: catalogs,
+    credentialEnvironment: options.credentials ?? { EXACT_KEY: PROVIDER_SECRET },
+    recoveryReporter: {
+      reportExecutionIntentRecovery: vi.fn(async () => undefined)
+    },
+    now: options.now ?? (() => NOW),
+    handoffProducer: { drainIntervalMs: 60_000 },
+    executionScheduler: { intervalMs: 60_000 },
+    ...(options.fetch === undefined ? {} : { fetch: options.fetch })
+  });
+}
+
+async function createHarness(
+  catalog: TrustedAgentToolCatalogSnapshot,
+  source: AgentAdmissionAuthoritySource,
+  fetch?: typeof globalThis.fetch,
+  now: () => number = () => NOW
+): Promise<{
+  readonly unitOfWork: SqliteAgentRunUnitOfWork;
+  readonly conversation: SqliteConversationRunHandoffUnitOfWork;
+  readonly pipeline: AgentControlExecutionPipeline;
+  readonly runtime: ComposedAgentControlRuntime;
+  readonly dataRoot: string;
+}> {
+  const root = createRoot();
+  const unitOfWork = new SqliteAgentRunUnitOfWork(root);
+  const conversation = new SqliteConversationRunHandoffUnitOfWork(root);
+  const publicProjection = new SqlitePublicProjectionStore(root);
+  const pipeline = requirePipeline(await factory([catalog], {
+    now,
+    ...(fetch === undefined ? {} : { fetch })
+  }).create({
+    unitOfWork,
+    conversation,
+    agentAdmissionAuthoritySource: source,
+    modelProviders: [provider()]
+  }));
+  const runtime = new ComposedAgentControlRuntime(
+    unitOfWork,
+    conversation,
+    publicProjection,
+    undefined,
+    {
+      publishIntervalMs: 60_000,
+      conversationCommandNow: () => new Date('2025-01-01T00:00:00.000Z')
+    },
+    pipeline
+  );
+  return { unitOfWork, conversation, pipeline, runtime, dataRoot: root };
+}
+
+async function createSession(runtime: ComposedAgentControlRuntime): Promise<void> {
+  await expect(runtime.executeOwnedCommand(envelope({
+    kind: 'conversation.session.create.v3',
+    contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+    sessionId: 'session-v3',
+    workspaceId: 'workspace-v3'
+  }, 'create-session'))).resolves.toMatchObject({ outcome: { ok: true } });
+}
+
+function messageEnvelope(
+  messageId: string,
+  mode: 'agent' | 'plan' = 'agent'
+): RuntimeCommandEnvelope {
+  return envelope({
+    kind: 'conversation.message.accept.v3',
+    contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+    sessionId: 'session-v3',
+    workspaceId: 'workspace-v3',
+    expectedSessionVersion: 1,
+    messageId,
+    content: 'Execute the exact pure Ariadne v3 objective.',
+    execution: { mode }
+  }, `accept-${messageId}`);
+}
+
+function envelope(
+  command: RuntimeCommandEnvelope['command'],
+  commandId: string
+): RuntimeCommandEnvelope {
+  return {
+    commandId,
+    correlationId: commandId,
+    deadlineAt: DEADLINE,
+    signal: new AbortController().signal,
+    command
+  };
+}
+
+function requireAcceptedSagaId(
+  result: Awaited<ReturnType<ComposedAgentControlRuntime['executeOwnedCommand']>>
+): string {
+  if (
+    result?.outcome.ok !== true
+    || result.outcome.result.kind !== 'conversation.message.accepted.v3'
+  ) {
+    throw new Error('pipeline_test_message_not_accepted');
+  }
+  return result.outcome.result.sagaId;
+}
+
+function expectAdmissionFailure(
+  operation: () => void,
+  reason: AgentControlConversationMessageAdmissionError['reason']
+): void {
+  try {
+    operation();
+    throw new Error('expected_admission_failure');
+  } catch (error) {
+    expect(error).toBeInstanceOf(AgentControlConversationMessageAdmissionError);
+    expect(error).toMatchObject({ reason });
+  }
+}
+
+function requirePipeline(
+  value: AgentControlExecutionPipeline | null
+): AgentControlExecutionPipeline {
+  if (value === null) throw new Error('pipeline_test_pipeline_missing');
+  return value;
+}
+
+function enabledSource(
+  catalog: TrustedAgentToolCatalogSnapshot,
+  options: {
+    readonly deadlineAt?: string;
+    readonly permissionMode?: 'ask' | 'trusted';
+  } = {}
+): Extract<AgentAdmissionAuthoritySource, { readonly status: 'enabled' }> {
+  return {
+    sourceVersion: 1,
+    status: 'enabled',
+    manifests: [{
+      manifestVersion: 1,
+      manifestId: 'manifest-v3',
+      revision: 1,
+      workspace: {
+        workspaceId: 'workspace-v3',
+        revision: 1,
+        grantDigest: `sha256:${'a'.repeat(64)}`,
+        access: 'read',
+        scopeIds: ['workspace.root']
+      },
+      model: {
+        providerId: 'provider-v3',
+        modelId: 'model-v3',
+        settingsRevision: 7
+      },
+      policy: {
+        policyId: 'policy-v3',
+        revision: 1,
+        permissionMode: options.permissionMode ?? 'ask'
+      },
+      capabilityGrant: {
+        grantId: 'capability-grant-v3',
+        revision: 1,
+        capabilities: [{
+          capabilityId: 'workspace.read',
+          scopeIds: ['workspace.root']
+        }]
+      },
+      toolCatalog: {
+        catalogId: catalog.catalogId,
+        revision: catalog.revision,
+        digest: catalog.catalogDigest,
+        allowedToolNames: ['workspace.read']
+      },
+      rootBudget: {
+        authorityId: 'budget-authority-v3',
+        revision: 1,
+        vector: {
+          modelTurns: 2,
+          toolCalls: 1,
+          readCalls: 1,
+          writeCalls: 0,
+          shellCalls: 0,
+          costMicrousd: 1_000
+        },
+        deadlinePolicy: {
+          kind: 'absolute',
+          deadlineAt: options.deadlineAt ?? DEADLINE
+        }
+      }
+    }]
+  };
+}
+
+function enabledPlanSource(
+  catalog: TrustedAgentToolCatalogSnapshot
+): Extract<AgentAdmissionAuthoritySource, { readonly status: 'enabled' }> {
+  const source = enabledSource(catalog);
+  const manifest = source.manifests[0]!;
+  manifest.workspace.access = 'write';
+  manifest.capabilityGrant.capabilities = [
+    { capabilityId: 'workspace.read', scopeIds: ['workspace.root'] },
+    { capabilityId: 'workspace.write', scopeIds: ['workspace.root'] }
+  ];
+  manifest.toolCatalog.allowedToolNames = [
+    'workspace.list_files',
+    'workspace.read_file',
+    'workspace.write_file'
+  ];
+  manifest.rootBudget.vector = {
+    modelTurns: 2,
+    toolCalls: 3,
+    readCalls: 2,
+    writeCalls: 1,
+    shellCalls: 0,
+    costMicrousd: 1_000
+  };
+  return source;
+}
+
+function disabledSource(): Extract<
+AgentAdmissionAuthoritySource,
+{ readonly status: 'disabled' }
+> {
+  return {
+    sourceVersion: 1,
+    status: 'disabled',
+    reason: 'not_configured'
+  };
+}
+
+function provider(): NonNullable<RuntimeBootstrap['modelProviders']>[number] {
+  return {
+    providerId: 'provider-v3',
+    name: 'provider-v3',
+    protocol: 'openai-compatible',
+    credentialEnvironmentVariable: 'EXACT_KEY',
+    enabled: true,
+    baseUrl: 'https://provider.example/v1',
+    model: 'model-v3',
+    inference: {}
+  };
+}
+
+function trustedCatalog(options: {
+  readonly catalogId?: string;
+  readonly revision?: number;
+  readonly execute?: AgentToolExecutableImplementationV1['execute'];
+} = {}): TrustedAgentToolCatalogSnapshot {
+  const artifacts = artifactBytes();
+  const document: AgentToolContractDocumentV1 = {
+    documentVersion: 1,
+    toolName: 'workspace.read',
+    toolVersion: '1.0.0',
+    providerId: 'ariadne.builtin',
+    inputSchema: { type: 'object' },
+    outputSchema: { type: 'object' },
+    capabilityIds: ['workspace.read'],
+    requiredWorkspaceAccess: 'read',
+    permission: { authority: 'run_grant', approval: 'never' },
+    scopeSemantics: 'none',
+    resourceSemantics: 'none',
+    sideEffect: 'read',
+    idempotency: 'idempotency_key_required',
+    recovery: 'retry_same_idempotency_key',
+    timeoutMs: 30_000,
+    implementationArtifacts: {
+      providerDigest: digest(artifacts.provider),
+      normalizerDigest: digest(artifacts.normalizer),
+      preparedValidatorDigest: digest(artifacts.preparedValidator),
+      executeDigest: digest(artifacts.execute)
+    }
+  };
+  const executable: AgentToolExecutableImplementationV1 = {
+    artifacts,
+    normalizeAndValidate: (input) => ({ status: 'accepted', input }),
+    validatePrepared: (input) => ({ status: 'accepted', input }),
+    execute: options.execute
+      ?? (async () => ({ status: 'succeeded', result: { ok: true } }))
+  };
+  return compileTrustedAgentToolCatalog({
+    catalogId: options.catalogId ?? 'catalog-v3',
+    revision: options.revision ?? 3,
+    tools: [{ document, executable }]
+  });
+}
+
+function trustedPlanCatalog(): TrustedAgentToolCatalogSnapshot {
+  const artifacts = artifactBytes();
+  const executable: AgentToolExecutableImplementationV1 = {
+    artifacts,
+    normalizeAndValidate: (input) => ({ status: 'accepted', input }),
+    validatePrepared: (input) => ({ status: 'accepted', input }),
+    execute: async () => ({ status: 'succeeded', result: { ok: true } })
+  };
+  const tool = (
+    toolName: string,
+    capabilityId: string,
+    access: 'read' | 'write',
+    sideEffect: 'read' | 'write'
+  ): { document: AgentToolContractDocumentV1; executable: AgentToolExecutableImplementationV1 } => ({
+    document: {
+      documentVersion: 1,
+      toolName,
+      toolVersion: '1.0.0',
+      providerId: 'ariadne.builtin',
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
+      capabilityIds: [capabilityId],
+      requiredWorkspaceAccess: access,
+      permission: {
+        authority: 'run_grant',
+        approval: access === 'write' ? 'required' : 'never'
+      },
+      scopeSemantics: 'none',
+      resourceSemantics: 'none',
+      sideEffect,
+      idempotency: 'idempotency_key_required',
+      recovery: 'retry_same_idempotency_key',
+      timeoutMs: 30_000,
+      implementationArtifacts: {
+        providerDigest: digest(artifacts.provider),
+        normalizerDigest: digest(artifacts.normalizer),
+        preparedValidatorDigest: digest(artifacts.preparedValidator),
+        executeDigest: digest(artifacts.execute)
+      }
+    },
+    executable
+  });
+  return compileTrustedAgentToolCatalog({
+    catalogId: 'catalog-plan-v3',
+    revision: 4,
+    tools: [
+      tool('workspace.list_files', 'workspace.read', 'read', 'read'),
+      tool('workspace.read_file', 'workspace.read', 'read', 'read'),
+      tool('workspace.write_file', 'workspace.write', 'write', 'write')
+    ]
+  });
+}
+
+function providerResponse(content: unknown): Response {
+  return new Response(JSON.stringify({
+    model: 'model-v3',
+    choices: [{
+      index: 0,
+      message: { role: 'assistant', content: JSON.stringify(content) }
+    }]
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+}
+
+function requestBody(init: RequestInit | undefined): unknown {
+  if (typeof init?.body !== 'string') throw new Error('provider_request_body_missing');
+  return JSON.parse(init.body);
+}
+
+function requireProviderMessages(
+  value: unknown
+): readonly { readonly role: string; readonly content: string }[] {
+  if (typeof value !== 'object' || value === null || !('messages' in value)) {
+    throw new Error('provider_request_messages_missing');
+  }
+  const messages = (value as { readonly messages?: unknown }).messages;
+  if (!Array.isArray(messages)) throw new Error('provider_request_messages_invalid');
+  return messages as readonly { readonly role: string; readonly content: string }[];
+}
+
+function parseJsonText(value: unknown): unknown {
+  if (typeof value !== 'string') throw new Error('provider_message_content_invalid');
+  return JSON.parse(value);
+}
+
+function canonicalTestJson(value: unknown): string {
+  if (value === null) return 'null';
+  if (typeof value === 'string' || typeof value === 'boolean') {
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'number') return JSON.stringify(Object.is(value, -0) ? 0 : value);
+  if (Array.isArray(value)) return `[${value.map(canonicalTestJson).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) =>
+    `${JSON.stringify(key)}:${canonicalTestJson(record[key])}`
+  ).join(',')}}`;
+}
+
+function artifactBytes(): AgentToolExecutableImplementationV1['artifacts'] {
+  const bytes = (value: string): Uint8Array => new TextEncoder().encode(value);
+  return {
+    provider: bytes('pipeline-provider-v1'),
+    normalizer: bytes('pipeline-normalizer-v1'),
+    preparedValidator: bytes('pipeline-prepared-validator-v1'),
+    execute: bytes('pipeline-execute-v1')
+  };
+}
+
+function digest(value: Uint8Array): string {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+}
+
+function createRoot(): string {
+  const root = mkdtempSync(path.join(tmpdir(), 'ariadne-production-pipeline-'));
+  roots.push(root);
+  return root;
+}

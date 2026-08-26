@@ -1,6 +1,6 @@
 import type { AgentIntentType, AgentWorkflowType } from "./IntentTypes.js";
 import { EditVerificationWorkflow } from "./EditVerificationWorkflow.js";
-import type { AgentWorkflowCorrectionRecord } from "./RunPolicyTypes.js";
+import type { AgentWorkflowCorrectionRecord } from "./WorkflowExecutionContracts.js";
 import type { AgentToolStep } from "./toolStep.js";
 
 export const MAX_WORKFLOW_CORRECTION_ATTEMPTS = 2;

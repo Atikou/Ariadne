@@ -1,5 +1,4 @@
 import type {
-  AgentProposal,
   PermissionRequest,
   PlanHandoff,
   RunSummary
@@ -13,7 +12,6 @@ interface ApprovalSessionReference {
 interface ConversationApprovalSnapshot {
   permissions: readonly PermissionRequest[];
   planHandoffs: readonly PlanHandoff[];
-  proposals: readonly AgentProposal[];
   runs: readonly RunSummary[];
 }
 
@@ -35,9 +33,6 @@ export function pendingApprovalSessionIds(
     if (sessionId) sessionIds.add(sessionId);
   };
 
-  snapshot.proposals
-    .filter((proposal) => proposal.status === 'pending')
-    .forEach(addSession);
   snapshot.permissions
     .filter((request) => request.status === 'pending')
     .forEach(addSession);

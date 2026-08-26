@@ -6,10 +6,10 @@ import { StatusPill } from '@renderer/shared/ui/StatusPill';
 
 export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
   const runtime = useRuntimeSnapshot(services.runtime);
-  const agentRuns = runtime.runs.filter((candidate) => candidate.origin === 'agent');
+  const agentRuns = runtime.runs;
   const run = agentRuns.find((candidate) => [
-    'queued', 'running', 'waiting_permission', 'waiting_plan_handoff',
-    'waiting_budget', 'paused', 'interrupted'
+    'queued', 'running', 'waiting_permission', 'waiting_decision',
+    'waiting_budget', 'waiting_children', 'cancelling', 'paused', 'interrupted'
   ].includes(candidate.status)) ?? agentRuns[0];
   const progress = Math.round((run?.progress ?? (run?.status === 'completed' ? 1 : 0)) * 100);
   const tone = run?.status === 'completed'
@@ -17,8 +17,10 @@ export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): Rea
     : run?.status === 'failed'
       ? 'danger'
       : run?.status === 'waiting_permission'
-        || run?.status === 'waiting_plan_handoff'
+        || run?.status === 'waiting_decision'
         || run?.status === 'waiting_budget'
+        || run?.status === 'waiting_children'
+        || run?.status === 'cancelling'
         || run?.status === 'paused'
         || run?.status === 'interrupted'
         ? 'warning'
@@ -42,14 +44,14 @@ export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): Rea
       {run.budgetUsage && <p>
         已累计使用 {run.budgetUsage.modelTurns} 次模型调用、{run.budgetUsage.toolCalls} 次工具调用。
       </p>}
-      <div className="agent-controls">
+      {run.origin !== 'projection' && <div className="agent-controls">
         <button type="button" onClick={() => void services.runtime.resumeBudget(run)}>
           <RotateCw size={13} /> 按建议预算继续
         </button>
         <button type="button" onClick={() => void services.runtime.cancelRun(run)}>
           <Square size={13} /> 停止任务
         </button>
-      </div>
+      </div>}
     </div>}
     {run?.status === 'paused' && <div className="status-section">
       <h2>任务已暂停</h2>
@@ -60,15 +62,15 @@ export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): Rea
       <p>{run.detail ?? (run.recoveryStatus === 'recoverable'
         ? '运行停在安全检查点，可以从原位置继续。'
         : '存在状态不确定的非幂等副作用，需要结束本次运行。')}</p>
-      <div className="agent-controls">
+      {run.origin !== 'projection' && <div className="agent-controls">
         {run.recoveryStatus === 'recoverable'
           ? <button type="button" onClick={() => void services.runtime.recoverRun(run, 'resume')}><RotateCw size={13} /> 从检查点继续</button>
           : <>
               <button type="button" onClick={() => void services.runtime.recoverRun(run, 'mark_failed')}><CircleX size={13} /> 标记失败</button>
               <button type="button" onClick={() => void services.runtime.recoverRun(run, 'cancel')}><Square size={13} /> 取消任务</button>
             </>}
-      </div>
+      </div>}
     </div>}
-    {run && !['completed', 'failed', 'cancelled', 'interrupted', 'waiting_budget'].includes(run.status) && <footer className="agent-controls"><button type="button" onClick={() => void services.runtime.cancelRun(run)}><Square size={13} /> 取消任务</button></footer>}
+    {run && run.origin !== 'projection' && !['completed', 'failed', 'cancelled', 'interrupted', 'waiting_budget', 'cancelling'].includes(run.status) && <footer className="agent-controls"><button type="button" onClick={() => void services.runtime.cancelRun(run)}><Square size={13} /> 取消任务</button></footer>}
   </section>;
 }

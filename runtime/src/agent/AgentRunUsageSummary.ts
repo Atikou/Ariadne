@@ -1,5 +1,6 @@
 import type { TraceEvent } from "../trace/TraceLogger.js";
-import type { AgentExecutionMeta, AgentRunMode } from "./RunPolicyTypes.js";
+import type { AgentExecutionMeta } from "./AgentExecutionMetaContracts.js";
+import type { AgentRunMode } from "./RunPolicyPrimitives.js";
 import type { AgentToolStep } from "./toolStep.js";
 import { countToolOutcomeUsage, isFailedToolStep } from "./toolStepOutcome.js";
 

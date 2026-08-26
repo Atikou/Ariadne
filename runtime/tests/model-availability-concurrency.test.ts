@@ -37,4 +37,37 @@ describe('ModelAvailabilityRegistry probe coordination', () => {
     });
     expect(isAvailable).toHaveBeenCalledTimes(1);
   });
+
+  it('converges rejected probes to a safe cached unavailable record', async () => {
+    const isAvailable = vi.fn(async () => {
+      throw new Error('Authorization: Bearer credential-that-must-not-leak');
+    });
+    const client: ModelClient = {
+      name: 'remote-model',
+      model: 'remote-model',
+      location: 'remote',
+      isAvailable,
+      async chat() {
+        throw new Error('not used');
+      }
+    };
+    const availability = new ModelAvailabilityRegistry({ unavailableTtlMs: 60_000 });
+
+    const [first, second] = await Promise.all([
+      availability.refreshModel(client.name, client),
+      availability.refreshModel(client.name, client)
+    ]);
+
+    expect(first).toMatchObject({
+      modelId: client.name,
+      available: false,
+      reason: 'client.isAvailable() rejected'
+    });
+    expect(second).toEqual(first);
+    expect(first.reason).not.toContain('credential-that-must-not-leak');
+    expect(isAvailable).toHaveBeenCalledTimes(1);
+
+    await expect(availability.refreshModel(client.name, client)).resolves.toEqual(first);
+    expect(isAvailable).toHaveBeenCalledTimes(1);
+  });
 });

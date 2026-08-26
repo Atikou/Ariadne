@@ -1,5 +1,5 @@
 import type { AgentIntentType, AgentWorkflowType } from "./IntentTypes.js";
-import type { AgentWorkflowSwitch, AgentWorkflowTaskState } from "./RunPolicyTypes.js";
+import type { AgentWorkflowSwitch, AgentWorkflowTaskState } from "./WorkflowStateContracts.js";
 
 /** @deprecated 使用 TaskContext；仅 workflow switch 比较所需字段。 */
 export interface WorkflowSessionSnapshot {

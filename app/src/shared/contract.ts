@@ -167,7 +167,8 @@ export interface AgentProviderSettingsView {
 }
 
 export interface AgentSettingsView {
-  schemaVersion: 2;
+  schemaVersion: 3;
+  revision: number;
   routingStrategy: AgentRoutingStrategy;
   permissionMode: AgentPermissionMode;
   customPermissions: AgentCustomPermissions;
@@ -185,11 +186,8 @@ export interface AgentWorkspaceSettingsView {
   access: 'read' | 'write';
   pinned?: true | undefined;
   archivedAt?: string | undefined;
-  purgeAfter?: string | undefined;
-  purgedAt?: string | undefined;
 }
 
-export const WORKSPACE_ARCHIVE_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 
 export interface AgentWorkspaceRequest {
   workspaceId: string;
@@ -199,24 +197,69 @@ export interface AgentWorkspacePinUpdate extends AgentWorkspaceRequest {
   pinned: boolean;
 }
 
-export interface AgentProviderSettingsUpdate {
-  enabled: boolean;
-  baseUrl: string;
-  model: string;
-  inference: ModelInferenceProfile;
+export interface AgentProviderSettingsPatch {
+  enabled?: boolean | undefined;
+  baseUrl?: string | undefined;
+  model?: string | undefined;
+  inference?: ModelInferenceProfile | undefined;
   apiKey?: string | undefined;
-  clearApiKey: boolean;
+  clearApiKey?: true | undefined;
 }
 
-export interface AgentSettingsUpdate {
-  routingStrategy: AgentRoutingStrategy;
-  permissionMode: AgentPermissionMode;
-  customPermissions: AgentCustomPermissions;
-  workspaceRoot: string;
-  workspaceAccess: 'read' | 'write';
-  localModelRoots: string[];
-  providers: Record<AgentProviderId, AgentProviderSettingsUpdate>;
-  runtimePolicy?: RuntimePolicySnapshot | undefined;
+export type AgentSettingsOperation =
+  | {
+      kind: 'permissions.set';
+      mode: AgentPermissionMode;
+      customPermissions?: AgentCustomPermissions | undefined;
+    }
+  | { kind: 'routing.set'; strategy: AgentRoutingStrategy }
+  | { kind: 'modelRoots.replace'; roots: string[] }
+  | {
+      kind: 'provider.update';
+      providerId: AgentProviderId;
+      patch: AgentProviderSettingsPatch;
+    }
+  | { kind: 'runtimePolicy.replace'; policy: RuntimePolicySnapshot }
+  | { kind: 'workspace.select'; rootPath: string };
+
+export interface AgentSettingsMutation {
+  expectedRevision: number;
+  operations: AgentSettingsOperation[];
+}
+
+export type AgentSettingsEffect = 'hot_applied' | 'reload_scheduled' | 'restart_required';
+
+export type AgentSettingsMutationResult =
+  | {
+      ok: true;
+      settings: AgentSettingsView;
+      effect: AgentSettingsEffect;
+    }
+  | {
+      ok: false;
+      settings: AgentSettingsView;
+      error: {
+        code: 'settings_revision_conflict';
+        message: string;
+        expectedRevision: number;
+        currentRevision: number;
+      };
+    };
+
+export interface PublicError {
+  code: string;
+  message: string;
+  retryable: boolean;
+  correlationId: string;
+  details?: string[] | undefined;
+}
+
+export type Result<T, E = PublicError> =
+  | { ok: true; value: T }
+  | { ok: false; error: E };
+
+export interface RuntimeDesktopRequestOptions {
+  commandId?: string | undefined;
 }
 
 export type WakeSource = 'user' | 'shortcut' | 'voice' | 'system';
@@ -316,7 +359,7 @@ export interface ApprovalNavigationRequest {
 export interface AriadneApi {
   agentSettings: {
     load(): Promise<AgentSettingsView>;
-    update(settings: AgentSettingsUpdate): Promise<AgentSettingsView>;
+    apply(mutation: AgentSettingsMutation): Promise<AgentSettingsMutationResult>;
     setWorkspacePinned(request: AgentWorkspacePinUpdate): Promise<AgentSettingsView>;
     archiveWorkspace(request: AgentWorkspaceRequest): Promise<AgentSettingsView>;
     restoreWorkspace(request: AgentWorkspaceRequest): Promise<AgentSettingsView>;
@@ -334,8 +377,12 @@ export interface AriadneApi {
     update(preferences: UserPreferences): Promise<UserPreferences>;
   };
   runtime: {
-    getStatus(): Promise<RuntimeStatus>;
-    request(command: RuntimeCommand): Promise<RuntimeResult>;
+    getStatus(): Promise<Result<RuntimeStatus>>;
+    onStatus(listener: (status: RuntimeStatus) => void): () => void;
+    request(
+      command: RuntimeCommand,
+      options?: RuntimeDesktopRequestOptions
+    ): Promise<Result<RuntimeResult>>;
     onEvent(listener: (event: RuntimeEventEnvelope) => void): () => void;
   };
   system: {

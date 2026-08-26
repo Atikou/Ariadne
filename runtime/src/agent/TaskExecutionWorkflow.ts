@@ -2,7 +2,7 @@ import type { TraceLogger } from "../trace/TraceLogger.js";
 import type { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { ToolPermission } from "../core/permissions.js";
 import type { PlanExecutionMode } from "../plan/PlanActivationWorkflow.js";
-import type { UserPermissionPolicy } from "./RunPolicyTypes.js";
+import type { UserPermissionPolicy } from "./RunPolicyPrimitives.js";
 import {
   DryRunExecutor,
   TaskRunner,

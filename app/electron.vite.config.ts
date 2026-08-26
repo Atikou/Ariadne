@@ -14,6 +14,10 @@ export default defineConfig({
   preload: {
     resolve: { alias: aliases },
     build: {
+      // A sandboxed preload can require Electron and the small built-in Node
+      // surface only. Bundle every application dependency so the emitted CJS
+      // never tries to load workspace packages or Zod inside the sandbox.
+      externalizeDeps: false,
       rollupOptions: {
         output: {
           format: 'cjs',

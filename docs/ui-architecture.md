@@ -1,40 +1,60 @@
 # Renderer UI 架构
 
-Renderer 是基于 React 与 Dockview 的模块化工作区，所有 Agent 业务状态来自公开 Runtime 协议，不再使用本地 Mock。
+> 核对日期：2026-08-26
 
-| 模块 | 数据来源 | 职责 |
+Renderer 使用 React 与 Dockview。业务状态只来自 Public Projection v3；文件、终端、设置等桌面能力通过固定 Preload API 调用 Electron Main。
+
+## 模块边界
+
+| 模块 | 当前数据来源 | 边界 |
 |---|---|---|
-| 对话 | Runtime 会话、消息和流式事件；Renderer 工作区导航适配器 | 左侧按工作区组织紧凑会话行，负责新建、搜索、切换、置顶、双击行内重命名、删除和悬停详情；右侧负责消息输入、模型选择、复制、取消和对话标尺 |
-| Agent 状态 | Runtime run/activity | 目标、进度、活动、工具/审批计数和取消 |
-| 执行计划 | Runtime plan handoff | 展示步骤并批准或拒绝计划 |
-| 工具输出 | Runtime tool activity | 展示真实工具调用结果 |
-| 日志 | Runtime trace | 展示公开追踪记录 |
-| 权限 | Runtime permission request | 展示风险与目标并提交一次性允许或拒绝 |
-| 文件 | Main 的受限工作区服务 | 浏览授权目录树 |
-| 终端 | Main 管理的 node-pty 会话 | PowerShell/CMD 交互与会话切换 |
-| 设置 | App 桌面状态仓库 | 主题、窗口与桌面偏好 |
+| Chat | v3 Session、Message、Model Projection | 创建会话、发送消息、选择执行模式和模型 |
+| Session Activity | Conversation/Run Projection | 只读会话活动 |
+| Agent Status | Run Projection | 展示状态并发出 v3 Cancel |
+| Plan / Permission | Decision Projection | 使用 opaque action token 发出 v3 Decision |
+| Tool Output | Run Activity Projection | 展示已公开的 Tool 活动 |
+| Logs | 当前可用的公开诊断行 | 尚无完整生产 Diagnostics publisher，不应宣称持久 Runtime 日志 |
+| Files | Main 的受限工作区文件服务 | 只使用授权 `workspaceId` |
+| Terminal | Main 管理的 node-pty 会话 | 桌面能力，不等于 Agent 的持久终端 Tool |
+| Settings | Main 的设置仓库 | Provider、工作区、权限模式和桌面偏好 |
 
-提案和细粒度权限请求不属于某一条聊天消息。Renderer 在应用根层把两类 Runtime 待确认事件合并为单一队列，并固定显示在应用右下角；Chat 消息流不渲染审批卡。请求到达时若主窗口及其 Dockview Popout 均未聚焦，Electron Main 发出不含路径和权限明细的系统通知，用户点击通知后按主动操作恢复应用。
+SubAgent、Background Task、Scheduler、Memory 管理等模块当前没有 v3 command/projection consumer，不应增加占位按钮或用本地 Mock 伪装成可用能力。
 
 ## 状态流
 
-`RuntimeStore` 启动时并行获取状态、模型、会话、提案、运行、权限、计划和追踪快照；选中会话后加载消息。后续状态由单一事件订阅增量更新。组件只调用具名 Store 方法，不接触 Host 协议或 IPC channel。
+```text
+startup
+  -> projection.snapshot.get
+  -> initialize Projection cache at one revision/cursor
+  -> projection.commits.read(afterCursor)
+  -> idempotently apply ordered commits
+```
+
+Renderer 当前只发送：
+
+- `conversation.session.create.v3`；
+- `conversation.message.accept.v3`；
+- `agent.decision.resolve.v3`；
+- `agent.run.cancel.v3`。
+
+Renderer 不读取 Host DTO，不访问 Runtime 源码，也不使用旧 `runtime.snapshot.get`、`events.replay` 或分散 Proposal/Permission/Plan 列表修补状态。
+
+发送消息时，Renderer 可维护按 `messageId` 关联的临时 pending overlay；正式 Projection 到达后必须原位替换。临时状态不能创建 Run、Decision 或业务终态。
+
+## 窗口模型
+
+- 默认只有一个主 Renderer；所有模块注册到 Dockview。
+- Popout 只承载被移动的模块，不创建第二 Runtime 连接或第二业务 Store。
+- Popout 不装载 Preload，不属于 IPC 授权主体；模块逻辑仍由主 Renderer 的服务拥有。
+- Main 对新窗口、导航和资源协议执行 allowlist。
 
 ## 交互原则
 
-- 内容优先，不用厚重卡片强行表达选中状态。
-- 会话导航使用可折叠的“工作区文件夹 → 会话”层级；点击工作区标题整行即可展开或收起，行内不常驻显示时间，详细信息只在鼠标悬停时出现。
-- 会话侧栏顶部始终显示带文字的“打开工作区”和“新建会话”按钮，不以难以发现的纯图标代替主要操作；目录选择由 Main 的原生选择器完成。
-- Chat 内容区使用独立的左侧圆角描边和真实裁切，与底层会话导航形成清晰边界，不使用伪元素遮挡或额外装饰层模拟圆角。
-- 当前工作区选择与会话置顶属于桌面导航偏好；工作区文件访问和 Agent 能力继续经过 Main/Runtime 的安全边界。
-- 当前工作区选择通过共享导航服务通知文件和终端模块。文件树立即重载所选授权工作区；已有终端保持原工作目录，新建或主动重启终端才使用最新选择，工具栏持续显示实际 `cwd`。
-- 新建会话优先使用当前显示会话的 `workspaceId`；没有显示会话时使用当前选中的工作区。Renderer 将工作区 ID 显式交给 Runtime，由 Runtime 校验和持久化，不能只在前端列表中模拟归属。
-- 下拉菜单统一通过顶层 Portal 渲染，并按窗口可用空间自动调整上下方向、水平位置、宽度和最大高度，避免被 Dockview 面板或滚动容器裁切；选项采用紧凑密度。
-- 用户消息和 Ariadne 回答提供一致可用的复制操作。
-- Dockview 负责模块布局、分组和持久化；逻辑状态不与布局状态耦合。
-- 模块标签可拖出主窗口成为 Dockview Popout，也可从标签菜单显式打开；关闭独立窗口后模块返回主工作区，不复制业务状态或 Runtime 连接。
-- 拖动标签到主窗口内部仍执行普通停靠/拆分，只有拖放点越过当前原生窗口边界才触发 Popout，取消拖动不会误开窗口。
-- 每个功能模块必须在注册契约中声明最低宽度；Workspace 在新建面板和恢复持久化布局后统一向 Dockview 重新应用约束，避免任意模块被拖到不可读宽度。
-- 所有按钮、状态、说明和空状态使用中文。
-- `Agent`、`Runtime`、`API`、模型名、命令和快捷键属于专业术语，可保留英文，但不得直接显示 `ready`、`running` 等内部枚举值。
-- Runtime 不可用时禁用真实操作并展示稳定中文诊断，不回退到 Mock 数据。
+- 所有业务状态必须可追溯到 Public Projection；不使用 Mock 任务或伪造执行进度。
+- Permission/Plan 只展示 Runtime 提供的 sanitized Decision presentation；Renderer 不推断权限范围。
+- Runtime 不可用时禁用真实操作并显示稳定诊断，不自动切换到本地替代状态。
+- Workspace 导航偏好不提升文件、终端或 Agent 权限。
+- 模块布局与业务状态分离；恢复 Dockview 布局不能改变 Run/Session 所有权。
+- 界面正文和状态使用中文；Agent、Runtime、API、模型名与快捷键可保留英文。
+
+当前真实窗口验收只覆盖桌面壳与 Conversation/Projection；完整 Agent 交互边界见 [验证说明](verification.md)。

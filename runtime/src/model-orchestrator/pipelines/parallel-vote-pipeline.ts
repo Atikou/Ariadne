@@ -10,21 +10,14 @@ import type {
   OrchestratorResult,
   PipelineFallbackContext,
 } from "../types.js";
+import type {
+  ParallelVoteCandidate,
+  ParallelVoteResult,
+} from "../pipelineContracts.js";
 import { runSingleModelPipeline } from "./single-model-pipeline.js";
 import { parseStrictJsonDocument } from "../../util/strictJsonDocument.js";
 
-export interface ParallelVoteCandidate {
-  modelId: string;
-  answer: string;
-  callLogId: string;
-}
-
-export interface ParallelVoteResult {
-  winnerIndex: number;
-  winnerModelId: string;
-  reason?: string;
-  candidates: ParallelVoteCandidate[];
-}
+export type { ParallelVoteCandidate, ParallelVoteResult } from "../pipelineContracts.js";
 
 interface VoteRunCandidate extends ParallelVoteCandidate {
   index: number;

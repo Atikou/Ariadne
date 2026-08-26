@@ -1,41 +1,22 @@
 import type { AgentIntentType } from "../IntentTypes.js";
-import type { AgentRunMode, AgentStopReason } from "../RunPolicyTypes.js";
+import type { AgentRunMode, AgentStopReason } from "../RunPolicyPrimitives.js";
 import type { AgentToolStep } from "../toolStep.js";
+import type { CapabilityEscalationRecord } from "../CapabilityEscalationContracts.js";
 import { augmentContractWithEscalations } from "../capabilityEscalationRuntime.js";
 import { evaluateCompletionEvidence } from "./CompletionEvidence.js";
 import { buildTaskCompletionContract } from "./TaskCompletionContract.js";
 import { buildToolLedger } from "./ToolLedger.js";
+import type {
+  CompletionCriterionInput,
+  CompletionGuardResult,
+  CompletionStatus,
+  SideEffectKind,
+} from "./CompletionContracts.js";
 
-export type CompletionStatus =
-  | "completed_success"
-  | "completed_partial"
-  | "awaiting_permission"
-  | "blocked_by_policy"
-  | "misleading_completion"
-  | "historical_reference";
-
-export interface CompletionGuardResult {
-  /** @deprecated 使用 trustedForMemory */
-  accepted: boolean;
-  status: CompletionStatus;
-  stopReason: AgentStopReason;
-  reason: string;
-  contract: ReturnType<typeof buildTaskCompletionContract>;
-  ledger: ReturnType<typeof buildToolLedger>;
-  evidence: ReturnType<typeof evaluateCompletionEvidence>;
-  /** UI 应展示的回答（优先于 rawModelAnswer / result.answer）。 */
-  visibleAnswer?: string;
-  /** 是否允许作为 AI 主回答展示。 */
-  trustedVisible: boolean;
-  /** 是否允许进入 ContextRestorer / 已验证记忆。 */
-  trustedForMemory: boolean;
-  /** 仅 role=system 回灌模型（当前 run 继续时）。 */
-  systemFeedback?: string;
-  /** Guard 后用户可见、可持久化的可信回答（source=guard）。 */
-  guardedAnswer?: string;
-  /** 模型原始 final，仅 trace / raw_model_final 持久化。 */
-  rawModelAnswer?: string;
-}
+export type {
+  CompletionGuardResult,
+  CompletionStatus,
+} from "./CompletionContracts.js";
 
 function blockedRequiredSideEffectSteps(
   steps: AgentToolStep[],
@@ -150,14 +131,14 @@ export function evaluateCompletionGuard(input: {
   mode: AgentRunMode;
   answer: string;
   completionClaim?: "completed" | "partial" | "blocked" | "historical";
-  requiredSideEffects?: readonly import("./TaskCompletionContract.js").SideEffectKind[];
-  completionCriteria?: readonly import("./TaskCompletionContract.js").CompletionCriterionInput[];
+  requiredSideEffects?: readonly SideEffectKind[];
+  completionCriteria?: readonly CompletionCriterionInput[];
   steps: AgentToolStep[];
   stopReason?: AgentStopReason;
   awaitingPermission?: boolean;
   /** capability escalation 后的有效 intent（用于 completion contract）。 */
   reconciledIntent?: AgentIntentType;
-  capabilityEscalations?: import("../CapabilityEscalation.js").CapabilityEscalationRecord[];
+  capabilityEscalations?: CapabilityEscalationRecord[];
 }): CompletionGuardResult {
   const effectiveIntent = input.reconciledIntent ?? input.intent;
   const baseContract = buildTaskCompletionContract({

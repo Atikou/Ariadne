@@ -14,6 +14,7 @@ describe('desktop Runtime configuration', () => {
       executablePath: process.execPath,
       environment: { NODE: process.execPath },
       agentSettings: {
+        revision: 9,
         routingStrategy: 'cloud-first',
         permissionMode: 'risk-based',
         permissions: {
@@ -51,6 +52,14 @@ describe('desktop Runtime configuration', () => {
     expect(configuration.agentPermissions).toMatchObject({
       approvalPolicy: 'risk-based',
       proposalApproval: 'automatic'
+    });
+    expect(configuration.agentAdmissionAuthoritySource).toMatchObject({
+      sourceVersion: 1,
+      status: 'enabled',
+      manifests: [
+        { workspace: { workspaceId: 'primary' }, model: { providerId: 'openai' } },
+        { workspace: { workspaceId: 'workspace-secondary' }, model: { providerId: 'openai' } }
+      ]
     });
     expect(configuration.runtimePolicy).toEqual(createDefaultRuntimePolicySnapshot());
     expect(configuration.environment).toMatchObject({
@@ -163,6 +172,7 @@ function testRuntimeSettings(
   workspaceRoot: string
 ): Parameters<typeof createDesktopRuntimeConfiguration>[0]['agentSettings'] {
   return {
+    revision: 9,
     routingStrategy: 'cloud-first',
     permissionMode: 'risk-based',
     permissions: {

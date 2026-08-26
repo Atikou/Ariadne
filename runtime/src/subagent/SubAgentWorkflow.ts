@@ -1,22 +1,20 @@
 import type { TraceLogger } from "../trace/TraceLogger.js";
 import type { SubAgentCoordinator } from "./SubAgentCoordinator.js";
-import {
-  SubAgentWorkflowStateCenter,
-  type SubAgentDispatchSnapshot,
-  type SubAgentWorkflowResult,
-} from "./SubAgentWorkflowStateCenter.js";
+import { SubAgentWorkflowStateCenter } from "./SubAgentWorkflowStateCenter.js";
+import type {
+  SubAgentDispatchSnapshot,
+  SubAgentWorkflowHandle,
+  SubAgentWorkflowPort,
+} from "./SubAgentWorkflowContracts.js";
 import type { SubAgentBatchOptions } from "./types.js";
 
-export interface SubAgentWorkflowHandle {
-  dispatchId: string;
-  completion: Promise<SubAgentWorkflowResult>;
-}
+export type { SubAgentWorkflowHandle } from "./SubAgentWorkflowContracts.js";
 
 /**
  * One-way command consumer for dispatch_subagent.
  * Submission records state synchronously; child execution starts from a detached microtask.
  */
-export class SubAgentWorkflow {
+export class SubAgentWorkflow implements SubAgentWorkflowPort {
   readonly stateCenter: SubAgentWorkflowStateCenter;
 
   constructor(

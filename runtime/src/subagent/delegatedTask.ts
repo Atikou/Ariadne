@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { RunBudget } from "../agent/RunPolicyTypes.js";
+import type { RunBudget } from "../agent/RunPolicyPrimitives.js";
 import { mergeRunBudget, MODE_BASE_BUDGETS } from "../agent/runBudgetDefaults.js";
 
 export const MAX_DELEGATED_TASKS_PER_BATCH = 8;

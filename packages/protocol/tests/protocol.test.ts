@@ -5,8 +5,10 @@ import {
   MAX_RUNTIME_MESSAGE_BYTES,
   assertRuntimeMessageSize,
   hostToRuntimeMessageSchema,
+  parseHeadlessInput,
   parseHostToRuntimeMessage,
   parseRuntimeToHostMessage,
+  agentPersistenceKeyRingSchema,
   runtimeCommandSchema
 } from '../src/index.js';
 import {
@@ -24,6 +26,25 @@ const runtimeInstanceId = '744b7985-512d-49ef-bc1e-7cb87674ea3f';
 const runtimeBuildFingerprint = 'a'.repeat(64);
 
 describe('Ariadne Runtime protocol', () => {
+  it('requires stable command identity and an absolute deadline in Headless v3', () => {
+    const deadlineAt = new Date(Date.now() + 60_000).toISOString();
+    expect(parseHeadlessInput({
+      type: 'command',
+      requestId: 'headless-attempt-1',
+      commandId: 'headless-command-1',
+      deadlineAt,
+      command: { kind: 'runtime.status.get' }
+    })).toMatchObject({
+      commandId: 'headless-command-1',
+      deadlineAt
+    });
+    expect(() => parseHeadlessInput({
+      type: 'command',
+      requestId: 'headless-attempt-1',
+      command: { kind: 'runtime.status.get' }
+    })).toThrow();
+  });
+
   it('accepts a strict private bootstrap without exposing a port or credential', () => {
     const bootstrap = parseHostToRuntimeMessage({
       protocol: ARIADNE_RUNTIME_PROTOCOL,
@@ -47,6 +68,11 @@ describe('Ariadne Runtime protocol', () => {
         inference: {}
       }],
       routingStrategy: 'cloud-first',
+      agentAdmissionAuthoritySource: {
+        sourceVersion: 1,
+        status: 'disabled',
+        reason: 'not_configured'
+      },
       runtimePolicy: createDefaultRuntimePolicySnapshot(),
       profile: 'default',
       workspaces: [
@@ -71,6 +97,11 @@ describe('Ariadne Runtime protocol', () => {
       installRoot: 'E:\\Runtime',
       dataRoot: 'C:\\Data',
       modelRoots: [],
+      agentAdmissionAuthoritySource: {
+        sourceVersion: 1,
+        status: 'disabled',
+        reason: 'not_configured'
+      },
       runtimePolicy: createDefaultRuntimePolicySnapshot(),
       profile: 'default',
       workspaces: [{ workspaceId: 'primary', label: 'Project', rootPath: 'E:\\Project', access: 'read' }],
@@ -101,35 +132,132 @@ describe('Ariadne Runtime protocol', () => {
     }).success).toBe(false);
   });
 
-  it('keeps plan decisions separate from permission decisions', () => {
-    expect(runtimeCommandSchema.parse({
-      kind: 'planHandoffs.respond',
-      handoffId: 'handoff-1',
-      decision: 'approve'
-    })).toBeTruthy();
+  it('requires dataRoot to be a canonical absolute Windows or POSIX path', () => {
+    const base = {
+      protocol: ARIADNE_RUNTIME_PROTOCOL,
+      protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
+      runtimeInstanceId,
+      type: 'bootstrap',
+      appVersion: '0.1.0',
+      runtimeVersion: '0.1.0',
+      runtimeBuildFingerprint,
+      installRoot: 'E:\\Runtime',
+      modelRoots: [],
+      agentAdmissionAuthoritySource: {
+        sourceVersion: 1,
+        status: 'disabled',
+        reason: 'not_configured'
+      },
+      runtimePolicy: createDefaultRuntimePolicySnapshot(),
+      profile: 'default',
+      workspaces: [{ workspaceId: 'primary', label: 'Project', rootPath: 'E:\\Project', access: 'read' }],
+      production: false
+    } as const;
 
-    expect(runtimeCommandSchema.safeParse({
-      kind: 'planHandoffs.respond',
-      handoffId: 'handoff-1',
-      decision: 'allow_workspace'
+    for (const dataRoot of [
+      'C:\\Data\\Runtime',
+      'c:\\Data\\Runtime',
+      '\\\\server\\share\\Ariadne',
+      '/var/lib/ariadne/runtime'
+    ]) {
+      expect(hostToRuntimeMessageSchema.safeParse({ ...base, dataRoot }).success).toBe(true);
+    }
+    for (const dataRoot of [
+      'relative/data',
+      'C:relative',
+      'C:/Data',
+      'C:\\Data\\..\\Runtime',
+      'C:\\Data\\',
+      '/var/lib/../ariadne',
+      '/var//lib/ariadne',
+      '/var/lib/ariadne/'
+    ]) {
+      expect(hostToRuntimeMessageSchema.safeParse({ ...base, dataRoot }).success).toBe(false);
+    }
+  });
+
+  it('keeps the Agent persistence key ring on a strict private capability', () => {
+    const keyId = 'agent-key-00000000-0000-4000-8000-000000000001';
+    expect(parseRuntimeToHostMessage({
+      protocol: ARIADNE_RUNTIME_PROTOCOL,
+      protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
+      runtimeInstanceId,
+      type: 'capability_request',
+      requestId: 'request-agent-persistence-keyring',
+      capability: 'agent_persistence',
+      operation: { kind: 'agent.persistence.keyring.read' }
+    })).toMatchObject({
+      capability: 'agent_persistence',
+      operation: { kind: 'agent.persistence.keyring.read' }
+    });
+
+    expect(agentPersistenceKeyRingSchema.parse({
+      schemaVersion: 1,
+      runtimeInstanceId,
+      generation: 1,
+      activeKeyId: keyId,
+      keys: [{
+        keyId,
+        keyMaterialBase64: Buffer.alloc(32, 7).toString('base64')
+      }]
+    })).toMatchObject({ activeKeyId: keyId, generation: 1 });
+
+    expect(agentPersistenceKeyRingSchema.safeParse({
+      schemaVersion: 1,
+      runtimeInstanceId,
+      generation: 1,
+      activeKeyId: keyId,
+      keys: [{
+        keyId,
+        keyMaterialBase64: 'not-a-32-byte-key'
+      }]
     }).success).toBe(false);
+    expect(agentPersistenceKeyRingSchema.safeParse({
+      schemaVersion: 1,
+      runtimeInstanceId,
+      generation: 1,
+      activeKeyId: keyId,
+      keys: [
+        {
+          keyId,
+          keyMaterialBase64: Buffer.alloc(32, 7).toString('base64')
+        },
+        {
+          keyId: 'agent-key-00000000-0000-4000-8000-000000000002',
+          keyMaterialBase64: Buffer.alloc(32, 7).toString('base64')
+        }
+      ]
+    }).success).toBe(false);
+  });
 
-    expect(runtimeCommandSchema.parse({
-      kind: 'permissions.respond',
-      requestId: 'permission-1',
-      approvalVersion: 'version-1',
-      decision: 'allow_once',
-      approvedItemIds: ['item-1']
-    })).toBeTruthy();
+  it('rejects retired public legacy commands', () => {
+    const retiredCommands = [
+      {
+        kind: 'permissions.respond',
+        requestId: 'permission-1',
+        approvalVersion: 'version-1',
+        decision: 'allow_once',
+        approvedItemIds: ['item-1']
+      },
+      { kind: 'permissions.resume', requestId: 'permission-1' },
+      { kind: 'planHandoffs.respond', handoffId: 'handoff-1', decision: 'approve' },
+      { kind: 'planHandoffs.resume', handoffId: 'handoff-1' },
+      { kind: 'resources.update', resourceId: 'resource-1', name: 'updated' },
+      { kind: 'resources.delete', resourceId: 'resource-1' },
+      { kind: 'memories.update', memoryId: 'memory-1', value: 'updated' },
+      { kind: 'memories.delete', memoryId: 'memory-1' },
+      { kind: 'taskCheckpoints.restore', runId: 'run-1', checkpointId: 'checkpoint-1' },
+      { kind: 'permissions.list' },
+      { kind: 'planHandoffs.list' },
+      { kind: 'companion.messages.list', sessionId: 'session-1', limit: 20 },
+      { kind: 'runs.list' },
+      { kind: 'runs.get', runId: 'run-1' },
+      { kind: 'agent.proposals.list' }
+    ];
 
-    expect(runtimeCommandSchema.parse({
-      kind: 'permissions.resume',
-      requestId: 'permission-1'
-    })).toBeTruthy();
-    expect(runtimeCommandSchema.parse({
-      kind: 'planHandoffs.resume',
-      handoffId: 'handoff-1'
-    })).toBeTruthy();
+    for (const command of retiredCommands) {
+      expect(runtimeCommandSchema.safeParse(command).success).toBe(false);
+    }
   });
 
   it('requires a versioned six-region plan contract in public handoffs', () => {
@@ -190,191 +318,56 @@ describe('Ariadne Runtime protocol', () => {
     expect(planHandoffSchema.safeParse(legacyHandoff).success).toBe(false);
   });
 
-  it('validates governed memory commands and rejects ambiguous edited lifecycle', () => {
-    expect(runtimeCommandSchema.safeParse({
-      kind: 'memories.update',
-      memoryId: 'memory-1',
-      value: 'updated',
-      lifecycleState: 'active'
-    }).success).toBe(true);
-    expect(runtimeCommandSchema.safeParse({
-      kind: 'memories.update',
-      memoryId: 'memory-1'
-    }).success).toBe(false);
-    expect(runtimeCommandSchema.safeParse({
-      kind: 'memories.update',
-      memoryId: 'memory-1',
-      value: 'updated',
-      lifecycleState: 'rejected'
-    }).success).toBe(false);
-    expect(runtimeCommandSchema.safeParse({
-      kind: 'memories.update',
-      memoryId: 'memory-1',
-      sensitivity: 'secret'
-    }).success).toBe(false);
-  });
-
-  it('preserves narrowed Agent capabilities and exact permission approval scopes', () => {
-    expect(runtimeCommandSchema.parse({
-      kind: 'agent.proposals.respond',
-      proposalId: 'proposal-1',
-      decision: 'approve_once',
-      allowedCapabilities: ['file-read'],
-      workspaceId: 'primary',
-      workspaceAccess: 'read'
-    })).toMatchObject({ allowedCapabilities: ['file-read'], workspaceId: 'primary', workspaceAccess: 'read' });
-    expect(runtimeCommandSchema.safeParse({
-      kind: 'agent.proposals.respond',
-      proposalId: 'proposal-1',
-      decision: 'reject',
-      workspaceAccess: 'read'
-    }).success).toBe(false);
-
-    expect(permissionRequestSchema.parse({
-      requestId: 'permission-1',
-      runId: 'run-1',
-      approvalVersion: 'version-1',
-      title: '读取文件',
-      reason: '需要项目配置',
-      permissionItems: [{
-        itemId: 'item-1',
-        capability: 'read_file',
-        targetLabel: 'E:\\Project\\package.json',
-        reason: '读取项目配置',
-        risk: 'low',
-        approvalScopes: ['once', 'session', 'project', 'workspace']
-      }],
-      status: 'pending',
-      createdAt: '2026-07-21T12:00:00.000Z'
-    }).permissionItems[0]?.approvalScopes).toContain('workspace');
+  it('exposes only the v3 Projection command surface', () => {
+    for (const kind of [
+      'companion.sessions.list',
+      'companion.sessions.create',
+      'companion.chat.start',
+      'companion.chat.cancel',
+      'events.replay',
+      'models.list',
+      'agent.proposals.respond',
+      'runs.cancel',
+      'runs.recover',
+      'runs.resume',
+      'resources.list',
+      'memories.list',
+      'trace.list'
+    ]) {
+      expect(runtimeCommandSchema.safeParse({ kind }).success, kind).toBe(false);
+    }
   });
 
   it('rejects unregistered arbitrary commands', () => {
     expect(runtimeCommandSchema.safeParse({ kind: 'runtime.execute', method: 'anything' }).success).toBe(false);
   });
 
-  it('exposes opaque content-addressed Resource Registry commands without paths', () => {
-    expect(runtimeCommandSchema.parse({
-      kind: 'resources.list',
-      ownerType: 'session',
-      ownerId: 'session-1'
-    })).toMatchObject({ kind: 'resources.list', limit: 200 });
-    expect(runtimeCommandSchema.parse({
-      kind: 'resources.get',
-      resourceId: 'resource-1'
-    })).toBeTruthy();
-    expect(runtimeCommandSchema.parse({
-      kind: 'resources.delete',
-      resourceId: 'resource-1'
-    })).toBeTruthy();
-  });
-
-  it('requires a client message identity for optimistic Chat reconciliation', () => {
-    expect(runtimeCommandSchema.parse({
-      kind: 'companion.chat.start',
-      clientMessageId: 'ui-message-1',
-      message: '立即显示这条消息',
-      routingStrategy: 'privacy-first',
-      resources: []
-    })).toMatchObject({ clientMessageId: 'ui-message-1', routingStrategy: 'privacy-first' });
-
-    expect(runtimeCommandSchema.safeParse({
-      kind: 'companion.chat.start',
-      clientMessageId: 'ui-message-invalid-route',
-      message: '无效路由',
-      routingStrategy: 'fastest',
-      resources: []
-    }).success).toBe(false);
-
-    expect(runtimeCommandSchema.safeParse({
-      kind: 'companion.chat.start',
-      message: '缺少关联 ID',
-      resources: []
-    }).success).toBe(false);
-  });
-
-  it('accepts only the public Agent Plan mode on Chat start', () => {
-    expect(runtimeCommandSchema.parse({
-      kind: 'companion.chat.start',
-      clientMessageId: 'ui-message-plan',
-      message: 'Create a plan first',
-      agentMode: 'plan',
-      resources: []
-    })).toMatchObject({ agentMode: 'plan' });
-
-    expect(runtimeCommandSchema.safeParse({
-      kind: 'companion.chat.start',
-      clientMessageId: 'ui-message-invalid-agent-mode',
-      message: 'Implement immediately',
-      agentMode: 'implement',
-      resources: []
-    }).success).toBe(false);
-  });
-
-  it('requires the Runtime to acknowledge the accepted Chat execution mode', () => {
-    expect(runtimeResultSchema.parse({
-      kind: 'companion.chat.accepted',
-      runId: 'run-plan',
-      sessionId: 'session-plan',
-      executionMode: 'agent-plan'
-    })).toMatchObject({ executionMode: 'agent-plan' });
-
-    expect(runtimeResultSchema.safeParse({
-      kind: 'companion.chat.accepted',
-      runId: 'run-without-mode',
-      sessionId: 'session-without-mode'
-    }).success).toBe(false);
-  });
-
-  it('carries workspace ownership through session creation and Chat commands', () => {
-    expect(runtimeCommandSchema.parse({
-      kind: 'companion.sessions.create',
-      workspaceId: 'secondary'
-    })).toMatchObject({ workspaceId: 'secondary' });
-    expect(runtimeCommandSchema.parse({
-      kind: 'companion.chat.start',
-      clientMessageId: 'ui-message-workspace',
-      workspaceId: 'secondary',
-      message: '检查工作区',
-      resources: []
-    })).toMatchObject({ workspaceId: 'secondary' });
-  });
-
-  it('validates archived workspace purge commands and results', () => {
-    expect(runtimeCommandSchema.parse({
-      kind: 'companion.workspaces.purge',
-      workspaceId: 'secondary'
-    })).toEqual({
-      kind: 'companion.workspaces.purge',
-      workspaceId: 'secondary'
-    });
-    expect(runtimeResultSchema.parse({
-      kind: 'companion.workspace.purged',
-      workspaceId: 'secondary',
-      deletedSessions: 2,
-      deletedAgentContexts: 1
-    })).toMatchObject({
-      workspaceId: 'secondary',
-      deletedSessions: 2,
-      deletedAgentContexts: 1
-    });
-  });
-
-  it('validates Chat input without changing the user-authored text', () => {
+  it('requires authoritative session identity and version for v3 messages', () => {
     const message = '  你好\n下一行  ';
+    expect(runtimeCommandSchema.parse({
+      kind: 'conversation.session.create.v3',
+      contractVersion: '3.0',
+      sessionId: 'session-exact-text',
+      workspaceId: 'secondary'
+    })).toMatchObject({ sessionId: 'session-exact-text', workspaceId: 'secondary' });
     const command = runtimeCommandSchema.parse({
-      kind: 'companion.chat.start',
-      clientMessageId: 'ui-message-exact-text',
-      message,
-      resources: []
+      kind: 'conversation.message.accept.v3',
+      contractVersion: '3.0',
+      sessionId: 'session-exact-text',
+      workspaceId: 'secondary',
+      expectedSessionVersion: 1,
+      messageId: 'ui-message-exact-text',
+      content: message
     });
-
-    expect(command).toMatchObject({ message });
+    expect(command).toMatchObject({ content: message, expectedSessionVersion: 1 });
     expect(runtimeCommandSchema.safeParse({
-      kind: 'companion.chat.start',
-      clientMessageId: 'ui-message-whitespace-only',
-      message: ' \n\t ',
-      resources: []
+      kind: 'conversation.message.accept.v3',
+      contractVersion: '3.0',
+      sessionId: 'session-exact-text',
+      workspaceId: 'secondary',
+      expectedSessionVersion: 1,
+      messageId: 'ui-message-whitespace-only',
+      content: ' \n\t '
     }).success).toBe(false);
   });
 
@@ -398,7 +391,7 @@ describe('Ariadne Runtime protocol', () => {
     expect(runSummarySchema.safeParse(base).success).toBe(false);
   });
 
-  it('keeps budget yields distinct from crash recovery and accepts a same-Run resume command', () => {
+  it('keeps budget yields visible without exposing a retired resume command', () => {
     expect(runSummarySchema.safeParse({
       runId: 'run-budget',
       origin: 'agent',
@@ -425,7 +418,7 @@ describe('Ariadne Runtime protocol', () => {
       runId: 'run-budget',
       expectedAggregateVersion: 3,
       budget: { maxModelTurns: 12 }
-    }).success).toBe(true);
+    }).success).toBe(false);
   });
 
   it('rejects contradictory or duplicated model inference profiles', () => {
@@ -444,33 +437,116 @@ describe('Ariadne Runtime protocol', () => {
     );
   });
 
-  it('accepts public Companion messages larger than the former transport ceiling', () => {
-    const content = 'x'.repeat(300_000);
-    const response = parseRuntimeToHostMessage({
+  it('separates transport attempts from stable logical commands and carries an absolute deadline', () => {
+    const request = {
       protocol: ARIADNE_RUNTIME_PROTOCOL,
       protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
       runtimeInstanceId,
-      type: 'response',
-      requestId: 'request-large-message',
-      outcome: {
-        ok: true,
-        result: {
-          kind: 'companion.messages',
-          messages: [{
-            messageId: 'message-large',
-            sessionId: 'session-large',
-            role: 'assistant',
-            content,
-            status: 'completed',
-            createdAt: '2026-07-22T00:00:00.000Z'
-          }]
-        }
-      }
+      type: 'request',
+      commandId: 'command-runtime-status-1',
+      deadlineAt: '2026-07-31T12:00:00.000Z',
+      command: { kind: 'runtime.status.get' }
+    } as const;
+
+    const firstAttempt = parseHostToRuntimeMessage({
+      ...request,
+      requestId: 'request-attempt-1'
+    });
+    const retryAttempt = parseHostToRuntimeMessage({
+      ...request,
+      requestId: 'request-attempt-2'
     });
 
-    expect(response.type).toBe('response');
-    if (response.type !== 'response' || !response.outcome.ok) throw new Error('Expected a successful response.');
-    expect(response.outcome.result).toMatchObject({ kind: 'companion.messages' });
+    expect(firstAttempt).toMatchObject({
+      type: 'request',
+      requestId: 'request-attempt-1',
+      commandId: 'command-runtime-status-1',
+      deadlineAt: '2026-07-31T12:00:00.000Z'
+    });
+    expect(retryAttempt).toMatchObject({
+      type: 'request',
+      requestId: 'request-attempt-2',
+      commandId: firstAttempt.type === 'request' ? firstAttempt.commandId : undefined
+    });
+
+    expect(hostToRuntimeMessageSchema.safeParse({
+      ...request,
+      requestId: 'legacy-request-without-command-id',
+      commandId: undefined
+    }).success).toBe(false);
+    expect(hostToRuntimeMessageSchema.safeParse({
+      ...request,
+      requestId: 'legacy-request-without-deadline',
+      deadlineAt: undefined
+    }).success).toBe(false);
+  });
+
+  it('cancels a logical command explicitly instead of treating a local timeout as completion', () => {
+    expect(parseHostToRuntimeMessage({
+      protocol: ARIADNE_RUNTIME_PROTOCOL,
+      protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
+      runtimeInstanceId,
+      type: 'cancel',
+      cancelRequestId: 'cancel-attempt-1',
+      targetRequestId: 'request-attempt-1',
+      commandId: 'command-runtime-status-1',
+      reason: 'deadline_exceeded'
+    })).toMatchObject({
+      type: 'cancel',
+      cancelRequestId: 'cancel-attempt-1',
+      targetRequestId: 'request-attempt-1',
+      commandId: 'command-runtime-status-1',
+      reason: 'deadline_exceeded'
+    });
+
+    expect(hostToRuntimeMessageSchema.safeParse({
+      protocol: ARIADNE_RUNTIME_PROTOCOL,
+      protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
+      runtimeInstanceId,
+      type: 'cancel',
+      cancelRequestId: 'cancel-attempt-1',
+      targetRequestId: 'request-attempt-1',
+      reason: 'deadline_exceeded'
+    }).success).toBe(false);
+
+    expect(parseRuntimeToHostMessage({
+      protocol: ARIADNE_RUNTIME_PROTOCOL,
+      protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
+      runtimeInstanceId,
+      type: 'cancel_acknowledged',
+      cancelRequestId: 'cancel-attempt-1',
+      targetRequestId: 'request-attempt-1',
+      commandId: 'command-runtime-status-1',
+      status: 'accepted'
+    })).toMatchObject({
+      type: 'cancel_acknowledged',
+      status: 'accepted'
+    });
+  });
+
+  it('uses an absolute deadline for the complete Runtime shutdown chain', () => {
+    expect(parseHostToRuntimeMessage({
+      protocol: ARIADNE_RUNTIME_PROTOCOL,
+      protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
+      runtimeInstanceId,
+      type: 'shutdown',
+      requestId: 'shutdown-attempt-1',
+      reason: 'app_quit',
+      deadlineAt: '2026-07-31T12:00:00.000Z'
+    })).toMatchObject({
+      type: 'shutdown',
+      deadlineAt: '2026-07-31T12:00:00.000Z'
+    });
+
+    expect(hostToRuntimeMessageSchema.safeParse({
+      protocol: ARIADNE_RUNTIME_PROTOCOL,
+      protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
+      runtimeInstanceId,
+      type: 'shutdown',
+      requestId: 'legacy-relative-shutdown',
+      reason: 'app_quit',
+      deadlineMs: 10_000
+    }).success).toBe(false);
   });
 
   it('keeps reasoning separate from final content in messages and stream events', () => {
@@ -513,6 +589,10 @@ describe('Ariadne Runtime protocol', () => {
       source: 'provider',
       startedAt: '2026-07-22T00:00:00.000Z'
     }).success).toBe(true);
+    expect(runtimeEventSchema.safeParse({
+      kind: 'projection.changed',
+      feature: 'models'
+    }).success).toBe(true);
   });
 
   it('validates a correlated response and monotonic event envelope shape', () => {
@@ -522,6 +602,7 @@ describe('Ariadne Runtime protocol', () => {
       runtimeInstanceId,
       type: 'response',
       requestId: 'request-1',
+      commandId: 'command-1',
       outcome: {
         ok: true,
         result: { kind: 'acknowledged' }
@@ -537,22 +618,68 @@ describe('Ariadne Runtime protocol', () => {
         eventId: 'event-1',
         cursor: 1,
         schemaVersion: '2.0',
-        aggregateType: 'runtime',
-        aggregateId: 'runtime',
+        aggregateType: 'trace',
+        aggregateId: 'trace-1',
         aggregateVersion: 1,
         occurredAt: '2026-07-21T12:00:00.000Z',
         event: {
-          kind: 'runtime.status.changed',
-          status: {
-            availability: 'ready',
-            runtimeVersion: '0.1.0',
-            protocolVersion: '2.0',
-            capabilities: ['companion.chat'],
-            observedAt: '2026-07-21T12:00:00.000Z'
+          kind: 'trace.appended',
+          entry: {
+            traceId: 'trace-1',
+            level: 'info',
+            category: 'protocol-test',
+            message: 'Runtime event.',
+            occurredAt: '2026-07-21T12:00:00.000Z'
           }
         }
       }
     }).type).toBe('event');
+  });
+
+  it('returns a structured correlated error without throwing domain details across the host boundary', () => {
+    const response = parseRuntimeToHostMessage({
+      protocol: ARIADNE_RUNTIME_PROTOCOL,
+      protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
+      runtimeInstanceId,
+      type: 'response',
+      requestId: 'request-attempt-3',
+      commandId: 'command-runtime-status-1',
+      outcome: {
+        ok: false,
+        error: {
+          code: 'runtime_busy',
+          message: 'Runtime is at capacity.',
+          retryable: true,
+          correlationId: 'correlation-runtime-status-1'
+        }
+      }
+    });
+
+    expect(response).toMatchObject({
+      type: 'response',
+      requestId: 'request-attempt-3',
+      commandId: 'command-runtime-status-1',
+      outcome: {
+        ok: false,
+        error: {
+          code: 'runtime_busy',
+          retryable: true,
+          correlationId: 'correlation-runtime-status-1'
+        }
+      }
+    });
+
+    expect(() => parseRuntimeToHostMessage({
+      ...response,
+      outcome: {
+        ok: false,
+        error: {
+          code: 'runtime_busy',
+          message: 'Runtime is at capacity.',
+          retryable: true
+        }
+      }
+    })).toThrow();
   });
 
   it('carries a structured user-visible error on interrupted Companion messages', () => {

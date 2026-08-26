@@ -1,6 +1,8 @@
 import readline from "node:readline";
 
-import { HeadlessRuntimeHost } from "../transport/HeadlessRuntimeHost.js";
+import { createRuntimeKernelApplicationFactory } from "../application/RuntimeKernelApplication.js";
+import { createHeadlessRuntimeHost } from "../composition/createHeadlessRuntimeHost.js";
+import { createAgentProcessSandboxFactory } from './createAgentProcessSandboxFactory.js';
 
 for (const method of ["log", "info", "warn", "error", "debug"] as const) {
   console[method] = (...values: unknown[]) => {
@@ -10,7 +12,11 @@ for (const method of ["log", "info", "warn", "error", "debug"] as const) {
 }
 
 const once = process.argv.slice(2).includes("--once");
-const host = new HeadlessRuntimeHost({ once });
+const host = createHeadlessRuntimeHost(
+  createRuntimeKernelApplicationFactory(),
+  { once },
+  createAgentProcessSandboxFactory(),
+);
 const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 
 for await (const line of lines) {

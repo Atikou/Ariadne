@@ -10,14 +10,14 @@ import { RefactorPlanWorkflow } from "./RefactorPlanWorkflow.js";
 import { DebugAnalysisWorkflow } from "./DebugAnalysisWorkflow.js";
 import { EditProposalWorkflow } from "./EditProposalWorkflow.js";
 import { PlanWorkflow, type PlanWorkflowResumeContext } from "./PlanWorkflow.js";
+import type { RunPolicy } from "./RunPolicyContracts.js";
+import type { RunBudget } from "./RunPolicyPrimitives.js";
 import type {
   AgentWorkflowDebugAnalysis,
   AgentWorkflowInternalPlan,
   AgentWorkflowProposal,
   AgentWorkflowRefactorPlan,
-  RunPolicy,
-  RunBudget,
-} from "./RunPolicyTypes.js";
+} from "./WorkflowExecutionContracts.js";
 import { RunVerifyWorkflow } from "./RunVerifyWorkflow.js";
 import type { AgentToolStep } from "./toolStep.js";
 import { defaultWorkflowPlanner } from "./WorkflowPlanner.js";

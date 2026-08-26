@@ -1,21 +1,17 @@
 import type { AgentToolStep } from "../toolStep.js";
 import { isEffectiveWriteStep, isSuccessfulToolStep } from "../toolStepOutcome.js";
-import type { CompletionRequirement, TaskCompletionContract } from "./TaskCompletionContract.js";
+import type {
+  CompletionEvidenceReport,
+  CompletionRequirement,
+  CompletionRequirementEvidence,
+  TaskCompletionContract,
+} from "./CompletionContracts.js";
 import { buildToolLedger } from "./ToolLedger.js";
 
-export interface CompletionRequirementEvidence {
-  requirementId: string;
-  kind: CompletionRequirement["kind"];
-  satisfied: boolean;
-  reason: string;
-  toolCallIds: string[];
-}
-
-export interface CompletionEvidenceReport {
-  satisfied: boolean;
-  requirements: CompletionRequirementEvidence[];
-  missingRequirementIds: string[];
-}
+export type {
+  CompletionEvidenceReport,
+  CompletionRequirementEvidence,
+} from "./CompletionContracts.js";
 
 /**
  * 只消费系统产生的结构化工具事实。自然语言 answer/acceptance description 不参与裁决。

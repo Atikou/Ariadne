@@ -1,4 +1,4 @@
-import type { AgentRunMode, RunBudget } from "./RunPolicyTypes.js";
+import type { AgentRunMode, RunBudget } from "./RunPolicyPrimitives.js";
 
 /** 各模式主预算基线（不含分层字段，由 enrichRunBudget 补齐）。 */
 export const MODE_BASE_BUDGETS: Record<AgentRunMode, RunBudget> = {

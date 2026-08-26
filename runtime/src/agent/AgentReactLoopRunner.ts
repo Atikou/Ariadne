@@ -42,7 +42,8 @@ import {
   type AgentPlanModelDraft,
 } from "../plan/AgentPlanContract.js";
 import { AgentPlanQualityError } from "../plan/AgentPlanStore.js";
-import type { RunBudgetKey, RunPolicy } from "./RunPolicyTypes.js";
+import type { RunPolicy } from "./RunPolicyContracts.js";
+import type { RunBudgetKey } from "./RunPolicyPrimitives.js";
 import type { AgentToolStep } from "./toolStep.js";
 import type { CompletionCriterionInput } from "./completion/TaskCompletionContract.js";
 import type {

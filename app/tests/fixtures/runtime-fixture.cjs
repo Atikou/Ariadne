@@ -1,6 +1,8 @@
 const protocol = 'ariadne_runtime';
-const protocolVersion = '2.0';
+const protocolVersion = '3.0';
 let capabilityBootstrap;
+let cancellationObserved = false;
+let timedOutRequestId;
 
 function sendReady(message) {
   process.send({
@@ -24,21 +26,18 @@ function sendReady(message) {
       eventId: 'fixture-ready-1',
       cursor: 1,
       schemaVersion: '2.0',
-      aggregateType: 'runtime',
-      aggregateId: 'runtime',
+      aggregateType: 'trace',
+      aggregateId: 'fixture-ready-trace',
       aggregateVersion: 1,
       occurredAt: new Date().toISOString(),
       event: {
-        kind: 'runtime.status.changed',
-        status: {
-          availability: 'ready',
-          runtimeVersion: process.env.ARIADNE_TEST_RUNTIME_VERSION || message.runtimeVersion,
-          runtimeBuildFingerprint:
-            process.env.ARIADNE_TEST_RUNTIME_BUILD_FINGERPRINT
-            || message.runtimeBuildFingerprint,
-          protocolVersion,
-          capabilities: [],
-          observedAt: new Date().toISOString()
+        kind: 'trace.appended',
+        entry: {
+          traceId: 'fixture-ready-trace',
+          level: 'info',
+          category: 'fixture',
+          message: 'Runtime fixture ready.',
+          occurredAt: new Date().toISOString()
         }
       }
     }
@@ -51,6 +50,10 @@ process.on('message', (message) => {
     return;
   }
   if (message.type === 'bootstrap') {
+    if (process.env.ARIADNE_TEST_RUNTIME_BEHAVIOR === 'delayed_ready_abort_gate') {
+      setTimeout(() => sendReady(message), 100);
+      return;
+    }
     if (process.env.ARIADNE_TEST_RUNTIME_BEHAVIOR === 'capability_on_bootstrap') {
       capabilityBootstrap = message;
       process.send({
@@ -83,8 +86,29 @@ process.on('message', (message) => {
     return;
   }
   if (message.type === 'request') {
+    if (
+      process.env.ARIADNE_TEST_RUNTIME_BEHAVIOR === 'delayed_ready_abort_gate'
+      && message.commandId === 'command-cancel-during-start'
+    ) {
+      process.exit(94);
+      return;
+    }
     if (process.env.ARIADNE_TEST_RUNTIME_BEHAVIOR === 'crash_on_request') {
       process.exit(17);
+      return;
+    }
+    if (
+      process.env.ARIADNE_TEST_RUNTIME_BEHAVIOR === 'cancel_gate'
+      && message.commandId === 'command-timeout'
+    ) {
+      timedOutRequestId = message.requestId;
+      return;
+    }
+    if (
+      process.env.ARIADNE_TEST_RUNTIME_BEHAVIOR === 'cancel_gate'
+      && !cancellationObserved
+    ) {
+      process.exit(93);
       return;
     }
     process.send({
@@ -93,6 +117,7 @@ process.on('message', (message) => {
       runtimeInstanceId: message.runtimeInstanceId,
       type: 'response',
       requestId: message.requestId,
+      commandId: message.commandId,
       outcome: {
         ok: true,
         result: {
@@ -106,6 +131,24 @@ process.on('message', (message) => {
           }
         }
       }
+    });
+    return;
+  }
+  if (message.type === 'cancel') {
+    const status = (
+      message.commandId === 'command-timeout'
+      && message.targetRequestId === timedOutRequestId
+    ) ? 'accepted' : 'attempt_mismatch';
+    if (status === 'accepted') cancellationObserved = true;
+    process.send({
+      protocol,
+      protocolVersion,
+      runtimeInstanceId: message.runtimeInstanceId,
+      type: 'cancel_acknowledged',
+      cancelRequestId: message.cancelRequestId,
+      targetRequestId: message.targetRequestId,
+      commandId: message.commandId,
+      status
     });
     return;
   }

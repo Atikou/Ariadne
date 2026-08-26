@@ -22,31 +22,22 @@ describe('Composer add menu', () => {
     expect(styles).toMatch(/\.composer-add-popover\s*\{[^}]*position:\s*fixed;[^}]*overflow-y:\s*auto;/);
   });
 
-  it('wires only Plan mode while keeping the other requested rows presentation-only', async () => {
+  it('shows only actions that have a production command path', async () => {
     const menu = await readFile(
       join(rendererRoot, 'modules', 'chat', 'ComposerAddMenu.tsx'),
       'utf8'
     );
 
-    for (const expectedText of [
-      '文件和文件夹',
-      '设置要持续追求的目标',
-      '开启计划模式',
-      'Documents',
-      'PDF',
-      'Spreadsheets',
-      'Presentations',
-      'Template Creator',
-      'Sites'
-    ]) {
-      expect(menu).toContain(expectedText);
-    }
+    expect(menu).toContain('开启计划模式');
+    for (const unavailableAction of [
+      '文件和文件夹', '目标', 'Documents', 'PDF', 'Spreadsheets',
+      'Presentations', 'Template Creator', 'Sites'
+    ]) expect(menu).not.toContain(unavailableAction);
     expect(menu).toContain("if (item.id !== 'plan' || item.disabled) return");
     expect(menu).toContain('onPlanModeChange(!planModeEnabled)');
     expect(menu).toContain('aria-pressed');
     expect(menu).toContain('disabled={item.disabled}');
     expect(menu).toContain('composer-plan-mode-chip');
-    expect(menu).not.toContain('services.');
-    expect(menu).not.toContain('window.ariadne');
+    expect(menu).not.toContain('功能展示');
   });
 });

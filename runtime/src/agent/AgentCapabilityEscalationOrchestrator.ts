@@ -9,7 +9,7 @@ import {
   type CapabilityEscalationRecord,
 } from "./CapabilityEscalation.js";
 import type { AgentIntentType, AgentWorkflowType } from "./IntentTypes.js";
-import type { UserPermissionPolicy } from "./RunPolicyTypes.js";
+import type { UserPermissionPolicy } from "./RunPolicyPrimitives.js";
 import type { WorkflowRouteResult } from "./WorkflowRouter.js";
 import {
   applyEscalationBudget,

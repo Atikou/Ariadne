@@ -1,101 +1,110 @@
 import { describe, expect, it } from 'vitest';
-
-import type {
-  ConversationSession,
-  RuntimeCommand,
-  RuntimeResult,
-  RuntimeStatus
-} from '@ariadne/protocol/public';
+import type { RuntimeStatus } from '@ariadne/protocol/public';
 import { RuntimeStore } from '../src/renderer/src/core/runtime/runtime-store';
+import { successfulRuntimeApi } from './support/runtime-api';
+import {
+  message,
+  projectionSnapshot,
+  readBatch,
+  session
+} from './projection-v3-fixture';
 
-const stoppedStatus: RuntimeStatus = {
-  availability: 'stopped',
+const READY: RuntimeStatus = {
+  availability: 'ready',
   capabilities: [],
-  observedAt: '2026-07-22T00:00:00.000Z'
+  observedAt: '2026-07-31T00:00:00.000Z'
 };
 
-describe('RuntimeStore session consistency', () => {
-  it('ignores message history that completes after a newer session selection', async () => {
-    const pending = new Map<string, (result: RuntimeResult) => void>();
-    const store = new RuntimeStore({
-      getStatus: async () => stoppedStatus,
-      request: (command) => {
-        if (command.kind !== 'companion.messages.list') throw new Error(`Unexpected command: ${command.kind}`);
-        return new Promise<RuntimeResult>((resolve) => pending.set(command.sessionId, resolve));
-      },
-      onEvent: () => () => undefined
-    });
-
-    const first = store.selectSession('session-a');
-    const second = store.selectSession('session-b');
-    pending.get('session-b')?.(messageResult('session-b', 'newer'));
-    await second;
-    pending.get('session-a')?.(messageResult('session-a', 'stale'));
-    await first;
-
-    expect(store.getSnapshot()).toMatchObject({
-      selectedSessionId: 'session-b',
-      messages: [{ sessionId: 'session-b', content: 'newer' }]
-    });
-  });
-
-  it('removes a deleted session locally and selects the remaining session', async () => {
-    const sessions = [session('session-a'), session('session-b')];
-    let createIndex = 0;
-    const commands: RuntimeCommand[] = [];
-    const store = new RuntimeStore({
-      getStatus: async () => stoppedStatus,
+describe('RuntimeStore session presentation', () => {
+  it('selects messages from MessageStore without issuing a domain list query', async () => {
+    const commands: string[] = [];
+    const store = new RuntimeStore(successfulRuntimeApi({
+      getStatus: async () => READY,
       request: async (command) => {
-        commands.push(command);
-        if (command.kind === 'companion.sessions.create') {
-          const created = sessions[createIndex++];
-          if (!created) throw new Error('No fixture session available.');
-          return { kind: 'companion.session', session: created };
+        commands.push(command.kind);
+        if (command.kind === 'projection.snapshot.get') {
+          return {
+            kind: 'projection.snapshot',
+            snapshot: projectionSnapshot({
+              sessions: [session('session-a'), session('session-b')],
+              messages: [message('message-a', 'session-a'), message('message-b', 'session-b')]
+            })
+          };
         }
-        if (command.kind === 'companion.messages.list') {
-          return messageResult(command.sessionId, `history:${command.sessionId}`);
+        if (command.kind === 'projection.commits.read') {
+          return {
+            kind: 'projection.commits',
+            batch: readBatch(
+              command.request.afterCursor,
+              command.request.afterDigest,
+              [],
+              { streamId: command.request.streamId }
+            )
+          };
         }
-        if (command.kind === 'companion.sessions.delete') return { kind: 'acknowledged' };
         throw new Error(`Unexpected command: ${command.kind}`);
       },
       onEvent: () => () => undefined
-    });
+    }));
+    await store.initialize();
 
-    await store.createSession();
-    await store.createSession();
-    await store.selectSession('session-a');
-    await store.deleteSession('session-a');
+    await store.selectSession('session-b');
 
     expect(store.getSnapshot()).toMatchObject({
-      sessions: [{ sessionId: 'session-b' }],
       selectedSessionId: 'session-b',
-      messages: [{ sessionId: 'session-b', content: 'history:session-b' }]
+      messages: [{ messageId: 'message-b', sessionId: 'session-b' }]
     });
-    expect(commands).toContainEqual({ kind: 'companion.sessions.delete', sessionId: 'session-a' });
+    expect(commands).not.toContain('companion.messages.list');
+  });
+
+  it('creates the session only with the first message and waits for Projection before listing it', async () => {
+    let createdSessionId = '';
+    let initialized = false;
+    const store = new RuntimeStore(successfulRuntimeApi({
+      getStatus: async () => READY,
+      request: async (command) => {
+        if (command.kind === 'projection.snapshot.get') {
+          return { kind: 'projection.snapshot', snapshot: projectionSnapshot() };
+        }
+        if (command.kind === 'projection.commits.read') {
+          if (!initialized) initialized = true;
+          return {
+            kind: 'projection.commits',
+            batch: readBatch(
+              command.request.afterCursor,
+              command.request.afterDigest,
+              [],
+              { streamId: command.request.streamId }
+            )
+          };
+        }
+        if (command.kind === 'conversation.session.create.v3') {
+          createdSessionId = command.sessionId;
+          return { kind: 'conversation.session.created.v3', sessionId: command.sessionId, version: 1 };
+        }
+        if (command.kind === 'conversation.message.accept.v3') {
+          return {
+            kind: 'conversation.message.accepted.v3',
+            sessionId: command.sessionId,
+            sessionVersion: 2,
+            messageId: command.messageId,
+            messageVersion: 1,
+            sagaId: 'first-message-saga'
+          };
+        }
+        throw new Error(`Unexpected command: ${command.kind}`);
+      },
+      onEvent: () => () => undefined
+    }));
+    await store.initialize();
+
+    const accepted = await store.sendMessage('Created', { workspaceId: 'workspace-primary' });
+    expect(accepted.sessionId).toBe(createdSessionId);
+
+    expect(store.getSnapshot()).toMatchObject({
+      selectedSessionId: createdSessionId,
+      sessions: []
+    });
+    expect(initialized).toBe(true);
   });
 });
-
-function session(sessionId: string): ConversationSession {
-  return {
-    sessionId,
-    workspaceId: 'primary',
-    title: sessionId,
-    pinned: false,
-    createdAt: '2026-07-22T00:00:00.000Z',
-    updatedAt: '2026-07-22T00:00:00.000Z'
-  };
-}
-
-function messageResult(sessionId: string, content: string): RuntimeResult {
-  return {
-    kind: 'companion.messages',
-    messages: [{
-      messageId: `message:${sessionId}`,
-      sessionId,
-      role: 'assistant',
-      content,
-      status: 'completed',
-      createdAt: '2026-07-22T00:00:01.000Z'
-    }]
-  };
-}

@@ -13,12 +13,13 @@ import type {
   RunActivity,
   RunSummary,
 } from '@ariadne/protocol/public';
+import type { RuntimeRun } from '@renderer/core/runtime/runtime-store';
 
 import { MarkdownMessage } from './MarkdownMessage';
 
 export interface RunProcessingDisclosureProps {
   reasoning?: CompanionMessageReasoning | undefined;
-  run?: RunSummary | undefined;
+  run?: ProcessingRun | undefined;
   activities: RunActivity[];
   messageStatus?: 'streaming' | 'completed' | 'interrupted' | 'failed' | undefined;
   fallbackDurationMs?: number | undefined;
@@ -27,6 +28,7 @@ export interface RunProcessingDisclosureProps {
 
 type ToolActivity = Extract<RunActivity, { activityType: 'tool' }>;
 type SystemActivity = Extract<RunActivity, { activityType: 'system' }>;
+type ProcessingRun = RuntimeRun | RunSummary;
 type ProcessingItem =
   | { kind: 'narration'; key: string; occurredAt: string; segment: CompanionReasoningSegment }
   | { kind: 'system'; key: string; occurredAt: string; activity: SystemActivity }
@@ -224,7 +226,7 @@ function compareOccurredAt(
 }
 
 function isOpenRun(
-  run: RunSummary | undefined,
+  run: ProcessingRun | undefined,
   reasoning: CompanionMessageReasoning | undefined,
 ): boolean {
   if (reasoning?.status === 'streaming') return true;
@@ -233,7 +235,7 @@ function isOpenRun(
 }
 
 function processingDuration(input: {
-  run?: RunSummary | undefined;
+  run?: ProcessingRun | undefined;
   reasoning?: CompanionMessageReasoning | undefined;
   fallbackDurationMs?: number | undefined;
   nowMs: number;
@@ -263,15 +265,19 @@ function processingDuration(input: {
 }
 
 function processingLabel(
-  run: RunSummary | undefined,
+  run: ProcessingRun | undefined,
   reasoning: CompanionMessageReasoning | undefined,
   durationMs: number,
   active: boolean,
 ): string {
-  if (run?.status === 'waiting_permission') return '等待权限确认';
-  if (run?.status === 'waiting_plan_handoff') return '等待计划确认';
-  if (run?.status === 'waiting_budget') return '等待追加预算';
-  if (run?.status === 'paused') return '处理已暂停';
+  const status: string | undefined = run?.status;
+  if (status === 'waiting_permission') return '等待权限确认';
+  if (status === 'waiting_decision') return '等待决定';
+  if (status === 'waiting_plan_handoff') return '等待计划确认';
+  if (status === 'waiting_budget') return '等待追加预算';
+  if (status === 'waiting_children') return '等待子任务';
+  if (status === 'cancelling') return '正在取消';
+  if (status === 'paused') return '处理已暂停';
   const duration = formatProcessingDuration(durationMs);
   if (run?.status === 'failed') return `处理失败 ${duration}`;
   if (run?.status === 'cancelled' || run?.status === 'interrupted') {

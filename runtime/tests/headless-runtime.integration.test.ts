@@ -31,29 +31,60 @@ describe("headless NDJSON Runtime", () => {
     const first = startHeadless();
     first.send(hello(fixture, 0));
     const ready = await first.waitFor("ready");
-    expect(ready).toMatchObject({ protocolVersion: "2.0" });
+    expect(ready).toMatchObject({ protocolVersion: "3.0" });
     first.send({
       type: "command",
       requestId: "status-1",
+      commandId: "headless-status-1",
+      deadlineAt: new Date(Date.now() + 15_000).toISOString(),
       command: { kind: "runtime.status.get" },
     });
-    const response = await first.waitFor("response");
+    const response = await first.waitForResponse("status-1");
     expect(response).toMatchObject({
       requestId: "status-1",
       outcome: { ok: true, result: { kind: "runtime.status" } },
     });
-    const event = await first.waitFor("event");
-    const cursor = event.type === "event" ? event.event.cursor : 0;
-    expect(cursor).toBeGreaterThan(0);
+    first.send({
+      type: "command",
+      requestId: "status-1-replay",
+      commandId: "headless-status-1",
+      deadlineAt: new Date(Date.now() + 15_000).toISOString(),
+      command: { kind: "runtime.status.get" },
+    });
+    const replay = await first.waitForResponse("status-1-replay");
+    expect(replay.type === "response" && response.type === "response"
+      ? replay.outcome
+      : undefined).toEqual(response.type === "response" ? response.outcome : undefined);
+    first.send({
+      type: "command",
+      requestId: "expired-1",
+      commandId: "headless-expired-1",
+      deadlineAt: new Date(Date.now() - 1).toISOString(),
+      command: { kind: "projection.snapshot.get", contractVersion: "3.0" },
+    });
+    await expect(first.waitForResponse("expired-1")).resolves.toMatchObject({
+      outcome: {
+        ok: false,
+        error: { code: "deadline_exceeded", retryable: false },
+      },
+    });
     first.send({ type: "shutdown", requestId: "shutdown-1" });
     await first.waitForResponse("shutdown-1");
     expect(await first.exit()).toBe(0);
 
     const second = startHeadless();
-    second.send(hello(fixture, cursor));
+    second.send(hello(fixture, 0));
     await second.waitFor("ready");
-    const replayed = await second.waitFor("event");
-    expect(replayed.type === "event" && replayed.event.cursor).toBeGreaterThan(cursor);
+    second.send({
+      type: "command",
+      requestId: "snapshot-2",
+      commandId: "headless-snapshot-2",
+      deadlineAt: new Date(Date.now() + 15_000).toISOString(),
+      command: { kind: "projection.snapshot.get", contractVersion: "3.0" },
+    });
+    await expect(second.waitForResponse("snapshot-2")).resolves.toMatchObject({
+      outcome: { ok: true, result: { kind: "projection.snapshot" } },
+    });
     second.send({ type: "shutdown", requestId: "shutdown-2" });
     await second.waitForResponse("shutdown-2");
     expect(await second.exit()).toBe(0);
@@ -67,6 +98,8 @@ describe("headless NDJSON Runtime", () => {
     process.send({
       type: "command",
       requestId: "once-status",
+      commandId: "headless-once-status",
+      deadlineAt: new Date(Date.now() + 15_000).toISOString(),
       command: { kind: "runtime.status.get" },
     });
     await process.waitForResponse("once-status");
@@ -100,7 +133,7 @@ function hello(
 ) {
   return {
     type: "hello",
-    protocolVersion: "2.0",
+    protocolVersion: "3.0",
     resumeCursor,
     bootstrap: {
       protocol: ARIADNE_RUNTIME_PROTOCOL,
@@ -121,6 +154,11 @@ function hello(
         permissionPolicy: "confirmBeforeRun",
         sandboxMode: "workspace-write",
         allowedPermissions: ["read", "write", "shell", "network", "dangerous"],
+      },
+      agentAdmissionAuthoritySource: {
+        sourceVersion: 1,
+        status: "disabled",
+        reason: "not_configured",
       },
       runtimePolicy: createDefaultRuntimePolicySnapshot(),
       profile: "local-only",

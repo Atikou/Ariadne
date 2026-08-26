@@ -20,11 +20,10 @@ import {
   parseRunModeValue,
   parseUserPermissionPolicyValue,
   type AgentRunMode,
-  type ResolveRunPolicyInput,
   type RunBudget,
-  type RunPolicy,
   type UserPermissionPolicy,
-} from "./RunPolicyTypes.js";
+} from "./RunPolicyPrimitives.js";
+import type { ResolveRunPolicyInput, RunPolicy } from "./RunPolicyContracts.js";
 
 /** 解析运行模式、分项预算与权限策略；与 `BudgetManager` 配对使用。 */
 export class RunPolicyManager {

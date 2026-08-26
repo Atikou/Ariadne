@@ -9,7 +9,7 @@ import { CompanionAgentPlanWorkflow } from "../src/application/CompanionAgentPla
 import { CompanionService } from "../src/companion/CompanionService.js";
 import type { ModelResponse } from "../src/model/types.js";
 import type { AgentStreamEvent } from "../src/orchestrator/AgentStream.js";
-import type { AgentStopReason } from "../src/agent/RunPolicyTypes.js";
+import type { AgentStopReason } from "../src/agent/RunPolicyPrimitives.js";
 import { AgentPlanStore } from "../src/plan/AgentPlanStore.js";
 import { createAgentPlanContract } from "../src/plan/AgentPlanContract.js";
 import { PlanHandoffStore } from "../src/policy/PlanHandoffStore.js";

@@ -1,60 +1,50 @@
 # Ariadne
 
-Ariadne 是 Electron 桌面 Agent 应用。当前仓库是协议、Runtime、测试、构建和发布的唯一来源；不依赖项目外 Agent 实现，也不保留退役框架的兼容层。
+Ariadne 是 Electron 桌面 Agent 应用。本仓库是协议、Runtime、桌面应用、测试和发布资产的唯一源码来源。
 
-## 架构
+## 当前生产架构
 
 ```text
-Electron Renderer
-  └─ 固定、类型化 Preload API
-       └─ Electron Main
-            ├─ 窗口 / 终端 / 文件 / Browser / 安全存储
-            ├─ Host capability broker
-            └─ RuntimeSupervisor
-                 └─ Protocol 2.0 Node IPC
-                      └─ Ariadne Runtime
-                           ├─ RunAggregate / checkpoint / tool ledger
-                           ├─ domain event outbox / snapshot / replay
-                           ├─ Agent / 模型 / Context / Memory
-                           ├─ ToolContract / 权限 / Egress / Sandbox
-                           └─ MCP / Skills / Hooks / Resource / Eval
+Renderer Feature Stores
+  -> fixed sandbox Preload
+  -> Electron Main
+  -> Protocol 3.0 Node IPC
+  -> ComposedRuntimeIngress
+       |-> Runtime Kernel（状态、模型目录与推理网关）
+       `-> Agent Control（Conversation、Run、Decision、Effect、Projection）
 ```
 
-- `app/`：Electron Main、Preload、Renderer 和桌面系统能力。
-- `packages/protocol/`：App 与 Runtime 唯一共享的 Public、Host、Headless 2.0 协议。
-- `runtime/`：Agent 业务核心和 Windows Sandbox helper。
-- `scripts/`：独立性、打包、签名与发布门禁。
-- `docs/`：架构、成熟度、验证和验收矩阵。
+- `app/`：Electron Main、Preload、Renderer，以及窗口、文件、终端、Browser 和安全存储等桌面能力。
+- `packages/protocol/`：Public、Host、Headless 与 Settings 契约。
+- `packages/agent-core/`：Run、Turn、Inference、Decision、Effect、Plan、Budget 和 Child Run 的领域与应用规则。
+- `runtime/`：Runtime Ingress、Control、Composition 与具体 Adapter。
+- `scripts/`：架构、独立性、打包、签名和发布门禁。
 
-Renderer 只接收 Public DTO，不接触 Node、数据库、密钥、PID、端口或本机绝对路径。Main 拥有 Browser、安全存储与桌面资源，但不承载 Agent 编排。Runtime 不启动本地 HTTP Server、不监听端口。
+Renderer 只消费 Public DTO；Main 拥有 OS 能力、凭据和 Runtime 生命周期；Runtime 不启动入站 HTTP Server。Conversation、Agent Control、Runtime command journal 和 Public Projection 分别拥有自己的持久化边界。
 
-## P0/P1 主干
+当前 Public 命令面只有：
 
-- 单一 `RunAggregate` 使用 typed command 和 `expectedAggregateVersion`。
-- aggregate、checkpoint、tool ledger 与 domain event outbox 在同一事务提交。
-- Renderer 从单 revision 快照初始化，再按持久 cursor 幂等重放事件；Trace 只用于诊断。
-- Zod 4 `ToolContract` 是工具输入、输出和 Provider JSON Schema 的唯一来源。
-- native Tool Calling 与文本 fallback 统一为 `AgentAction`；协议修复最多两次且无副作用。
-- 工具 checkpoint、稳定幂等键、安全只读并发和不确定副作用恢复阻塞。
-- `ContentEnvelope`、分层指令权限和统一 secret egress gate。
-- TokenCounter、预算装箱、本地 GGUF Embedding、严格摘要、可治理长期记忆。
-- LSP 3.18 优先、Tree-sitter WASM fallback 与持久 Repo Map。
-- MCP、Skills、Hooks、内容寻址 Resource Registry、隔离 Browser Service。
-- Headless NDJSON、Task compare/restore、Provider resilience/qualification 和脱敏 OTel。
-- 数据库迁移备份/回滚、新 Schema 拒写与 fail-closed Windows 发布门禁。
+- Runtime 状态；
+- Projection 快照与 commit replay；
+- v3 Session 创建与 Message 接收；
+- v3 Decision 处理；
+- v3 Run 取消。
 
-## 开发与验证
+目录中仍存在的 Memory、Embedding、SubAgent、Scheduler、Background Task、完整 Hooks、Telemetry 和 Provider Resilience 代码，不等于这些能力已经接入 v3 产品路径。只有具备生产 Provider、Consumer、持久权威、公开投影、恢复测试并由 Runtime status 宣告的能力，才算产品能力。
+
+## 开发验证
 
 ```powershell
 npm.cmd install
 npm.cmd run typecheck
 npm.cmd test
+npm.cmd run check:architecture
 npm.cmd run audit:runtime-independence
 npm.cmd run verify:release-contract
 npm.cmd run test:electron
 ```
 
-当前自动基线为 Protocol 18、Runtime 162、App 163，共 343 项。真实 Electron 冒烟会启动真实窗口与 Runtime 子进程，并把证据写入 `artifacts/electron-runtime-smoke/`。
+`test:electron` 当前通过真实 Electron 窗口、Preload、Main、Runtime 子进程、SQLite 和 Public Projection 执行确定性 Agent 产品门禁，覆盖 direct、Tool continuation、Decision allow/deny、运行中取消，以及 inference/effect/projection 三个持久边界的 Runtime 强杀恢复。它使用进程外 HTTPS Provider fixture，不替代 Live Provider、本地模型、Browser/MCP、正式签名 Sandbox Helper 或干净机器发布验收。
 
 正式发布门禁：
 
@@ -62,26 +52,31 @@ npm.cmd run test:electron
 npm.cmd run verify:release
 ```
 
-该命令要求依赖、协议、Runtime、App、独立性、真实 Electron、原生 Sandbox、模型 Runtime、签名环境、Windows 安装包和 Authenticode 产物全部通过。缺少真实模型、正式证书或干净 Windows 验收机时会 fail-closed，不能把开发构建描述为可生产发布。
+该门禁在缺少模型资产、签名环境或安装包验收条件时 fail closed。自动测试通过不等于正式发布已验收。
 
-## 当前未验收边界
+## 当前主要不足
 
-- 真实远程 Provider/本地聊天模型的工具、权限、计划、取消和强杀恢复。
-- 实际 BGE-M3 资产的多语言语义召回。
-- 签名原生 Sandbox helper 下的真实 MCP STDIO 服务器，以及真实远程 MCP OAuth 授权、刷新和断线恢复。
-- Browser 真实网站重定向、敏感输入和下载隔离。
-- 正式签名安装包的全新安装、N-1 升级、迁移失败回滚、备份降级和卸载。
+- 缺少真实 Electron Agent 闭环门禁；
+- 持久化 UoW、Composition Factory 和 First-party Tool Catalog 仍是大型热点；
+- 缺少 durable Agent inbox、运行中 steer/follow-up 和可恢复流式事件；
+- v3 尚未接入系统性的 Context compaction、Tool result pruning 与 spill；
+- Child Run 有领域基础，但 SubAgent 没有形成生产闭环；
+- 能力装配仍集中在工厂和静态目录，缺少冻结的 Capability Manifest；
+- Diagnostics、Telemetry、Provider Resilience 和完整 Hooks 尚未形成 v3 生命周期。
 
-这些条目不会因为自动测试通过而被标记为已验收。
+完整证据和实施顺序见 [Ariadne 与 deepseek-harness 对比审计](docs/deepseek-harness-comparison-audit-2026-08-26.md)。
 
 ## 文档
 
-- [架构设计](docs/architecture.md)
-- [Agent 成熟度与 P0/P1 验收清单](docs/Agent成熟度差距与改进路线.md)
-- [Runtime P0/P1 完成状态](docs/Runtime接入-TODO.md)
-- [验证说明](docs/verification.md)
-- [机器可读覆盖矩阵](docs/verification-matrix.json)
+- [文档索引与有效性规则](docs/README.md)
+- [当前实现架构](docs/architecture.md)
+- [目标架构与不变量](docs/architecture-v3.md)
 - [项目结构](docs/project-structure.md)
+- [验证说明](docs/verification.md)
+- [机器可读验收矩阵](docs/verification-matrix.json)
 - [Renderer UI 架构](docs/ui-architecture.md)
-- [Provider 协议与模型推理配置](docs/Provider协议与模型推理配置.md)
+- [Provider 与模型推理配置](docs/Provider协议与模型推理配置.md)
 - [Runtime 独立性审计](docs/Runtime独立性审计.md)
+- [Companion 能力请求协议](docs/agent-proposal-protocol.md)
+
+架构决策记录位于 [`docs/adr/`](docs/adr/README.md)。

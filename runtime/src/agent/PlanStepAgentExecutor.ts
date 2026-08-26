@@ -7,7 +7,7 @@ import {
   type StepResult,
 } from "./TaskRunner.js";
 import type { PlanStep } from "./types.js";
-import type { RunBudget } from "./RunPolicyTypes.js";
+import type { RunBudget } from "./RunPolicyPrimitives.js";
 import type {
   AgentCompletionContext,
   CompletionCriterionInput,

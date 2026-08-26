@@ -57,7 +57,7 @@ describe("Ariadne Runtime test boundary", () => {
         .map((file) => readFile(file, "utf8")),
     );
 
-    expect(manifest.scripts?.test).toBe("vitest run");
+    expect(manifest.scripts?.test).toBe("vitest run --maxWorkers=4");
     expect(testSources.join("\n")).not.toMatch(/\bnode:test\b|\bnode:assert\b/u);
   });
 });

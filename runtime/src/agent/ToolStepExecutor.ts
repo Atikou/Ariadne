@@ -5,6 +5,7 @@ import { StepExecutionError, type StepContext, type StepExecutor, type StepResul
 import type { PlanStep } from "./types.js";
 import type { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { BudgetManager } from "./BudgetManager.js";
+import type { UserPermissionPolicy } from "./RunPolicyPrimitives.js";
 import {
   ToolExecutionGateway,
   defaultWorkflowRouteForTaskTool,
@@ -24,7 +25,7 @@ export interface ToolStepExecutorOptions {
   projectAllowedPermissions?: ToolPermission[];
   /** 为 true 时，无 tool 绑定的步骤直接失败，禁止 no-op 跳过。 */
   requireToolBinding?: boolean;
-  permissionPolicy?: import("./RunPolicyTypes.js").UserPermissionPolicy;
+  permissionPolicy?: UserPermissionPolicy;
   budgetBucket?: BudgetBucket;
   budgetManager?: BudgetManager;
   existingSteps?: import("./toolStep.js").AgentToolStep[];

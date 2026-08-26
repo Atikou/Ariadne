@@ -1,6 +1,9 @@
 import { RunPolicyManager } from "./RunPolicyManager.js";
-import type { AgentRunMode, ResolveRunPolicyInput, RunPolicy } from "./RunPolicyTypes.js";
-export type * from "./RunPolicyTypes.js";
+import type { ResolveRunPolicyInput, RunPolicy } from "./RunPolicyContracts.js";
+import type { AgentRunMode } from "./RunPolicyPrimitives.js";
+
+export type { ResolveRunPolicyInput, RunPolicy } from "./RunPolicyContracts.js";
+export type { AgentRunMode } from "./RunPolicyPrimitives.js";
 
 export async function resolveRunPolicyAsync(input: ResolveRunPolicyInput = {}): Promise<RunPolicy> {
   return new RunPolicyManager().resolveAsync(input);

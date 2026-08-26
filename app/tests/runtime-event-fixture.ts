@@ -2,7 +2,6 @@ import {
   runtimeEventEnvelopeSchema,
   type RuntimeEvent,
   type RuntimeEventEnvelope,
-  type RuntimeResult,
 } from "@ariadne/protocol/public";
 
 export function runtimeEnvelope(
@@ -22,28 +21,12 @@ export function runtimeEnvelope(
   });
 }
 
-export function emptyRuntimeSnapshot(revision = 0): Extract<RuntimeResult, { kind: "runtime.snapshot" }> {
-  return {
-    kind: "runtime.snapshot",
-    snapshot: {
-      revision,
-      capturedAt: "2026-07-22T00:00:00.000Z",
-      runs: [],
-      permissions: [],
-      planHandoffs: [],
-      proposals: [],
-    },
-  };
-}
-
 function metadataFor(event: RuntimeEvent): {
   aggregateType: RuntimeEventEnvelope["aggregateType"];
   aggregateId: string;
   aggregateVersion?: number;
 } {
   switch (event.kind) {
-    case "runtime.status.changed":
-      return { aggregateType: "runtime", aggregateId: "runtime" };
     case "companion.reasoning.delta":
     case "companion.token.delta":
       return { aggregateType: "companion", aggregateId: event.messageId };
@@ -65,6 +48,8 @@ function metadataFor(event: RuntimeEvent): {
       return { aggregateType: "permission", aggregateId: event.request.requestId };
     case "planHandoff.changed":
       return { aggregateType: "plan_handoff", aggregateId: event.handoff.handoffId };
+    case "projection.changed":
+      return { aggregateType: "projection", aggregateId: event.feature };
     case "trace.appended":
       return { aggregateType: "trace", aggregateId: event.entry.traceId };
   }

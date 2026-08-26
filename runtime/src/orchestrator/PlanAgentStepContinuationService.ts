@@ -187,10 +187,12 @@ export class PlanAgentStepContinuationService {
     });
   }
 
-  async recover(): Promise<number> {
+  async recover(signal?: AbortSignal): Promise<number> {
+    signal?.throwIfAborted();
     this.deps.bindings.resetInterruptedClaims();
     let resumed = 0;
     for (const binding of this.deps.bindings.listRecoverable()) {
+      signal?.throwIfAborted();
       const child = this.deps.runs.get(binding.childRunId);
       if (!child || !isTerminalStatus(child.status)) continue;
       await this.handleRunTerminal({
@@ -199,8 +201,10 @@ export class PlanAgentStepContinuationService {
         source: "startup_recovery",
         at: new Date().toISOString(),
       });
+      signal?.throwIfAborted();
       resumed += 1;
     }
+    signal?.throwIfAborted();
     return resumed;
   }
 

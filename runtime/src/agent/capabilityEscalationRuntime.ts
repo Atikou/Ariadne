@@ -1,7 +1,7 @@
 import type { ToolPermission } from "../core/permissions.js";
 import type { AgentIntentType } from "./IntentTypes.js";
 import type { BudgetManager } from "./BudgetManager.js";
-import type { CapabilityEscalationRecord } from "./CapabilityEscalation.js";
+import type { CapabilityEscalationRecord } from "./CapabilityEscalationContracts.js";
 import {
   normalizeTaskCompletionContract,
   type PersistedTaskCompletionContract,

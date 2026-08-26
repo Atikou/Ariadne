@@ -9,30 +9,19 @@ import {
   type ImportRecord,
 } from "./importExportParser.js";
 import type {
+  CodeAnalysis,
+  CodeIntelligenceProvider
+} from "./CodeIntelligenceContracts.js";
+import type {
   ProjectReferenceRecord,
   ProjectSymbolRecord,
 } from "./projectIndexTypes.js";
 import { TreeSitterWasmIntelligenceProvider } from "./TreeSitterWasmIntelligenceProvider.js";
 
-export interface CodeAnalysis {
-  providerId: string;
-  symbols: ProjectSymbolRecord[];
-  imports: ImportRecord[];
-  exports: ExportRecord[];
-  references: ProjectReferenceRecord[];
-  parseDiagnostics: string[];
-}
-
-export interface CodeIntelligenceProvider {
-  readonly id: string;
-  supports(filePath: string): boolean;
-  analyze(
-    filePath: string,
-    content: string,
-    context?: { workspaceRoot?: string },
-  ): Promise<CodeAnalysis>;
-  dispose?(): Promise<void>;
-}
+export type {
+  CodeAnalysis,
+  CodeIntelligenceProvider
+} from "./CodeIntelligenceContracts.js";
 
 const TS_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
 

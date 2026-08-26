@@ -1,36 +1,40 @@
-# Agent 提案协议与诊断日志
+# Companion 能力请求协议
 
-## 设计边界
+> 核对日期：2026-08-26
+> 这是 Companion 对用户意图的内部解释协议，不是 Public v3 的独立 Proposal 命令面。
 
-Companion 只负责把用户请求解释为非执行性的 Agent 能力提案。真实身份、工作区、作用域、授权和执行句柄只由 Runtime 绑定，模型输出不能携带这些字段。
+## 边界
 
-提案按固定顺序经过：
+Companion 只能提出非执行性的能力请求。真实 Session、Workspace、Model、Tool Catalog、Capability Grant、Decision 和 Run 身份由 Runtime 绑定；模型输出不能创建授权或执行句柄。
 
-1. `transport_selection`：根据模型声明选择传输。
-2. `protocol_parse`：解析原生工具调用或版本化文本信封。
-3. `schema_validation`：校验字段、类型、枚举、长度和额外字段。
-4. `business_validation`：校验风险与能力组合等业务语义。
-5. `permission_validation`：由 Runtime 按用户、工作区和宿主能力边界裁剪并校验。
-6. `proposal_delivery`：通过持久化 Outbox 幂等投递授权提案。
+```text
+Companion output
+  -> transport parse
+  -> strict schema validation
+  -> business/risk validation
+  -> Runtime authority narrowing
+  -> Conversation Handoff
+  -> v3 Run / Decision Projection
+```
 
-任何阶段失败都不能越过后续边界，也不能创建宽于用户权限的授权请求。
+任何阶段失败都不能越过后续边界，也不能扩大 Main 注入的 Workspace 或 permission ceiling。
 
-## 传输协议
+## 模型传输
 
-支持原生结构化工具调用的模型必须调用：
+支持结构化工具调用的 Companion 模型使用：
 
 ```text
 request_agent_capabilities
 ```
 
-工具参数严格包含：
+参数只包含：
 
-- `reason`
-- `interpretedTask`
-- `requestedCapabilities`
-- `risk`
+- `reason`；
+- `interpretedTask`；
+- `requestedCapabilities`；
+- `risk`。
 
-明确声明 `toolCallCapability: "unsupported"` 的本地模型不接收工具 Schema，改用版本化兼容信封：
+明确不支持 Tool Calling 的模型可使用版本化文本信封：
 
 ```text
 <ariadne-agent-proposal protocol="1">
@@ -38,32 +42,21 @@ request_agent_capabilities
 </ariadne-agent-proposal>
 ```
 
-原生工具模型不能静默降级到文本信封；未版本化信封也不属于有效协议。
+原生 Tool Calling 模型不能静默降级到文本信封。结构化调用出现时，其参数是唯一提案载荷；同一响应中的普通说明文字不参与授权。
 
-原生响应中的结构化工具调用是提案载荷的唯一权威来源。模型若在同一次响应中附带普通说明文字，Runtime 丢弃该文字、记录 `discarded_text_with_tool_call` 警告，并继续对工具参数执行 Schema、业务语义和权限校验；这不是自动重试条件。
+## 重试与幂等
 
-## 重试规则
+协议修复只能发生在尚未产生现实副作用时，并且必须满足：
 
-协议错误必须显式声明 `retryable`。自动重试还必须同时满足：
+- 输入有稳定的已持久化消息身份；
+- 错误属于可修复的 transport/schema 阶段；
+- 尚未创建 Handoff/Decision/Run 权威事实；
+- 本轮修复次数有界。
 
-- 尚未创建 Outbox 或产生任何现实副作用；
-- 当前请求具有持久化用户消息提供的幂等身份；
-- 错误发生在可修复的传输、协议或 Schema 阶段；
-- 本轮尚未自动重试。
+业务语义失败、权限收窄失败、Handoff 结果未知或任何跨过外部 I/O 的操作都不能透明重试。
 
-业务语义失败、权限校验失败、提案投递结果未知以及任何非幂等写操作都不自动补救。
+## Public v3 映射
 
-## 日志契约
+Public 协议不暴露旧的 `agent.proposals` 写流程。需要用户确认的权限、计划或恢复动作进入 sanitized Decision Projection；Renderer 只使用 `agent.decision.resolve.v3` 和 opaque action token。
 
-Runtime 日志统一包含显式 `level`、`category`、`message` 和可选 `metadata`。Agent 提案失败日志至少包含：
-
-- 生命周期阶段和稳定错误分类；
-- 标准化字段路径；
-- 模型名称和协议版本；
-- 响应 SHA-256；
-- 响应长度、工具名称及脱敏截断片段；
-- `retryable` 和是否具有幂等保障。
-
-输入日志只保存长度及脱敏、截断后的预览。密钥、令牌和认证字段由 Trace 写入边界统一脱敏。日志面板默认显示时间、级别、分类和消息，结构化元数据通过“结构化详情”展开查看。
-
-Trace 成功写入后，同一份已脱敏事件会发布到 Runtime 可重放事件流，并实时投影为 `trace.appended`。日志面板的初始 `trace.list` 与实时事件按 `traceId` 合并，启动刷新期间产生的日志不会被快照覆盖。
+诊断事件必须脱敏。当前 v3 没有完整生产 Diagnostics publisher，因此不能宣称 proposal 解析日志会自动进入持久、可重放的公共日志流。

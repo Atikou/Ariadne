@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentExecutionMeta, RunBudgetUsage } from "../src/agent/RunPolicyTypes.js";
+import type { AgentExecutionMeta } from "../src/agent/AgentExecutionMetaContracts.js";
+import type { RunBudgetUsage } from "../src/agent/RunPolicyPrimitives.js";
 import { renderResumeCheckpoint } from "../src/agent/AgentRunBootstrap.js";
 import { MODE_BASE_BUDGETS } from "../src/agent/runBudgetDefaults.js";
 import {
