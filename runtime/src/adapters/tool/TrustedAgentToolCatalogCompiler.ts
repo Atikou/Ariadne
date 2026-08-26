@@ -12,6 +12,8 @@ import {
 } from '@ariadne/agent-core';
 
 import type {
+  AgentToolCatalogSnapshot,
+  AgentToolCatalogSnapshotEntry,
   AgentToolContractDocumentV1,
   AgentToolExecutableImplementationV1
 } from '../../control/ports/AgentToolExecution.js';
@@ -33,25 +35,8 @@ export interface TrustedAgentToolRegistrationV1 {
   readonly executable: AgentToolExecutableImplementationV1;
 }
 
-export interface TrustedAgentToolCatalogSnapshotEntry {
-  readonly document: AgentToolContractDocumentV1;
-  readonly tool: AgentPinnedToolIdentity;
-  readonly executable: Pick<
-    AgentToolExecutableImplementationV1,
-    'normalizeAndValidate' | 'validatePrepared' | 'execute'
-  >;
-}
-
-/**
- * Opaque, immutable result of trusted compilation. Runtime code can inspect
- * it, but only this module can register an object as a verified snapshot.
- */
-export interface TrustedAgentToolCatalogSnapshot {
-  readonly catalogId: string;
-  readonly revision: number;
-  readonly catalogDigest: string;
-  readonly entries: readonly TrustedAgentToolCatalogSnapshotEntry[];
-}
+export type TrustedAgentToolCatalogSnapshotEntry = AgentToolCatalogSnapshotEntry;
+export type TrustedAgentToolCatalogSnapshot = AgentToolCatalogSnapshot;
 
 /**
  * The sole authority that turns contract documents and implementation

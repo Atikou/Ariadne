@@ -1,11 +1,22 @@
 import {
+  ARIADNE_RUNTIME_PROTOCOL,
+  ARIADNE_RUNTIME_PROTOCOL_VERSION,
   FIRST_PARTY_AGENT_TOOL_CATALOG_DIGEST,
   FIRST_PARTY_AGENT_TOOL_CATALOG_REVISION,
-  FIRST_PARTY_AGENT_TOOL_NAMES
+  FIRST_PARTY_AGENT_TOOL_NAMES,
+  type RuntimeBootstrap
 } from '@ariadne/protocol/host';
+import {
+  createDefaultRuntimePolicySnapshot,
+  type RuntimePolicySnapshot
+} from '@ariadne/protocol/settings';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createFirstPartyAgentToolCatalog } from '../src/composition/FirstPartyAgentToolCatalog.js';
+import {
+  compileProductionRuntimeCapabilityManifest
+} from '../src/composition/ProductionRuntimeCapabilityManifest.js';
+import type { HostCapabilityClient } from '../src/ingress/HostCapabilityClient.js';
+import type { FirstPartyProcessSandboxFactory } from '../src/composition/first-party-tools/FirstPartyAgentToolSupport.js';
 
 const temporaryRoots: string[] = [];
 
@@ -53,7 +64,7 @@ describe('first-party Agent Tool Catalog', () => {
       startFile: vi.fn(),
       startShell: vi.fn()
     };
-    const catalog = createFirstPartyAgentToolCatalog([{
+    const catalog = await compileCapabilityCatalog([{
       workspaceId: 'workspace-command',
       label: 'Command workspace',
       rootPath: root,
@@ -98,7 +109,7 @@ describe('first-party Agent Tool Catalog', () => {
       url: 'https://example.com/',
       title: 'Example'
     }));
-    const catalog = createFirstPartyAgentToolCatalog([], { request });
+    const catalog = await compileCapabilityCatalog([], { request });
 
     expect(catalog.revision).toBe(FIRST_PARTY_AGENT_TOOL_CATALOG_REVISION);
     expect(catalog.catalogDigest).toBe(FIRST_PARTY_AGENT_TOOL_CATALOG_DIGEST);
@@ -138,7 +149,7 @@ describe('first-party Agent Tool Catalog', () => {
       operation: operation.kind,
       ok: true
     }));
-    const catalog = createFirstPartyAgentToolCatalog([], { request });
+    const catalog = await compileCapabilityCatalog([], { request });
     const byName = (name: string) => catalog.entries.find(
       (entry) => entry.document.toolName === name
     );
@@ -194,7 +205,7 @@ describe('first-party Agent Tool Catalog', () => {
         : 'application/octet-stream',
       dataBase64: png.toString('base64')
     }));
-    const catalog = createFirstPartyAgentToolCatalog([{
+    const catalog = await compileCapabilityCatalog([{
       workspaceId: 'workspace-artifact',
       label: 'Artifact workspace',
       rootPath: root,
@@ -249,7 +260,7 @@ describe('first-party Agent Tool Catalog', () => {
   it('exposes configured remote MCP servers without exposing endpoints or credentials', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-mcp-workspace-'));
     temporaryRoots.push(root);
-    const catalog = createFirstPartyAgentToolCatalog([{
+    const catalog = await compileCapabilityCatalog([{
       workspaceId: 'workspace-mcp',
       label: 'MCP workspace',
       rootPath: root,
@@ -290,6 +301,54 @@ describe('first-party Agent Tool Catalog', () => {
     });
   });
 });
+
+async function compileCapabilityCatalog(
+  workspaces: RuntimeBootstrap['workspaces'],
+  hostCapabilities?: HostCapabilityClient,
+  mcpServers: RuntimePolicySnapshot['mcp']['servers'] = [],
+  processSandboxFactory?: FirstPartyProcessSandboxFactory
+) {
+  const runtimePolicy = createDefaultRuntimePolicySnapshot();
+  runtimePolicy.mcp.servers = [...mcpServers];
+  const bootstrap: RuntimeBootstrap = {
+    protocol: ARIADNE_RUNTIME_PROTOCOL,
+    protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
+    runtimeInstanceId: '00000000-0000-4000-8000-000000000071',
+    type: 'bootstrap',
+    appVersion: '0.1.0',
+    runtimeVersion: '0.1.0',
+    runtimeBuildFingerprint: 'a'.repeat(64),
+    installRoot: path.resolve('.'),
+    dataRoot: path.resolve('.'),
+    modelRoots: [],
+    agentPermissions: {
+      approvalPolicy: 'request',
+      proposalApproval: 'manual',
+      permissionPolicy: 'confirmBeforeRun',
+      sandboxMode: 'workspace-write',
+      allowedPermissions: ['read', 'write', 'shell', 'network']
+    },
+    agentAdmissionAuthoritySource: {
+      sourceVersion: 1,
+      status: 'disabled',
+      reason: 'not_configured'
+    },
+    runtimePolicy,
+    profile: 'test',
+    workspaces: [...workspaces],
+    production: false
+  };
+  const manifest = await compileProductionRuntimeCapabilityManifest({
+    bootstrap,
+    ...(hostCapabilities === undefined ? {} : { hostCapabilities }),
+    ...(processSandboxFactory === undefined ? {} : {
+      processSandboxFactory: (options) => processSandboxFactory(options.workspaceRoot)
+    })
+  });
+  const catalog = manifest.agentToolCatalogSnapshots[0];
+  if (catalog === undefined) throw new Error('test_capability_catalog_missing');
+  return catalog;
+}
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';

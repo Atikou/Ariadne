@@ -54,7 +54,7 @@ Ariadne 是独立设计、独立实现、独立发布的桌面 Agent 产品。�
 - Public 命令面已收口到 Runtime status、Projection snapshot/commit replay、v3 Session/Message、v3 Decision 和 v3 Cancel；未知命令不再 fallback。
 - Node IPC 与 Headless Transport 只依赖 `RuntimeIngress`；Runtime Command、Conversation、Agent Control 与 Public Projection 数据库物理隔离。
 - Agent Control schema v5 / ledger revision 49 持有 Run/Turn/Inference/Decision/Effect、Plan、Budget、Delegation、Child Run、execution intent 和受保护 Turn 输入快照。
-- 默认生产 Composition 已装配 exact model inference、immutable Tool Catalog、Effect dispatch、因果 continuation、follow-up inference、work scheduler 和 started-work recovery gate。
+- 默认生产 Composition 已由 bootstrap 冻结的 Capability Manifest 统一装配公开能力和 immutable Tool Catalog；exact model inference、Effect dispatch、因果 continuation、follow-up inference、work scheduler 和 started-work recovery gate 消费该快照。
 - Public Projection v3 的生产 publisher 覆盖 Conversation、Agent Run/Decision 和 Model；Renderer 只使用 snapshot + commit replay。
 - Architecture Gate 当前通过：0 SCC、0 循环边、0 规则违规；文件和依赖边数量以命令输出为准。
 - 当前真实 Electron Agent smoke 已覆盖 direct、真实 Composer 中同一 Run 的运行中 inbox continuation、Tool continuation、Decision allow/deny、运行中取消，以及 inference/effect/projection 三个持久边界的 Runtime 强杀恢复；它使用确定性进程外 HTTPS Provider fixture，不代表 Live Provider、本地模型或真实 Browser/MCP 已验收。
@@ -163,6 +163,8 @@ runtime/src/
     sandbox/
     host/
   composition/                # 唯一对象组装和生命周期注册位置
+    ProductionRuntimeCapabilityManifest.ts # 窄生产入口
+    runtime-capabilities/       # Provider seam、生产定义、bootstrap context、Manifest compiler
 
 app/src/
   main/

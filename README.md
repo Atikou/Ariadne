@@ -56,11 +56,11 @@ npm.cmd run verify:release
 
 ## 当前主要不足
 
-- 持久化 UoW、Composition Factory 和 First-party Tool Catalog 仍是大型热点；
+- 持久化 UoW 和部分 Composition Factory 仍是大型热点；
 - Agent inbox 与运行中 steer/follow-up 已接入；仍缺少可恢复 token/reasoning 流和独立 context injection；
 - v3 已接入 Conversation 历史、确定性 Context compaction、Tool result pruning 和有界 Provider overflow recovery；spill 与精确 tokenizer 尚未接入；
 - one-shot ordinary Child SubAgent 已形成生产闭环；外部/continuable Provider 和 Child 专用控制面尚未接入；
-- 能力装配仍集中在工厂和静态目录，缺少冻结的 Capability Manifest；
+- 能力装配已由 bootstrap 冻结的 Capability Manifest 统一驱动；仍未接线的 Public Capability 会被自动审计但不会被宣告；
 - Diagnostics、Telemetry、Provider Resilience 和完整 Hooks 尚未形成 v3 生命周期。
 
 完整证据和实施顺序见 [Ariadne 与 deepseek-harness 对比审计](docs/deepseek-harness-comparison-audit-2026-08-26.md)。
@@ -76,6 +76,7 @@ npm.cmd run verify:release
 - [Renderer UI 架构](docs/ui-architecture.md)
 - [Provider 与模型推理配置](docs/Provider协议与模型推理配置.md)
 - [v3 长上下文生命周期](docs/long-context-v3.md)
+- [Runtime Capability Manifest](docs/capability-manifest.md)
 - [Runtime 独立性审计](docs/Runtime独立性审计.md)
 - [Companion 能力请求协议](docs/agent-proposal-protocol.md)
 

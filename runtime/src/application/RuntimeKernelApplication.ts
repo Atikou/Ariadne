@@ -144,50 +144,11 @@ class RuntimeKernelApplication implements RuntimeApplication {
   }
 
   public status(): RuntimeStatus {
-    const writeEnabled = this.input.bootstrap.workspaces.some(
-      (workspace) => workspace.access === 'write'
-    );
-    const browserEnabled = this.input.bootstrap.agentPermissions?.allowedPermissions
-      .includes('network') === true;
-    const permissionSet = new Set(
-      this.input.bootstrap.agentPermissions?.allowedPermissions ?? []
-    );
-    const mcpEnabled = this.input.bootstrap.runtimePolicy.mcp.servers.some((server) => {
-      if (!server.enabled) return false;
-      if (server.transport === 'streamable-http') return permissionSet.has('network');
-      return permissionSet.has('shell')
-        && (server.workspaceAccess !== 'write' || permissionSet.has('write'))
-        && (server.networkAccess !== 'online-approved' || permissionSet.has('network'));
-    });
     return {
       availability: this.lifecycle === 'running' ? 'ready' : 'stopped',
       runtimeVersion: this.input.runtimeVersion,
       protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
-      capabilities: [
-        'companion.chat',
-        'companion.agent-plan',
-        'companion.sessions',
-        'agent.runs',
-        'agent.inbox',
-        'agent.permissions',
-        'agent.plans',
-        'agent.tools',
-        ...(this.input.bootstrap.agentAdmissionAuthoritySource.status === 'enabled'
-          ? ['agent.subagents' as const]
-          : []),
-        'models.local',
-        'models.remote',
-        'workspace.read',
-        ...(mcpEnabled ? ['mcp.tools' as const] : []),
-        ...(this.input.bootstrap.runtimePolicy.skills.enabled.length > 0
-          ? ['skills.instructions' as const]
-          : []),
-        ...(this.input.bootstrap.runtimePolicy.hooks.definitions.some(
-          (hook) => hook.events.includes('run.pre')
-        ) ? ['hooks.run-pre' as const] : []),
-        ...(browserEnabled ? ['browser.web' as const] : []),
-        ...(writeEnabled ? ['workspace.write' as const] : []),
-      ],
+      capabilities: [...this.input.capabilityManifest.publicCapabilities],
       observedAt: new Date().toISOString()
     };
   }

@@ -83,7 +83,7 @@ Message accepted
   -> terminal result projection
 ```
 
-当前默认生产 Composition 已装配 `ProductionAgentControlExecutionPipelineFactory`、`AgentRunWorkScheduler`、精确模型网关和 immutable first-party Tool Catalog。Tool 身份、schema、输入摘要、工作区、能力授权和模型绑定在 admission 时固定；执行时不得按名称重新解析成另一实现。
+当前默认生产 Composition 在 bootstrap 时先启动静态 Capability Provider 并冻结单一 Manifest，再由它向 Runtime Kernel 和 Agent Control 提供公开能力与 immutable first-party Tool Catalog。`ProductionAgentControlExecutionPipelineFactory`、`AgentRunWorkScheduler` 和精确模型网关只消费该已验证快照。Tool 身份、schema、输入摘要、工作区、能力授权和模型绑定在 admission 时固定；执行时不得按名称重新解析成另一实现。
 
 Plan、Budget、Delegation 和 Child Run 已进入 Agent Core/Control 权威模型。one-shot SubAgent 已接通模型 Directive、原子 Child Run 创建、普通 v3 调度、终态结果回灌、公开父子投影和 UI 状态；外部/continuable Provider 与专用 Child 控制面尚未接入。
 
@@ -113,7 +113,7 @@ Renderer 的写操作只使用 v3 Session/Message、Decision 和 Cancel 命令�
 | Background/Scheduler | 有旧模块基础，没有 v3 产品闭环 |
 | Diagnostics/Telemetry/Provider Resilience | 有 schema/实现片段，v3 生命周期或 consumer 不完整 |
 
-Runtime status 只能宣告真实装配并满足权限条件的能力。协议枚举、设置字段、目录或单元测试本身都不是能力证据。
+Runtime status 只读取 bootstrap 冻结 Manifest 中已成功启动 Provider 的输出，不再自行读取配置拼接清单。协议枚举但没有 Provider owner 的条目进入 `unwiredPublicCapabilities` 审计结果，不能出现在 status。详见 [Runtime Capability Manifest](capability-manifest.md)。
 
 ## 7. 生命周期与安全
 

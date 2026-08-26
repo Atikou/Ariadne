@@ -86,7 +86,7 @@
     {
       "module": "first-party-tools-permissions-and-sandbox",
       "source": [
-        "runtime/src/composition/FirstPartyAgentToolCatalog.ts",
+        "runtime/src/composition/ProductionRuntimeCapabilityManifest.ts",
         "runtime/src/adapters/tool/ImmutableAgentToolCatalog.ts",
         "runtime/src/control/run/AgentDecisionAuthorityService.ts",
         "runtime/src/sandbox"
@@ -131,7 +131,7 @@
       "source": [
         "app/src/main/services/browser-service.ts",
         "runtime/src/adapters/mcp/ProductionMcpAgentClient.ts",
-        "runtime/src/composition/FirstPartyAgentToolCatalog.ts"
+        "runtime/src/composition/ProductionRuntimeCapabilityManifest.ts"
       ],
       "unit": "verified",
       "integration": "verified",
@@ -152,6 +152,24 @@
       "realWindow": "not_accepted",
       "realMachine": "not_accepted",
       "notes": "Admission instruction assembly and run.pre policy are connected. Progressive Skill loading and other Hook lifecycle events are not connected to v3."
+    },
+    {
+      "module": "runtime-capability-manifest",
+      "source": [
+        "runtime/src/ingress/RuntimeCapabilityManifest.ts",
+        "runtime/src/composition/ProductionRuntimeCapabilityManifest.ts",
+        "runtime/src/composition/runtime-capabilities/RuntimeCapabilityProvider.ts",
+        "runtime/src/composition/runtime-capabilities/ProductionRuntimeCapabilityProviders.ts",
+        "runtime/src/composition/runtime-capabilities/RuntimeCapabilityManifestCompiler.ts",
+        "runtime/src/composition/ComposedRuntimeIngress.ts",
+        "runtime/src/application/RuntimeKernelApplication.ts"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_applicable",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
+      "notes": "One bootstrap-frozen Provider graph now drives Runtime status and the trusted first-party Tool Catalog. Automated tests cover ownership, dependency validation, missing-provider non-advertisement, diagnostics and rollback; Electron smoke verifies the shared production bootstrap path. Dynamic loading and hot reload are intentionally unsupported."
     },
     {
       "module": "context-lifecycle-memory-and-embedding",

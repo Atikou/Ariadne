@@ -23,7 +23,7 @@ Ariadne Runtime 是桌面应用唯一的 Agent 业务进程。当前生产入口
 
 未知命令 fail closed，不会回退到旧 Facade 或第二 Writer。
 
-`FirstPartyAgentToolCatalog` 只组合并冻结 Browser、MCP、Workspace 三个 tool family，不再同时拥有全部 schema、校验和执行实现。Agent/Conversation SQLite UoW 仍是唯一事务所有者；outbox、execution intent、row mapping 和 Projection read 作为同连接子模块运行，不拥有独立提交或补偿流程。
+Runtime bootstrap 只编译一次 `RuntimeCapabilityManifest`。Workspace、Browser、MCP 等静态 Provider 各自贡献 Tool family、公开能力和生命周期；同一个冻结快照同时驱动 immutable Tool Catalog 与 Runtime status。Agent/Conversation SQLite UoW 仍是唯一事务所有者；outbox、execution intent、row mapping 和 Projection read 作为同连接子模块运行，不拥有独立提交或补偿流程。
 
 ## 持久控制面
 
@@ -48,14 +48,14 @@ Runtime command journal
 - Workspace、Browser 与经授权的 MCP 工具；
 - Admission 时的 Skills 指令和声明式 `run.pre` Hook。
 
-以下目录或设置目前没有完整 v3 产品闭环：SubAgent、Background Task、Scheduler、Memory/Embedding、完整 Hooks、Diagnostics/Telemetry 和 Provider Resilience。它们不得仅因有源码或单元测试就出现在能力声明中。
+以下目录或设置目前没有完整 v3 产品闭环：外部/continuable SubAgent Provider、Background Task、Scheduler、Memory/Embedding、完整 Hooks、Diagnostics/Telemetry 和 Provider Resilience。它们不得仅因有源码或单元测试就出现在能力声明中；Manifest 会自动列出 Protocol 中缺少生产 Provider owner 的公开能力。
 
 ## 主要目录
 
 - `src/entry`、`src/transport`、`src/ingress`：进程入口、Node IPC/Headless 和命令身份。
 - `src/application`：小型 Runtime Kernel 与模型推理网关。
 - `src/control`、`src/conversation`：Agent Control 与 Conversation 业务边界。
-- `src/composition`：唯一生产组装入口和生命周期。
+- `src/composition`：唯一生产组装入口、Capability Provider 图和生命周期。
 - `src/adapters`：SQLite、模型、工具、MCP 等 Port 实现。
 - `src/projection`：Conversation、Agent Run 和 Model 的公共投影 publisher。
 - `src/tools`、`src/security`、`src/sandbox`：工具、内容外发和受控进程边界。
@@ -74,4 +74,4 @@ npm.cmd run audit:runtime-independence
 npm.cmd run test:electron
 ```
 
-当前验收边界见 [验证说明](../docs/verification.md)，能力差距见 [对比审计](../docs/deepseek-harness-comparison-audit-2026-08-26.md)。
+当前验收边界见 [验证说明](../docs/verification.md)，能力装配契约见 [Runtime Capability Manifest](../docs/capability-manifest.md)，能力差距见 [对比审计](../docs/deepseek-harness-comparison-audit-2026-08-26.md)。

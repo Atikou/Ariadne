@@ -1,5 +1,4 @@
 import { assertCanonicalAbsoluteDataRoot } from '@ariadne/protocol/host';
-import type { RuntimePolicySnapshot } from '@ariadne/protocol/settings';
 import {
   type AgentPlanReference
 } from '@ariadne/agent-core';
@@ -84,10 +83,6 @@ import {
 import {
   ProductionAgentControlExecutionPipelineFactory
 } from './ProductionAgentControlExecutionPipelineFactory.js';
-import {
-  createFirstPartyAgentToolCatalog,
-  type FirstPartyProcessSandboxFactory
-} from './FirstPartyAgentToolCatalog.js';
 import {
   ProtectedAgentTerminalAssistantContentResolver
 } from './ProtectedAgentTerminalAssistantContentResolver.js';
@@ -651,14 +646,8 @@ function createProductionExecutionPipelineFactory(
   if (input.workspaces === undefined || input.credentialEnvironment === undefined) {
     return undefined;
   }
-  const processSandboxFactory = createFirstPartyProcessSandboxFactory(input);
   return new ProductionAgentControlExecutionPipelineFactory({
-    toolCatalogSnapshots: [createFirstPartyAgentToolCatalog(
-      input.workspaces,
-      input.hostCapabilities,
-      authorizedMcpServers(input),
-      processSandboxFactory
-    )],
+    toolCatalogSnapshots: input.capabilityManifest.agentToolCatalogSnapshots,
     credentialEnvironment: input.credentialEnvironment,
     recoveryReporter: {
       reportExecutionIntentRecovery: async (notice) => {
@@ -668,33 +657,6 @@ function createProductionExecutionPipelineFactory(
         });
       }
     }
-  });
-}
-
-function createFirstPartyProcessSandboxFactory(
-  input: AgentControlRuntimeFactoryInput
-): FirstPartyProcessSandboxFactory | undefined {
-  if (input.agentPermissions === undefined) return undefined;
-  if (input.processSandboxFactory === undefined) return undefined;
-  return (workspaceRoot) => input.processSandboxFactory!({
-    workspaceRoot,
-    installRoot: input.installRoot ?? workspaceRoot,
-    production: input.production,
-    mode: input.agentPermissions!.sandboxMode,
-    allowedPermissions: [...input.agentPermissions!.allowedPermissions]
-  });
-}
-
-function authorizedMcpServers(
-  input: AgentControlRuntimeFactoryInput
-): RuntimePolicySnapshot['mcp']['servers'] {
-  const permissions = new Set(input.agentPermissions?.allowedPermissions ?? []);
-  return (input.runtimePolicy?.mcp.servers ?? []).filter((server) => {
-    if (!server.enabled) return false;
-    if (server.transport === 'streamable-http') return permissions.has('network');
-    return permissions.has('shell')
-      && (server.workspaceAccess !== 'write' || permissions.has('write'))
-      && (server.networkAccess !== 'online-approved' || permissions.has('network'));
   });
 }
 

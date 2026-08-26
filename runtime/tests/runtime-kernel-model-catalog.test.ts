@@ -14,6 +14,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   createRuntimeKernelApplicationFactory
 } from '../src/application/RuntimeKernelApplication.js';
+import {
+  compileProductionRuntimeCapabilityManifest
+} from '../src/composition/ProductionRuntimeCapabilityManifest.js';
 import { createShutdownContext } from '../src/ingress/ShutdownContext.js';
 
 const roots: string[] = [];
@@ -29,8 +32,13 @@ describe('RuntimeKernelApplication model catalog', () => {
     const workspaceRoot = temporaryRoot('ariadne-kernel-workspace-');
     writeFileSync(path.join(root, 'Qwen Local.gguf'), Buffer.from([1, 2, 3]));
 
+    const runtimeBootstrap = bootstrap(dataRoot, workspaceRoot, [root]);
+    const capabilityManifest = await compileProductionRuntimeCapabilityManifest({
+      bootstrap: runtimeBootstrap
+    });
     const application = await createRuntimeKernelApplicationFactory().create({
-      bootstrap: bootstrap(dataRoot, workspaceRoot, [root]),
+      bootstrap: runtimeBootstrap,
+      capabilityManifest,
       emitEvent: () => undefined,
       runtimeVersion: '0.1.0'
     });

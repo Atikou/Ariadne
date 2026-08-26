@@ -35,6 +35,10 @@ import {
 import { RuntimeLifecycleRegistry } from './RuntimeLifecycleRegistry.js';
 import { DeferredProjectionWakeEventSink } from './DeferredProjectionWakeEventSink.js';
 import type { AgentProcessSandboxFactory } from '../control/ports/AgentProcessSandbox.js';
+import type { RuntimeCapabilityManifest } from '../ingress/RuntimeCapabilityManifest.js';
+import {
+  compileProductionRuntimeCapabilityManifest
+} from './ProductionRuntimeCapabilityManifest.js';
 
 export const ARIADNE_RUNTIME_VERSION = '0.1.0';
 
@@ -71,6 +75,7 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
   private application?: RuntimeApplication;
   private agentControl?: AgentControlRuntimeLifecycle;
   private projectionWakeEventSink?: DeferredProjectionWakeEventSink;
+  private capabilityManifest?: RuntimeCapabilityManifest;
   private readonly activeCommands = new Map<string, ActiveCommand>();
   private readonly inFlightExecutions = new Set<Promise<RuntimeCommandOutcome>>();
   private shutdownOperation?: Promise<void>;
@@ -118,6 +123,22 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
       phase = 'legacy_control_preflight';
       this.dependencies.preflightMemoryControlShadows(bootstrap.dataRoot);
 
+      phase = 'capability_manifest';
+      this.capabilityManifest = await compileProductionRuntimeCapabilityManifest({
+        bootstrap,
+        ...(input.hostCapabilities === undefined
+          ? {}
+          : { hostCapabilities: input.hostCapabilities }),
+        ...(this.dependencies.processSandboxFactory === undefined
+          ? {}
+          : { processSandboxFactory: this.dependencies.processSandboxFactory })
+      });
+      const capabilityManifest = this.capabilityManifest;
+      registry.register({
+        name: 'capability_manifest',
+        close: (context) => capabilityManifest.close(context)
+      });
+
       phase = 'command_journal';
       this.dependencies.commandJournal.open(bootstrap.dataRoot);
       registry.register({
@@ -128,6 +149,7 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
       phase = 'runtime_application';
       this.application = await this.dependencies.runtimeApplicationFactory.create({
         bootstrap,
+        capabilityManifest,
         hostCapabilities: input.hostCapabilities,
         emitEvent: input.emitEvent,
         runtimeVersion
@@ -159,15 +181,14 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
           modelProviders: bootstrap.modelProviders,
           workspaces: bootstrap.workspaces,
           runtimePolicy: bootstrap.runtimePolicy,
-          agentPermissions: bootstrap.agentPermissions,
-          processSandboxFactory: this.dependencies.processSandboxFactory,
           credentialEnvironment: process.env,
           modelCatalog: application.modelCatalog,
           ...(application.modelInferenceGateway === undefined
             ? {}
             : { modelInferenceGateway: application.modelInferenceGateway }),
           publicEventSink: projectionWakeEventSink,
-          hostCapabilities: input.hostCapabilities
+          hostCapabilities: input.hostCapabilities,
+          capabilityManifest
         });
         const agentControl = this.agentControl;
         registry.register({
@@ -207,6 +228,7 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
       this.application = undefined;
       this.agentControl = undefined;
       this.projectionWakeEventSink = undefined;
+      this.capabilityManifest = undefined;
       this.lifecycle = 'failed';
       const cause = cleanupFailures.length === 0
         ? error
@@ -511,6 +533,10 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
       barrierFailures,
       async () => this.agentControl?.prepareShutdown(context)
     );
+    await attemptShutdownStep(
+      barrierFailures,
+      async () => this.capabilityManifest?.prepareShutdown(context)
+    );
     if (barrierFailures.length > 0) {
       this.lifecycle = 'failed';
       // No business store or owner fence may be released unless every active
@@ -541,6 +567,12 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
       await this.application?.shutdown(context);
       this.application = undefined;
       this.projectionWakeEventSink = undefined;
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await this.capabilityManifest?.close(context);
+      this.capabilityManifest = undefined;
     } catch (error) {
       failures.push(error);
     }

@@ -56,6 +56,7 @@ export const runtimeCapabilitySchema = z.enum([
   'hooks.run-pre',
   'browser.web'
 ]);
+export type RuntimeCapability = z.infer<typeof runtimeCapabilitySchema>;
 
 export const runtimeStatusSchema = z
   .object({

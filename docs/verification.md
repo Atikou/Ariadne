@@ -42,6 +42,7 @@ npm.cmd run test:electron
 - `typecheck` 和 `test` 按 Protocol -> Agent Core -> Runtime -> App 顺序运行。
 - `check:architecture` 验证完整 TS/TSX 依赖图和规则，并执行 Hotspot Boundary Gate；后者限制 Factory、Tool family 和 SQLite UoW 子边界的规模与职责回流，不允许通过刷新 baseline 隐藏新增债务。
 - `audit:runtime-independence` 只证明源码、依赖、入口和入站网络边界独立，不证明产品能力。
+- Capability Manifest 测试验证 Provider 依赖/所有权、缺 Provider 不宣告、Tool Catalog 同源、失败回滚和公开安全诊断；它不代替真实 Provider/窗口验收。
 - `verify:release-contract` 校验安装器、数据库兼容策略、外部 Embedding 资产和本验收矩阵的静态契约。
 
 ## 4. Electron smoke 的准确含义

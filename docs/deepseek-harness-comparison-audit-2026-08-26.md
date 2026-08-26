@@ -152,7 +152,7 @@ Ariadne 当前使用编译验证过的 immutable Tool Catalog，并将工具身�
 | P1 | 无 v3 token/reasoning 流 | 公共 Projection 主要发布已提交最终状态 | Chunk 有稳定 attempt/sequence，并可重放或明确声明仅临时 |
 | 部分修复 | 无生产 Context Compaction/Spill | Conversation 历史、确定性压缩、Tool result pruning、精确容量和 overflow recovery 已进入 v3 | 剩余：spill 引用恢复与精确 tokenizer |
 | 部分修复 | SubAgent 产品闭环 | one-shot ordinary Child 已接通 Directive、原子创建、调度、结果回灌和父子投影 | 剩余：continuable/external Provider、Child 专用控制和真实窗口场景 |
-| P1 | 能力装配硬编码 | Factory、Catalog、status 枚举集中修改 | 启动期冻结的 Capability Manifest 与窄 Provider seam |
+| 已修复 | 能力装配硬编码 | 单一 bootstrap Manifest 驱动 Provider 图、Catalog、status、诊断与生命周期 | 保持静态、冻结、可审计；不引入任意磁盘动态加载 |
 | P2 | Skills 全量注入 | 启用 Skill 的完整正文在 admission 时一次性进入指令 | Catalog 渐进披露，按需加载完整 Skill |
 | P2 | Hooks 仅有 `run.pre` | 其他 hook schema 存在但 v3 不消费 | typed、可审计、可去重的生命周期扩展点 |
 | P2 | 后台任务与终端缺失 | 一次性命令为主，无持久 PTY/Job 控制 | owner-scoped terminal、background job list/read/stop |
@@ -200,9 +200,9 @@ Provider fixture 是进程外、确定性 HTTPS OpenAI-compatible 服务，经�
 |---|---:|---:|---|
 | `SqliteAgentRunUnitOfWork.ts` | 6,045 行 | 4,991 行 | `outbox/SqliteAgentRunOutboxStore`；`execution-intent` store、validation、row mapper |
 | `SqliteConversationRunHandoffUnitOfWork.ts` | 2,276 行 | 1,923 行 | Conversation authority row mapper；只读 Projection reader |
-| `DefaultAgentControlRuntimeFactory.ts` | 1,313 行 | 746 行 | 公开命令由 Router 分发；Inbox handler、公共失败翻译和 Projection wake 已拆为独立边界 |
+| `DefaultAgentControlRuntimeFactory.ts` | 1,313 行 | 713 行 | 公开命令由 Router 分发；Tool/权限装配移交 bootstrap Capability Manifest |
 | `AgentControlPublicCommandRouter.ts` | 940 行 | 658 行 | `AgentInboxPublicCommandHandler` 与 `AgentPublicCommandFailures` 已迁出，Router 保留协议路由和 replay/reconciliation |
-| `FirstPartyAgentToolCatalog.ts` | 1,034 行 | 82 行 | Browser、MCP、Workspace tool family 与共享 support 分离，Catalog 只组合并冻结顺序 |
+| 旧 `FirstPartyAgentToolCatalog.ts` | 1,034 行 | 已删除 | Browser/MCP/Workspace Provider 各自贡献 Tool；238 行 Manifest compiler 统一校验和冻结 |
 
 持久化子模块接收同一个 `DatabaseSync`，由外层 UoW 统一调度并在既有 transaction 内调用；没有按表拆成互相补偿的 Repository，也没有引入第二 Writer。
 
@@ -373,13 +373,13 @@ Ariadne 当前生产路径已有：
 7. 已完成：Public Projection 和 Renderer 显示父子关系；
 8. 已完成：稳定 identity、command receipt 与 replay 防止重复 Child。
 
-### 6.7 P1：能力装配仍是硬编码
+### 6.7 已修复：bootstrap 冻结的 Capability Manifest
 
-当前生产路径由以下集中点组装：
+历史生产路径由以下集中点分别组装：
 
 - `DefaultAgentControlRuntimeFactory`
 - `ProductionAgentControlExecutionPipelineFactory`
-- `FirstPartyAgentToolCatalog`
+- 已删除的旧 `FirstPartyAgentToolCatalog`
 - `RuntimeKernelApplication.status()` 的静态 capability 列表
 
 新增一种完整能力通常需要同时修改：
@@ -393,7 +393,7 @@ Ariadne 当前生产路径已有：
 - Main/Preload；
 - Renderer。
 
-建议借鉴 deepseek-harness 的 capability seam，但采用静态、冻结、可审计的 Ariadne 版本：
+现已借鉴 deepseek-harness 的 capability seam，并落地静态、冻结、可审计的 Ariadne 版本：
 
 ```ts
 interface CapabilityDefinition {
@@ -415,14 +415,17 @@ interface CapabilityHandle {
 }
 ```
 
-约束：
+当前约束与结果：
 
-- Manifest 在 Runtime bootstrap 时编译并冻结；
-- status 只能从已成功启动的 Provider 推导；
+- Manifest 在 Runtime bootstrap、业务 Store 打开前编译并冻结，并由 Kernel/Agent Control 共享；
+- status、Tool Catalog 和无敏感诊断只能从已成功启动的 Provider 推导；
 - Tool Catalog 仍在 admission 时编译并 pin；
 - 不允许 Runtime 从任意磁盘路径动态加载 JavaScript；
 - 第一阶段不做热重载；
-- 一个 capability 的删除必须同时移除 Provider、Consumer、协议广告和持久数据迁移。
+- 一个 capability 的删除必须同时移除 Provider、Consumer、协议广告和持久数据迁移；缺 Provider 时即使配置仍存在也不会宣告；
+- Protocol 已定义但没有 Provider owner 的条目由 `unwiredPublicCapabilities` 自动报告。
+
+实现与删除规则见 [Runtime Capability Manifest](capability-manifest.md)。
 
 ### 6.8 P2：Skills 应改为渐进披露
 
@@ -498,7 +501,7 @@ Diagnostics/Telemetry 必须：
 - Git 状态/差异工具；
 - v3 Code Intelligence/LSP consumer。
 
-这些能力适合在 Capability Manifest 稳定后实现，避免再次扩大 `FirstPartyAgentToolCatalog.ts`。
+这些能力现在必须作为独立 Capability Provider 实现，不能再次把装配逻辑塞回 Factory 或 Tool family 聚合文件。
 
 ## 7. 不应照搬 deepseek-harness 的部分
 
@@ -586,7 +589,7 @@ Ariadne 应继续使用自身的 fail-closed Sandbox Helper、签名和发布验
 - FirstParty Tool 定义按能力族拆分；
 - 0 SCC、0 rule violation。
 
-### 阶段 3：Capability Manifest
+### 阶段 3：Capability Manifest（已完成）
 
 目标：让能力接线状态可由系统计算和验证。
 
@@ -597,6 +600,8 @@ Ariadne 应继续使用自身的 fail-closed Sandbox Helper、签名和发布验
 - 存在代码但未接线的模块能被审计工具自动列出；
 - 删除一个 capability 不需要修改无关 Agent Core 文件；
 - Manifest 可输出为无敏感信息的诊断快照。
+
+实现已拆为 28 行生产入口、48 行 Provider seam、75 行 bootstrap context、91 行生产 Provider 定义和 238 行通用 compiler，并由 Hotspot Boundary Gate 锁定，避免把旧 Catalog/Factory 复杂度整体搬进新的 Manifest 巨型入口。
 
 ### 阶段 4：流式事件与 Context 生命周期
 

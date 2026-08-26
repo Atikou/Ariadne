@@ -9,6 +9,7 @@ import type { RuntimeModelCatalogSource } from './RuntimeModelCatalog.js';
 import type {
   ExactAgentModelInferenceRuntime
 } from '../control/ports/AgentModelInference.js';
+import type { RuntimeCapabilityManifest } from './RuntimeCapabilityManifest.js';
 
 export interface RuntimeApplicationCommandResult {
   readonly outcome: RuntimeResponse['outcome'];
@@ -33,6 +34,7 @@ export interface RuntimeApplication {
 
 export interface RuntimeApplicationFactoryInput {
   readonly bootstrap: RuntimeBootstrap;
+  readonly capabilityManifest: RuntimeCapabilityManifest;
   readonly hostCapabilities?: HostCapabilityClient;
   readonly emitEvent: (event: RuntimeEventEnvelope) => void;
   readonly runtimeVersion: string;

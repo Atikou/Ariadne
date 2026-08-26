@@ -15,7 +15,7 @@ import type { RuntimePublicEventSink } from './RuntimePublicEventSink.js';
 import type {
   ExactAgentModelInferenceRuntime
 } from '../control/ports/AgentModelInference.js';
-import type { AgentProcessSandboxFactory } from '../control/ports/AgentProcessSandbox.js';
+import type { RuntimeCapabilityManifest } from './RuntimeCapabilityManifest.js';
 
 export interface AgentControlRuntimeLifecycle {
   readonly schemaVersion: number;
@@ -47,10 +47,6 @@ export interface AgentControlRuntimeFactoryInput {
   readonly workspaces?: RuntimeBootstrap['workspaces'];
   /** Exact immutable extension policy snapshot supplied by Main. */
   readonly runtimePolicy?: RuntimeBootstrap['runtimePolicy'];
-  /** Exact sandbox and permission ceiling supplied by Main. */
-  readonly agentPermissions?: RuntimeBootstrap['agentPermissions'];
-  /** Outer adapter for authenticated process execution; never constructed by composition. */
-  readonly processSandboxFactory?: AgentProcessSandboxFactory;
   /** Process environment supplied explicitly to Provider credential binding. */
   readonly credentialEnvironment?: Readonly<Record<string, string | undefined>>;
   /** Bound before start; reads the one Runtime-owned, public-safe model catalog. */
@@ -60,6 +56,8 @@ export interface AgentControlRuntimeFactoryInput {
   /** Composition-gated queue for non-authoritative Projection wake hints. */
   readonly publicEventSink: RuntimePublicEventSink;
   readonly hostCapabilities: HostCapabilityClient;
+  /** The one bootstrap-compiled capability truth shared with Runtime Kernel. */
+  readonly capabilityManifest: RuntimeCapabilityManifest;
 }
 
 /**

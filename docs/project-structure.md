@@ -36,7 +36,9 @@ Ariadne/
 │  ├─ src/application/          # Runtime Kernel、模型目录与推理网关
 │  ├─ src/control/              # Agent Control use cases/ports
 │  ├─ src/conversation/         # Conversation domain contracts
-│  ├─ src/composition/          # 唯一生产组装入口
+│  ├─ src/composition/          # 唯一生产组装入口与静态 Capability Provider 图
+│  │  ├─ runtime-capabilities/   # Provider seam、定义、context 与 Manifest compiler
+│  ├─ src/ingress/RuntimeCapabilityManifest.ts # Kernel/Control 共享的冻结 Manifest Port
 │  ├─ src/adapters/             # Persistence、Model、Tool、MCP adapters
 │  ├─ src/projection/           # Conversation/Agent/Model publishers
 │  ├─ src/tools/                # 通用 Tool contracts/implementations

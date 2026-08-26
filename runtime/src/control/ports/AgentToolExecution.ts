@@ -1,5 +1,6 @@
 import type {
   AgentEffectExecutionOutcome,
+  AgentPinnedToolIdentity,
   AgentToolJsonValue
 } from '@ariadne/agent-core';
 
@@ -87,4 +88,21 @@ export interface AgentToolExecutableImplementationV1 {
     input: AgentToolJsonValue,
     context: AgentToolExecutionContext
   ): Promise<AgentEffectExecutionOutcome>;
+}
+
+/** Compiler-produced immutable Catalog contract consumed across composition seams. */
+export interface AgentToolCatalogSnapshotEntry {
+  readonly document: AgentToolContractDocumentV1;
+  readonly tool: AgentPinnedToolIdentity;
+  readonly executable: Pick<
+    AgentToolExecutableImplementationV1,
+    'normalizeAndValidate' | 'validatePrepared' | 'execute'
+  >;
+}
+
+export interface AgentToolCatalogSnapshot {
+  readonly catalogId: string;
+  readonly revision: number;
+  readonly catalogDigest: string;
+  readonly entries: readonly AgentToolCatalogSnapshotEntry[];
 }

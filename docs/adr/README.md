@@ -21,5 +21,6 @@ ADR 记录长期决策和历史原因，不承担当前能力清单。当前生�
 | [0015](0015-pure-v3-text-effect-result-protocol.md) | Accepted | v3 文本 Effect Result 协议 |
 | [0016](0016-agent-run-work-scheduler-and-recovery.md) | Accepted | Run Work Scheduler 与恢复 |
 | [0017](0017-exact-follow-up-inference-ownership.md) | Accepted | Follow-up Inference 所有权 |
+| [0018](0018-bootstrap-frozen-capability-manifest.md) | Accepted | Bootstrap 冻结的 Capability Manifest |
 
 ADR 的日期不表示内容过期；它表示决策发生时间。若实现状态已变化，正文必须把旧状态标为历史快照，并链接当前实现文档。

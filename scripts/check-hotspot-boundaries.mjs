@@ -21,17 +21,38 @@ const boundaries = [
     maxLines: 750
   },
   {
-    file: 'runtime/src/composition/FirstPartyAgentToolCatalog.ts',
-    maxLines: 120,
+    file: 'runtime/src/composition/ProductionRuntimeCapabilityManifest.ts',
+    maxLines: 60,
     required: [
-      './first-party-tools/BrowserAgentTools.js',
-      './first-party-tools/McpAgentTools.js',
-      './first-party-tools/WorkspaceAgentTools.js'
+      './runtime-capabilities/ProductionRuntimeCapabilityContext.js',
+      './runtime-capabilities/ProductionRuntimeCapabilityProviders.js',
+      './runtime-capabilities/RuntimeCapabilityManifestCompiler.js'
     ],
     forbidden: [
-      /function\s+registerBrowser/,
-      /function\s+registerMcp/,
-      /function\s+registerWorkspace/
+      /defineRuntimeCapabilityProvider/,
+      /compileTrustedAgentToolCatalog/
+    ]
+  },
+  {
+    file: 'runtime/src/composition/runtime-capabilities/RuntimeCapabilityProvider.ts',
+    maxLines: 80
+  },
+  {
+    file: 'runtime/src/composition/runtime-capabilities/ProductionRuntimeCapabilityContext.ts',
+    maxLines: 110
+  },
+  {
+    file: 'runtime/src/composition/runtime-capabilities/ProductionRuntimeCapabilityProviders.ts',
+    maxLines: 140,
+    forbidden: [/compileTrustedAgentToolCatalog/]
+  },
+  {
+    file: 'runtime/src/composition/runtime-capabilities/RuntimeCapabilityManifestCompiler.ts',
+    maxLines: 300,
+    forbidden: [
+      /createBrowserAgentToolRegistrations/,
+      /createMcpAgentToolRegistrations/,
+      /createWorkspaceAgentToolRegistrations/
     ]
   },
   {
