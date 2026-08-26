@@ -16,6 +16,7 @@
 
 | 文档 | 用途 |
 |---|---|
+| [源码快照复现契约](source-reproducibility.md) | 固定工具链、lockfile、干净检出和 CI 复现边界 |
 | [当前实现架构](architecture.md) | 生产进程、命令、持久化、能力接线和未验收边界 |
 | [目标架构](architecture-v3.md) | 长期依赖方向、Owner、事务和安全不变量 |
 | [项目结构](project-structure.md) | 当前目录、依赖方向和数据目录 |

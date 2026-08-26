@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "description": "Ariadne Electron desktop shell",
+  "packageManager": "npm@10.9.2",
+  "engines": {
+    "node": "22.13.1",
+    "npm": "10.9.2"
+  },
   "workspaces": [
     "app",
     "packages/agent-core",
@@ -16,6 +21,8 @@
     "typecheck": "npm run build --workspace @ariadne/protocol && npm run build --workspace @ariadne/agent-core && npm run typecheck --workspace @ariadne/runtime && npm run typecheck --workspace @ariadne/app",
     "test": "npm run build --workspace @ariadne/protocol && npm run build --workspace @ariadne/agent-core && npm run build --workspace @ariadne/runtime && npm run test --workspace @ariadne/protocol && npm run test --workspace @ariadne/agent-core && npm run test --workspace @ariadne/runtime && npm run test --workspace @ariadne/app",
     "check:architecture": "node scripts/check-architecture.mjs && node scripts/check-hotspot-boundaries.mjs",
+    "verify:source-snapshot": "node scripts/check-source-reproducibility.mjs",
+    "verify:reproducible": "npm run verify:source-snapshot && npm run typecheck && npm test && npm run check:architecture && npm run audit:runtime-independence && npm run verify:release-contract",
     "test:electron": "npm run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/electron-smoke.ps1",
     "audit:runtime-independence": "node scripts/audit-runtime-independence.mjs",
     "verify:release-contract": "node scripts/verify-release-contract.mjs",
