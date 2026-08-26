@@ -69,6 +69,7 @@ export function admitAgentRun(
     state,
     turns: [turn],
     effects: [],
+    inbox: [],
     createdAt: command.occurredAt,
     updatedAt: command.occurredAt
   };

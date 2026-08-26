@@ -36,7 +36,7 @@ export type AgentFollowUpInferenceDispatchOutcome =
     };
 
 /**
- * True only for the initial Attempt of the latest causal Effect-result Turn.
+ * True only for the initial Attempt of the latest causal continuation Turn.
  * Conversation and Delegation first Turns remain exclusively owned by their
  * durable admission/execution-intent producers.
  */
@@ -46,7 +46,10 @@ export function isOwnedAgentFollowUpInference(
   attempt: AgentInferenceAttempt
 ): boolean {
   return run.turns.at(-1)?.turnId === turn.turnId
-    && turn.intention.cause.kind === 'effect_results'
+    && (
+      turn.intention.cause.kind === 'effect_results'
+      || turn.intention.cause.kind === 'inbox_inputs'
+    )
     && turn.attempts.length === 1
     && turn.attempts[0]?.attemptId === attempt.attemptId
     && attempt.cause.kind === 'initial'
@@ -92,7 +95,7 @@ export class AgentFollowUpInferenceDispatchController {
     }
 
     const cause = turn.intention.cause;
-    if (cause.kind !== 'effect_results') {
+    if (cause.kind !== 'effect_results' && cause.kind !== 'inbox_inputs') {
       throw invariant('Follow-up inference cannot own an objective Turn.');
     }
     const commandId = await deriveStableAgentId(

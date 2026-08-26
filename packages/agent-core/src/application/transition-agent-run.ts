@@ -5,10 +5,13 @@ import type {
   BeginAgentRunCommand,
   CancelAgentRunCommand,
   CompleteAgentRunCommand,
+  EnqueueAgentInboxInputCommand,
   FailAgentRunCommand,
   RecordAgentEffectResultCommand,
   RegisterAgentEffectCommand,
   RequestAgentDecisionCommand,
+  RemoveAgentInboxInputCommand,
+  ReplaceAgentInboxInputCommand,
   ResolveAgentDecisionCommand,
   StartAgentEffectCommand,
   StartAgentRunCommand
@@ -36,6 +39,10 @@ import {
   transitionAgentEffect
 } from '../domain/effect.js';
 import type { AgentTurn } from '../domain/turn.js';
+import {
+  assertValidAgentInboxInput,
+  type AgentInboxInput
+} from '../domain/inbox.js';
 import {
   AgentRunInvariantError,
   AgentRunTransitionError
@@ -89,6 +96,7 @@ export function createAgentRun(
     state,
     turns: [],
     effects: [],
+    inbox: [],
     createdAt: command.occurredAt,
     updatedAt: command.occurredAt
   };
@@ -130,8 +138,34 @@ export function transitionAgentRun(
   switch (command.kind) {
     case 'run.begin':
       return beginRun(run, command);
-    case 'run.register_turn':
-      return applyAgentTurnMutation(run, command.occurredAt, registerAgentTurn(run, command));
+    case 'run.enqueue_inbox_input':
+      return enqueueInboxInput(run, command);
+    case 'run.replace_inbox_input':
+      return replaceInboxInput(run, command);
+    case 'run.remove_inbox_input':
+      return removeInboxInput(run, command);
+    case 'run.register_turn': {
+      const mutation = registerAgentTurn(run, command);
+      const inputIds = inboxInputIds(command.turn.cause);
+      return applyAgentTurnMutation(
+        run,
+        command.occurredAt,
+        inputIds.length === 0
+          ? mutation
+          : {
+              ...mutation,
+              events: [
+                ...mutation.events,
+                {
+                  type: 'inbox.inputs_claimed',
+                  turnId: command.turn.turnId,
+                  inputIds: [...inputIds]
+                }
+              ]
+            },
+        claimInboxInputs(run, command)
+      );
+    }
     case 'run.start_inference_attempt':
       return applyAgentTurnMutation(run, command.occurredAt, startAgentInferenceAttempt(run, command));
     case 'run.record_inference_attempt_result':
@@ -161,6 +195,144 @@ export function transitionAgentRun(
     case 'run.cancel':
       return cancelRun(run, command);
   }
+}
+
+function enqueueInboxInput(
+  run: AgentRun,
+  command: EnqueueAgentInboxInputCommand
+): AgentRunTransition {
+  if (
+    run.turns.length >= run.binding.budget.vector.modelTurns
+    || Date.parse(command.occurredAt) >= Date.parse(run.binding.budget.deadlineAt)
+  ) {
+    throw new AgentRunTransitionError(
+      'Agent inbox cannot accept input without a remaining model Turn and deadline.'
+    );
+  }
+  if (run.inbox.some((candidate) => (
+    candidate.inputId === command.input.inputId
+    || candidate.messageId === command.input.messageId
+  ))) {
+    throw new AgentRunTransitionError('Agent inbox input identity is already bound.');
+  }
+  if (run.inbox.length >= 1_000) {
+    throw new AgentRunTransitionError('Agent inbox capacity is exhausted.');
+  }
+  const input: AgentInboxInput = {
+    ...command.input,
+    version: 1,
+    state: 'queued',
+    queuedAt: command.occurredAt,
+    updatedAt: command.occurredAt
+  };
+  assertValidAgentInboxInput(input);
+  return updateRun(
+    run,
+    command.occurredAt,
+    run.state,
+    run.effects,
+    [{ type: 'inbox.input_enqueued', input }],
+    run.turns,
+    [...run.inbox, input]
+  );
+}
+
+function replaceInboxInput(
+  run: AgentRun,
+  command: ReplaceAgentInboxInputCommand
+): AgentRunTransition {
+  const current = requireQueuedInboxInput(run, command.inputId, command.expectedInputVersion);
+  const input: AgentInboxInput = {
+    ...current,
+    version: current.version + 1,
+    content: command.content,
+    contentDigest: command.contentDigest,
+    updatedAt: command.occurredAt
+  };
+  assertValidAgentInboxInput(input);
+  return updateRun(
+    run,
+    command.occurredAt,
+    run.state,
+    run.effects,
+    [{ type: 'inbox.input_replaced', input }],
+    run.turns,
+    run.inbox.map((candidate) => candidate.inputId === input.inputId ? input : candidate)
+  );
+}
+
+function removeInboxInput(
+  run: AgentRun,
+  command: RemoveAgentInboxInputCommand
+): AgentRunTransition {
+  const current = requireQueuedInboxInput(run, command.inputId, command.expectedInputVersion);
+  return updateRun(
+    run,
+    command.occurredAt,
+    run.state,
+    run.effects,
+    [{
+      type: 'inbox.input_removed',
+      inputId: current.inputId,
+      inputVersion: current.version + 1
+    }],
+    run.turns,
+    run.inbox.filter((candidate) => candidate.inputId !== current.inputId)
+  );
+}
+
+function requireQueuedInboxInput(
+  run: AgentRun,
+  inputId: string,
+  expectedVersion: number
+): Extract<AgentInboxInput, { readonly state: 'queued' }> {
+  const input = run.inbox.find((candidate) => candidate.inputId === inputId);
+  if (input === undefined) throw new AgentRunTransitionError('Agent inbox input was not found.');
+  if (input.version !== expectedVersion) {
+    throw new AgentRunTransitionError('Agent inbox input version conflict.');
+  }
+  if (input.state !== 'queued') {
+    throw new AgentRunTransitionError('Claimed Agent inbox input is immutable.');
+  }
+  return input;
+}
+
+function claimInboxInputs(
+  run: AgentRun,
+  command: Extract<AgentRunCommand, { readonly kind: 'run.register_turn' }>
+): readonly AgentInboxInput[] {
+  const ids = inboxInputIds(command.turn.cause);
+  if (ids.length === 0) return run.inbox;
+  const expected = new Set(ids);
+  const queued = run.inbox.filter((input) => expected.has(input.inputId));
+  if (
+    queued.length !== ids.length
+    || queued.some((input) => input.state !== 'queued')
+    || ids.some((id, index) => queued[index]?.inputId !== id)
+  ) {
+    throw new AgentRunTransitionError(
+      'Inbox continuation must claim exact queued inputs in durable queue order.'
+    );
+  }
+  return run.inbox.map((input): AgentInboxInput => expected.has(input.inputId)
+    ? {
+        ...input,
+        state: 'claimed',
+        claimedAt: command.occurredAt,
+        claimedTurnId: command.turn.turnId,
+        updatedAt: command.occurredAt
+      }
+    : input);
+}
+
+function inboxInputIds(
+  cause: Extract<AgentRunCommand, { readonly kind: 'run.register_turn' }>['turn']['cause']
+): readonly string[] {
+  return cause.kind === 'inbox_inputs'
+    ? cause.inputIds
+    : cause.kind === 'effect_results'
+      ? cause.inboxInputIds ?? []
+      : [];
 }
 
 function beginRun(
@@ -688,7 +860,8 @@ function assertNoStartedEffects(
 function applyAgentTurnMutation(
   run: AgentRun,
   occurredAt: string,
-  mutation: AgentTurnMutation
+  mutation: AgentTurnMutation,
+  inbox: readonly AgentInboxInput[] = run.inbox
 ): AgentRunTransition {
   return updateRun(
     run,
@@ -696,7 +869,8 @@ function applyAgentTurnMutation(
     mutation.state,
     run.effects,
     mutation.events,
-    mutation.turns
+    mutation.turns,
+    inbox
   );
 }
 
@@ -721,7 +895,8 @@ function updateRun(
   state: AgentRunState,
   effects: readonly AgentEffect[],
   events: readonly AgentRunEventPayload[],
-  turns: readonly AgentTurn[] = run.turns
+  turns: readonly AgentTurn[] = run.turns,
+  inbox: readonly AgentInboxInput[] = run.inbox
 ): AgentRunTransition {
   const next: AgentRun = {
     ...run,
@@ -729,6 +904,7 @@ function updateRun(
     state,
     turns,
     effects,
+    inbox,
     updatedAt: occurredAt
   };
   assertValidAgentRun(next);

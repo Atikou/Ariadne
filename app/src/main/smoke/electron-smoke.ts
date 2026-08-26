@@ -18,6 +18,7 @@ interface SmokeResult {
   sessionProjected: boolean;
   messageProjected: boolean;
   directAgentCompleted: boolean;
+  inboxContinuationCompleted: boolean;
   readToolCompleted: boolean;
   permissionBlockedBeforeAllow: boolean;
   permissionAllowCompleted: boolean;
@@ -53,6 +54,7 @@ interface SmokeObservation {
   sessionProjected?: boolean;
   messageProjected?: boolean;
   directAgentCompleted?: boolean;
+  inboxContinuationCompleted?: boolean;
   readToolCompleted?: boolean;
   permissionBlockedBeforeAllow?: boolean;
   permissionAllowCompleted?: boolean;
@@ -326,6 +328,10 @@ export async function runElectronSmokeTest(
           '归档聊天',
           '标记为未读'
         ]);
+        document.querySelector('.conversation-context-menu[role="menu"]')?.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+        );
+        await waitUntil(() => !document.querySelector('.conversation-context-menu[role="menu"]'));
         const runtimeStatusConsistent = Boolean(await waitUntil(() => {
           const consumers = [...document.querySelectorAll('[data-runtime-availability]')];
           return consumers.length >= 3
@@ -347,6 +353,71 @@ export async function runElectronSmokeTest(
             && message.content === 'ARIADNE_SMOKE_READ_OK'
           ))
         ));
+
+        setValue?.call(composer, 'ariadne-smoke:inbox');
+        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        const inboxStartButton = await waitUntil(() => {
+          const button = document.querySelector('.send-button');
+          return button instanceof HTMLButtonElement && !button.disabled ? button : null;
+        });
+        inboxStartButton.click();
+        const inbox = await waitUntil(async () => {
+          const current = await snapshot();
+          const userMessage = current.messages.find((item) => (
+            item.sessionId === direct.run.sessionId
+            && item.role === 'user'
+            && item.content === 'ariadne-smoke:inbox'
+          ));
+          const run = userMessage
+            ? current.runs.find((item) => item.sourceMessageId === userMessage.messageId)
+            : undefined;
+          return run?.status === 'running' ? { runId: run.runId, sessionId: run.sessionId } : null;
+        });
+        setValue?.call(composer, 'ARIADNE_SMOKE_INBOX_INPUT');
+        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        const inboxSendButton = await waitUntil(() => {
+          const button = document.querySelector('.send-button');
+          return button instanceof HTMLButtonElement && !button.disabled ? button : null;
+        });
+        inboxSendButton.click();
+        const queuedInbox = await waitForRun(inbox.runId, (run) => run.inbox.some((input) => (
+          input.delivery === 'next_turn'
+          && input.content === 'ARIADNE_SMOKE_INBOX_INPUT'
+          && input.state === 'queued'
+        )));
+        const inboxInputId = queuedInbox.run.inbox.find((input) => (
+          input.content === 'ARIADNE_SMOKE_INBOX_INPUT'
+        ))?.inputId;
+        if (typeof inboxInputId !== 'string') throw new Error('inbox_input_identity_missing');
+        const inboxTerminal = await waitForRun(inbox.runId, (run, current) => (
+          run.status === 'completed'
+          && run.inbox.some((input) => (
+            input.inputId === inboxInputId
+            && input.state === 'claimed'
+            && typeof input.claimedTurnId === 'string'
+          ))
+          && run.interactionMessages.some((message) => (
+            message.role === 'assistant'
+            && message.content === 'ARIADNE_SMOKE_INBOX_FIRST'
+          ))
+          && run.interactionMessages.some((message) => (
+            message.messageId === inboxInputId
+            && message.role === 'user'
+            && message.content === 'ARIADNE_SMOKE_INBOX_INPUT'
+          ))
+          && current.messages.some((message) => (
+            message.runId === run.runId
+            && message.role === 'assistant'
+            && message.status === 'completed'
+            && message.content === 'ARIADNE_SMOKE_INBOX_FINAL'
+          ))
+        ));
+        const inboxTranscriptVisible = Boolean(await waitUntil(() => {
+          const text = document.querySelector('.chat-panel')?.textContent ?? '';
+          return text.includes('ARIADNE_SMOKE_INBOX_FIRST')
+            && text.includes('ARIADNE_SMOKE_INBOX_INPUT')
+            && text.includes('ARIADNE_SMOKE_INBOX_FINAL');
+        }));
 
         const workspaceBeforeAllow = await listWorkspace();
         const allow = await createRun('ariadne-smoke:write_allow');
@@ -459,6 +530,8 @@ export async function runElectronSmokeTest(
           sessionProjected: direct.current.sessions.some((item) => item.sessionId === direct.run.sessionId),
           messageProjected: direct.current.messages.some((item) => item.messageId === direct.userMessage.messageId),
           directAgentCompleted: direct.run.status === 'completed',
+          inboxContinuationCompleted: inboxTerminal.run.runId === inbox.runId
+            && inboxTranscriptVisible,
           readToolCompleted: readTerminal.run.status === 'completed',
           permissionBlockedBeforeAllow,
           permissionAllowCompleted: permissionAllowCompleted && allowTerminal.run.status === 'completed',
@@ -502,6 +575,7 @@ export async function runElectronSmokeTest(
       sessionProjected: observation.sessionProjected === true,
       messageProjected: observation.messageProjected === true,
       directAgentCompleted: observation.directAgentCompleted === true,
+      inboxContinuationCompleted: observation.inboxContinuationCompleted === true,
       readToolCompleted: observation.readToolCompleted === true,
       permissionBlockedBeforeAllow: observation.permissionBlockedBeforeAllow === true,
       permissionAllowCompleted: observation.permissionAllowCompleted === true,
@@ -534,6 +608,7 @@ export async function runElectronSmokeTest(
       && result.sessionProjected
       && result.messageProjected
       && result.directAgentCompleted
+      && result.inboxContinuationCompleted
       && result.readToolCompleted
       && result.permissionBlockedBeforeAllow
       && result.permissionAllowCompleted
@@ -570,6 +645,7 @@ async function readProviderState(path: string): Promise<ProviderState> {
 function validateProviderTrace(state: ProviderState): boolean {
   const expected: Record<string, readonly [number, number, number]> = {
     direct: [1, 0, 1],
+    inbox: [1, 1, 2],
     read: [1, 1, 2],
     write_allow: [1, 1, 2],
     write_deny: [1, 0, 1],
@@ -597,8 +673,10 @@ function validateProviderTrace(state: ProviderState): boolean {
     && state.scenarios.crash_effect?.aborted === 0
     && state.scenarios.crash_projection?.responses === 2
     && state.scenarios.crash_projection?.aborted === 0
-    && state.requests === 11
-    && state.responses === 9
+    && state.scenarios.inbox?.responses === 2
+    && state.scenarios.inbox?.aborted === 0
+    && state.requests === 13
+    && state.responses === 11
     && state.aborted === 2;
 }
 

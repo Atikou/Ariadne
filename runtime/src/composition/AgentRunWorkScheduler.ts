@@ -26,6 +26,7 @@ type ActionableWork = Extract<
     readonly kind:
       | 'dispatch_effect'
       | 'continue_effect_results'
+      | 'continue_inbox'
       | 'dispatch_follow_up'
       | 'fail_model_turn_budget'
       | 'fail_deadline_expired';
@@ -79,6 +80,14 @@ export interface AgentRunWorkContinuationReceipt {
 export interface AgentRunWorkContinuationOwner {
   continueSettledBatch(
     recovery: ReadyResumableAgentRunRecovery,
+    signal: AbortSignal
+  ): Promise<AgentRunWorkContinuationReceipt>;
+}
+
+export interface AgentRunWorkInboxContinuationOwner {
+  continueInbox(
+    recovery: ReadyResumableAgentRunRecovery,
+    inputIds: readonly string[],
     signal: AbortSignal
   ): Promise<AgentRunWorkContinuationReceipt>;
 }
@@ -182,6 +191,7 @@ export interface AgentRunWorkDrainResult {
   readonly scannedRuns: number;
   readonly dispatchedEffects: number;
   readonly continuedBatches: number;
+  readonly continuedInboxInputs: number;
   readonly dispatchedFollowUps: number;
   readonly terminalizedRuns: number;
 }
@@ -258,6 +268,7 @@ export class AgentRunWorkScheduler {
     private readonly classifier: Pick<AgentRunWorkClassifier, 'classify'>,
     private readonly effects: AgentRunWorkEffectDispatcher,
     private readonly continuations: AgentRunWorkContinuationOwner,
+    private readonly inboxContinuations: AgentRunWorkInboxContinuationOwner,
     private readonly followUps: AgentRunWorkFollowUpOwner,
     private readonly terminalizations: AgentRunWorkTerminalizationOwner,
     options: AgentRunWorkSchedulerOptions = {}
@@ -487,6 +498,17 @@ export class AgentRunWorkScheduler {
         result.continuedBatches += 1;
         return;
       }
+      case 'continue_inbox': {
+        const resumable = requireResumable(recovery, work);
+        const receipt = await this.inboxContinuations.continueInbox(
+          resumable,
+          work.inputIds,
+          this.abortController.signal
+        );
+        assertInboxContinuationReceipt(receipt, work);
+        result.continuedInboxInputs += work.inputIds.length;
+        return;
+      }
       case 'dispatch_follow_up': {
         requireResumable(recovery, work);
         const receipt = await this.followUps.dispatchOwned({
@@ -629,6 +651,7 @@ interface MutableAgentRunWorkDrainResult {
   scannedRuns: number;
   dispatchedEffects: number;
   continuedBatches: number;
+  continuedInboxInputs: number;
   dispatchedFollowUps: number;
   terminalizedRuns: number;
 }
@@ -639,6 +662,7 @@ function mutableDrainResult(): MutableAgentRunWorkDrainResult {
     scannedRuns: 0,
     dispatchedEffects: 0,
     continuedBatches: 0,
+    continuedInboxInputs: 0,
     dispatchedFollowUps: 0,
     terminalizedRuns: 0
   };
@@ -703,9 +727,24 @@ function startedWorkFault(work: StartedWork): AgentRunWorkSchedulerFault {
 function isActionable(work: AgentRunWorkClassification): work is ActionableWork {
   return work.kind === 'dispatch_effect'
     || work.kind === 'continue_effect_results'
+    || work.kind === 'continue_inbox'
     || work.kind === 'dispatch_follow_up'
     || work.kind === 'fail_model_turn_budget'
     || work.kind === 'fail_deadline_expired';
+}
+
+function assertInboxContinuationReceipt(
+  receipt: AgentRunWorkContinuationReceipt,
+  work: Extract<ActionableWork, { readonly kind: 'continue_inbox' }>
+): void {
+  if (
+    receipt.receiptVersion !== 1
+    || receipt.runId !== work.runId
+    || receipt.runVersion <= work.expectedVersion
+    || !nonEmpty(receipt.commandId)
+    || !nonEmpty(receipt.turnId)
+    || !nonEmpty(receipt.attemptId)
+  ) throw new Error('Inbox continuation returned a contradictory work receipt.');
 }
 
 function isConcurrentSnapshotConflict(error: unknown): boolean {

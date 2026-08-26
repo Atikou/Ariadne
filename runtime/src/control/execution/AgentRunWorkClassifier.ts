@@ -15,6 +15,7 @@ interface AgentRunWorkIdentity {
 }
 
 interface AgentSettledEffectBatchWorkIdentity {
+  readonly boundaryKind: 'effect_results';
   readonly sourceTurnId: string;
   readonly sourceAttemptId: string;
   readonly sourceDirectiveDigest: string;
@@ -22,6 +23,18 @@ interface AgentSettledEffectBatchWorkIdentity {
   readonly effectIds: readonly string[];
   readonly toolCallIds: readonly string[];
 }
+
+interface AgentSettledInboxWorkIdentity {
+  readonly boundaryKind: 'inbox_inputs';
+  readonly sourceTurnId: string;
+  readonly sourceAttemptId: string;
+  readonly sourceDirectiveDigest: string;
+  readonly inputIds: readonly string[];
+}
+
+type AgentContinuationBoundaryWorkIdentity =
+  | AgentSettledEffectBatchWorkIdentity
+  | AgentSettledInboxWorkIdentity;
 
 export type AgentRunWorkClassification =
   | (AgentRunWorkIdentity & {
@@ -38,16 +51,23 @@ export type AgentRunWorkClassification =
       readonly kind: 'continue_effect_results';
     } & AgentSettledEffectBatchWorkIdentity)
   | (AgentRunWorkIdentity & {
+      readonly kind: 'continue_inbox';
+      readonly sourceTurnId: string;
+      readonly sourceAttemptId: string;
+      readonly sourceDirectiveDigest: string;
+      readonly inputIds: readonly string[];
+    })
+  | (AgentRunWorkIdentity & {
       readonly kind: 'fail_model_turn_budget';
       readonly observedModelTurns: number;
       readonly modelTurnLimit: number;
-    } & AgentSettledEffectBatchWorkIdentity)
+    } & AgentContinuationBoundaryWorkIdentity)
   | (AgentRunWorkIdentity & {
       readonly kind: 'fail_deadline_expired';
       readonly deadlineAt: string;
       /** Durable time at which the settled batch was last committed. */
       readonly observedAt: string;
-    } & AgentSettledEffectBatchWorkIdentity)
+    } & AgentContinuationBoundaryWorkIdentity)
   | (AgentRunWorkIdentity & {
       readonly kind: 'wait_permission';
       readonly effectId: string;
@@ -243,6 +263,44 @@ function classifyRunningRun(
   }
 
   const directive = attempt.state.directive;
+  if (directive.kind === 'respond' || directive.kind === 'complete') {
+    const inputIds = claimableResponseBoundaryInputs(run);
+    if (inputIds.length > 0) {
+      const boundary = {
+        boundaryKind: 'inbox_inputs' as const,
+        sourceTurnId: turn.turnId,
+        sourceAttemptId: attempt.attemptId,
+        sourceDirectiveDigest: attempt.state.directiveDigest,
+        inputIds
+      };
+      if (Date.parse(run.updatedAt) >= Date.parse(run.binding.budget.deadlineAt)) {
+        return {
+          ...identity,
+          ...boundary,
+          kind: 'fail_deadline_expired',
+          deadlineAt: run.binding.budget.deadlineAt,
+          observedAt: run.updatedAt
+        };
+      }
+      if (run.turns.length >= run.binding.budget.vector.modelTurns) {
+        return {
+          ...identity,
+          ...boundary,
+          kind: 'fail_model_turn_budget',
+          observedModelTurns: run.turns.length,
+          modelTurnLimit: run.binding.budget.vector.modelTurns
+        };
+      }
+      return {
+        ...identity,
+        kind: 'continue_inbox',
+        sourceTurnId: turn.turnId,
+        sourceAttemptId: attempt.attemptId,
+        sourceDirectiveDigest: attempt.state.directiveDigest,
+        inputIds
+      };
+    }
+  }
   if (directive.kind === 'checkpoint') {
     return {
       ...identity,
@@ -339,6 +397,7 @@ function classifyRunningRun(
       );
     }
     const batch = {
+      boundaryKind: 'effect_results' as const,
       sourceTurnId: turn.turnId,
       sourceAttemptId: attempt.attemptId,
       sourceDirectiveDigest: attempt.state.directiveDigest,
@@ -379,6 +438,17 @@ function classifyRunningRun(
     turn.turnId,
     attempt.attemptId
   );
+}
+
+function claimableResponseBoundaryInputs(run: AgentRun): readonly string[] {
+  const queued = run.inbox.filter((input) => input.state === 'queued');
+  const nextTurn = queued.find((input) => input.delivery === 'next_turn');
+  return queued
+    .filter((input) => (
+      input.delivery === 'next_step'
+      || input.inputId === nextTurn?.inputId
+    ))
+    .map((input) => input.inputId);
 }
 
 function classifyIntendedInference(

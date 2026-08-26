@@ -22,12 +22,15 @@ import {
   publicDecisionChoicesV1,
   publicPlanDecisionPresentationSourceV1Schema,
   publicRunProjectionV3Schema,
+  redactPublicProjectionTextV3,
   type ProjectionCommitV3,
   type PublicDecisionPresentationV1,
   type PublicDecisionProjectionV3,
   type PublicRunProjectionV3
 } from '@ariadne/protocol/public';
 import type {
+  AgentRunInteractionProjectionMessage,
+  AgentRunInteractionProjectionResolver,
   AgentRunTerminalResultProjectionSink,
   AgentRunVersionReader
 } from './AgentRunProjectionPorts.js';
@@ -42,6 +45,7 @@ export interface AgentRunPublicProjectionPublisherOptions {
   readonly claimLimit?: number;
   readonly claimIdFactory?: () => string;
   readonly terminalResultSink?: AgentRunTerminalResultProjectionSink;
+  readonly interactionResolver?: AgentRunInteractionProjectionResolver;
 }
 
 export interface AgentRunPublicProjectionPublishResult {
@@ -90,6 +94,7 @@ export class AgentRunPublicProjectionPublisher {
   private readonly claimLimit: number;
   private readonly claimIdFactory: () => string;
   private readonly terminalResultSink?: AgentRunTerminalResultProjectionSink;
+  private readonly interactionResolver?: AgentRunInteractionProjectionResolver;
   private activePublish: Promise<AgentRunPublicProjectionPublishResult> | null = null;
 
   public constructor(
@@ -103,6 +108,7 @@ export class AgentRunPublicProjectionPublisher {
     this.claimIdFactory = options.claimIdFactory
       ?? (() => `agent-run-public-projection:${randomUUID()}`);
     this.terminalResultSink = options.terminalResultSink;
+    this.interactionResolver = options.interactionResolver;
     assertOptions(this.claimLeaseMs, this.claimLimit);
   }
 
@@ -141,7 +147,11 @@ export class AgentRunPublicProjectionPublisher {
         immutable.events,
         this.runVersions
       );
-      const commit = publicCommit(immutable.run, decision);
+      const interactions = await resolveInteractionMessages(
+        immutable.run,
+        this.interactionResolver
+      );
+      const commit = publicCommit(immutable.run, decision, interactions);
 
       if (isTerminalRun(immutable.run) && this.terminalResultSink !== undefined) {
         const terminalEvent = terminalEventForRun(immutable.events, immutable.run);
@@ -171,7 +181,8 @@ export class AgentRunPublicProjectionPublisher {
 
 function publicCommit(
   run: AgentRun,
-  decision: PublicDecisionProjectionV3 | null
+  decision: PublicDecisionProjectionV3 | null,
+  interactions: readonly AgentRunInteractionProjectionMessage[]
 ): ProjectionCommitV3 {
   const changes: ProjectionCommitV3['changes'] = [
     {
@@ -180,7 +191,7 @@ function publicCommit(
       aggregateId: run.runId,
       aggregateVersion: run.version,
       projectedAt: run.updatedAt,
-      dto: projectAgentRunV3(run)
+      dto: projectAgentRunV3(run, interactions)
     },
     ...(decision === null
       ? []
@@ -240,7 +251,8 @@ export function agentRunProjectionSourceId(runId: string): string {
 }
 
 export function projectAgentRunV3(
-  run: AgentRun
+  run: AgentRun,
+  interactions: readonly AgentRunInteractionProjectionMessage[] = []
 ): PublicRunProjectionV3 {
   assertValidAgentRun(run);
   return publicRunProjectionV3Schema.parse({
@@ -280,10 +292,48 @@ export function projectAgentRunV3(
             : {})
       };
     }),
+    inbox: run.inbox.map((input) => ({
+      inputId: input.inputId,
+      messageId: input.messageId,
+      version: input.version,
+      delivery: input.delivery,
+      content: redactPublicProjectionTextV3(input.content),
+      state: input.state,
+      queuedAt: input.queuedAt,
+      updatedAt: input.updatedAt,
+      ...(input.state === 'claimed' ? { claimedTurnId: input.claimedTurnId } : {})
+    })),
+    interactionMessages: interactions.map((message) => ({
+      messageId: message.messageId,
+      sessionId: run.binding.sessionId,
+      runId: run.runId,
+      version: 1,
+      role: message.role,
+      content: redactPublicProjectionTextV3(message.content),
+      status: 'completed' as const,
+      createdAt: message.occurredAt,
+      updatedAt: message.occurredAt
+    })),
     updatedAt: run.updatedAt,
     ...(run.state.status === 'queued' ? {} : { startedAt: run.createdAt }),
     ...terminalTimestamp(run)
   });
+}
+
+async function resolveInteractionMessages(
+  run: AgentRun,
+  resolver: AgentRunInteractionProjectionResolver | undefined
+): Promise<readonly AgentRunInteractionProjectionMessage[]> {
+  const requiresResolver = run.turns.slice(1).some((turn) => {
+    const cause = turn.intention.cause;
+    return cause.kind === 'inbox_inputs'
+      || (cause.kind === 'effect_results' && (cause.inboxInputIds?.length ?? 0) > 0);
+  });
+  if (!requiresResolver) return [];
+  if (resolver === undefined) {
+    throw new Error('agent_run_interaction_projection_resolver_unavailable');
+  }
+  return resolver.resolveInteractionMessages(run);
 }
 
 function effectTimestamp(effect: AgentRun['effects'][number]['state']): string {

@@ -18,6 +18,7 @@ import {
   type AgentRunWorkContinuationOwner,
   type AgentRunWorkEffectDispatcher,
   type AgentRunWorkFollowUpOwner,
+  type AgentRunWorkInboxContinuationOwner,
   type AgentRunWorkSchedulerOptions,
   type AgentRunWorkTerminalizationOwner
 } from '../src/composition/AgentRunWorkScheduler.js';
@@ -425,6 +426,7 @@ describe('AgentRunWorkScheduler', () => {
 interface Ports {
   effects: AgentRunWorkEffectDispatcher;
   continuations: AgentRunWorkContinuationOwner;
+  inboxContinuations: AgentRunWorkInboxContinuationOwner;
   followUps: AgentRunWorkFollowUpOwner;
   terminalizations: AgentRunWorkTerminalizationOwner;
 }
@@ -441,6 +443,7 @@ function createScheduler(
     classifier,
     ports.effects,
     ports.continuations,
+    ports.inboxContinuations,
     ports.followUps,
     ports.terminalizations,
     {
@@ -462,6 +465,11 @@ function rejectingPorts(): Ports {
     continuations: {
       continueSettledBatch: vi.fn(async () => {
         throw new Error('unexpected Effect continuation');
+      })
+    },
+    inboxContinuations: {
+      continueInbox: vi.fn(async () => {
+        throw new Error('unexpected inbox continuation');
       })
     },
     followUps: {
@@ -565,6 +573,7 @@ function dispatchEffect(runId: string, expectedVersion: number): AgentRunWorkCla
 function continueEffects(runId: string, expectedVersion: number): AgentRunWorkClassification {
   return {
     kind: 'continue_effect_results',
+    boundaryKind: 'effect_results',
     runId,
     expectedVersion,
     checkpointVersion: expectedVersion,
@@ -582,6 +591,7 @@ function failModelTurnBudget(
 ): AgentRunWorkClassification {
   return {
     kind: 'fail_model_turn_budget',
+    boundaryKind: 'effect_results',
     runId,
     expectedVersion,
     checkpointVersion: expectedVersion,

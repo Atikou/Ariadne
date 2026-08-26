@@ -19,6 +19,7 @@ import type {
   AgentTurnCause,
   AgentTurnInputSummary
 } from '../domain/turn.js';
+import type { AgentInboxDelivery } from '../domain/inbox.js';
 
 interface AgentCommandBase {
   readonly commandId: AgentCommandId;
@@ -40,7 +41,10 @@ export interface AdmitAgentRunCommand extends AgentCommandBase {
   readonly kind: 'run.admit';
   readonly binding: AgentRunBinding;
   readonly turn: {
-    readonly cause: Exclude<AgentTurnCause, { readonly kind: 'effect_results' }>;
+    readonly cause: Extract<
+      AgentTurnCause,
+      { readonly kind: 'conversation_objective' | 'delegation_objective' }
+    >;
     readonly turnId: AgentTurnId;
     readonly attemptId: AgentInferenceAttemptId;
     readonly providerIdempotencyKey: string;
@@ -51,6 +55,31 @@ export interface AdmitAgentRunCommand extends AgentCommandBase {
 
 export interface BeginAgentRunCommand extends AgentRunMutationCommandBase {
   readonly kind: 'run.begin';
+}
+
+export interface EnqueueAgentInboxInputCommand extends AgentRunMutationCommandBase {
+  readonly kind: 'run.enqueue_inbox_input';
+  readonly input: {
+    readonly inputId: string;
+    readonly messageId: string;
+    readonly delivery: AgentInboxDelivery;
+    readonly content: string;
+    readonly contentDigest: string;
+  };
+}
+
+export interface ReplaceAgentInboxInputCommand extends AgentRunMutationCommandBase {
+  readonly kind: 'run.replace_inbox_input';
+  readonly inputId: string;
+  readonly expectedInputVersion: number;
+  readonly content: string;
+  readonly contentDigest: string;
+}
+
+export interface RemoveAgentInboxInputCommand extends AgentRunMutationCommandBase {
+  readonly kind: 'run.remove_inbox_input';
+  readonly inputId: string;
+  readonly expectedInputVersion: number;
 }
 
 export interface RegisterAgentTurnCommand extends AgentRunMutationCommandBase {
@@ -198,6 +227,9 @@ export type AgentRunCommand =
   | AdmitAgentRunCommand
   | StartAgentRunCommand
   | BeginAgentRunCommand
+  | EnqueueAgentInboxInputCommand
+  | ReplaceAgentInboxInputCommand
+  | RemoveAgentInboxInputCommand
   | RegisterAgentTurnCommand
   | StartAgentInferenceAttemptCommand
   | RecordAgentInferenceAttemptResultCommand

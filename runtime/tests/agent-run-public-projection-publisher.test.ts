@@ -777,6 +777,7 @@ function runWith(
     state,
     turns: [],
     effects,
+    inbox: [],
     createdAt: at(0),
     updatedAt
   };

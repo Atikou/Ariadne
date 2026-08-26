@@ -17,8 +17,8 @@ import {
 } from '../src/control/execution/AgentRunWorkClassifier.js';
 import { AgentStartedWorkRecoveryCoordinator } from
   '../src/control/execution/AgentStartedWorkRecoveryCoordinator.js';
-import { AgentSettledEffectBatchTerminalizationCoordinator } from
-  '../src/control/execution/AgentSettledEffectBatchTerminalizationCoordinator.js';
+import { AgentContinuationBoundaryTerminalizationCoordinator } from
+  '../src/control/execution/AgentContinuationBoundaryTerminalizationCoordinator.js';
 
 describe('AgentRunWorkClassifier', () => {
   it('dispatches the first authorized Effect in committed invocation order', () => {
@@ -95,6 +95,7 @@ describe('AgentRunWorkClassifier', () => {
 
     expect(classifyAgentRunWork(run)).toEqual({
       kind: 'continue_effect_results',
+      boundaryKind: 'effect_results',
       runId: RUN_ID,
       expectedVersion: 4,
       checkpointVersion: 4,
@@ -111,6 +112,7 @@ describe('AgentRunWorkClassifier', () => {
 
     expect(classifyAgentRunWork(run)).toEqual({
       kind: 'fail_model_turn_budget',
+      boundaryKind: 'effect_results',
       runId: RUN_ID,
       expectedVersion: 4,
       checkpointVersion: 4,
@@ -129,6 +131,7 @@ describe('AgentRunWorkClassifier', () => {
 
     expect(classifyAgentRunWork(run)).toEqual({
       kind: 'fail_deadline_expired',
+      boundaryKind: 'effect_results',
       runId: RUN_ID,
       expectedVersion: 4,
       checkpointVersion: 4,
@@ -364,6 +367,48 @@ describe('AgentRunWorkClassifier', () => {
       attemptId: SOURCE_ATTEMPT_ID
     });
   });
+
+  it('claims every next-step input and only the first next-turn input in queue order', () => {
+    const run = directiveRun({ kind: 'complete' });
+    run.version = 5;
+    run.state = { status: 'running', checkpointVersion: 5, enteredAt: at(4) };
+    run.inbox = [
+      queuedInbox('input-turn-first', 'next_turn', 2),
+      queuedInbox('input-step', 'next_step', 3),
+      queuedInbox('input-turn-second', 'next_turn', 4)
+    ];
+    run.updatedAt = at(4);
+    assertValidAgentRun(run);
+
+    expect(classifyAgentRunWork(run)).toMatchObject({
+      kind: 'continue_inbox',
+      inputIds: ['input-turn-first', 'input-step']
+    });
+  });
+
+  it('terminalizes instead of poisoning the scheduler when inbox work reaches its deadline', () => {
+    const run = directiveRun({ kind: 'complete' });
+    run.version = 3;
+    run.state = { status: 'running', checkpointVersion: 3, enteredAt: at(0) };
+    run.inbox = [queuedInbox('input-deadline', 'next_turn', 2)];
+    run.updatedAt = at(3);
+    replaceRunBudget(run, { ...run.binding.budget, deadlineAt: at(3) });
+    assertValidAgentRun(run);
+
+    expect(classifyAgentRunWork(run)).toEqual({
+      kind: 'fail_deadline_expired',
+      boundaryKind: 'inbox_inputs',
+      runId: RUN_ID,
+      expectedVersion: 3,
+      checkpointVersion: 3,
+      sourceTurnId: SOURCE_TURN_ID,
+      sourceAttemptId: SOURCE_ATTEMPT_ID,
+      sourceDirectiveDigest: digest('6'),
+      inputIds: ['input-deadline'],
+      deadlineAt: at(3),
+      observedAt: at(3)
+    });
+  });
 });
 
 describe('AgentStartedWorkRecoveryCoordinator', () => {
@@ -450,7 +495,7 @@ describe('AgentStartedWorkRecoveryCoordinator', () => {
   });
 });
 
-describe('AgentSettledEffectBatchTerminalizationCoordinator', () => {
+describe('AgentContinuationBoundaryTerminalizationCoordinator', () => {
   it('commits a stable model-turn-budget failure and bounded checkpoint', async () => {
     const firstRuns = new MemoryRunUnitOfWork(modelTurnBudgetExhaustedRun());
     const secondRuns = new MemoryRunUnitOfWork(modelTurnBudgetExhaustedRun());
@@ -463,9 +508,9 @@ describe('AgentSettledEffectBatchTerminalizationCoordinator', () => {
       throw new Error('expected_model_turn_terminal_work');
     }
 
-    const first = await new AgentSettledEffectBatchTerminalizationCoordinator(firstRuns)
+    const first = await new AgentContinuationBoundaryTerminalizationCoordinator(firstRuns)
       .terminalize(firstWork, new AbortController().signal);
-    const second = await new AgentSettledEffectBatchTerminalizationCoordinator(secondRuns)
+    const second = await new AgentContinuationBoundaryTerminalizationCoordinator(secondRuns)
       .terminalize(secondWork, new AbortController().signal);
 
     expect(first).toEqual({
@@ -514,7 +559,7 @@ describe('AgentSettledEffectBatchTerminalizationCoordinator', () => {
       throw new Error('expected_deadline_terminal_work');
     }
 
-    const receipt = await new AgentSettledEffectBatchTerminalizationCoordinator(runs)
+    const receipt = await new AgentContinuationBoundaryTerminalizationCoordinator(runs)
       .terminalize(work, new AbortController().signal);
 
     expect(receipt).toMatchObject({
@@ -534,13 +579,50 @@ describe('AgentSettledEffectBatchTerminalizationCoordinator', () => {
     });
   });
 
+  it('commits bounded recovery evidence when queued inbox work reaches its deadline', async () => {
+    const run = directiveRun({ kind: 'complete' });
+    run.version = 3;
+    run.state = { status: 'running', checkpointVersion: 3, enteredAt: at(0) };
+    run.inbox = [queuedInbox('input-deadline', 'next_turn', 2)];
+    run.updatedAt = at(3);
+    replaceRunBudget(run, { ...run.binding.budget, deadlineAt: at(3) });
+    assertValidAgentRun(run);
+    const runs = new MemoryRunUnitOfWork(run);
+    const work = classifyAgentRunWork(run);
+    if (work.kind !== 'fail_deadline_expired') {
+      throw new Error('expected_inbox_deadline_terminal_work');
+    }
+
+    await expect(new AgentContinuationBoundaryTerminalizationCoordinator(runs)
+      .terminalize(work, new AbortController().signal)).resolves.toMatchObject({
+        runVersion: 4,
+        checkpointVersion: 4,
+        status: 'failed',
+        reason: 'deadline_expired'
+      });
+    expect(runs.current.state).toMatchObject({
+      status: 'failed',
+      errorCode: 'agent_run_deadline_expired',
+      message:
+        'The immutable Agent Run deadline expired before queued inbox inputs could be claimed.'
+    });
+    expect(runs.lastCommit?.mutations[0]?.artifacts.checkpoint?.payload)
+      .toMatchObject({
+        engineContinuation: {
+          phase: 'inbox_inputs_terminalized',
+          reason: 'deadline_expired',
+          inputIds: ['input-deadline']
+        }
+      });
+  });
+
   it('reports a typed version conflict for stale terminal work', async () => {
     const runs = new MemoryRunUnitOfWork(modelTurnBudgetExhaustedRun());
     const work = classifyAgentRunWork(runs.current);
     if (work.kind !== 'fail_model_turn_budget') {
       throw new Error('expected_model_turn_terminal_work');
     }
-    const coordinator = new AgentSettledEffectBatchTerminalizationCoordinator(runs);
+    const coordinator = new AgentContinuationBoundaryTerminalizationCoordinator(runs);
     await coordinator.terminalize(work, new AbortController().signal);
 
     await expect(coordinator.terminalize(work, new AbortController().signal))
@@ -617,6 +699,7 @@ function toolBatchRun(states: readonly AgentEffect['state'][]): MutableAgentRun 
       effect(EFFECT_A_ID, TOOL_CALL_A_ID, INPUT_A_DIGEST, 'idempotency-a', states[0]!),
       effect(EFFECT_B_ID, TOOL_CALL_B_ID, INPUT_B_DIGEST, 'idempotency-b', states[1]!)
     ],
+    inbox: [],
     createdAt: at(0),
     updatedAt: at(3)
   };
@@ -737,6 +820,7 @@ function objectiveRun(
       createdAt: at(0)
     }],
     effects: [],
+    inbox: [],
     createdAt: at(0),
     updatedAt: status === 'intended' ? at(0) : at(1)
   };
@@ -752,6 +836,7 @@ function queuedRun(): MutableAgentRun {
     state: { status: 'queued', checkpointVersion: 0, queuedAt: at(0) },
     turns: [],
     effects: [],
+    inbox: [],
     createdAt: at(0),
     updatedAt: at(0)
   };
@@ -813,6 +898,24 @@ function directiveRun(
   run.updatedAt = at(1);
   assertValidAgentRun(run);
   return run;
+}
+
+function queuedInbox(
+  inputId: string,
+  delivery: 'next_turn' | 'next_step',
+  second: number
+): AgentRun['inbox'][number] {
+  return {
+    inputId,
+    messageId: `message-${inputId}`,
+    version: 1,
+    delivery,
+    content: inputId,
+    contentDigest: digest(String(second)),
+    queuedAt: at(second),
+    updatedAt: at(second),
+    state: 'queued'
+  };
 }
 
 function conversationBinding(): AgentRun['binding'] {

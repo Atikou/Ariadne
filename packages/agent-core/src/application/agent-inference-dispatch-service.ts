@@ -34,6 +34,7 @@ import {
 } from './turn-input-digest.js';
 import type { AgentRunUnitOfWork } from './unit-of-work.js';
 import { deriveStableAgentId } from './stable-id.js';
+import { canonicalizeAgentControlData } from './control-command-digest.js';
 import type {
   AgentInferenceDirectivePlanner
 } from './agent-inference-directive-planner.js';
@@ -316,13 +317,22 @@ export class AgentInferenceDispatchService {
       request.turnId,
       request.attemptId
     );
+    const resultAuthority = await this.loadRun(started.run.runId);
+    const resultTurn = requireTurn(resultAuthority, request.turnId);
+    const resultAttempt = requireAttempt(resultTurn, request.attemptId);
+    assertInboxOnlyConcurrentMutation(
+      started.run,
+      resultAuthority,
+      resultTurn,
+      resultAttempt
+    );
     if (directive !== null) {
       try {
         const plan = await this.directivePlanner.plan({
           resultCommandId,
-          run: started.run,
-          turn: startedTurn,
-          attempt: startedAttempt,
+          run: resultAuthority,
+          turn: resultTurn,
+          attempt: resultAttempt,
           directive,
           availableTools: payload.input.availableTools,
           occurredAt: finishedAt
@@ -350,16 +360,16 @@ export class AgentInferenceDispatchService {
       kind: 'run.record_inference_attempt_result',
       commandId: resultCommandId,
       runId: started.run.runId,
-      expectedVersion: started.run.version,
+      expectedVersion: resultAuthority.version,
       occurredAt: finishedAt,
       turnId: startedTurn.turnId,
       attemptId: startedAttempt.attemptId,
       result
     }, checkpointArtifacts(this.checkpoints.create({
-      run: started.run,
-      turn: startedTurn,
-      attempt: startedAttempt,
-      checkpointVersion: started.run.state.checkpointVersion + 1,
+      run: resultAuthority,
+      turn: resultTurn,
+      attempt: resultAttempt,
+      checkpointVersion: resultAuthority.state.checkpointVersion + 1,
       phase: 'inference_result',
       occurredAt: finishedAt,
       result
@@ -385,6 +395,33 @@ export class AgentInferenceDispatchService {
     );
     if (run === null) throw new AgentRunNotFoundError(runId);
     return run;
+  }
+}
+
+function assertInboxOnlyConcurrentMutation(
+  started: AgentRun,
+  current: AgentRun,
+  turn: AgentTurn,
+  attempt: AgentInferenceAttempt
+): void {
+  if (
+    current.runId !== started.runId
+    || current.version < started.version
+    || current.state.status !== 'running'
+    || attempt.state.status !== 'started'
+    || turn.turnId !== started.turns.find((candidate) => candidate.turnId === turn.turnId)?.turnId
+    || canonicalizeAgentControlData(current.binding)
+      !== canonicalizeAgentControlData(started.binding)
+    || canonicalizeAgentControlData(current.turns)
+      !== canonicalizeAgentControlData(started.turns)
+    || canonicalizeAgentControlData(current.effects)
+      !== canonicalizeAgentControlData(started.effects)
+    || canonicalizeAgentControlData(current.state)
+      !== canonicalizeAgentControlData(started.state)
+  ) {
+    throw new AgentRunTransitionError(
+      'Inference result authority changed outside the durable Agent inbox boundary.'
+    );
   }
 }
 

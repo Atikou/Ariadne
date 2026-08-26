@@ -83,6 +83,19 @@ export type PublicToolActivityProjectionV3 = z.infer<
   typeof publicToolActivityProjectionV3Schema
 >;
 
+export const publicAgentInboxInputV3Schema = z.object({
+  inputId: publicProjectionCanonicalIdSchema,
+  messageId: publicProjectionCanonicalIdSchema,
+  version: versionSchema,
+  delivery: z.enum(['next_turn', 'next_step']),
+  content: boundedTextSchema,
+  state: z.enum(['queued', 'claimed']),
+  queuedAt: publicProjectionCanonicalTimestampSchema,
+  updatedAt: publicProjectionCanonicalTimestampSchema,
+  claimedTurnId: publicProjectionCanonicalIdSchema.optional()
+}).strict();
+export type PublicAgentInboxInputV3 = z.infer<typeof publicAgentInboxInputV3Schema>;
+
 export const publicRunProjectionV3Schema = z.object({
   runId: publicProjectionCanonicalIdSchema,
   sessionId: publicProjectionCanonicalIdSchema.optional(),
@@ -106,6 +119,8 @@ export const publicRunProjectionV3Schema = z.object({
   label: boundedLabelSchema,
   progress: z.number().min(0).max(1).optional(),
   toolActivities: z.array(publicToolActivityProjectionV3Schema).max(1_000).default([]),
+  inbox: z.array(publicAgentInboxInputV3Schema).max(1_000).default([]),
+  interactionMessages: z.array(publicMessageProjectionV3Schema).max(1_000).default([]),
   updatedAt: publicProjectionCanonicalTimestampSchema,
   startedAt: publicProjectionCanonicalTimestampSchema.optional(),
   completedAt: publicProjectionCanonicalTimestampSchema.optional()

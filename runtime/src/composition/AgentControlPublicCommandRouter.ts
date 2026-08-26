@@ -43,11 +43,17 @@ import {
   AgentControlConversationMessageAdmissionError,
   type AgentControlExecutionPipeline
 } from './ProductionAgentControlExecutionPipelineFactory.js';
+import { AgentInboxPublicCommandHandler } from './AgentInboxPublicCommandHandler.js';
+import {
+  completedPublicError,
+  publicRunMutationFailure
+} from './AgentPublicCommandFailures.js';
 
 export interface AgentControlPublicCommandRouterOptions {
   readonly authorizedWorkspaceIds?: readonly string[];
   readonly conversationCommandNow?: () => Date;
   readonly agentDecisionCommandNow?: () => Date;
+  readonly agentInboxCommandNow?: () => Date;
 }
 
 export interface AgentControlPublicCommandRouterCallbacks {
@@ -66,6 +72,7 @@ export class AgentControlPublicCommandRouter {
   private readonly conversationAuthority: ConversationAuthorityService;
   private readonly agentDecisionAuthority: AgentDecisionAuthorityService;
   private readonly agentCommands: AgentRunCommandService;
+  private readonly agentInbox: AgentInboxPublicCommandHandler;
   private readonly authorizedWorkspaceIds: ReadonlySet<string>;
   private readonly conversationCommandNow: () => Date;
 
@@ -83,6 +90,10 @@ export class AgentControlPublicCommandRouter {
       options.agentDecisionCommandNow
     );
     this.agentCommands = new AgentRunCommandService(unitOfWork);
+    this.agentInbox = new AgentInboxPublicCommandHandler(unitOfWork, {
+      wakeWorkScheduler: () => this.executionPipeline?.runWorkScheduler.wake(),
+      wakeProjectionDrain: callbacks.wakeProjectionDrain
+    }, options.agentInboxCommandNow);
     this.authorizedWorkspaceIds = new Set(options.authorizedWorkspaceIds ?? []);
     this.conversationCommandNow = options.conversationCommandNow ?? (() => new Date());
   }
@@ -99,6 +110,10 @@ export class AgentControlPublicCommandRouter {
         return this.executeResolveAgentDecision(envelope, envelope.command);
       case 'agent.run.cancel.v3':
         return this.executeCancelAgentRun(envelope, envelope.command);
+      case 'agent.inbox.enqueue.v3':
+      case 'agent.inbox.replace.v3':
+      case 'agent.inbox.remove.v3':
+        return this.agentInbox.execute(envelope, envelope.command);
       case 'projection.snapshot.get': {
         if (
           envelope.command.contractVersion
@@ -156,6 +171,17 @@ export class AgentControlPublicCommandRouter {
         const result = await this.executeOwnedCommand(envelope);
         if (result === null || result.settlement !== 'completed') {
           throw new Error('agent_run_cancel_reconciliation_invalid');
+        }
+        return result.outcome.ok
+          ? { kind: 'committed', outcome: result.outcome }
+          : { kind: 'not_committed' };
+      }
+      case 'agent.inbox.enqueue.v3':
+      case 'agent.inbox.replace.v3':
+      case 'agent.inbox.remove.v3': {
+        const result = await this.executeOwnedCommand(envelope);
+        if (result === null || result.settlement !== 'completed') {
+          throw new Error('agent_inbox_command_reconciliation_invalid');
         }
         return result.outcome.ok
           ? { kind: 'committed', outcome: result.outcome }
@@ -628,56 +654,4 @@ function publicDecisionFailure(
     }
   }
   return null;
-}
-
-function publicRunMutationFailure(
-  envelope: RuntimeCommandEnvelope,
-  error: unknown
-): RuntimeApplicationCommandResult | null {
-  if (!(error instanceof AgentCoreError)) return null;
-  if (error.code === 'AGENT_RUN_VERSION_CONFLICT') {
-    return completedPublicError(
-      envelope,
-      'agent_run_version_conflict',
-      'The Agent Run changed before this command was applied.',
-      false
-    );
-  }
-  if (error.code === 'AGENT_RUN_NOT_FOUND') {
-    return completedPublicError(
-      envelope,
-      'agent_run_not_found',
-      'The authoritative Agent Run does not exist.',
-      false
-    );
-  }
-  if (error.code === 'AGENT_RUN_TRANSITION') {
-    return completedPublicError(
-      envelope,
-      'agent_run_action_invalid',
-      'The Agent Run cannot accept this action in its current state.',
-      false
-    );
-  }
-  return null;
-}
-
-function completedPublicError(
-  envelope: RuntimeCommandEnvelope,
-  code: string,
-  message: string,
-  retryable: boolean
-): RuntimeApplicationCommandResult {
-  return {
-    outcome: {
-      ok: false,
-      error: {
-        code,
-        message,
-        retryable,
-        correlationId: envelope.correlationId
-      }
-    },
-    settlement: 'completed'
-  };
 }

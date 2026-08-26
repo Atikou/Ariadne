@@ -316,6 +316,55 @@ describe('SqliteAgentRunUnitOfWork', () => {
     });
   });
 
+  it('reuses the latest checkpoint across a verified inbox-only Run advance', async () => {
+    const { database } = createDatabase();
+    const unitOfWork = createUnitOfWork(database);
+    const commands = new SqliteTestAgentRunCommandService(unitOfWork);
+    await commands.execute(startCommand('run-inbox-checkpoint', 'command-start-inbox-checkpoint'));
+    await commands.execute({
+      kind: 'run.begin',
+      commandId: 'command-begin-inbox-checkpoint',
+      runId: 'run-inbox-checkpoint',
+      expectedVersion: 1,
+      occurredAt: at(1)
+    });
+    const inboxCommands = new AgentRunCommandService(unitOfWork);
+    await inboxCommands.execute({
+      kind: 'run.enqueue_inbox_input',
+      commandId: 'command-enqueue-inbox-checkpoint',
+      runId: 'run-inbox-checkpoint',
+      expectedVersion: 2,
+      occurredAt: at(2),
+      input: {
+        inputId: 'input-inbox-checkpoint',
+        messageId: 'message-inbox-checkpoint',
+        delivery: 'next_turn',
+        content: 'Continue this same Run.',
+        contentDigest: `sha256:${'e'.repeat(64)}`
+      }
+    }, { turnInputPayloads: [], effectPayloads: [] });
+    await inboxCommands.execute({
+      kind: 'run.replace_inbox_input',
+      commandId: 'command-replace-inbox-checkpoint',
+      runId: 'run-inbox-checkpoint',
+      expectedVersion: 3,
+      occurredAt: at(3),
+      inputId: 'input-inbox-checkpoint',
+      expectedInputVersion: 1,
+      content: 'Continue this same Run with the revised constraint.',
+      contentDigest: `sha256:${'f'.repeat(64)}`
+    }, { turnInputPayloads: [], effectPayloads: [] });
+
+    await expect(unitOfWork.listActiveRuns()).resolves.toMatchObject({
+      items: [{
+        ready: true,
+        phase: 'resumable',
+        run: { version: 4, inbox: [{ version: 2, state: 'queued' }] },
+        checkpoint: { runVersion: 2, checkpointVersion: 1 }
+      }]
+    });
+  });
+
   it('rejects an active SQLite transition without a checkpoint and rolls back every row', async () => {
     const { database } = createDatabase();
     const unitOfWork = createUnitOfWork(database);
@@ -1934,6 +1983,7 @@ function multiRunStartCommit(commandId: string): AgentRunCommandCommit {
         state,
         turns: [],
         effects: [],
+        inbox: [],
         createdAt: at(0),
         updatedAt: at(0)
       };

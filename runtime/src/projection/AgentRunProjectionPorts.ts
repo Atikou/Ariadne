@@ -19,6 +19,21 @@ export interface AgentRunVersionReader extends AgentRunCommandReceiptReader {
   ): Promise<AgentPlanVersionCommit | null>;
 }
 
+export interface AgentRunInteractionProjectionMessage {
+  readonly messageId: string;
+  readonly turnId: string;
+  readonly role: 'user' | 'assistant';
+  readonly content: string;
+  readonly occurredAt: string;
+}
+
+/** Resolves the protected bodies needed by the public in-Run transcript. */
+export interface AgentRunInteractionProjectionResolver {
+  resolveInteractionMessages(
+    run: AgentRun
+  ): Promise<readonly AgentRunInteractionProjectionMessage[]>;
+}
+
 export interface AgentRunTerminalResultProjectionRequest {
   readonly run: AgentRun;
   readonly sourceRunEventId: string;

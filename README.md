@@ -44,7 +44,7 @@ npm.cmd run verify:release-contract
 npm.cmd run test:electron
 ```
 
-`test:electron` 当前通过真实 Electron 窗口、Preload、Main、Runtime 子进程、SQLite 和 Public Projection 执行确定性 Agent 产品门禁，覆盖 direct、Tool continuation、Decision allow/deny、运行中取消，以及 inference/effect/projection 三个持久边界的 Runtime 强杀恢复。它使用进程外 HTTPS Provider fixture，不替代 Live Provider、本地模型、Browser/MCP、正式签名 Sandbox Helper 或干净机器发布验收。
+`test:electron` 当前通过真实 Electron 窗口、Preload、Main、Runtime 子进程、SQLite 和 Public Projection 执行确定性 Agent 产品门禁，覆盖 direct、真实 Composer 中同一 Run 的运行中 inbox continuation、Tool continuation、Decision allow/deny、运行中取消，以及 inference/effect/projection 三个持久边界的 Runtime 强杀恢复。它使用进程外 HTTPS Provider fixture，不替代 Live Provider、本地模型、Browser/MCP、正式签名 Sandbox Helper 或干净机器发布验收。
 
 正式发布门禁：
 
@@ -56,9 +56,8 @@ npm.cmd run verify:release
 
 ## 当前主要不足
 
-- 缺少真实 Electron Agent 闭环门禁；
 - 持久化 UoW、Composition Factory 和 First-party Tool Catalog 仍是大型热点；
-- 缺少 durable Agent inbox、运行中 steer/follow-up 和可恢复流式事件；
+- Agent inbox 与运行中 steer/follow-up 已接入；仍缺少可恢复 token/reasoning 流和独立 context injection；
 - v3 尚未接入系统性的 Context compaction、Tool result pruning 与 spill；
 - Child Run 有领域基础，但 SubAgent 没有形成生产闭环；
 - 能力装配仍集中在工厂和静态目录，缺少冻结的 Capability Manifest；

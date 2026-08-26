@@ -37,6 +37,7 @@ export const runtimeCapabilitySchema = z.enum([
   'companion.sessions',
   'agent.proposals',
   'agent.runs',
+  'agent.inbox',
   'agent.permissions',
   'agent.plans',
   'agent.tools',
@@ -766,6 +767,36 @@ export const runtimeCommandSchema = z.discriminatedUnion('kind', [
     expectedVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     occurredAt: isoDateTimeSchema,
     reason: z.literal('user_requested')
+  }).strict(),
+  z.object({
+    kind: z.literal('agent.inbox.enqueue.v3'),
+    contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
+    runId: publicProjectionCanonicalIdSchema,
+    sessionId: publicProjectionCanonicalIdSchema,
+    inputId: publicProjectionCanonicalIdSchema,
+    delivery: z.enum(['next_turn', 'next_step']),
+    content: z.string().min(1).max(100_000).refine(
+      (value) => value.trim().length > 0,
+      'Agent inbox input cannot contain only whitespace.'
+    )
+  }).strict(),
+  z.object({
+    kind: z.literal('agent.inbox.replace.v3'),
+    contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
+    runId: publicProjectionCanonicalIdSchema,
+    inputId: publicProjectionCanonicalIdSchema,
+    expectedInputVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    content: z.string().min(1).max(100_000).refine(
+      (value) => value.trim().length > 0,
+      'Agent inbox input cannot contain only whitespace.'
+    )
+  }).strict(),
+  z.object({
+    kind: z.literal('agent.inbox.remove.v3'),
+    contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
+    runId: publicProjectionCanonicalIdSchema,
+    inputId: publicProjectionCanonicalIdSchema,
+    expectedInputVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
   }).strict()
 ]);
 
@@ -804,6 +835,26 @@ export const runtimeResultSchema = z.discriminatedUnion('kind', [
     kind: z.literal('agent.run.cancelled.v3'),
     runId: publicProjectionCanonicalIdSchema,
     runVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
+  }).strict(),
+  z.object({
+    kind: z.literal('agent.inbox.enqueued.v3'),
+    runId: publicProjectionCanonicalIdSchema,
+    runVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    inputId: publicProjectionCanonicalIdSchema,
+    inputVersion: z.literal(1)
+  }).strict(),
+  z.object({
+    kind: z.literal('agent.inbox.replaced.v3'),
+    runId: publicProjectionCanonicalIdSchema,
+    runVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    inputId: publicProjectionCanonicalIdSchema,
+    inputVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
+  }).strict(),
+  z.object({
+    kind: z.literal('agent.inbox.removed.v3'),
+    runId: publicProjectionCanonicalIdSchema,
+    runVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    inputId: publicProjectionCanonicalIdSchema
   }).strict(),
   z.object({ kind: z.literal('acknowledged') }).strict()
 ]);

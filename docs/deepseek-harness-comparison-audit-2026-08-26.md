@@ -77,10 +77,10 @@ deepseek-harness 自身仍标记为 developer preview，并明确允许破坏性
 | 验证项 | 结果 | 证据边界 |
 |---|---|---|
 | `npm.cmd run typecheck` | PASS | Protocol、Agent Core、Runtime、App 类型检查通过 |
-| `npm.cmd test` | PASS | Protocol 39、Agent Core 93、Runtime 667、App 247，共 1,046 项 |
-| `npm.cmd run check:architecture` | PASS | 827 个 TS/TSX 文件、3,303 条内部边、0 SCC、0 循环边、0 规则违规 |
-| `npm.cmd run audit:runtime-independence` | PASS | 850 个生产文件；无 Runtime server/public 目录、无入站 HTTP、无仓库外文件依赖 |
-| `npm.cmd run test:electron` | PASS | 真实窗口覆盖 direct、Tool continuation、Decision allow/deny、cancel，以及 inference/effect/projection 三个持久边界的 Runtime 强杀恢复 |
+| `npm.cmd test` | PASS | Protocol 39、Agent Core 97、Runtime 676、App 249，共 1,061 项 |
+| `npm.cmd run check:architecture` | PASS | 845 个 TS/TSX 文件、3,387 条内部边、0 SCC、0 循环边、0 规则违规 |
+| `npm.cmd run audit:runtime-independence` | PASS | 866 个生产文件；无 Runtime server/public 目录、无入站 HTTP、无仓库外文件依赖 |
+| `npm.cmd run test:electron` | PASS | 真实窗口覆盖 direct、真实 Composer 运行中 inbox continuation、Tool continuation、Decision allow/deny、cancel，以及 inference/effect/projection 三个持久边界的 Runtime 强杀恢复 |
 
 Electron 结果位于：
 
@@ -148,7 +148,7 @@ Ariadne 当前使用编译验证过的 immutable Tool Catalog，并将工具身�
 | 已修复 | 真实 Agent 验收不足 | 确定性真实窗口门禁已覆盖模型、Tool、Decision、取消和强杀恢复 | 保持为必跑门禁；另设可选 Live Provider gate |
 | 已修复 | 当前重构不可复现 | 517 个变更文件已进入本文所在的可检出基线 commit | 后续修改保持小步提交，并由完整门禁验证 |
 | 已修复 | 巨型热点迁移 | 命令路由、Tool family、outbox、execution intent、Conversation row/projection 已形成独立边界 | 由 Hotspot Boundary Gate 阻止职责和规模重新汇聚 |
-| P1 | 无统一运行中 Agent inbox | 只有发消息、Decision、Cancel，没有 followup/steer/inject | 持久、可恢复、可投影的输入队列和运行中控制 |
+| 已修复 | 统一运行中 Agent inbox | 同一 Run 已支持 durable next-turn/next-step、replace/remove、原子 claim 和 Public Projection | 后续独立建设不唤醒模型的 context injection |
 | P1 | 无 v3 token/reasoning 流 | 公共 Projection 主要发布已提交最终状态 | Chunk 有稳定 attempt/sequence，并可重放或明确声明仅临时 |
 | P1 | 无生产 Context Compaction/Spill | 长上下文、超大 Tool 结果缺少系统性处理 | 自动压缩、Tool Result pruning、spill 引用与恢复 |
 | P1 | SubAgent 未形成产品闭环 | Child Run 领域规则存在，Provider/Directive/Control/UI 未接通 | v3 Delegation 从模型到 Child Run、结果和控制完整闭环 |
@@ -168,12 +168,13 @@ Ariadne 当前使用编译验证过的 immutable Tool Catalog，并将工具身�
 当前门禁验证：
 
 1. direct answer 形成带因果 `runId` 的 terminal assistant message；
-2. `workspace.read_file` 结果进入 Provider continuation；
-3. `workspace.write_file` 在 allow 前无副作用、allow 后只写一次、deny 后不写；
-4. 运行中 cancel 中止真实 Provider HTTP 请求，并通过持久 recovery evidence 收敛；
-5. 独立只读 SQLite watcher 在 inference started、effect started、Agent authority completed/Public Projection pending 三个精确边界触发 Runtime 强杀；
-6. 重启后分别收敛为 interrupted 或完成投影，没有重复 Provider 请求或文件写入；
-7. fixture 精确记录 11 次 Provider 请求、9 次响应、2 次 abort，Renderer console 无错误。
+2. 首轮推理期间从真实 Composer 排入输入，由同一 Run 的 continuation Turn 消费并在 UI 显示两轮 assistant response；
+3. `workspace.read_file` 结果进入 Provider continuation；
+4. `workspace.write_file` 在 allow 前无副作用、allow 后只写一次、deny 后不写；
+5. 运行中 cancel 中止真实 Provider HTTP 请求，并通过持久 recovery evidence 收敛；
+6. 独立只读 SQLite watcher 在 inference started、effect started、Agent authority completed/Public Projection pending 三个精确边界触发 Runtime 强杀；
+7. 重启后分别收敛为 interrupted 或完成投影，没有重复 Provider 请求或文件写入；
+8. fixture 精确记录 13 次 Provider 请求、11 次响应、2 次 abort，Renderer console 无错误。
 
 Provider fixture 是进程外、确定性 HTTPS OpenAI-compatible 服务，经过生产 Provider adapter，但不是外部商业 Provider。失败时 smoke 保存结构化诊断和截图。
 
@@ -197,10 +198,11 @@ Provider fixture 是进程外、确定性 HTTPS OpenAI-compatible 服务，经�
 
 | 原热点 | 修复前 | 当前 | 新边界 |
 |---|---:|---:|---|
-| `SqliteAgentRunUnitOfWork.ts` | 6,045 行 | 4,947 行 | `outbox/SqliteAgentRunOutboxStore`；`execution-intent` store、validation、row mapper |
-| `SqliteConversationRunHandoffUnitOfWork.ts` | 2,276 行 | 1,922 行 | Conversation authority row mapper；只读 Projection reader |
-| `DefaultAgentControlRuntimeFactory.ts` | 1,313 行 | 733 行 | `AgentControlPublicCommandRouter` 拥有公开命令分发、replay/reconciliation 和错误翻译 |
-| `FirstPartyAgentToolCatalog.ts` | 1,034 行 | 81 行 | Browser、MCP、Workspace tool family 与共享 support 分离，Catalog 只组合并冻结顺序 |
+| `SqliteAgentRunUnitOfWork.ts` | 6,045 行 | 4,991 行 | `outbox/SqliteAgentRunOutboxStore`；`execution-intent` store、validation、row mapper |
+| `SqliteConversationRunHandoffUnitOfWork.ts` | 2,276 行 | 1,923 行 | Conversation authority row mapper；只读 Projection reader |
+| `DefaultAgentControlRuntimeFactory.ts` | 1,313 行 | 746 行 | 公开命令由 Router 分发；Inbox handler、公共失败翻译和 Projection wake 已拆为独立边界 |
+| `AgentControlPublicCommandRouter.ts` | 940 行 | 658 行 | `AgentInboxPublicCommandHandler` 与 `AgentPublicCommandFailures` 已迁出，Router 保留协议路由和 replay/reconciliation |
+| `FirstPartyAgentToolCatalog.ts` | 1,034 行 | 82 行 | Browser、MCP、Workspace tool family 与共享 support 分离，Catalog 只组合并冻结顺序 |
 
 持久化子模块接收同一个 `DatabaseSync`，由外层 UoW 统一调度并在既有 transaction 内调用；没有按表拆成互相补偿的 Repository，也没有引入第二 Writer。
 
@@ -234,50 +236,47 @@ composition/
 
 `SqliteAgentRunUnitOfWork.ts` 仍然较大，但剩余主体是同一 command-commit/recovery 原子边界。本次不为追求行数把它切成跨 Repository 补偿流程；后续若继续拆分，应以独立 command fact/preparation 模块为单位，并继续复用唯一事务。
 
-### 6.3 P1：缺少统一 Agent inbox 和运行中交互
+### 6.3 已修复：统一 Agent inbox 和运行中交互
 
-当前 v3 公共命令只有：
+当前 v3 公共命令新增：
 
-- `runtime.status.get`
-- `projection.snapshot.get`
-- `projection.commits.read`
-- `conversation.session.create.v3`
-- `conversation.message.accept.v3`
-- `agent.decision.resolve.v3`
-- `agent.run.cancel.v3`
+- `agent.inbox.enqueue.v3`
+- `agent.inbox.replace.v3`
+- `agent.inbox.remove.v3`
 
-这意味着运行中的 Run 主要只能等待 Decision 或被取消，不能稳定表达：
+同一 `AgentRun` 现在稳定表达：
 
-- followup：排入下一 Turn；
-- steer：插入下一 Step；
-- inject：注入上下文但不主动唤醒；
-- replace/remove：修改尚未消费的排队消息；
-- 父 Run 或外部系统向 Child Run 发送控制消息。
+- followup：`next_turn` 在响应边界领取最早一条；
+- steer：`next_step` 在 Tool-result Step 或更早到达的响应边界领取全部；
+- replace/remove：按 input version 修改尚未领取的排队消息；
+- Provider inference 期间接纳输入，并在最新 Run version 上提交原 Provider 结果；
+- crash/replay：claim 与 continuation Turn 原子提交，稳定 ID 防止重复消费；
+- Public Projection：队列状态与同 Run 中间对话均可恢复，Renderer 只读投影。
 
-deepseek-harness 的 Agent handle、inbox、turn 和 step 语义值得借鉴，但 Ariadne 应将输入接纳和状态变化持久化，而不是直接复制进程内 Agent 对象。
+实现借鉴 deepseek-harness 的 Agent handle、inbox、turn 和 step 语义，但没有复制进程内 Agent 对象。Ariadne 将输入接纳、版本、claim、Turn input、receipt 和投影保持在既有 durable authority 中。
 
-建议新增领域边界：
+当前领域边界：
 
 ```text
-AgentInputQueue
-  next_turn[]
-  next_step[]
-  injected_context[]
+AgentRun.inbox
+  next_turn
+  next_step
 
 InputState
-  queued -> claimed -> entered
-         -> replaced | cancelled | discarded
+  queued -> replaced | removed
+  queued -> claimed (inside run.register_turn)
 ```
 
-每一条输入至少绑定：
+每一条输入绑定：
 
 - `messageId/inputId`；
 - `runId`；
-- target；
-- source；
-- accepted version；
-- causal Turn/Step；
+- delivery；
+- input version 和 content digest；
+- claimed Turn；
 - durable receipt。
+
+完整不变量、权威链路和剩余非目标见 [Agent inbox 与运行中交互](agent-inbox.md)。独立 context injection、跨 Child Run inbox 和 token/reasoning stream 仍未完成，不随本项标记为已修复。
 
 ### 6.4 P1：模型流和可重放交互不完整
 
@@ -597,13 +596,13 @@ Ariadne 应继续使用自身的 fail-closed Sandbox Helper、签名和发布验
 - 删除一个 capability 不需要修改无关 Agent Core 文件；
 - Manifest 可输出为无敏感信息的诊断快照。
 
-### 阶段 4：Agent inbox、流式事件与 Context 生命周期
+### 阶段 4：流式事件与 Context 生命周期
 
-目标：支持长任务、运行中交互和大输出。
+Agent inbox、followup 和 steer 已完成；本阶段剩余目标是可恢复流式交互、独立 context injection 和大输出生命周期。
 
 退出条件：
 
-- followup/steer/inject 具有 durable receipt；
+- 独立 context injection 具有 durable receipt；
 - chunk 与 terminal message 的权威边界明确；
 - compaction、pruning 和 spill 可恢复、可删除；
 - Runtime 重启后不会重复消费输入或重复压缩；

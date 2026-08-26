@@ -427,6 +427,7 @@ export class AgentPlanBudgetChildRunService {
           },
           turns: [],
           effects: [],
+          inbox: [],
           createdAt: command.occurredAt,
           updatedAt: command.occurredAt
         };

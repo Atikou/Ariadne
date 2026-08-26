@@ -11,6 +11,7 @@ import type {
   ModelSummary,
   PublicDecisionChoiceV3,
   PublicDecisionProjectionV3,
+  PublicRunProjectionV3,
   RunActivity,
   PublicProjectionReadBatchV3,
   RuntimeCommand,
@@ -300,6 +301,86 @@ export class RuntimeStore {
       result.kind !== 'agent.run.cancelled.v3'
       || result.runId !== run.runId
     ) throw new Error(`runtime_result_invalid:${result.kind}`);
+    void this.requestSynchronization(false);
+  }
+
+  async enqueueAgentInput(
+    run: RuntimeRun,
+    content: string,
+    delivery: 'next_turn' | 'next_step'
+  ): Promise<string> {
+    if (!this.status.capabilities.includes('agent.inbox')) {
+      throw new Error('runtime_capability_missing:agent.inbox');
+    }
+    if (run.origin !== 'projection' || run.sessionId === undefined) {
+      throw new Error('projection_run_action_unavailable:inbox');
+    }
+    const inputId = crypto.randomUUID();
+    const result = await this.command({
+      kind: 'agent.inbox.enqueue.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      runId: run.runId,
+      sessionId: run.sessionId,
+      inputId,
+      delivery,
+      content
+    });
+    if (
+      result.kind !== 'agent.inbox.enqueued.v3'
+      || result.runId !== run.runId
+      || result.inputId !== inputId
+    ) throw new Error(`runtime_result_invalid:${result.kind}`);
+    void this.requestSynchronization(false);
+    return inputId;
+  }
+
+  async replaceAgentInput(
+    run: RuntimeRun,
+    inputId: string,
+    expectedInputVersion: number,
+    content: string
+  ): Promise<void> {
+    if (!this.status.capabilities.includes('agent.inbox')) {
+      throw new Error('runtime_capability_missing:agent.inbox');
+    }
+    if (run.origin !== 'projection') {
+      throw new Error('projection_run_action_unavailable:inbox');
+    }
+    const result = await this.command({
+      kind: 'agent.inbox.replace.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      runId: run.runId,
+      inputId,
+      expectedInputVersion,
+      content
+    });
+    if (result.kind !== 'agent.inbox.replaced.v3' || result.inputId !== inputId) {
+      throw new Error(`runtime_result_invalid:${result.kind}`);
+    }
+    void this.requestSynchronization(false);
+  }
+
+  async removeAgentInput(
+    run: RuntimeRun,
+    inputId: string,
+    expectedInputVersion: number
+  ): Promise<void> {
+    if (!this.status.capabilities.includes('agent.inbox')) {
+      throw new Error('runtime_capability_missing:agent.inbox');
+    }
+    if (run.origin !== 'projection') {
+      throw new Error('projection_run_action_unavailable:inbox');
+    }
+    const result = await this.command({
+      kind: 'agent.inbox.remove.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      runId: run.runId,
+      inputId,
+      expectedInputVersion
+    });
+    if (result.kind !== 'agent.inbox.removed.v3' || result.inputId !== inputId) {
+      throw new Error(`runtime_result_invalid:${result.kind}`);
+    }
     void this.requestSynchronization(false);
   }
 
@@ -593,7 +674,10 @@ export class RuntimeStore {
 
   private createSnapshot(projection: ProjectionCacheSnapshot): RuntimeSnapshot {
     const authoritativeMessages = projection.messages.map(presentMessage);
-    const messages = this.ui.projectedMessages(authoritativeMessages, projection.runs);
+    const messages = this.ui.projectedMessages(
+      mergeInteractionMessages(authoritativeMessages, projection.runs),
+      projection.runs
+    );
     const pendingOverlayId = this.ui.pendingChatOverlayId;
     return {
       initialized: this.initialized,
@@ -625,6 +709,31 @@ export class RuntimeStore {
       lastError: projection.integrityError ?? this.requestError
     };
   }
+}
+
+function mergeInteractionMessages(
+  authoritative: readonly RuntimeMessage[],
+  runs: readonly PublicRunProjectionV3[]
+): RuntimeMessage[] {
+  const messages = [...authoritative];
+  const identities = new Set(messages.map((message) => message.messageId));
+  for (const run of runs) {
+    for (const interaction of run.interactionMessages) {
+      if (identities.has(interaction.messageId)) continue;
+      identities.add(interaction.messageId);
+      messages.push(presentMessage(interaction));
+    }
+  }
+  return messages.sort((left, right) => {
+    const time = left.createdAt.localeCompare(right.createdAt);
+    if (time !== 0) return time;
+    const role = interactionRoleOrder(left.role) - interactionRoleOrder(right.role);
+    return role !== 0 ? role : left.messageId.localeCompare(right.messageId);
+  });
+}
+
+function interactionRoleOrder(role: RuntimeMessage['role']): number {
+  return role === 'assistant' ? 0 : role === 'user' ? 1 : 2;
 }
 
 export function runtimeRequestErrorMessage(

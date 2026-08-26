@@ -57,7 +57,7 @@ Ariadne 是独立设计、独立实现、独立发布的桌面 Agent 产品。�
 - 默认生产 Composition 已装配 exact model inference、immutable Tool Catalog、Effect dispatch、因果 continuation、follow-up inference、work scheduler 和 started-work recovery gate。
 - Public Projection v3 的生产 publisher 覆盖 Conversation、Agent Run/Decision 和 Model；Renderer 只使用 snapshot + commit replay。
 - Architecture Gate 当前通过：0 SCC、0 循环边、0 规则违规；文件和依赖边数量以命令输出为准。
-- 当前真实 Electron Agent smoke 已覆盖 direct、Tool continuation、Decision allow/deny、运行中取消，以及 inference/effect/projection 三个持久边界的 Runtime 强杀恢复；它使用确定性进程外 HTTPS Provider fixture，不代表 Live Provider、本地模型或真实 Browser/MCP 已验收。
+- 当前真实 Electron Agent smoke 已覆盖 direct、真实 Composer 中同一 Run 的运行中 inbox continuation、Tool continuation、Decision allow/deny、运行中取消，以及 inference/effect/projection 三个持久边界的 Runtime 强杀恢复；它使用确定性进程外 HTTPS Provider fixture，不代表 Live Provider、本地模型或真实 Browser/MCP 已验收。
 - Diagnostics publisher、Context compaction、SubAgent 产品闭环、完整 Hooks/Telemetry/Provider Resilience 等仍未完成，不能因源码存在而视为生产能力。
 
 ## 3. 架构原则

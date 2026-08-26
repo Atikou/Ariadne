@@ -629,6 +629,8 @@ function commitWithAllFeatures(): ProjectionCommitV3 {
           label: 'Working',
           progress: 0.5,
           toolActivities: [],
+          inbox: [],
+          interactionMessages: [],
           updatedAt: at(1),
           startedAt: at(0)
         }

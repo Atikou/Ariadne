@@ -22,6 +22,9 @@ import {
 import {
   DefaultAgentControlRuntimeFactory
 } from '../src/composition/DefaultAgentControlRuntimeFactory.js';
+import {
+  projectionWakeAggregateId
+} from '../src/composition/PublicProjectionWakeCommitSink.js';
 import type { HostCapabilityClient } from '../src/ingress/HostCapabilityClient.js';
 import type { ShutdownContext } from '../src/ingress/ShutdownContext.js';
 
@@ -329,7 +332,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       expect(appendPublicEvent).toHaveBeenCalledTimes(1);
       expect(appendPublicEvent).toHaveBeenCalledWith(expect.objectContaining({
         aggregateType: 'projection',
-        aggregateId: 'model-catalog',
+        aggregateId: projectionWakeAggregateId('model-catalog', 'models'),
         aggregateVersion: 1,
         event: {
           kind: 'projection.changed',

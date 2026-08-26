@@ -295,7 +295,10 @@ export class AgentRunAdmissionController {
 
 function turnCauseFromBinding(
   binding: AgentRunBinding
-): Exclude<AgentTurnCause, { readonly kind: 'effect_results' }> {
+): Extract<
+  AgentTurnCause,
+  { readonly kind: 'conversation_objective' | 'delegation_objective' }
+> {
   const objective = binding.objectiveRef;
   return objective.kind === 'conversation_message'
     ? {
@@ -315,7 +318,10 @@ function turnCauseFromBinding(
 function createTurnInputSnapshot(
   identity: AdmissionIdentity,
   snapshot: AgentRunAdmissionSnapshot,
-  cause: Exclude<AgentTurnCause, { readonly kind: 'effect_results' }>
+  cause: Extract<
+    AgentTurnCause,
+    { readonly kind: 'conversation_objective' | 'delegation_objective' }
+  >
 ): AgentTurnInputSnapshotV1 {
   const objective = snapshot.binding.objectiveRef;
   const protectedSnapshot: AgentTurnInputSnapshotV1 = {

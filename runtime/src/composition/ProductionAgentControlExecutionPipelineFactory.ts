@@ -49,6 +49,9 @@ import {
   AgentEffectContinuationController
 } from '../control/execution/AgentEffectContinuationController.js';
 import {
+  AgentInboxContinuationController
+} from '../control/execution/AgentInboxContinuationController.js';
+import {
   AgentFollowUpInferenceDispatchController
 } from '../control/execution/AgentFollowUpInferenceDispatchController.js';
 import {
@@ -58,8 +61,8 @@ import {
   AgentRunWorkClassifier
 } from '../control/execution/AgentRunWorkClassifier.js';
 import {
-  AgentSettledEffectBatchTerminalizationCoordinator
-} from '../control/execution/AgentSettledEffectBatchTerminalizationCoordinator.js';
+  AgentContinuationBoundaryTerminalizationCoordinator
+} from '../control/execution/AgentContinuationBoundaryTerminalizationCoordinator.js';
 import {
   AgentRunExecutionDispatchController
 } from '../control/execution/AgentRunExecutionDispatchController.js';
@@ -283,6 +286,10 @@ implements AgentControlExecutionPipelineFactory {
       input.unitOfWork,
       input.unitOfWork
     );
+    const inboxContinuations = new AgentInboxContinuationController(
+      input.unitOfWork,
+      input.unitOfWork
+    );
     const followUps = new AgentFollowUpInferenceDispatchController(
       input.unitOfWork,
       inference
@@ -290,7 +297,7 @@ implements AgentControlExecutionPipelineFactory {
     const startedWorkRecovery = new AgentStartedWorkRecoveryCoordinator(
       input.unitOfWork
     );
-    const terminalizations = new AgentSettledEffectBatchTerminalizationCoordinator(
+    const terminalizations = new AgentContinuationBoundaryTerminalizationCoordinator(
       input.unitOfWork
     );
     const runWorkScheduler = new AgentRunWorkScheduler(
@@ -298,6 +305,7 @@ implements AgentControlExecutionPipelineFactory {
       new AgentRunWorkClassifier(),
       effects,
       continuations,
+      inboxContinuations,
       followUps,
       terminalizations,
       {

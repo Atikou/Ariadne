@@ -191,6 +191,8 @@ describe('RuntimeStore command routing', () => {
       aggregateVersion: 7,
       checkpointStage: 'interrupted',
       recoveryStatus: 'recoverable',
+      inbox: [],
+      interactionMessages: [],
       timing: { activeDurationMs: 1 }
     } satisfies RuntimeRun;
 

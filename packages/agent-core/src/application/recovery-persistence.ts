@@ -15,6 +15,7 @@ import {
   digestAgentTurnInput,
   summarizeAgentTurnInput
 } from './turn-input-digest.js';
+import { canonicalizeAgentControlData } from './control-command-digest.js';
 
 export const MAX_PROTECTED_AGENT_TURN_INPUT_SNAPSHOT_UTF8_BYTES = 256 * 1_024;
 
@@ -419,6 +420,13 @@ export function assertAgentRunCommitArtifacts(
     }
   } else if (isTerminalAgentRun(next)) {
     if (checkpoint !== undefined) assertExactCheckpoint(next, checkpoint);
+  } else if (isAgentRunInboxOnlyMutation(current, next)) {
+    if (checkpoint !== undefined) {
+      throw checkpointConflict(
+        next.runId,
+        'A pure Agent inbox mutation must reuse the existing recovery checkpoint.'
+      );
+    }
   } else {
     if (checkpoint === undefined) {
       throw checkpointConflict(
@@ -530,6 +538,25 @@ export function assertAgentRunCommitArtifacts(
       'Every newly committed untrusted Directive body requires one protected artifact.'
     );
   }
+}
+
+export function isAgentRunInboxOnlyMutation(
+  current: AgentRun | null,
+  next: AgentRun
+): boolean {
+  return current !== null
+    && next.version === current.version + 1
+    && next.state.checkpointVersion === current.state.checkpointVersion
+    && canonicalizeAgentControlData(next.binding)
+      === canonicalizeAgentControlData(current.binding)
+    && canonicalizeAgentControlData(next.state)
+      === canonicalizeAgentControlData(current.state)
+    && canonicalizeAgentControlData(next.turns)
+      === canonicalizeAgentControlData(current.turns)
+    && canonicalizeAgentControlData(next.effects)
+      === canonicalizeAgentControlData(current.effects)
+    && canonicalizeAgentControlData(next.inbox)
+      !== canonicalizeAgentControlData(current.inbox);
 }
 
 /** Rehashes protected Turn inputs before a Unit of Work performs its first write. */
@@ -843,20 +870,63 @@ function assertExactTurnInputSnapshot(
   ) {
     throw turnInputConflict(run.runId, 'turn_input_cause_mismatch');
   }
-  let observedStructuredResult = false;
-  for (const message of snapshot.messages) {
-    if (message.kind === 'effect_result') {
-      observedStructuredResult = true;
-    } else if (observedStructuredResult) {
-      throw turnInputConflict(run.runId, 'turn_input_cause_mismatch');
-    }
-  }
+  assertExactCurrentContinuationSuffix(run, turnId, snapshot.messages);
   if (
     new TextEncoder().encode(canonicalizeJsonData(snapshot)).byteLength
     > MAX_PROTECTED_AGENT_TURN_INPUT_SNAPSHOT_UTF8_BYTES
   ) {
     throw turnInputConflict(run.runId, 'turn_input_digest_mismatch');
   }
+}
+
+function assertExactCurrentContinuationSuffix(
+  run: AgentRun,
+  turnId: string,
+  messages: readonly AgentTurnInputMessage[]
+): void {
+  const turn = run.turns.find((candidate) => candidate.turnId === turnId);
+  if (turn === undefined) throw turnInputConflict(run.runId, 'turn_input_cause_mismatch');
+  const cause = turn.intention.cause;
+  if (cause.kind === 'conversation_objective' || cause.kind === 'delegation_objective') return;
+
+  const inputIds = cause.kind === 'inbox_inputs'
+    ? cause.inputIds
+    : cause.inboxInputIds ?? [];
+  const inputMessages = messages.slice(messages.length - inputIds.length);
+  if (
+    inputMessages.length !== inputIds.length
+    || inputMessages.some((message, index) => {
+      const input = run.inbox.find((candidate) => candidate.inputId === inputIds[index]);
+      return input === undefined
+        || input.state !== 'claimed'
+        || input.claimedTurnId !== turnId
+        || message.kind !== 'text'
+        || message.role !== 'user'
+        || message.content !== input.content;
+    })
+  ) throw turnInputConflict(run.runId, 'turn_input_cause_mismatch');
+
+  const beforeInputs = messages.length - inputIds.length;
+  if (cause.kind === 'inbox_inputs') {
+    const assistant = messages[beforeInputs - 1];
+    if (assistant?.kind !== 'text' || assistant.role !== 'assistant') {
+      throw turnInputConflict(run.runId, 'turn_input_cause_mismatch');
+    }
+    return;
+  }
+
+  const currentResults = messages.slice(
+    beforeInputs - cause.effectIds.length,
+    beforeInputs
+  );
+  if (
+    currentResults.length !== cause.effectIds.length
+    || currentResults.some((message, index) => (
+      message.kind !== 'effect_result'
+      || message.effectId !== cause.effectIds[index]
+      || message.toolCallId !== cause.toolCallIds[index]
+    ))
+  ) throw turnInputConflict(run.runId, 'turn_input_cause_mismatch');
 }
 
 type ExpectedEffectResult =
@@ -1007,7 +1077,14 @@ function sameTurnCause(left: AgentTurnCause, right: AgentTurnCause): boolean {
         && left.sourceAttemptId === right.sourceAttemptId
         && left.sourceDirectiveDigest === right.sourceDirectiveDigest
         && sameStringArray(left.effectIds, right.effectIds)
-        && sameStringArray(left.toolCallIds, right.toolCallIds);
+        && sameStringArray(left.toolCallIds, right.toolCallIds)
+        && sameStringArray(left.inboxInputIds ?? [], right.inboxInputIds ?? []);
+    case 'inbox_inputs':
+      return right.kind === left.kind
+        && left.sourceTurnId === right.sourceTurnId
+        && left.sourceAttemptId === right.sourceAttemptId
+        && left.sourceDirectiveDigest === right.sourceDirectiveDigest
+        && sameStringArray(left.inputIds, right.inputIds);
   }
 }
 

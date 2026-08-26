@@ -8,13 +8,13 @@
 | 命令 | 当前结果 | 证据 |
 |---|---|---|
 | `npm.cmd run typecheck` | PASS | Protocol、Agent Core、Runtime、App 类型检查通过 |
-| `npm.cmd test` | PASS | Protocol 39、Agent Core 93、Runtime 667、App 247，共 1,046 项 |
-| `npm.cmd run check:architecture` | PASS | 839 个 TS/TSX 文件、3,351 条内部边、0 SCC、0 循环边、0 规则违规；Hotspot Boundary Gate 通过 |
-| `npm.cmd run audit:runtime-independence` | PASS | 862 个生产文件；无入站 HTTP、仓库外文件依赖或根脚本路径 |
+| `npm.cmd test` | PASS | Protocol 39、Agent Core 97、Runtime 676、App 249，共 1,061 项 |
+| `npm.cmd run check:architecture` | PASS | 845 个 TS/TSX 文件、3,387 条内部边、0 SCC、0 循环边、0 规则违规；Hotspot Boundary Gate 通过 |
+| `npm.cmd run audit:runtime-independence` | PASS | 866 个生产文件；无入站 HTTP、仓库外文件依赖或根脚本路径 |
 | `npm.cmd run verify:release-contract` | PASS | 安装器、迁移、模型资产和验收矩阵契约通过 |
-| `npm.cmd run test:electron` | PASS | 真实窗口完成 direct、Tool continuation、Decision allow/deny、运行中取消和三个持久边界的 Runtime 强杀恢复 |
+| `npm.cmd run test:electron` | PASS | 真实窗口完成 direct、真实 Composer 运行中 inbox continuation、Tool continuation、Decision allow/deny、运行中取消和三个持久边界的 Runtime 强杀恢复 |
 
-`test:electron` 的最新结果记录了 11 次 Provider 请求、9 次响应、2 次被取消请求；三个强杀点分别位于 initial inference started、effect started 和 Agent authority completed/Public Projection pending。上述数字是本次修复后的当前工作树结果；后续仍应以命令和 artifact 为准。
+`test:electron` 的最新结果记录了 13 次 Provider 请求、11 次响应、2 次被取消请求；其中 inbox 场景通过真实 Composer 在首轮推理进行中加入输入，并由同一 Run 的下一 Turn 消费。三个强杀点分别位于 initial inference started、effect started 和 Agent authority completed/Public Projection pending。上述数字是本次修复后的当前工作树结果；后续仍应以命令和 artifact 为准。
 
 ## 2. 历史审计快照
 
@@ -58,6 +58,7 @@ Renderer -> Sandbox Preload -> Electron Main -> Node IPC -> Runtime
 - 真实 Electron 主窗口、Sandbox Preload、Main、Runtime 子进程、SQLite 和 Public Projection；
 - 通过真实设置接口启用唯一可用的 Agent 模型；
 - 直接回答形成带因果 `runId` 的 terminal assistant message；
+- 首轮推理期间从真实 Composer 排入 `next_turn`，Public Projection 唤醒 Renderer 清除 pending overlay，并在同一 Run 中形成第二轮 assistant response；
 - `workspace.read_file` 执行后由 Provider continuation 消费精确结果；
 - `workspace.write_file` 在 allow 前不产生外部动作，allow 后只写一次，deny 后不写；
 - 推理进行中取消会中止 Provider 请求，并以持久 recovery evidence 收敛为 cancelled；
@@ -84,7 +85,7 @@ Provider 是 smoke 脚本启动的进程外、确定性 HTTPS OpenAI-compatible 
 - Diagnostics publisher 与 Telemetry lifecycle；
 - Provider Resilience policy 在 v3 inference adapter 中的消费；
 - Context compaction、Tool result pruning 和 spill；
-- 运行中 follow-up/steer/inject 与可恢复 token stream。
+- 不唤醒模型的独立 context injection 与可恢复 token/reasoning stream；运行中 follow-up/steer 已进入生产链路。
 
 这些条目在 [verification-matrix.json](verification-matrix.json) 中只能标记为 `partial` 或 `not_accepted`，不能因为目录、schema 或单元测试存在而标记为产品已验收。
 

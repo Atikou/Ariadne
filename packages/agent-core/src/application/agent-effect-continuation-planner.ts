@@ -107,17 +107,31 @@ implements AgentEffectContinuationPlanner {
     );
     const sourceAttempt = requireSucceededToolAttempt(sourceTurn.attempts.at(-1));
     const directive = sourceAttempt.state.directive;
+    const inboxInputs = run.inbox.filter((input) => (
+      input.state === 'queued' && input.delivery === 'next_step'
+    ));
     const cause: Extract<AgentTurnCause, { readonly kind: 'effect_results' }> = {
       kind: 'effect_results',
       sourceTurnId: sourceTurn.turnId,
       sourceAttemptId: sourceAttempt.attemptId,
       sourceDirectiveDigest: sourceAttempt.state.directiveDigest,
       effectIds: directive.invocations.map((invocation) => invocation.effectId),
-      toolCallIds: directive.invocations.map((invocation) => invocation.toolCallId)
+      toolCallIds: directive.invocations.map((invocation) => invocation.toolCallId),
+      ...(inboxInputs.length === 0
+        ? {}
+        : { inboxInputIds: inboxInputs.map((input) => input.inputId) })
     };
     const appended = exactCurrentResultMessages(run, directive.invocations, request.effectResults);
     const modelData = canonicalModelData({
-      messages: [...request.sourceTurnInput.messages, ...appended],
+      messages: [
+        ...request.sourceTurnInput.messages,
+        ...appended,
+        ...inboxInputs.map((input) => ({
+          kind: 'text' as const,
+          role: 'user' as const,
+          content: input.content
+        }))
+      ],
       availableTools: request.sourceTurnInput.availableTools
     });
     const inputDigest = await digestAgentTurnInput(modelData);
@@ -127,7 +141,8 @@ implements AgentEffectContinuationPlanner {
       run.runId,
       sourceTurn.turnId,
       sourceAttempt.attemptId,
-      sourceAttempt.state.directiveDigest
+      sourceAttempt.state.directiveDigest,
+      ...inboxInputs.flatMap((input) => [input.inputId, input.contentDigest])
     ] as const;
     const commandId = await deriveStableAgentId('effect-continuation', ...identity);
     const turnId = await deriveStableAgentId('continuation-turn', ...identity);
@@ -160,7 +175,10 @@ implements AgentEffectContinuationPlanner {
       cause: {
         ...cause,
         effectIds: [...cause.effectIds],
-        toolCallIds: [...cause.toolCallIds]
+        toolCallIds: [...cause.toolCallIds],
+        ...(cause.inboxInputIds === undefined
+          ? {}
+          : { inboxInputIds: [...cause.inboxInputIds] })
       },
       authorityRef: cloneAuthorityReference(request.sourceTurnInput.authorityRef),
       messages: modelData.messages,

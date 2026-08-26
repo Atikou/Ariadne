@@ -52,6 +52,14 @@ export type AgentTurnCause =
       readonly sourceDirectiveDigest: string;
       readonly effectIds: readonly string[];
       readonly toolCallIds: readonly string[];
+      readonly inboxInputIds?: readonly string[];
+    }
+  | {
+      readonly kind: 'inbox_inputs';
+      readonly sourceTurnId: string;
+      readonly sourceAttemptId: string;
+      readonly sourceDirectiveDigest: string;
+      readonly inputIds: readonly string[];
     };
 
 export interface AgentTurnIntention {
@@ -416,6 +424,7 @@ function assertValidTurnIntention(
   assertSha256Digest(intention.inputDigest, 'turn.intention.inputDigest');
   assertInputSummary(intention.inputSummary);
   const causeMatchesObjective = intention.cause.kind === 'effect_results'
+    || intention.cause.kind === 'inbox_inputs'
     || (
       intention.cause.kind === 'conversation_objective'
       && runBinding.objectiveRef.kind === 'conversation_message'
@@ -491,7 +500,8 @@ function assertValidTurnCause(cause: AgentTurnCause): void {
           'sourceAttemptId',
           'sourceDirectiveDigest',
           'effectIds',
-          'toolCallIds'
+          'toolCallIds',
+          ...(cause.inboxInputIds === undefined ? [] : ['inboxInputIds'])
         ],
         'turn.intention.cause'
       );
@@ -508,6 +518,39 @@ function assertValidTurnCause(cause: AgentTurnCause): void {
       if (cause.effectIds.length !== cause.toolCallIds.length || cause.effectIds.length === 0) {
         throw new AgentRunInvariantError(
           'Effect-result Turn causes require non-empty paired Effect and Tool-call identities.'
+        );
+      }
+      if (cause.inboxInputIds !== undefined) {
+        assertDenseDataArray(cause.inboxInputIds, 'turn.intention.cause.inboxInputIds');
+        assertUniqueCanonicalPublicIds(
+          cause.inboxInputIds,
+          'turn.intention.cause.inboxInputIds'
+        );
+      }
+      return;
+    case 'inbox_inputs':
+      assertExactObjectKeys(
+        cause,
+        [
+          'kind',
+          'sourceTurnId',
+          'sourceAttemptId',
+          'sourceDirectiveDigest',
+          'inputIds'
+        ],
+        'turn.intention.cause'
+      );
+      assertIdentifier(cause.sourceTurnId, 'turn.intention.cause.sourceTurnId');
+      assertIdentifier(cause.sourceAttemptId, 'turn.intention.cause.sourceAttemptId');
+      assertSha256Digest(
+        cause.sourceDirectiveDigest,
+        'turn.intention.cause.sourceDirectiveDigest'
+      );
+      assertDenseDataArray(cause.inputIds, 'turn.intention.cause.inputIds');
+      assertUniqueCanonicalPublicIds(cause.inputIds, 'turn.intention.cause.inputIds');
+      if (cause.inputIds.length === 0) {
+        throw new AgentRunInvariantError(
+          'Inbox continuation requires at least one claimed input.'
         );
       }
       return;

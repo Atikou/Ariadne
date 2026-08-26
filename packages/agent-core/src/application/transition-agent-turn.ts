@@ -63,9 +63,11 @@ export function registerAgentTurn(
     }
   } else if (command.turn.cause.kind === 'effect_results') {
     assertExactEffectResultCause(run, command.turn.cause);
+  } else if (command.turn.cause.kind === 'inbox_inputs') {
+    assertExactInboxCause(run, command.turn.cause);
   } else {
     throw new AgentRunTransitionError(
-      'Every continuation Turn must bind one exact Effect-result batch.'
+      'Every continuation Turn must bind Effect results or claimed Agent inbox inputs.'
     );
   }
   assertNoStartedEffects(run, command.kind);
@@ -103,8 +105,13 @@ export function registerAgentTurn(
         ? {
             ...command.turn.cause,
             effectIds: [...command.turn.cause.effectIds],
-            toolCallIds: [...command.turn.cause.toolCallIds]
+            toolCallIds: [...command.turn.cause.toolCallIds],
+            ...(command.turn.cause.inboxInputIds === undefined
+              ? {}
+              : { inboxInputIds: [...command.turn.cause.inboxInputIds] })
           }
+        : command.turn.cause.kind === 'inbox_inputs'
+          ? { ...command.turn.cause, inputIds: [...command.turn.cause.inputIds] }
         : { ...command.turn.cause },
       bindingVersion: binding.bindingVersion,
       ...(binding.bindingVersion === 4
@@ -132,6 +139,42 @@ export function registerAgentTurn(
       { type: 'inference_attempt.registered', turnId: turn.turnId, attempt }
     ]
   };
+}
+
+function assertExactInboxCause(
+  run: AgentRun,
+  cause: Extract<RegisterAgentTurnCommand['turn']['cause'], { kind: 'inbox_inputs' }>
+): void {
+  const sourceTurn = run.turns.at(-1);
+  const sourceAttempt = sourceTurn?.attempts.at(-1);
+  if (
+    sourceTurn === undefined
+    || sourceAttempt?.state.status !== 'succeeded'
+    || (sourceAttempt.state.directive.kind !== 'respond'
+      && sourceAttempt.state.directive.kind !== 'complete')
+    || sourceTurn.turnId !== cause.sourceTurnId
+    || sourceAttempt.attemptId !== cause.sourceAttemptId
+    || sourceAttempt.state.directiveDigest !== cause.sourceDirectiveDigest
+  ) {
+    throw new AgentRunTransitionError(
+      'Inbox continuation must extend the latest succeeded response boundary.'
+    );
+  }
+  assertExactQueuedInboxOrder(run, cause.inputIds);
+}
+
+function assertExactQueuedInboxOrder(run: AgentRun, inputIds: readonly string[]): void {
+  const requested = new Set(inputIds);
+  const queued = run.inbox.filter((input) => requested.has(input.inputId));
+  if (
+    queued.length !== inputIds.length
+    || queued.some((input) => input.state !== 'queued')
+    || inputIds.some((id, index) => queued[index]?.inputId !== id)
+  ) {
+    throw new AgentRunTransitionError(
+      'Inbox continuation inputs must match the durable queue order exactly.'
+    );
+  }
 }
 
 function assertExactEffectResultCause(
@@ -201,6 +244,16 @@ function assertExactEffectResultCause(
     throw new AgentRunTransitionError(
       'A source Directive can cause at most one continuation Turn.'
     );
+  }
+  if (cause.inboxInputIds !== undefined) {
+    assertExactQueuedInboxOrder(run, cause.inboxInputIds);
+    if (cause.inboxInputIds.some((inputId) => (
+      run.inbox.find((input) => input.inputId === inputId)?.delivery !== 'next_step'
+    ))) {
+      throw new AgentRunTransitionError(
+        'Only next-step inputs can join an Effect-result continuation.'
+      );
+    }
   }
 }
 

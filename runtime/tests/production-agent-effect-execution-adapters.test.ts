@@ -242,6 +242,7 @@ function runningRun(runId = RUN_ID): AgentRun {
     },
     turns: [],
     effects: [effect],
+    inbox: [],
     createdAt: '2030-01-01T00:00:00.000Z',
     updatedAt: '2030-01-01T00:00:03.000Z'
   };

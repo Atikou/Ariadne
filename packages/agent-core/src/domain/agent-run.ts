@@ -22,6 +22,10 @@ import {
   isTerminalInferenceAttempt
 } from './turn.js';
 import type { AgentCommittedToolInvocation } from './directive.js';
+import {
+  assertValidAgentInboxInput,
+  type AgentInboxInput
+} from './inbox.js';
 import { sameAgentPinnedToolIdentity } from './tool.js';
 import {
   type AgentRunId,
@@ -138,6 +142,7 @@ export interface AgentRun {
   readonly state: AgentRunState;
   readonly turns: readonly AgentTurn[];
   readonly effects: readonly AgentEffect[];
+  readonly inbox: readonly AgentInboxInput[];
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -152,6 +157,7 @@ export function assertValidAgentRun(run: AgentRun): void {
       'state',
       'turns',
       'effects',
+      'inbox',
       'createdAt',
       'updatedAt'
     ],
@@ -167,6 +173,9 @@ export function assertValidAgentRun(run: AgentRun): void {
   }
   if (!Array.isArray(run.effects)) {
     throw new AgentRunInvariantError('run.effects must be an array.');
+  }
+  if (!Array.isArray(run.inbox) || run.inbox.length > 1_000) {
+    throw new AgentRunInvariantError('run.inbox must be a bounded array.');
   }
   if (run.binding.budget.runId !== run.runId) {
     throw new AgentRunInvariantError(
@@ -200,6 +209,30 @@ export function assertValidAgentRun(run: AgentRun): void {
     readonly attempt: AgentInferenceAttempt;
   }> = [];
   let openInferenceAttempts = 0;
+  const inboxInputIds = new Set<string>();
+  const inboxMessageIds = new Set<string>();
+  for (const input of run.inbox) {
+    assertValidAgentInboxInput(input);
+    assertUnique(inboxInputIds, input.inputId, 'inbox inputId');
+    assertUnique(inboxMessageIds, input.messageId, 'inbox messageId');
+    if (Date.parse(input.queuedAt) < Date.parse(run.createdAt)) {
+      throw new AgentRunInvariantError('Agent inbox input cannot precede its Run.');
+    }
+    if (input.state === 'claimed') {
+      const turn = run.turns.find((candidate) => candidate.turnId === input.claimedTurnId);
+      const cause = turn?.intention.cause;
+      const claimedIds = cause?.kind === 'inbox_inputs'
+        ? cause.inputIds
+        : cause?.kind === 'effect_results'
+          ? cause.inboxInputIds ?? []
+          : [];
+      if (!claimedIds.includes(input.inputId)) {
+        throw new AgentRunInvariantError(
+          'Claimed Agent inbox input must bind its exact continuation Turn.'
+        );
+      }
+    }
+  }
 
   for (let turnIndex = 0; turnIndex < run.turns.length; turnIndex += 1) {
     const turn = run.turns[turnIndex];
@@ -218,10 +251,11 @@ export function assertValidAgentRun(run: AgentRun): void {
       || (
         turnIndex > 0
         && turn.intention.cause.kind !== 'effect_results'
+        && turn.intention.cause.kind !== 'inbox_inputs'
       )
     ) {
       throw new AgentRunInvariantError(
-        'A Run first Turn requires its objective cause; later Turns require Effect results.'
+        'A Run first Turn requires its objective cause; later Turns require a continuation cause.'
       );
     }
     if (

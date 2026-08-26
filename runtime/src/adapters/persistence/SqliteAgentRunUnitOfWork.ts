@@ -18,6 +18,7 @@ import {
   zeroAgentBudgetVector,
   agentBudgetVectorFits,
   isZeroAgentBudgetVector,
+  isAgentRunInboxOnlyMutation,
   canonicalizeAgentControlData,
   sha256AgentControlData,
   summarizeAgentTurnInput,
@@ -3434,7 +3435,13 @@ function assertRecoveryMaterialComplete(database: DatabaseSync, run: AgentRun): 
       `SELECT run_version FROM agent_v3_checkpoints
        WHERE run_id=? AND checkpoint_version=?`
     ).get(run.runId, run.state.checkpointVersion) as { run_version: number } | undefined;
-    if (checkpoint?.run_version !== run.version) {
+    if (
+      checkpoint === undefined
+      || (
+        checkpoint.run_version !== run.version
+        && !checkpointCoversInboxOnlyAdvance(database, run, checkpoint.run_version)
+      )
+    ) {
       throw new AgentRunRecoveryConflictError(
         run.runId,
         'checkpoint_mismatch',
@@ -3975,7 +3982,10 @@ async function loadActiveRuns(
       AgentCheckpointMetadataRow | undefined;
     if (checkpoint === undefined) {
       issues.add('missing_checkpoint');
-    } else if (checkpoint.run_version !== run.version) {
+    } else if (
+      checkpoint.run_version !== run.version
+      && !checkpointCoversInboxOnlyAdvance(database, run, checkpoint.run_version)
+    ) {
       issues.add('checkpoint_metadata_mismatch');
     }
 
@@ -4117,6 +4127,33 @@ async function loadActiveRuns(
         }
       : {})
   };
+}
+
+function checkpointCoversInboxOnlyAdvance(
+  database: DatabaseSync,
+  current: AgentRun,
+  checkpointRunVersion: number
+): boolean {
+  if (checkpointRunVersion <= 0 || checkpointRunVersion >= current.version) return false;
+  let previous = loadHistoricalAgentRunVersion(
+    database,
+    current.runId,
+    checkpointRunVersion,
+    `agent_v3_checkpoints:${current.runId}:${String(current.state.checkpointVersion)}`
+  );
+  for (let version = checkpointRunVersion + 1; version <= current.version; version += 1) {
+    const next = version === current.version
+      ? current
+      : loadHistoricalAgentRunVersion(
+          database,
+          current.runId,
+          version,
+          `agent_v3_command_runs:${current.runId}:${String(version)}`
+        );
+    if (!isAgentRunInboxOnlyMutation(previous, next)) return false;
+    previous = next;
+  }
+  return true;
 }
 
 async function loadCheckpointPayload(
@@ -4540,7 +4577,13 @@ function parseStoredRun(
 ): AgentRun {
   const parsed = parseJson(json, source);
   if (!isRecord(parsed)) throw storageCorruption(`${source}:run_not_object`);
-  const run = parsed as unknown as AgentRun;
+  // Historical Run envelopes predate the inbox field. Normalize that exact
+  // legacy shape before applying the current aggregate validator.
+  const run = (
+    Object.prototype.hasOwnProperty.call(parsed, 'inbox')
+      ? parsed
+      : { ...parsed, inbox: [] }
+  ) as unknown as AgentRun;
   try {
     assertValidAgentRun(run);
   } catch (error) {

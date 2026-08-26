@@ -121,7 +121,6 @@ Runtime status 只能宣告真实装配并满足权限条件的能力。协议�
 
 ## 8. 当前未验收
 
-- 真实 Electron 中的 direct answer、Tool continuation、Decision allow/deny、Cancel 和 Runtime 强杀恢复；
 - 真实远程 Provider 与本地聊天模型；
 - 签名 Sandbox helper 下的真实 MCP STDIO、远程 MCP OAuth 和 Browser 下载隔离；
 - BGE-M3 或其他实际 Embedding 资产；

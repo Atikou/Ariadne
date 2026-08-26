@@ -10,20 +10,23 @@ import type {
   PublicMessageProjectionV3,
   PublicModelProjectionV3,
   PublicRunProjectionV3,
+  PublicAgentInboxInputV3,
   PublicSessionProjectionV3,
   RunSummary,
   RunActivity,
   TraceEntry
 } from '@ariadne/protocol/public';
 
+export type RuntimeMessage = CompanionMessage & {
+  deliveryState?: 'pending' | 'failed';
+};
+
 export type RuntimeRun = Omit<RunSummary, 'origin' | 'status'> & {
   /** v3 intentionally does not guess which mutation route owns this run. */
   origin: RunSummary['origin'] | 'projection';
   status: PublicRunProjectionV3['status'];
-};
-
-export type RuntimeMessage = CompanionMessage & {
-  deliveryState?: 'pending' | 'failed';
+  inbox: PublicAgentInboxInputV3[];
+  interactionMessages: RuntimeMessage[];
 };
 
 export type RuntimePermissionDecision = Omit<
@@ -108,6 +111,8 @@ export function presentRun(run: PublicRunProjectionV3): RuntimeRun {
     aggregateVersion: run.version,
     checkpointStage: run.status,
     recoveryStatus: run.status === 'interrupted' ? 'recoverable' : 'none',
+    inbox: run.inbox.map((input) => ({ ...input })),
+    interactionMessages: run.interactionMessages.map(presentMessage),
     timing: {
       activeDurationMs,
       ...(active && run.startedAt !== undefined ? { activeSince: run.updatedAt } : {})

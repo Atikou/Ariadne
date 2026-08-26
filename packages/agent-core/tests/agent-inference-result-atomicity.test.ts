@@ -36,6 +36,50 @@ const PROVIDER_KEY = 'provider-atomic-result';
 const DEFAULT_TOOLS = [testAvailableTool('workspace.write')];
 
 describe('atomic inference result application', () => {
+  it('commits a Provider result on top of an inbox mutation made during inference', async () => {
+    const setup = await admittedSetup({
+      runId: 'run-inference-inbox-concurrency',
+      permissionMode: 'trusted'
+    });
+    const engine = {
+      decide: vi.fn(async () => {
+        const current = setup.unit.loadRun(setup.runId);
+        if (current === null) throw new Error('concurrent inbox fixture Run missing');
+        await new AgentRunCommandService(setup.unit).execute({
+          kind: 'run.enqueue_inbox_input',
+          commandId: 'enqueue-during-inference',
+          runId: setup.runId,
+          expectedVersion: current.version,
+          occurredAt: at(2),
+          input: {
+            inputId: 'input-during-inference',
+            messageId: 'message-during-inference',
+            delivery: 'next_step',
+            content: 'Use this before your next model step.',
+            contentDigest: `sha256:${'9'.repeat(64)}`
+          }
+        }, { turnInputPayloads: [], effectPayloads: [] });
+        return { kind: 'respond' as const, content: 'First response.' };
+      })
+    };
+
+    const dispatched = await createDispatcher(setup, engine).dispatch(
+      dispatchRequest('dispatch-with-concurrent-inbox', setup.runId)
+    );
+
+    expect(dispatched.run).toMatchObject({
+      version: 4,
+      state: { status: 'running' },
+      inbox: [{
+        inputId: 'input-during-inference',
+        state: 'queued',
+        delivery: 'next_step'
+      }],
+      turns: [{ attempts: [{ state: { status: 'succeeded' } }] }]
+    });
+    expect(engine.decide).toHaveBeenCalledOnce();
+  });
+
   it('commits a trusted tool Directive, authorized Effect, payload, checkpoint, receipt, and outbox in one result version', async () => {
     const setup = await admittedSetup({
       runId: 'run-trusted-tool',

@@ -13,6 +13,7 @@ const scenarios = [
   'read',
   'write_allow',
   'write_deny',
+  'inbox',
   'cancel',
   'crash_inference',
   'crash_effect',
@@ -57,7 +58,8 @@ const server = createServer({
   }
 
   const continuationPayload = readContinuationPayload(messages);
-  const continuation = continuationPayload !== null;
+  const inboxContinuation = scenario === 'inbox' && hasInboxContinuation(messages);
+  const continuation = continuationPayload !== null || inboxContinuation;
   const scenarioState = state.scenarios[scenario];
   state.requests += 1;
   scenarioState.requests += 1;
@@ -72,11 +74,14 @@ const server = createServer({
   });
 
   if (scenario === 'cancel' || scenario === 'crash_inference') return;
+  if (scenario === 'inbox' && !continuation) {
+    await delay(2_000);
+  }
   if (scenario === 'crash_projection' && continuation) {
     await delay(750);
   }
 
-  const directive = createDirective(scenario, continuationPayload);
+  const directive = createDirective(scenario, continuationPayload, inboxContinuation);
   const payload = JSON.stringify({
     model,
     choices: [{
@@ -126,7 +131,10 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => server.close(() => process.exit(0)));
 }
 
-function createDirective(scenario, continuationPayload) {
+function createDirective(scenario, continuationPayload, inboxContinuation) {
+  if (inboxContinuation) {
+    return { kind: 'respond', content: 'ARIADNE_SMOKE_INBOX_FINAL' };
+  }
   if (continuationPayload !== null) {
     if (!validContinuation(scenario, continuationPayload)) {
       return { kind: 'respond', content: 'ARIADNE_SMOKE_EFFECT_VALIDATION_FAILED' };
@@ -143,6 +151,8 @@ function createDirective(scenario, continuationPayload) {
   switch (scenario) {
     case 'direct':
       return { kind: 'respond', content: 'ARIADNE_SMOKE_DIRECT_OK' };
+    case 'inbox':
+      return { kind: 'respond', content: 'ARIADNE_SMOKE_INBOX_FIRST' };
     case 'read':
       return {
         kind: 'invoke_tools',
@@ -176,6 +186,16 @@ function createDirective(scenario, continuationPayload) {
     default:
       throw new Error(`unexpected_responding_scenario:${scenario}`);
   }
+}
+
+function hasInboxContinuation(messages) {
+  return messages.some((message) => (
+    message?.role === 'assistant'
+    && message?.content === 'ARIADNE_SMOKE_INBOX_FIRST'
+  )) && messages.some((message) => (
+    message?.role === 'user'
+    && message?.content === 'ARIADNE_SMOKE_INBOX_INPUT'
+  ));
 }
 
 function readContinuationPayload(messages) {
@@ -225,10 +245,16 @@ function identifyScenario(messages) {
   const text = messages
     .map((message) => typeof message?.content === 'string' ? message.content : '')
     .join('\n');
+  let identified = null;
+  let identifiedAt = -1;
   for (const scenario of scenarios) {
-    if (text.includes(`ariadne-smoke:${scenario}`)) return scenario;
+    const index = text.lastIndexOf(`ariadne-smoke:${scenario}`);
+    if (index > identifiedAt) {
+      identified = scenario;
+      identifiedAt = index;
+    }
   }
-  return null;
+  return identified;
 }
 
 function readJsonBody(request) {

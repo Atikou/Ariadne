@@ -10,6 +10,7 @@ import type {
   AgentInferenceAttemptState,
   AgentTurn
 } from '../domain/turn.js';
+import type { AgentInboxInput } from '../domain/inbox.js';
 import type {
   AgentCommandId,
   AgentDecisionId,
@@ -35,6 +36,24 @@ export type AgentRunEventPayload =
   | {
       readonly type: 'turn.registered';
       readonly turn: AgentTurn;
+    }
+  | {
+      readonly type: 'inbox.input_enqueued';
+      readonly input: AgentInboxInput;
+    }
+  | {
+      readonly type: 'inbox.input_replaced';
+      readonly input: AgentInboxInput;
+    }
+  | {
+      readonly type: 'inbox.input_removed';
+      readonly inputId: string;
+      readonly inputVersion: number;
+    }
+  | {
+      readonly type: 'inbox.inputs_claimed';
+      readonly turnId: string;
+      readonly inputIds: readonly string[];
     }
   | {
       readonly type: 'inference_attempt.registered';

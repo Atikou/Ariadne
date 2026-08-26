@@ -59,6 +59,11 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   const [activeId, setActiveId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isAtLatest, setIsAtLatest] = useState(true);
+  const [editingInbox, setEditingInbox] = useState<{
+    inputId: string;
+    version: number;
+    content: string;
+  } | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
@@ -132,8 +137,20 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
     'waiting_children', 'cancelling'
   ].includes(run.status));
   const running = Boolean(activeRun);
-  const runActionAvailable = activeRun?.origin !== 'projection';
+  const runActionAvailable = activeRun?.origin === 'projection';
+  const inboxAvailable = runtime.status.capabilities.includes('agent.inbox');
+  const queuedInputs = activeRun?.inbox.filter((input) => input.state === 'queued') ?? [];
   const sending = runtime.messages.some((message) => message.deliveryState === 'pending');
+
+  useEffect(() => {
+    if (
+      editingInbox !== null
+      && !queuedInputs.some((input) => (
+        input.inputId === editingInbox.inputId
+        && input.version === editingInbox.version
+      ))
+    ) setEditingInbox(null);
+  }, [editingInbox, queuedInputs]);
 
   useEffect(() => {
     if (defaultsLoadedRef.current) return;
@@ -290,18 +307,24 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
     };
   }, [setFollowingLatest]);
 
-  const send = async (): Promise<void> => {
+  const send = async (delivery: 'next_turn' | 'next_step' = 'next_turn'): Promise<void> => {
     const message = draft;
-    if (!message.trim() || !composerWorkspaceId || running || sending || !canChat || (planModeEnabled && !planModeAvailable)) return;
+    if (!message.trim() || !composerWorkspaceId || sending || !canChat || (planModeEnabled && !planModeAvailable)) return;
     setDraft('');
     setFollowingLatest(true);
     try {
-      await services.runtime.sendMessage(message, {
-        ...(selectedModelId !== AUTO_MODEL_ID ? { modelId: selectedModelId } : {}),
-        ...(selectedInference ? { inference: selectedInference } : {}),
-        ...(planModeEnabled ? {} : { routingStrategy }),
-        workspaceId: composerWorkspaceId
-      });
+      if (activeRun && inboxAvailable) {
+        await services.runtime.enqueueAgentInput(activeRun, message, delivery);
+      } else if (activeRun) {
+        throw new Error('runtime_capability_missing:agent.inbox');
+      } else {
+        await services.runtime.sendMessage(message, {
+          ...(selectedModelId !== AUTO_MODEL_ID ? { modelId: selectedModelId } : {}),
+          ...(selectedInference ? { inference: selectedInference } : {}),
+          ...(planModeEnabled ? {} : { routingStrategy }),
+          workspaceId: composerWorkspaceId
+        });
+      }
     } catch {
       setDraft(message);
     }
@@ -310,7 +333,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
-      void send();
+      void send(event.metaKey || event.ctrlKey ? 'next_step' : 'next_turn');
     }
   };
 
@@ -411,6 +434,53 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
 
         <div className="composer-wrap">
           <div className="composer">
+            {queuedInputs.length > 0 && activeRun && (
+              <div className="agent-inbox" aria-label="Agent 输入队列">
+                {queuedInputs.map((input) => (
+                  <div className="agent-inbox-row" key={input.inputId}>
+                    <span className="agent-inbox-mode">
+                      {input.delivery === 'next_step' ? '下一步' : '下一轮'}
+                    </span>
+                    {editingInbox?.inputId === input.inputId
+                      ? <input
+                          className="agent-inbox-edit"
+                          aria-label="编辑排队消息"
+                          autoFocus
+                          value={editingInbox.content}
+                          onChange={(event) => setEditingInbox({
+                            ...editingInbox,
+                            content: event.target.value
+                          })}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Escape') setEditingInbox(null);
+                            if (event.key === 'Enter' && editingInbox.content.trim()) {
+                              event.preventDefault();
+                              const replacement = editingInbox;
+                              setEditingInbox(null);
+                              void services.runtime.replaceAgentInput(
+                                activeRun,
+                                replacement.inputId,
+                                replacement.version,
+                                replacement.content
+                              );
+                            }
+                          }}
+                        />
+                      : <span className="agent-inbox-content">{input.content}</span>}
+                    <button type="button" onClick={() => setEditingInbox({
+                      inputId: input.inputId,
+                      version: input.version,
+                      content: input.content
+                    })}>编辑</button>
+                    <button type="button" onClick={() => void services.runtime.removeAgentInput(
+                      activeRun,
+                      input.inputId,
+                      input.version
+                    )}>移除</button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="composer-context-bar">
               {composerWorkspaceId && workspaceOptions.length > 0
                 ? <SelectMenu<string>
@@ -432,7 +502,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
               ref={composerInputRef}
               value={draft}
               rows={1}
-              placeholder={modelState.composerPlaceholder}
+              placeholder={running ? '继续输入：Enter 排到下一轮，Ctrl/⌘+Enter 在下一步介入' : modelState.composerPlaceholder}
               aria-label="消息输入框"
               disabled={!canChat}
               onChange={(event) => setDraft(event.target.value)}
@@ -506,20 +576,16 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                 />
                 <button
                   type="button"
-                  className={`send-button${running ? ' send-button--stop' : ''}`}
-                  disabled={sending || (running
+                  className={`send-button${running && !draft.trim() ? ' send-button--stop' : ''}`}
+                  disabled={sending || (running && !draft.trim()
                     ? !runActionAvailable
                     : !draft.trim() || !composerWorkspaceId || !canChat)}
-                  onClick={() => running && activeRun
+                  onClick={() => running && activeRun && !draft.trim()
                     ? void services.runtime.cancelRun(activeRun)
-                    : void send()}
-                  aria-label={running
-                    ? runActionAvailable
-                      ? activeRun?.origin === 'agent' ? '取消 Agent 任务' : '停止生成'
-                      : '运行操作等待 v3 决策写入通道'
-                    : '发送消息'}
+                    : void send('next_turn')}
+                  aria-label={running && !draft.trim() ? '取消 Agent 任务' : running ? '排到下一轮' : '发送消息'}
                 >
-                  {running ? <span className="send-stop-glyph" aria-hidden="true" /> : <Send size={16} />}
+                  {running && !draft.trim() ? <span className="send-stop-glyph" aria-hidden="true" /> : <Send size={16} />}
                 </button>
               </div>
             </div>

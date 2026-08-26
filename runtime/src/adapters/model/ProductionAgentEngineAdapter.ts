@@ -143,36 +143,48 @@ function prepareBoundModelHistory(
   input: AgentTurnInput
 ): readonly ExactAgentModelInferenceMessage[] {
   const current = requireCurrentSchedulableAttempt(input);
-  const cause = current.turn.intention.cause;
-  if (cause.kind !== 'effect_results') {
-    if (input.messages.some((message) => message.kind !== 'text')) {
-      throw invalidBoundModelHistory();
-    }
-    return input.messages.map((message) => {
-      if (message.kind !== 'text') throw invalidBoundModelHistory();
-      return { role: message.role, content: message.content };
-    });
-  }
-
-  const firstEffectResult = input.messages.findIndex(
-    (message) => message.kind === 'effect_result'
-  );
-  if (firstEffectResult < 0) throw invalidBoundModelHistory();
-
+  const turns = input.run.turns.slice(0, current.turnIndex + 1);
+  const appendedCount = turns.slice(1).reduce((count, turn) => {
+    const cause = turn.intention.cause;
+    return count + (cause.kind === 'effect_results'
+      ? cause.effectIds.length + (cause.inboxInputIds?.length ?? 0)
+      : cause.kind === 'inbox_inputs'
+        ? 1 + cause.inputIds.length
+        : Number.POSITIVE_INFINITY);
+  }, 0);
+  const baseCount = input.messages.length - appendedCount;
+  if (!Number.isSafeInteger(baseCount) || baseCount < 1) throw invalidBoundModelHistory();
   const history: ExactAgentModelInferenceMessage[] = [];
-  for (let index = 0; index < firstEffectResult; index += 1) {
+  for (let index = 0; index < baseCount; index += 1) {
     const message = input.messages[index];
     if (message?.kind !== 'text') throw invalidBoundModelHistory();
     history.push({ role: message.role, content: message.content });
   }
 
-  let messageIndex = firstEffectResult;
-  const continuationTurns = input.run.turns.slice(1, current.turnIndex + 1);
-  for (const turn of continuationTurns) {
-    if (turn.intention.cause.kind !== 'effect_results') {
-      throw invalidBoundModelHistory();
+  let messageIndex = baseCount;
+  for (const turn of turns.slice(1)) {
+    const cause = turn.intention.cause;
+    if (cause.kind === 'inbox_inputs') {
+      const batch = input.messages.slice(
+        messageIndex,
+        messageIndex + 1 + cause.inputIds.length
+      );
+      if (
+        batch.length !== 1 + cause.inputIds.length
+        || batch.some((message) => message.kind !== 'text')
+        || batch[0]?.kind !== 'text'
+        || batch[0].role !== 'assistant'
+        || batch.slice(1).some((message) => message.kind !== 'text' || message.role !== 'user')
+      ) throw invalidBoundModelHistory();
+      for (const message of batch) {
+        if (message.kind !== 'text') throw invalidBoundModelHistory();
+        history.push({ role: message.role, content: message.content });
+      }
+      messageIndex += batch.length;
+      continue;
     }
-    const batchSize = turn.intention.cause.effectIds.length;
+    if (cause.kind !== 'effect_results') throw invalidBoundModelHistory();
+    const batchSize = cause.effectIds.length;
     const batch = input.messages.slice(messageIndex, messageIndex + batchSize);
     if (
       batch.length !== batchSize
@@ -195,11 +207,27 @@ function prepareBoundModelHistory(
     history.push({
       role: 'user',
       content: renderEffectResultBatch(
-        turn.intention.cause.sourceDirectiveDigest,
+        cause.sourceDirectiveDigest,
         verified.results
       )
     });
     messageIndex += batchSize;
+    const inboxInputCount = cause.inboxInputIds?.length ?? 0;
+    const inboxMessages = input.messages.slice(
+      messageIndex,
+      messageIndex + inboxInputCount
+    );
+    if (
+      inboxMessages.length !== inboxInputCount
+      || inboxMessages.some((message) => message.kind !== 'text' || message.role !== 'user')
+    ) {
+      throw invalidBoundModelHistory();
+    }
+    for (const message of inboxMessages) {
+      if (message.kind !== 'text') throw invalidBoundModelHistory();
+      history.push({ role: 'user', content: message.content });
+    }
+    messageIndex += inboxInputCount;
   }
   if (messageIndex !== input.messages.length) throw invalidBoundModelHistory();
   return history;

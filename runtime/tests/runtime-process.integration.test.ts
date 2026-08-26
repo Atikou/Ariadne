@@ -24,6 +24,7 @@ import { AGENT_CONTROL_DB_SCHEMA_VERSION } from '../src/adapters/persistence/age
 import { CONVERSATION_DB_SCHEMA_VERSION } from '../src/adapters/persistence/ConversationDbSchema.js';
 import { PUBLIC_PROJECTION_DB_SCHEMA_VERSION } from '../src/adapters/persistence/PublicProjectionDbSchema.js';
 import { RUNTIME_COMMAND_DB_SCHEMA_VERSION } from '../src/adapters/persistence/runtimeCommandDbMigrations.js';
+import { projectionWakeAggregateId } from '../src/composition/PublicProjectionWakeCommitSink.js';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const runtimeEntry = path.join(packageRoot, 'dist', 'entry', 'runtime-process.js');
@@ -110,7 +111,7 @@ describe('portless Runtime process', () => {
     );
     expect(modelWake.event).toMatchObject({
       aggregateType: 'projection',
-      aggregateId: 'model-catalog',
+      aggregateId: projectionWakeAggregateId('model-catalog', 'models'),
       event: { kind: 'projection.changed', feature: 'models' }
     });
     const serializedWake = JSON.stringify(modelWake);

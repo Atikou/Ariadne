@@ -168,6 +168,7 @@ class RuntimeKernelApplication implements RuntimeApplication {
         'companion.agent-plan',
         'companion.sessions',
         'agent.runs',
+        'agent.inbox',
         'agent.permissions',
         'agent.plans',
         'agent.tools',

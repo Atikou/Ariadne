@@ -286,6 +286,7 @@ function cancelledRun(contentDigest: string): AgentRun {
     },
     turns: [],
     effects: [],
+    inbox: [],
     createdAt: at(2),
     updatedAt: at(4)
   };

@@ -4,7 +4,10 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { AgentRunCommandService } from '@ariadne/agent-core';
-import { PUBLIC_PROJECTION_CONTRACT_VERSION } from '@ariadne/protocol/public';
+import {
+  PUBLIC_PROJECTION_CONTRACT_VERSION,
+  type RuntimeCommand
+} from '@ariadne/protocol/public';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -26,6 +29,7 @@ import type {
 import { ConversationAuthorityService } from '../src/control/conversation/ConversationAuthorityService.js';
 import { ConversationRunHandoffSagaService } from '../src/control/conversation/ConversationRunHandoffSagaService.js';
 import { createShutdownContext } from '../src/ingress/ShutdownContext.js';
+import type { RuntimeCommandEnvelope } from '../src/ingress/RuntimeIngress.js';
 
 const temporaryRoots: string[] = [];
 
@@ -84,6 +88,100 @@ describe('Agent Control v3 public projection lifecycle', () => {
       outcome: { ok: true, result: { runVersion: 2 } }
     });
     await control.shutdown(createShutdownContext(Date.now() + 5_000));
+  });
+
+  it('persists, replays, edits, removes, and projects one unified inbox entry', async () => {
+    const root = createRoot();
+    const unit = new SqliteAgentRunUnitOfWork(root);
+    const conversation = new SqliteConversationRunHandoffUnitOfWork(root);
+    const projection = new SqlitePublicProjectionStore(root);
+    await startRun(unit, 'run-public-inbox');
+    const control = new ComposedAgentControlRuntime(
+      unit,
+      conversation,
+      projection,
+      undefined,
+      {
+        publishIntervalMs: 60_000,
+        agentInboxCommandNow: () => new Date(at(1))
+      },
+      projectionLifecyclePipeline()
+    );
+    const close = closeControl(control);
+    try {
+      await control.start();
+      const enqueue = commandEnvelope({
+        kind: 'agent.inbox.enqueue.v3',
+        contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+        runId: 'run-public-inbox',
+        sessionId: 'session-run-public-inbox',
+        inputId: 'input-public-inbox',
+        delivery: 'next_step',
+        content: 'Inspect the durable inbox before the next step.'
+      }, 'enqueue-public-inbox');
+      await expect(control.executeOwnedCommand(enqueue)).resolves.toMatchObject({
+        outcome: {
+          ok: true,
+          result: { kind: 'agent.inbox.enqueued.v3', runVersion: 2, inputVersion: 1 }
+        }
+      });
+      await expect(control.executeOwnedCommand(enqueue)).resolves.toMatchObject({
+        outcome: { ok: true, result: { runVersion: 2, inputVersion: 1 } }
+      });
+      await expect.poll(() => projection.snapshot()).toMatchObject({
+        runs: [{
+          runId: 'run-public-inbox',
+          version: 2,
+          inbox: [{
+            inputId: 'input-public-inbox',
+            version: 1,
+            delivery: 'next_step',
+            state: 'queued'
+          }]
+        }]
+      });
+
+      await expect(control.executeOwnedCommand(commandEnvelope({
+        kind: 'agent.inbox.replace.v3',
+        contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+        runId: 'run-public-inbox',
+        inputId: 'input-public-inbox',
+        expectedInputVersion: 1,
+        content: 'Use the revised durable inbox input.'
+      }, 'replace-public-inbox'))).resolves.toMatchObject({
+        outcome: {
+          ok: true,
+          result: { kind: 'agent.inbox.replaced.v3', runVersion: 3, inputVersion: 2 }
+        }
+      });
+      await expect.poll(() => projection.snapshot()).toMatchObject({
+        runs: [{
+          version: 3,
+          inbox: [{ version: 2, content: 'Use the revised durable inbox input.' }]
+        }]
+      });
+
+      await expect(control.executeOwnedCommand(commandEnvelope({
+        kind: 'agent.inbox.remove.v3',
+        contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+        runId: 'run-public-inbox',
+        inputId: 'input-public-inbox',
+        expectedInputVersion: 2
+      }, 'remove-public-inbox'))).resolves.toMatchObject({
+        outcome: {
+          ok: true,
+          result: { kind: 'agent.inbox.removed.v3', runVersion: 4 }
+        }
+      });
+      await expect.poll(() => projection.snapshot()).toMatchObject({
+        runs: [{ version: 4, inbox: [] }]
+      });
+      await expect(unit.transaction((transaction) => (
+        transaction.loadRun('run-public-inbox')
+      ))).resolves.toMatchObject({ version: 4, inbox: [] });
+    } finally {
+      await close();
+    }
   });
 
   it('fails startup when durable Handoff work exists without its producer', async () => {
@@ -542,6 +640,19 @@ function closeControl(control: ComposedAgentControlRuntime): () => Promise<void>
     } finally {
       context.dispose();
     }
+  };
+}
+
+function commandEnvelope(
+  command: RuntimeCommand,
+  commandId: string
+): RuntimeCommandEnvelope {
+  return {
+    commandId,
+    correlationId: commandId,
+    deadlineAt: '2031-01-01T00:00:00.000Z',
+    signal: new AbortController().signal,
+    command
   };
 }
 

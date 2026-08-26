@@ -59,12 +59,13 @@ import {
 } from '../projection/ConversationPublicProjectionPublisher.js';
 import {
   ModelCatalogPublicProjectionPublisher,
-  type ModelCatalogProjectionPublished,
   type ModelCatalogPublicProjectionPublisherOptions
 } from '../projection/ModelCatalogPublicProjectionPublisher.js';
+import type { RuntimePublicEventSink } from '../ingress/RuntimePublicEventSink.js';
 import {
-  ModelCatalogProjectionWakePublisher
-} from './ModelCatalogProjectionWakePublisher.js';
+  PublicProjectionWakeCommitSink,
+  PublicProjectionWakePublisher
+} from './PublicProjectionWakeCommitSink.js';
 import type {
   ModelCatalogProjectionSource
 } from '../projection/ModelCatalogProjectionPorts.js';
@@ -90,6 +91,9 @@ import {
   ProtectedAgentTerminalAssistantContentResolver
 } from './ProtectedAgentTerminalAssistantContentResolver.js';
 import {
+  ProtectedAgentRunInteractionMessageResolver
+} from './ProtectedAgentRunInteractionMessageResolver.js';
+import {
   AgentControlPublicCommandRouter
 } from './AgentControlPublicCommandRouter.js';
 
@@ -102,12 +106,13 @@ export interface AgentControlPublicProjectionLifecycleOptions {
   readonly publishIntervalMs?: number;
   readonly publisher?: Omit<
     AgentRunPublicProjectionPublisherOptions,
-    'terminalResultSink'
+    'terminalResultSink' | 'interactionResolver'
   >;
   readonly conversationPublisher?: ConversationPublicProjectionPublisherOptions;
   readonly modelPublisher?: ModelCatalogPublicProjectionPublisherOptions;
   readonly conversationCommandNow?: () => Date;
   readonly agentDecisionCommandNow?: () => Date;
+  readonly agentInboxCommandNow?: () => Date;
 }
 
 /** Composition-owned Agent store and public projection producer lifecycle. */
@@ -141,13 +146,22 @@ implements AgentControlRuntimeLifecycle {
     options: AgentControlPublicProjectionLifecycleOptions = {},
     private readonly executionPipeline?: AgentControlExecutionPipeline,
     modelCatalog: ModelCatalogProjectionSource = EMPTY_MODEL_CATALOG,
-    modelProjectionPublished?: ModelCatalogProjectionPublished,
+    projectionWakeEventSink?: RuntimePublicEventSink,
     authorizedWorkspaceIds: readonly string[] = []
   ) {
     this.publishIntervalMs = options.publishIntervalMs
       ?? DEFAULT_PUBLIC_PROJECTION_INTERVAL_MS;
     const conversationCommandNow = options.conversationCommandNow ?? (() => new Date());
     assertPublishInterval(this.publishIntervalMs);
+    const projectionSink = projectionWakeEventSink === undefined
+      ? publicProjection
+      : new PublicProjectionWakeCommitSink(
+          publicProjection,
+          projectionWakeEventSink
+        );
+    const projectionWakePublisher = projectionWakeEventSink === undefined
+      ? undefined
+      : new PublicProjectionWakePublisher(projectionWakeEventSink);
     const terminalResults = new ConversationAgentResultCoordinator(
       conversation,
       new ConversationAgentResultProjectionService(conversation),
@@ -157,22 +171,25 @@ implements AgentControlRuntimeLifecycle {
     this.agentPublisher = new AgentRunPublicProjectionPublisher(
       unitOfWork,
       createAgentRunVersionReader(unitOfWork),
-      publicProjection,
+      projectionSink,
       {
         ...options.publisher,
-        terminalResultSink: terminalResults
+        terminalResultSink: terminalResults,
+        interactionResolver: new ProtectedAgentRunInteractionMessageResolver(unitOfWork)
       }
     );
     this.conversationPublisher = new ConversationPublicProjectionPublisher(
       conversation,
-      publicProjection,
+      projectionSink,
       options.conversationPublisher
     );
     this.modelPublisher = new ModelCatalogPublicProjectionPublisher(
       modelCatalog,
       publicProjection,
       options.modelPublisher,
-      modelProjectionPublished
+      projectionWakePublisher === undefined
+        ? undefined
+        : (commit) => projectionWakePublisher.publish(commit)
     );
     this.publicCommands = new AgentControlPublicCommandRouter(
       unitOfWork,
@@ -188,7 +205,8 @@ implements AgentControlRuntimeLifecycle {
       {
         authorizedWorkspaceIds,
         conversationCommandNow,
-        agentDecisionCommandNow: options.agentDecisionCommandNow
+        agentDecisionCommandNow: options.agentDecisionCommandNow,
+        agentInboxCommandNow: options.agentInboxCommandNow
       }
     );
   }
@@ -515,9 +533,6 @@ implements AgentControlRuntimeFactory {
             ? {}
             : { modelInferenceGateway: input.modelInferenceGateway })
         });
-        const modelWakePublisher = new ModelCatalogProjectionWakePublisher(
-          input.publicEventSink
-        );
         return new ComposedAgentControlRuntime(
           unitOfWork,
           conversation,
@@ -526,7 +541,7 @@ implements AgentControlRuntimeFactory {
           this.lifecycleOptions,
           executionPipeline ?? undefined,
           input.modelCatalog,
-          (commit) => modelWakePublisher.publish(commit),
+          input.publicEventSink,
           input.workspaces?.map((workspace) => workspace.workspaceId) ?? []
         );
       } catch (error) {
@@ -597,9 +612,6 @@ implements AgentControlRuntimeFactory {
           ? {}
           : { modelInferenceGateway: input.modelInferenceGateway })
       });
-      const modelWakePublisher = new ModelCatalogProjectionWakePublisher(
-        input.publicEventSink
-      );
       return new ComposedAgentControlRuntime(
         unitOfWork,
         conversation,
@@ -608,7 +620,7 @@ implements AgentControlRuntimeFactory {
         this.lifecycleOptions,
         executionPipeline ?? undefined,
         input.modelCatalog,
-        (commit) => modelWakePublisher.publish(commit),
+        input.publicEventSink,
         input.workspaces?.map((workspace) => workspace.workspaceId) ?? []
       );
     } catch (error) {

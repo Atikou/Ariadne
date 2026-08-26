@@ -14,23 +14,23 @@ import {
   type AgentRunWorkClassification
 } from './AgentRunWorkClassifier.js';
 
-export type AgentSettledEffectBatchTerminalWork = Extract<
+export type AgentContinuationBoundaryTerminalWork = Extract<
   AgentRunWorkClassification,
   { readonly kind: 'fail_model_turn_budget' | 'fail_deadline_expired' }
 >;
 
-export type AgentSettledEffectBatchTerminalFailureReason =
+export type AgentContinuationBoundaryTerminalFailureReason =
   | 'model_turn_budget_exhausted'
   | 'deadline_expired';
 
-export interface AgentSettledEffectBatchTerminalizationReceiptV1 {
+export interface AgentContinuationBoundaryTerminalizationReceiptV1 {
   readonly receiptVersion: 1;
   readonly commandId: string;
   readonly runId: string;
   readonly runVersion: number;
   readonly checkpointVersion: number;
   readonly status: 'failed';
-  readonly reason: AgentSettledEffectBatchTerminalFailureReason;
+  readonly reason: AgentContinuationBoundaryTerminalFailureReason;
   readonly errorCode:
     | 'agent_model_turn_budget_exhausted'
     | 'agent_run_deadline_expired';
@@ -38,17 +38,17 @@ export interface AgentSettledEffectBatchTerminalizationReceiptV1 {
 }
 
 interface FailureSpec {
-  readonly reason: AgentSettledEffectBatchTerminalFailureReason;
-  readonly errorCode: AgentSettledEffectBatchTerminalizationReceiptV1['errorCode'];
+  readonly reason: AgentContinuationBoundaryTerminalFailureReason;
+  readonly errorCode: AgentContinuationBoundaryTerminalizationReceiptV1['errorCode'];
   readonly message: string;
 }
 
 /**
- * Terminal owner for a settled Effect batch that cannot legally introduce
- * another model Turn. It performs no provider or Tool I/O and commits one
- * stable `run.fail` command with a bounded v3 checkpoint.
+ * Terminal owner for a settled Effect or inbox response boundary that cannot
+ * legally introduce another model Turn. It performs no Provider or Tool I/O
+ * and commits one stable `run.fail` command with bounded recovery evidence.
  */
-export class AgentSettledEffectBatchTerminalizationCoordinator {
+export class AgentContinuationBoundaryTerminalizationCoordinator {
   private readonly commands: AgentRunCommandService;
 
   public constructor(private readonly runs: AgentRunUnitOfWork) {
@@ -56,19 +56,15 @@ export class AgentSettledEffectBatchTerminalizationCoordinator {
   }
 
   public async terminalize(
-    work: AgentSettledEffectBatchTerminalWork,
+    work: AgentContinuationBoundaryTerminalWork,
     signal: AbortSignal
-  ): Promise<AgentSettledEffectBatchTerminalizationReceiptV1> {
+  ): Promise<AgentContinuationBoundaryTerminalizationReceiptV1> {
     signal.throwIfAborted();
     const run = await this.runs.transaction((transaction) => (
       transaction.loadRun(work.runId)
     ));
     if (run === null) {
-      throw new AgentRunVersionConflictError(
-        work.runId,
-        work.expectedVersion,
-        null
-      );
+      throw new AgentRunVersionConflictError(work.runId, work.expectedVersion, null);
     }
     if (run.version !== work.expectedVersion) {
       throw new AgentRunVersionConflictError(
@@ -82,11 +78,9 @@ export class AgentSettledEffectBatchTerminalizationCoordinator {
 
     const failure = failureSpec(work);
     const commandId = await deriveStableAgentId(
-      'settled-effect-batch-failure',
+      'continuation-boundary-failure',
       run.runId,
-      work.sourceTurnId,
-      work.sourceAttemptId,
-      work.sourceDirectiveDigest,
+      ...boundaryIdentity(work),
       failure.reason
     );
     const occurredAt = run.updatedAt;
@@ -113,7 +107,7 @@ export class AgentSettledEffectBatchTerminalizationCoordinator {
       || committed.run.state.checkpointVersion !== checkpoint.checkpointVersion
     ) {
       throw invariant(
-        'Settled Effect-batch terminalization returned a contradictory receipt.'
+        'Continuation-boundary terminalization returned a contradictory receipt.'
       );
     }
     return {
@@ -132,19 +126,17 @@ export class AgentSettledEffectBatchTerminalizationCoordinator {
 
 function assertExactTerminalWork(
   run: AgentRun,
-  work: AgentSettledEffectBatchTerminalWork
+  work: AgentContinuationBoundaryTerminalWork
 ): void {
   const classified = classifyAgentRunWork(run);
   if (
-    classified.kind !== work.kind
+    (classified.kind !== 'fail_model_turn_budget'
+      && classified.kind !== 'fail_deadline_expired')
+    || classified.kind !== work.kind
     || classified.runId !== work.runId
     || classified.expectedVersion !== work.expectedVersion
     || classified.checkpointVersion !== work.checkpointVersion
-    || classified.sourceTurnId !== work.sourceTurnId
-    || classified.sourceAttemptId !== work.sourceAttemptId
-    || classified.sourceDirectiveDigest !== work.sourceDirectiveDigest
-    || !sameIds(classified.effectIds, work.effectIds)
-    || !sameIds(classified.toolCallIds, work.toolCallIds)
+    || !sameBoundary(classified, work)
     || (
       classified.kind === 'fail_model_turn_budget'
       && work.kind === 'fail_model_turn_budget'
@@ -163,30 +155,31 @@ function assertExactTerminalWork(
     )
   ) {
     throw invariant(
-      'Settled Effect-batch terminalization identity drifted from the aggregate.'
+      'Continuation-boundary terminalization identity drifted from the aggregate.'
     );
   }
 }
 
-function failureSpec(work: AgentSettledEffectBatchTerminalWork): FailureSpec {
+function failureSpec(work: AgentContinuationBoundaryTerminalWork): FailureSpec {
+  const suffix = work.boundaryKind === 'effect_results'
+    ? ' after the Effect batch settled.'
+    : ' before queued inbox inputs could be claimed.';
   return work.kind === 'fail_model_turn_budget'
     ? {
         reason: 'model_turn_budget_exhausted',
         errorCode: 'agent_model_turn_budget_exhausted',
-        message:
-          'The immutable Agent Run model-turn budget was exhausted after the Effect batch settled.'
+        message: `The immutable Agent Run model-turn budget was exhausted${suffix}`
       }
     : {
         reason: 'deadline_expired',
         errorCode: 'agent_run_deadline_expired',
-        message:
-          'The immutable Agent Run deadline expired after the Effect batch settled.'
+        message: `The immutable Agent Run deadline expired${suffix}`
       };
 }
 
 function createTerminalCheckpoint(
   run: AgentRun,
-  work: AgentSettledEffectBatchTerminalWork,
+  work: AgentContinuationBoundaryTerminalWork,
   failure: FailureSpec,
   occurredAt: string
 ): AgentRunCheckpointCommit {
@@ -196,18 +189,63 @@ function createTerminalCheckpoint(
     payload: {
       format: 'ariadne.agent-checkpoint',
       schemaVersion: 1,
-      engineContinuation: {
-        phase: 'effect_results_terminalized',
-        reason: failure.reason,
-        sourceTurnId: work.sourceTurnId,
-        sourceAttemptId: work.sourceAttemptId,
-        sourceDirectiveDigest: work.sourceDirectiveDigest,
-        effectIds: [...work.effectIds],
-        toolCallIds: [...work.toolCallIds]
-      },
+      engineContinuation: work.boundaryKind === 'effect_results'
+        ? {
+            phase: 'effect_results_terminalized',
+            reason: failure.reason,
+            sourceTurnId: work.sourceTurnId,
+            sourceAttemptId: work.sourceAttemptId,
+            sourceDirectiveDigest: work.sourceDirectiveDigest,
+            effectIds: [...work.effectIds],
+            toolCallIds: [...work.toolCallIds]
+          }
+        : {
+            phase: 'inbox_inputs_terminalized',
+            reason: failure.reason,
+            sourceTurnId: work.sourceTurnId,
+            sourceAttemptId: work.sourceAttemptId,
+            sourceDirectiveDigest: work.sourceDirectiveDigest,
+            inputIds: [...work.inputIds]
+          },
       modelContext: null
     }
   };
+}
+
+function sameBoundary(
+  left: AgentContinuationBoundaryTerminalWork,
+  right: AgentContinuationBoundaryTerminalWork
+): boolean {
+  if (
+    left.boundaryKind !== right.boundaryKind
+    || left.sourceTurnId !== right.sourceTurnId
+    || left.sourceAttemptId !== right.sourceAttemptId
+    || left.sourceDirectiveDigest !== right.sourceDirectiveDigest
+  ) return false;
+  return left.boundaryKind === 'effect_results' && right.boundaryKind === 'effect_results'
+    ? sameIds(left.effectIds, right.effectIds)
+      && sameIds(left.toolCallIds, right.toolCallIds)
+    : left.boundaryKind === 'inbox_inputs' && right.boundaryKind === 'inbox_inputs'
+      && sameIds(left.inputIds, right.inputIds);
+}
+
+function boundaryIdentity(work: AgentContinuationBoundaryTerminalWork): readonly string[] {
+  return work.boundaryKind === 'effect_results'
+    ? [
+        work.boundaryKind,
+        work.sourceTurnId,
+        work.sourceAttemptId,
+        work.sourceDirectiveDigest,
+        ...work.effectIds,
+        ...work.toolCallIds
+      ]
+    : [
+        work.boundaryKind,
+        work.sourceTurnId,
+        work.sourceAttemptId,
+        work.sourceDirectiveDigest,
+        ...work.inputIds
+      ];
 }
 
 function sameIds(left: readonly string[], right: readonly string[]): boolean {

@@ -81,6 +81,8 @@ export function run(
     status,
     label: `Run ${status}`,
     toolActivities: [],
+    inbox: [],
+    interactionMessages: [],
     updatedAt: NOW,
     startedAt: NOW
   };

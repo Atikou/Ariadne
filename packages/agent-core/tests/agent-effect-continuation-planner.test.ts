@@ -35,6 +35,60 @@ const INPUT_DIGESTS = [
 ] as const;
 
 describe('DefaultAgentEffectContinuationPlanner', () => {
+  it('claims only next-step inbox entries at an Effect-result boundary', async () => {
+    const fixture = await sourceFixture();
+    const run: AgentRun = {
+      ...fixture.run,
+      version: fixture.run.version + 2,
+      inbox: [{
+        inputId: 'input-next-turn-after-effects',
+        messageId: 'message-next-turn-after-effects',
+        version: 1,
+        delivery: 'next_turn',
+        content: 'Wait for the response boundary.',
+        contentDigest: `sha256:${'5'.repeat(64)}`,
+        queuedAt: at(7),
+        updatedAt: at(7),
+        state: 'queued'
+      }, {
+        inputId: 'input-next-step-after-effects',
+        messageId: 'message-next-step-after-effects',
+        version: 1,
+        delivery: 'next_step',
+        content: 'Apply before the next model step.',
+        contentDigest: `sha256:${'6'.repeat(64)}`,
+        queuedAt: at(7),
+        updatedAt: at(7),
+        state: 'queued'
+      }]
+    };
+    assertValidAgentRun(run);
+
+    const planned = await new DefaultAgentEffectContinuationPlanner().plan({
+      run,
+      sourceTurnInput: fixture.snapshot,
+      effectResults: fixture.evidence
+    });
+    expect(planned.command.turn.cause).toMatchObject({
+      kind: 'effect_results',
+      inboxInputIds: ['input-next-step-after-effects']
+    });
+    expect(planned.turnInput.messages.at(-1)).toEqual({
+      kind: 'text',
+      role: 'user',
+      content: 'Apply before the next model step.'
+    });
+    const claimed = transitionAgentRun(run, planned.command).run;
+    expect(claimed.inbox).toMatchObject([{
+      inputId: 'input-next-turn-after-effects',
+      state: 'queued'
+    }, {
+      inputId: 'input-next-step-after-effects',
+      state: 'claimed',
+      claimedTurnId: planned.command.turn.turnId
+    }]);
+  });
+
   it('builds one stable full-history continuation and validates protected evidence', async () => {
     const fixture = await sourceFixture();
     const planner = new DefaultAgentEffectContinuationPlanner();

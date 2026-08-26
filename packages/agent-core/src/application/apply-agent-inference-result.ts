@@ -130,6 +130,14 @@ function applySucceededDirective(
 ): AgentInferenceResultMutation {
   switch (directive.kind) {
     case 'respond':
+      if (run.inbox.some((input) => input.state === 'queued')) {
+        return {
+          state: { status: 'running', checkpointVersion, enteredAt: occurredAt },
+          turns,
+          effects: run.effects,
+          events
+        };
+      }
       events.push({ type: 'run.completed' });
       return terminalMutation(
         {
@@ -142,6 +150,14 @@ function applySucceededDirective(
         events
       );
     case 'complete': {
+      if (run.inbox.some((input) => input.state === 'queued')) {
+        return {
+          state: { status: 'running', checkpointVersion, enteredAt: occurredAt },
+          turns,
+          effects: run.effects,
+          events
+        };
+      }
       const state: AgentRunState = directive.outputRef === undefined
         ? {
             status: 'completed',

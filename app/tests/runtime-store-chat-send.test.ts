@@ -252,6 +252,186 @@ describe('RuntimeStore v3 chat boundary', () => {
     expect(store.getSnapshot().pendingOverlayIds).toEqual([]);
   });
 
+  it('merges durable in-Run interactions between the objective and terminal response', async () => {
+    const objective: PublicMessageProjectionV3 = {
+      messageId: 'message-objective',
+      sessionId: 'session-a',
+      runId: 'run-interactions',
+      version: 1,
+      role: 'user',
+      content: 'Initial objective.',
+      status: 'completed',
+      createdAt: NOW,
+      updatedAt: NOW
+    };
+    const terminal: PublicMessageProjectionV3 = {
+      messageId: 'message-terminal',
+      sessionId: 'session-a',
+      runId: 'run-interactions',
+      version: 1,
+      role: 'assistant',
+      content: 'Final response.',
+      status: 'completed',
+      createdAt: '2026-07-31T00:00:04.000Z',
+      updatedAt: '2026-07-31T00:00:04.000Z'
+    };
+    const projectedRun = {
+      ...run('run-interactions', 'completed', 8),
+      interactionMessages: [{
+        messageId: 'message-intermediate-assistant',
+        sessionId: 'session-a',
+        runId: 'run-interactions',
+        version: 1,
+        role: 'assistant' as const,
+        content: 'Intermediate response.',
+        status: 'completed' as const,
+        createdAt: '2026-07-31T00:00:01.000Z',
+        updatedAt: '2026-07-31T00:00:01.000Z'
+      }, {
+        messageId: 'message-inbox-user',
+        sessionId: 'session-a',
+        runId: 'run-interactions',
+        version: 1,
+        role: 'user' as const,
+        content: 'Continue with this.',
+        status: 'completed' as const,
+        createdAt: '2026-07-31T00:00:02.000Z',
+        updatedAt: '2026-07-31T00:00:02.000Z'
+      }],
+      completedAt: '2026-07-31T00:00:04.000Z',
+      updatedAt: '2026-07-31T00:00:04.000Z'
+    } satisfies PublicRunProjectionV3;
+    const store = new RuntimeStore(successfulRuntimeApi({
+      getStatus: async () => READY,
+      request: async (command) => {
+        if (command.kind === 'projection.snapshot.get') {
+          return {
+            kind: 'projection.snapshot',
+            snapshot: projectionSnapshot({
+              sessions: [session('session-a')],
+              messages: [objective, terminal],
+              runs: [projectedRun]
+            })
+          };
+        }
+        if (command.kind === 'projection.commits.read') {
+          return {
+            kind: 'projection.commits',
+            batch: readBatch(
+              command.request.afterCursor,
+              command.request.afterDigest,
+              [],
+              { streamId: command.request.streamId }
+            )
+          };
+        }
+        throw new Error(`Unexpected command: ${command.kind}`);
+      },
+      onEvent: () => () => undefined
+    }));
+
+    await store.initialize();
+    await store.selectSession('session-a');
+    expect(store.getSnapshot().messages.map((message) => message.messageId)).toEqual([
+      'message-objective',
+      'message-intermediate-assistant',
+      'message-inbox-user',
+      'message-terminal'
+    ]);
+  });
+
+  it('routes enqueue, replace, and remove through the unified Agent inbox protocol', async () => {
+    const commands: RuntimeCommand[] = [];
+    const store = new RuntimeStore(successfulRuntimeApi({
+      getStatus: async () => ({
+        ...READY,
+        capabilities: ['companion.chat', 'agent.inbox']
+      }),
+      request: async (command) => {
+        commands.push(command);
+        if (command.kind === 'projection.snapshot.get') {
+          return {
+            kind: 'projection.snapshot',
+            snapshot: projectionSnapshot({
+              sessions: [session('session-a')],
+              runs: [run('run-inbox-ui', 'running', 4)]
+            })
+          };
+        }
+        if (command.kind === 'projection.commits.read') {
+          return {
+            kind: 'projection.commits',
+            batch: readBatch(
+              command.request.afterCursor,
+              command.request.afterDigest,
+              [],
+              { streamId: command.request.streamId }
+            )
+          };
+        }
+        if (command.kind === 'agent.inbox.enqueue.v3') {
+          return {
+            kind: 'agent.inbox.enqueued.v3',
+            runId: command.runId,
+            runVersion: 5,
+            inputId: command.inputId,
+            inputVersion: 1
+          };
+        }
+        if (command.kind === 'agent.inbox.replace.v3') {
+          return {
+            kind: 'agent.inbox.replaced.v3',
+            runId: command.runId,
+            runVersion: 6,
+            inputId: command.inputId,
+            inputVersion: 2
+          };
+        }
+        if (command.kind === 'agent.inbox.remove.v3') {
+          return {
+            kind: 'agent.inbox.removed.v3',
+            runId: command.runId,
+            runVersion: 7,
+            inputId: command.inputId
+          };
+        }
+        throw new Error(`Unexpected command: ${command.kind}`);
+      },
+      onEvent: () => () => undefined
+    }));
+    await store.initialize();
+    const projectedRun = store.getSnapshot().runs[0]!;
+
+    const inputId = await store.enqueueAgentInput(
+      projectedRun,
+      'Steer before the next step.',
+      'next_step'
+    );
+    await store.replaceAgentInput(projectedRun, inputId, 1, 'Revised steering.');
+    await store.removeAgentInput(projectedRun, inputId, 2);
+
+    expect(commands.filter((command) => command.kind.startsWith('agent.inbox.')))
+      .toMatchObject([{
+        kind: 'agent.inbox.enqueue.v3',
+        runId: 'run-inbox-ui',
+        sessionId: 'session-a',
+        inputId,
+        delivery: 'next_step',
+        content: 'Steer before the next step.'
+      }, {
+        kind: 'agent.inbox.replace.v3',
+        runId: 'run-inbox-ui',
+        inputId,
+        expectedInputVersion: 1,
+        content: 'Revised steering.'
+      }, {
+        kind: 'agent.inbox.remove.v3',
+        runId: 'run-inbox-ui',
+        inputId,
+        expectedInputVersion: 2
+      }]);
+  });
+
   it('routes cancellation through the authoritative projected Run version', async () => {
     const commands: RuntimeCommand[] = [];
     const store = new RuntimeStore(successfulRuntimeApi({
@@ -326,7 +506,9 @@ function chatProjectionCommit(clientMessageId: string) {
     title: 'Agent run',
     status: 'completed',
     label: 'Completed',
-    toolActivities: [],
+        toolActivities: [],
+        inbox: [],
+        interactionMessages: [],
     updatedAt: NOW,
     startedAt: NOW,
     completedAt: NOW

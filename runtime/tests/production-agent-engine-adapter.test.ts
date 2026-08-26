@@ -1,5 +1,6 @@
 import {
   AgentInferenceDeterministicFailureError,
+  assertValidAgentRun,
   type AgentAvailableTool,
   type AgentCommittedDirective,
   type AgentJsonValue,
@@ -157,6 +158,28 @@ describe('ProductionAgentEngineAdapter', () => {
     for (const message of request.messages.slice(2)) {
       expect(message.content).toBe(canonicalTestJson(JSON.parse(message.content)));
     }
+  });
+
+  it('renders a same-Run inbox continuation as exact assistant and user history', async () => {
+    const fixture = createInboxContinuationFixture();
+    const inference = vi.fn(async () => inferenceResponse({
+      protocol: PROTOCOL,
+      directive: { kind: 'respond', content: 'continued after steering' }
+    }));
+    const adapter = new ProductionAgentEngineAdapter(
+      exactInferenceGateway(inference),
+      exactContracts(fixture.available)
+    );
+
+    await expect(adapter.decide(
+      fixture.input,
+      new AbortController().signal
+    )).resolves.toEqual({ kind: 'respond', content: 'continued after steering' });
+    expect(inference.mock.calls[0]![0].messages.slice(1)).toEqual([
+      { role: 'user', content: 'Write the result under src.' },
+      { role: 'assistant', content: 'First response.' },
+      { role: 'user', content: 'Apply this additional constraint.' }
+    ]);
   });
 
   it('rejects an Effect result on the initial objective Turn before any dependency read or Provider I/O', async () => {
@@ -676,6 +699,7 @@ function createContinuationFixture(
     },
     turns,
     effects,
+    inbox: [],
     createdAt: timeAt(0),
     updatedAt: timeAt(specs.length * 3)
   };
@@ -798,6 +822,116 @@ function createPlanFixture(): ReturnType<typeof createFixture> {
   };
 }
 
+function createInboxContinuationFixture(): ReturnType<typeof createFixture> {
+  const fixture = createFixture();
+  const source = fixture.input.run.turns[0]!;
+  const binding = {
+    ...fixture.input.run.binding,
+    budget: {
+      ...fixture.input.run.binding.budget,
+      vector: {
+        ...fixture.input.run.binding.budget.vector,
+        modelTurns: 3
+      }
+    }
+  };
+  const directiveDigest = digestFor(12);
+  const continuationMessages = [
+    ...fixture.input.messages,
+    { kind: 'text' as const, role: 'assistant' as const, content: 'First response.' },
+    {
+      kind: 'text' as const,
+      role: 'user' as const,
+      content: 'Apply this additional constraint.'
+    }
+  ];
+  const continuationTurnId = 'turn-engine-v3-inbox';
+  const run: AgentRun = {
+    ...fixture.input.run,
+    version: 4,
+    binding,
+    state: {
+      status: 'running',
+      checkpointVersion: 4,
+      enteredAt: timeAt(2)
+    },
+    turns: [{
+      ...source,
+      intention: { ...source.intention, budget: binding.budget },
+      attempts: [{
+        ...source.attempts[0]!,
+        state: {
+          status: 'succeeded',
+          finishedAt: timeAt(1),
+          directive: {
+            kind: 'respond',
+            contentRef: 'response-engine-v3-first',
+            contentDigest: digestFor(13)
+          },
+          directiveDigest
+        }
+      }]
+    }, {
+      turnId: continuationTurnId,
+      runId: fixture.input.run.runId,
+      intention: {
+        ...source.intention,
+        budget: binding.budget,
+        expectedRunVersion: 3,
+        checkpointVersion: 4,
+        cause: {
+          kind: 'inbox_inputs',
+          sourceTurnId: source.turnId,
+          sourceAttemptId: source.attempts[0]!.attemptId,
+          sourceDirectiveDigest: directiveDigest,
+          inputIds: ['input-engine-v3-inbox']
+        },
+        inputDigest: digestFor(14),
+        inputSummary: {
+          messageCount: continuationMessages.length,
+          toolCount: fixture.input.availableTools.length,
+          contentCharacterCount: continuationMessages.reduce(
+            (count, message) => count + message.content.length,
+            0
+          )
+        }
+      },
+      attempts: [{
+        attemptId: 'attempt-engine-v3-inbox',
+        turnId: continuationTurnId,
+        runId: fixture.input.run.runId,
+        providerIdempotencyKey: 'provider-key-engine-v3-inbox',
+        cause: { kind: 'initial' },
+        state: { status: 'intended', intendedAt: timeAt(2) }
+      }],
+      createdAt: timeAt(2)
+    }],
+    inbox: [{
+      inputId: 'input-engine-v3-inbox',
+      messageId: 'message-engine-v3-inbox',
+      version: 1,
+      delivery: 'next_turn',
+      content: 'Apply this additional constraint.',
+      contentDigest: digestFor(15),
+      queuedAt: timeAt(1),
+      updatedAt: timeAt(2),
+      state: 'claimed',
+      claimedAt: timeAt(2),
+      claimedTurnId: continuationTurnId
+    }],
+    updatedAt: timeAt(2)
+  };
+  assertValidAgentRun(run);
+  return {
+    ...fixture,
+    input: {
+      ...fixture.input,
+      run,
+      messages: continuationMessages
+    }
+  };
+}
+
 function exactInferenceGateway(
   infer: (
     request: DispatchExactAgentModelInferenceRequest
@@ -891,6 +1025,7 @@ function initialTurnRun(tool: AgentPinnedToolIdentity): AgentRun {
       createdAt: '2030-01-01T00:00:00.000Z'
     }],
     effects: [],
+    inbox: [],
     createdAt: '2030-01-01T00:00:00.000Z',
     updatedAt: '2030-01-01T00:00:00.000Z'
   };

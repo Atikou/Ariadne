@@ -34,7 +34,7 @@ npm.cmd run audit:runtime-independence
 
 - `npm.cmd run typecheck` 与 `npm.cmd test`；
 - `npm.cmd run check:architecture`；
-- 真实 Electron Agent smoke（direct、Tool、Decision、Cancel 与 Runtime 恢复）；
+- 真实 Electron Agent smoke（direct、运行中 inbox continuation、Tool、Decision、Cancel 与 Runtime 恢复）；
 - Live Provider、本地模型、Browser/MCP 与正式签名 Sandbox helper 验收；
 - Sandbox helper、模型资产、安装器和 Authenticode 验收。
 

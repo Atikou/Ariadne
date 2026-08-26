@@ -348,6 +348,7 @@ function followUpRun(): AgentRun {
       },
       state: { status: 'succeeded', finishedAt: at(4), attempt: 1 }
     }],
+    inbox: [],
     createdAt: at(0),
     updatedAt: at(5)
   };
