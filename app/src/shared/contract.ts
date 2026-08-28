@@ -179,12 +179,11 @@ export interface AgentProviderSettingsView {
 }
 
 export interface AgentSettingsView {
-  schemaVersion: 3;
+  schemaVersion: 4;
   revision: number;
   routingStrategy: AgentRoutingStrategy;
   permissionMode: AgentPermissionMode;
   customPermissions: AgentCustomPermissions;
-  workspaceRoot: string;
   workspaceAccess: 'read' | 'write';
   workspaces: AgentWorkspaceSettingsView[];
   localModelRoots: string[];
@@ -233,8 +232,7 @@ export type AgentSettingsOperation =
       providerId: AgentProviderId;
       patch: AgentProviderSettingsPatch;
     }
-  | { kind: 'runtimePolicy.replace'; policy: RuntimePolicySnapshot }
-  | { kind: 'workspace.select'; rootPath: string };
+  | { kind: 'runtimePolicy.replace'; policy: RuntimePolicySnapshot };
 
 export interface AgentSettingsMutation {
   expectedRevision: number;

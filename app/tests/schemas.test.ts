@@ -137,9 +137,9 @@ describe('IPC schemas', () => {
 
   it('only accepts bounded PowerShell and CMD terminal requests', () => {
     const sessionId = '8a74a717-d9c7-4a09-a038-83c138362f1e';
-    expect(createTerminalSessionRequestSchema.safeParse({ sessionId, workspaceId: 'primary', shell: 'powershell', columns: 120, rows: 30 }).success).toBe(true);
+    expect(createTerminalSessionRequestSchema.safeParse({ sessionId, workspaceId: 'workspace-main', shell: 'powershell', columns: 120, rows: 30 }).success).toBe(true);
     expect(createTerminalSessionRequestSchema.safeParse({ sessionId, workspaceId: 'workspace-secondary', shell: 'cmd', columns: 80, rows: 24 }).success).toBe(true);
-    expect(createTerminalSessionRequestSchema.safeParse({ sessionId, workspaceId: 'primary', shell: 'bash', columns: 80, rows: 24 }).success).toBe(false);
+    expect(createTerminalSessionRequestSchema.safeParse({ sessionId, workspaceId: 'workspace-main', shell: 'bash', columns: 80, rows: 24 }).success).toBe(false);
     expect(createTerminalSessionRequestSchema.safeParse({ sessionId, shell: 'cmd', columns: 80, rows: 24 }).success).toBe(false);
     expect(resizeTerminalRequestSchema.safeParse({ sessionId, columns: 501, rows: 24 }).success).toBe(false);
     expect(writeTerminalRequestSchema.safeParse({ sessionId, data: 'dir\r' }).success).toBe(true);

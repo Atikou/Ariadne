@@ -100,12 +100,6 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
       || visibleSessions.some((session) => session.workspaceId === workspace.workspaceId)),
     [normalizedQuery, visibleSessions, workspaces]
   );
-  const assistantSessions = useMemo(
-    () => visibleSessions.filter(
-      (session) => services.conversationNavigation.isAssistantWorkspace(session.workspaceId)
-    ),
-    [visibleSessions, services]
-  );
   const pendingSessionIds = useMemo(
     () => pendingApprovalSessionIds(runtime),
     [runtime.permissions, runtime.planHandoffs, runtime.runs]
@@ -152,8 +146,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
     setActionError(null);
     try {
       const workspaceId = selectedWorkspaceId
-        ?? services.conversationNavigation.getSelectedWorkspaceId()
-        ?? workspaces[0]?.workspaceId;
+        ?? services.conversationNavigation.getSelectedWorkspaceId();
       if (!workspaceId) throw new Error('请先打开一个工作区。');
       await services.conversationNavigation.selectWorkspace(workspaceId);
       services.runtime.clearSessionSelection();
@@ -301,12 +294,6 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
       </div>
 
       <div className="conversation-groups">
-        {assistantSessions.length > 0 && (
-          <div className="conversation-assistant-sessions" aria-label="助手会话">
-            {assistantSessions.map((session) => renderSessionRow(session))}
-          </div>
-        )}
-
         {visibleWorkspaces.map((workspace) => {
           const workspaceSessions = visibleSessions.filter(
             (session) => session.workspaceId === workspace.workspaceId

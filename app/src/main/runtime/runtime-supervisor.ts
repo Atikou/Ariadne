@@ -180,6 +180,9 @@ export class RuntimeSupervisor {
 
   async start(): Promise<RuntimeReady> {
     return this.runLifecycleOperation(async () => {
+      if (this.options.workspaces.length === 0) {
+        throw new RuntimeRequestError('runtime_workspace_missing', '请先打开工作区。', false);
+      }
       const buildFingerprint = this.resolveRuntimeBuildFingerprint();
       if (
         this.child
@@ -931,7 +934,6 @@ function assertSupervisorOptions(options: RuntimeSupervisorOptions): void {
   assertAbsolutePath('installRoot', options.installRoot);
   assertAbsolutePath('dataRoot', options.dataRoot);
   for (const root of options.modelRoots) assertAbsolutePath('modelRoot', root);
-  if (options.workspaces.length === 0) throw new Error('At least one Runtime workspace is required.');
   for (const workspace of options.workspaces) assertAbsolutePath('workspaceRoot', workspace.rootPath);
   agentAdmissionAuthoritySourceSchema.parse(options.agentAdmissionAuthoritySource);
   if (options.restartStabilityMs !== undefined && options.restartStabilityMs <= 0) {

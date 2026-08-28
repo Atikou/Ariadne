@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -64,6 +64,32 @@ describe('RuntimeKernelApplication model catalog', () => {
     const shutdown = createShutdownContext(Date.now() + 5_000);
     try {
       await application.disposeInitialization(shutdown);
+    } finally {
+      shutdown.dispose();
+    }
+  });
+
+  it('does not create workspace folders during Runtime startup', async () => {
+    const modelRoot = temporaryRoot('ariadne-kernel-empty-models-');
+    const dataRoot = temporaryRoot('ariadne-kernel-lazy-data-');
+    const workspaceRoot = temporaryRoot('ariadne-kernel-lazy-workspace-');
+    const runtimeBootstrap = bootstrap(dataRoot, workspaceRoot, [modelRoot]);
+    const capabilityManifest = await compileProductionRuntimeCapabilityManifest({
+      bootstrap: runtimeBootstrap
+    });
+    const application = await createRuntimeKernelApplicationFactory().create({
+      bootstrap: runtimeBootstrap,
+      capabilityManifest,
+      emitEvent: () => undefined,
+      runtimeVersion: '0.1.0'
+    });
+
+    await application.start();
+    expect(existsSync(path.join(dataRoot, 'data', 'workspaces'))).toBe(false);
+
+    const shutdown = createShutdownContext(Date.now() + 5_000);
+    try {
+      await application.shutdown(shutdown);
     } finally {
       shutdown.dispose();
     }

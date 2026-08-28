@@ -36,18 +36,15 @@ describe('Chat module composition', () => {
     expect(moduleIds).not.toContain('conversations.list');
   });
 
-  it('renders assistant sessions first and nests workspace sessions under their workspace', async () => {
+  it('nests every session under its explicit workspace', async () => {
     const [sidebar, styles] = await Promise.all([
       readFile(join(rendererRoot, 'modules', 'chat', 'ConversationSidebar.tsx'), 'utf8'),
       readFile(join(rendererRoot, 'app', 'styles.css'), 'utf8')
     ]);
 
-    expect(sidebar).toContain('assistantSessions');
-    expect(sidebar.indexOf('{assistantSessions.length > 0')).toBeLessThan(
-      sidebar.indexOf('{visibleWorkspaces.map((workspace) =>')
-    );
-    expect(sidebar).toContain('services.conversationNavigation.isAssistantWorkspace(session.workspaceId)');
-    expect(sidebar).toContain('conversation-assistant-sessions');
+    expect(sidebar).not.toContain('assistantSessions');
+    expect(sidebar).not.toContain('isAssistantWorkspace');
+    expect(sidebar).not.toContain('conversation-assistant-sessions');
     expect(sidebar).toContain('conversation-workspace-group');
     expect(sidebar).toContain('conversation-workspace-sessions');
     expect(sidebar).toContain("workspaceChild ? ' is-workspace-child' : ''");

@@ -7,6 +7,7 @@ const statePath = requireOption(options, 'state');
 const readyPath = requireOption(options, 'ready');
 const pfxPath = requireOption(options, 'pfx');
 const passphrase = requireOption(options, 'passphrase');
+const workspaceId = requireOption(options, 'workspace-id');
 
 const scenarios = [
   'direct',
@@ -75,7 +76,10 @@ const server = createServer({
 
   if (scenario === 'cancel' || scenario === 'crash_inference') return;
   if (scenario === 'inbox' && !continuation) {
-    await delay(2_000);
+    // Keep the first inference observably active while Electron, the public
+    // projection and React all cross their real asynchronous boundaries. The
+    // test must enqueue during execution, not race a two-second mock response.
+    await delay(10_000);
   }
   if (scenario === 'crash_projection' && continuation) {
     await delay(750);
@@ -160,7 +164,7 @@ function createDirective(scenario, continuationPayload, inboxContinuation) {
           toolCallId: 'smoke-read-call',
           toolName: 'workspace.read_file',
           input: { path: 'fixtures/read.txt' },
-          scope: ['primary']
+          scope: [workspaceId]
         }]
       };
     case 'write_allow':
@@ -174,7 +178,7 @@ function createDirective(scenario, continuationPayload, inboxContinuation) {
           toolCallId: 'smoke-crash-effect-call',
           toolName: 'browser.wait',
           input: { milliseconds: 30_000 },
-          scope: ['primary']
+          scope: [workspaceId]
         }]
       };
     case 'crash_projection':
@@ -236,7 +240,7 @@ function writeDirective(toolCallId, path, content) {
       toolCallId,
       toolName: 'workspace.write_file',
       input: { path, content },
-      scope: ['primary']
+      scope: [workspaceId]
     }]
   };
 }

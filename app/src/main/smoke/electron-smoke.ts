@@ -95,6 +95,7 @@ export async function runElectronSmokeTest(
   const providerBaseUrl = requireSmokeEnvironment('ARIADNE_SMOKE_PROVIDER_BASE_URL');
   const providerModel = requireSmokeEnvironment('ARIADNE_SMOKE_PROVIDER_MODEL');
   const providerStatePath = requireSmokeEnvironment('ARIADNE_SMOKE_PROVIDER_STATE');
+  const workspaceId = requireSmokeEnvironment('ARIADNE_SMOKE_WORKSPACE_ID');
   await mkdir(outputRoot, { recursive: true });
   if (window.webContents.isLoading()) await waitForLoad(window);
 
@@ -170,7 +171,7 @@ export async function runElectronSmokeTest(
             kind: 'conversation.session.create.v3',
             contractVersion: '3.0',
             sessionId,
-            workspaceId: 'primary'
+            workspaceId: ${JSON.stringify(workspaceId)}
           });
           if (created.kind !== 'conversation.session.created.v3') {
             throw new Error('session_create_result_invalid');
@@ -179,7 +180,7 @@ export async function runElectronSmokeTest(
             kind: 'conversation.message.accept.v3',
             contractVersion: '3.0',
             sessionId,
-            workspaceId: 'primary',
+            workspaceId: ${JSON.stringify(workspaceId)},
             expectedSessionVersion: created.version,
             messageId,
             content: marker,
@@ -220,7 +221,7 @@ export async function runElectronSmokeTest(
           }
         });
         const listWorkspace = (relativePath = '') => api.workspace.listDirectory({
-          workspaceId: 'primary',
+          workspaceId: ${JSON.stringify(workspaceId)},
           relativePath
         });
         const waitForRuntimeKillAck = (name) => waitUntilAcrossRuntimeRestart(async () => {
@@ -263,6 +264,11 @@ export async function runElectronSmokeTest(
         });
 
         const sessionsBeforeDraft = initialProjection.sessions.map((session) => session.sessionId).sort();
+        const workspaceButton = await waitUntil(() => document.querySelector(
+          '.conversation-workspace-row[data-workspace-id="' + ${JSON.stringify(workspaceId)} + '"] .conversation-workspace-main'
+        ));
+        workspaceButton.click();
+        await waitUntil(() => document.querySelector('.composer-workspace-menu .select-menu-trigger'));
         document.querySelector('.conversation-create-button')?.click();
         await delay(150);
         const sessionsAfterDraft = (await snapshot()).sessions.map((session) => session.sessionId).sort();
@@ -377,7 +383,11 @@ export async function runElectronSmokeTest(
         composer.dispatchEvent(new Event('input', { bubbles: true }));
         const inboxSendButton = await waitUntil(() => {
           const button = document.querySelector('.send-button');
-          return button instanceof HTMLButtonElement && !button.disabled ? button : null;
+          return button instanceof HTMLButtonElement
+            && !button.disabled
+            && button.getAttribute('aria-label') === '排到下一轮'
+            ? button
+            : null;
         });
         inboxSendButton.click();
         const queuedInbox = await waitForRun(inbox.runId, (run) => run.inbox.some((input) => (

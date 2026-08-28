@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createDefaultRuntimePolicySnapshot } from '@ariadne/protocol/settings';
-import { createDesktopRuntimeConfiguration, resolveDefaultWorkspaceRoot } from '../src/main/runtime/runtime-configuration';
+import { createDesktopRuntimeConfiguration } from '../src/main/runtime/runtime-configuration';
 
 describe('desktop Runtime configuration', () => {
   it('keeps provider credentials private and maps each provider to its own environment key', () => {
@@ -24,10 +24,9 @@ describe('desktop Runtime configuration', () => {
           sandboxMode: 'workspace-write',
           allowedPermissions: ['read', 'write', 'shell', 'network', 'dangerous']
         },
-        workspaceRoot: path.resolve(process.cwd()),
         workspaceAccess: 'read',
         workspaces: [
-          { workspaceId: 'primary', rootPath: path.resolve(process.cwd()), access: 'read' },
+          { workspaceId: 'workspace-main', rootPath: path.resolve(process.cwd()), access: 'read' },
           { workspaceId: 'workspace-secondary', rootPath: path.resolve(process.cwd(), 'secondary'), access: 'write' }
         ],
         localModelRoots: [path.resolve(process.cwd(), '.test-models')],
@@ -57,7 +56,7 @@ describe('desktop Runtime configuration', () => {
       sourceVersion: 1,
       status: 'enabled',
       manifests: [
-        { workspace: { workspaceId: 'primary' }, model: { providerId: 'openai' } },
+        { workspace: { workspaceId: 'workspace-main' }, model: { providerId: 'openai' } },
         { workspace: { workspaceId: 'workspace-secondary' }, model: { providerId: 'openai' } }
       ]
     });
@@ -77,7 +76,7 @@ describe('desktop Runtime configuration', () => {
     expect(JSON.stringify(configuration.modelProviders)).not.toContain('secret');
     expect(configuration.workspaces).toEqual([
       {
-        workspaceId: 'primary',
+        workspaceId: 'workspace-main',
         label: path.basename(path.resolve(process.cwd())),
         rootPath: path.resolve(process.cwd()),
         access: 'read'
@@ -89,27 +88,6 @@ describe('desktop Runtime configuration', () => {
         access: 'write'
       }
     ]);
-  });
-
-  it('resolves a stable workspace root without using process.cwd()', () => {
-    const appPath = path.resolve(process.cwd(), 'desktop-app');
-    const userDataPath = path.resolve(process.cwd(), '.test-user-data');
-    expect(resolveDefaultWorkspaceRoot({ appPath, userDataPath, packaged: false, environment: {} }))
-      .toBe(path.resolve(appPath, '..'));
-    expect(resolveDefaultWorkspaceRoot({ appPath, userDataPath, packaged: true, environment: {} }))
-      .toBe(path.resolve(userDataPath, 'workspace'));
-    expect(resolveDefaultWorkspaceRoot({
-      appPath,
-      userDataPath,
-      packaged: false,
-      environment: { ARIADNE_WORKSPACE_ROOT: path.resolve(process.cwd(), 'explicit-workspace') }
-    })).toBe(path.resolve(process.cwd(), 'explicit-workspace'));
-    expect(resolveDefaultWorkspaceRoot({
-      appPath,
-      userDataPath,
-      packaged: true,
-      environment: { ARIADNE_WORKSPACE_ROOT: path.resolve(process.cwd(), 'untrusted-workspace') }
-    })).toBe(path.resolve(userDataPath, 'workspace'));
   });
 
   it('resolves packaged Runtime code and the standalone Node runner from resources', () => {
@@ -182,9 +160,8 @@ function testRuntimeSettings(
       sandboxMode: 'workspace-write',
       allowedPermissions: ['read', 'write', 'shell', 'network', 'dangerous']
     },
-    workspaceRoot,
     workspaceAccess: 'write',
-    workspaces: [{ workspaceId: 'primary', rootPath: workspaceRoot, access: 'write' }],
+    workspaces: [{ workspaceId: 'workspace-main', rootPath: workspaceRoot, access: 'write' }],
     localModelRoots: [],
     runtimePolicy: createDefaultRuntimePolicySnapshot(),
     providers: {

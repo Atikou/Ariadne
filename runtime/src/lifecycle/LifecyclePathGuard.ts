@@ -9,16 +9,9 @@ const OUTSIDE_ROOT_REASON = "target_outside_lifecycle_roots";
 export class LifecyclePathGuard {
   private readonly allowedFileRoots: string[];
 
-  constructor(paths: { dataDir: string; workspaceRoot: string }) {
+  constructor(paths: { dataDir: string }) {
     const dataRoot = canonicalizePathIdentity(paths.dataDir);
-    const workspaceRoot = canonicalizePathIdentity(paths.workspaceRoot);
-    const timelineRoot = canonicalizePathIdentity(
-      path.join(paths.workspaceRoot, ".agent", "runs"),
-    );
     this.allowedFileRoots = [dataRoot];
-    if (isSameOrDescendant(timelineRoot, workspaceRoot)) {
-      this.allowedFileRoots.push(timelineRoot);
-    }
   }
 
   blockReason(action: CleanupAction): string | undefined {
@@ -58,11 +51,6 @@ export class LifecyclePathGuard {
       throw error;
     }
   }
-}
-
-function isSameOrDescendant(target: string, root: string): boolean {
-  const relative = path.relative(root, target);
-  return relative === "" || isRelativeDescendant(relative);
 }
 
 function isStrictDescendant(target: string, root: string): boolean {

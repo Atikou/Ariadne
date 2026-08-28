@@ -5,7 +5,6 @@ import type { LargestFileEntry, StorageCategory, StorageCategoryUsage, StorageUs
 
 export interface StorageInventoryPaths {
   dataDir: string;
-  workspaceRoot: string;
   traceFile: string;
   notificationFile: string;
   schedulerJournalFile: string;
@@ -29,10 +28,7 @@ export class StorageInventoryService {
     const cacheDir = path.join(this.paths.dataDir, "cache");
     const reportCacheDir = path.join(this.paths.dataDir, "reports", "cache");
     const tracesDir = path.join(this.paths.dataDir, "traces");
-    const timelineDirs = [
-      path.join(this.paths.dataDir, "sessions"),
-      path.join(this.paths.workspaceRoot, ".agent", "runs"),
-    ];
+    const timelineDir = path.join(this.paths.dataDir, "workspaces");
     const dataRunsDir = path.join(this.paths.dataDir, "runs");
     const lifecycleMetaDir = path.join(this.paths.dataDir, "lifecycle");
     const vectorsDir = path.join(this.paths.dataDir, "vectors");
@@ -49,9 +45,7 @@ export class StorageInventoryService {
       for (const f of traceFiles) bump("trace", f.size, 1);
     }
 
-    for (const timelineDir of timelineDirs) {
-      for (const f of walkFiles(timelineDir)) bump("timeline", f.size, 1);
-    }
+    for (const f of walkFiles(timelineDir)) bump("timeline", f.size, 1);
     for (const f of walkFiles(dataRunsDir)) bump("timeline", f.size, 1);
 
     bump("sqlite_memory", fileSizeIfExists(this.paths.memoryDbPath), existsDb(this.paths.memoryDbPath) ? 1 : 0);
@@ -82,7 +76,7 @@ export class StorageInventoryService {
     if (traceFiles.length === 0 && fileSizeIfExists(this.paths.traceFile) > 0) {
       allFiles.push({ path: this.paths.traceFile, bytes: fileSizeIfExists(this.paths.traceFile), category: "trace" });
     }
-    for (const timelineDir of timelineDirs) collectLargest("timeline", timelineDir);
+    collectLargest("timeline", timelineDir);
     collectLargest("notifications", path.dirname(this.paths.notificationFile));
 
     allFiles.sort((a, b) => b.bytes - a.bytes);

@@ -97,7 +97,7 @@ describe('Main Browser capability policy', () => {
     service.configure({
       ...createDefaultRuntimePolicySnapshot().browser,
       allowSensitiveInput: true
-    }, 'primary');
+    }, 'workspace-main');
     const result = await service.handle({
       kind: 'browser.type',
       selector: '#password',

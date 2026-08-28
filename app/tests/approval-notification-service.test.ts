@@ -91,7 +91,7 @@ function proposalEvent(status: AgentProposal['status']): RuntimeEvent {
       title: '创建项目',
       reason: '需要写入文件。',
       originalRequest: '创建一个项目',
-      workspaceIds: ['primary'],
+      workspaceIds: ['workspace-main'],
       requestedScopes: ['E:\\Temp'],
       requestedCapabilities: ['file-write'],
       risk: 'write',

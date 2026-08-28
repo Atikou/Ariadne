@@ -38,7 +38,7 @@ export interface BrowserServiceOptions {
   engine?: BrowserEngine;
   audit?: (event: BrowserAuditEvent) => void;
   policy?: BrowserPolicy;
-  workspaceId?: string;
+  workspaceId?: string | null;
 }
 
 /**
@@ -49,12 +49,12 @@ export class BrowserService {
   private readonly engine: BrowserEngine;
   private readonly audit: (event: BrowserAuditEvent) => void;
   private policy: BrowserPolicy;
-  private workspaceId: string;
+  private workspaceId: string | null;
 
   constructor(options: BrowserServiceOptions = {}) {
     this.audit = options.audit ?? (() => undefined);
     this.policy = structuredClone(options.policy ?? createDefaultRuntimePolicySnapshot().browser);
-    this.workspaceId = options.workspaceId ?? 'primary';
+    this.workspaceId = options.workspaceId ?? null;
     this.engine = options.engine ?? new WebContentsViewBrowserEngine(
       this.audit,
       () => this.policy,
@@ -62,7 +62,7 @@ export class BrowserService {
     );
   }
 
-  configure(policy: BrowserPolicy, workspaceId: string): void {
+  configure(policy: BrowserPolicy, workspaceId: string | null): void {
     const changedIsolation = policy.sessionMode !== this.policy.sessionMode
       || workspaceId !== this.workspaceId;
     this.policy = structuredClone(policy);
@@ -169,7 +169,7 @@ class WebContentsViewBrowserEngine implements BrowserEngine {
   constructor(
     private readonly audit: (event: BrowserAuditEvent) => void,
     private readonly policy: () => BrowserPolicy,
-    private readonly workspaceId: () => string
+    private readonly workspaceId: () => string | null
   ) {}
 
   async health(): Promise<void> {
@@ -285,9 +285,14 @@ class WebContentsViewBrowserEngine implements BrowserEngine {
 
   private contents(): WebContents {
     if (!this.view) {
-      const partition = this.policy().sessionMode === 'workspace-persistent'
-        ? `persist:ariadne-browser-${workspacePartitionId(this.workspaceId())}`
-        : `ariadne-browser-${randomUUID()}`;
+      const workspaceId = this.workspaceId();
+      let partition: string;
+      if (this.policy().sessionMode === 'temporary') {
+        partition = `ariadne-browser-${randomUUID()}`;
+      } else {
+        if (workspaceId === null) throw new Error('browser_workspace_not_selected');
+        partition = `persist:ariadne-browser-${workspacePartitionId(workspaceId)}`;
+      }
       this.view = new WebContentsView({
         webPreferences: {
           partition,

@@ -2,9 +2,11 @@ import path from "node:path";
 
 import { ActivityRunStore } from "../agent/timeline/ActivityRunStore.js";
 import {
-  listSessionAgentStorageRoots,
-  sessionAgentStorageRoot,
-} from "../agent/timeline/SessionAgentStorage.js";
+  deleteWorkspaceSessionStorage,
+  findWorkspaceSessionStorageRoots,
+  listWorkspaceSessionStorageRoots,
+  pruneEmptyWorkspaceSessionStorage,
+} from "../agent/timeline/WorkspaceSessionStorage.js";
 import type { DatabaseManager } from "../context/DatabaseManager.js";
 import { safeDeleteDirectory, walkFiles } from "./fsUtils.js";
 import { writeTombstone } from "./CleanupJournal.js";
@@ -24,7 +26,6 @@ export interface SessionArtifactCleanupResult {
 
 export function cleanupSessionArtifacts(opts: {
   dataDir: string;
-  workspaceRoot?: string;
   sessionId: string;
   runIds: string[];
   deleteTimeline: boolean;
@@ -35,16 +36,15 @@ export function cleanupSessionArtifacts(opts: {
   let bytesFreed = 0;
 
   if (opts.deleteTimeline) {
-    const storageRoot = sessionAgentStorageRoot(opts.dataDir, opts.sessionId);
-    for (const runId of opts.runIds) {
-      const timelineDir = path.join(storageRoot, ".agent", "runs", runId);
-      timelineDirs.push(timelineDir);
-      bytesFreed += dirSizeSafe(timelineDir);
+    const storageRoots = findWorkspaceSessionStorageRoots(opts.dataDir, opts.sessionId);
+    for (const storageRoot of storageRoots) {
+      for (const runId of opts.runIds) {
+        const timelineDir = path.join(storageRoot, "runs", runId);
+        timelineDirs.push(timelineDir);
+        bytesFreed += dirSizeSafe(timelineDir);
+      }
     }
-    safeDeleteDirectory(storageRoot);
-    if (opts.workspaceRoot) {
-      new ActivityRunStore(opts.workspaceRoot).deleteRunsForSessions([opts.sessionId]);
-    }
+    deleteWorkspaceSessionStorage(opts.dataDir, opts.sessionId);
   }
 
   for (const runId of opts.runIds) {
@@ -79,7 +79,6 @@ export interface RunArtifactCleanupResult {
 /** 删除单个 Run 的 timeline 与 data/runs 落盘。 */
 export function deleteRunArtifacts(opts: {
   dataDir: string;
-  workspaceRoot?: string;
   runId: string;
   sessionId?: string;
   removeTimeline?: boolean;
@@ -90,15 +89,15 @@ export function deleteRunArtifacts(opts: {
 
   if (opts.removeTimeline !== false) {
     const storageRoots = opts.sessionId
-      ? [sessionAgentStorageRoot(opts.dataDir, opts.sessionId)]
-      : listSessionAgentStorageRoots(opts.dataDir);
-    if (opts.workspaceRoot) storageRoots.push(opts.workspaceRoot);
+      ? findWorkspaceSessionStorageRoots(opts.dataDir, opts.sessionId)
+      : listWorkspaceSessionStorageRoots(opts.dataDir);
     for (const storageRoot of storageRoots) {
-      const candidate = path.join(storageRoot, ".agent", "runs", opts.runId);
+      const candidate = path.join(storageRoot, "runs", opts.runId);
       const bytes = dirSizeSafe(candidate);
       if (!new ActivityRunStore(storageRoot).deleteRunDirectory(opts.runId)) continue;
       timelineDir ??= candidate;
       bytesFreed += bytes;
+      pruneEmptyWorkspaceSessionStorage(storageRoot);
     }
   }
 

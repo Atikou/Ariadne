@@ -205,7 +205,7 @@ export const SandboxConfigSchema = z
     readOnlySubpaths: z
       .array(z.string().min(1))
       .max(64)
-      .default(["../.git", "../.agent", "../.agents"]),
+      .default(["../.git"]),
     /** 离线身份是否允许访问 127.0.0.0/8 与 ::1。 */
     allowLoopback: z.boolean().default(false),
     offlineUser: z
@@ -240,7 +240,7 @@ export const SandboxConfigSchema = z
     mode: "workspace-write",
     writableRoots: [],
     toolReadRoots: [],
-    readOnlySubpaths: ["../.git", "../.agent", "../.agents"],
+    readOnlySubpaths: ["../.git"],
     allowLoopback: false,
     offlineUser: "AriadneOffline",
     onlineUser: "AriadneOnline",

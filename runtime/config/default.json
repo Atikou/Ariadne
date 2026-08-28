@@ -196,7 +196,7 @@
       "mode": "workspace-write",
       "writableRoots": [],
       "toolReadRoots": [],
-      "readOnlySubpaths": ["../.git", "../.agent", "../.agents"],
+      "readOnlySubpaths": ["../.git"],
       "allowLoopback": false,
       "resourceLimits": {
         "maxProcesses": 32,

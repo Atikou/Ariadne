@@ -186,9 +186,6 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
     try {
       const normalizedRoots = normalizeLocalModelRoots(localModelRoots);
       const operations: AgentSettingsOperation[] = [];
-      if (agentSettings.workspaceRoot !== baseline.workspaceRoot) {
-        operations.push({ kind: 'workspace.select', rootPath: agentSettings.workspaceRoot });
-      }
       if (!sameJsonValue(normalizedRoots, baseline.localModelRoots)) {
         operations.push({ kind: 'modelRoots.replace', roots: normalizedRoots });
       }
@@ -255,7 +252,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
   };
 
   const archivedWorkspaces = agentSettings?.workspaces.filter(
-    (workspace) => workspace.workspaceId !== 'primary' && workspace.archivedAt
+    (workspace) => workspace.archivedAt
   ) ?? [];
   const archivedSessions = runtime.sessions.filter(
     (session) => services.conversationNavigation.isSessionArchived(session.sessionId)
@@ -268,7 +265,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
 
       <section className="settings-section" aria-labelledby={`${moduleId}-model-settings`}>
         <div className="settings-section-heading">
-          <div className="settings-section-title"><span className="settings-section-icon"><KeyRound size={16} /></span><div className="settings-section-copy"><h2 id={`${moduleId}-model-settings`}>Agent 与模型</h2><p>配置工作区根目录、本地模型目录和远程 Provider；运行权限与路由策略在 Chat 输入区动态选择。</p></div></div>
+          <div className="settings-section-title"><span className="settings-section-icon"><KeyRound size={16} /></span><div className="settings-section-copy"><h2 id={`${moduleId}-model-settings`}>Agent 与模型</h2><p>配置本地模型目录和远程 Provider；工作区通过 Chat 侧栏的“打开工作区”管理。</p></div></div>
           <span className={`settings-runtime-state settings-runtime-state--${runtimeStateTone}`} data-runtime-availability={runtime.status.availability} role="status" aria-live="polite">
             <span className={`settings-runtime-indicator settings-runtime-indicator--${runtimeStateTone}`} aria-hidden="true">{runtimeIsLoading ? null : runtimeStateSymbol}</span>
             <span>{runtimeStateLabel}</span>
@@ -278,11 +275,6 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
         {agentSettings ? (
           <form className="agent-settings-form" onSubmit={(event) => void saveAgentSettings(event)}>
             <div className="agent-settings-grid">
-              <label className="settings-field settings-field--wide"><span>Agent 工作区根目录</span><input
-                value={agentSettings.workspaceRoot}
-                placeholder="例如 E:\\Project\\MyProject"
-                onChange={(event) => setAgentSettings({ ...agentSettings, workspaceRoot: event.target.value })}
-              /><small>保存后会同时重启 Runtime 与文件浏览器边界；必须使用绝对路径。</small></label>
               <div className="settings-field settings-field--wide local-model-roots-field">
                 <span id={`${moduleId}-local-model-roots-label`}>本地模型目录</span>
                 <div className="local-model-roots-control" aria-labelledby={`${moduleId}-local-model-roots-label`}>

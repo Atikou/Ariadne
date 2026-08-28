@@ -18,16 +18,12 @@ class MemoryStorage implements Pick<Storage, 'getItem' | 'setItem'> {
 }
 
 describe('ConversationNavigationService', () => {
-  it('keeps the default conversation directory internal instead of rendering a workspace row', async () => {
-    const service = createService(new MemoryStorage(), 'E:\\Project\\Ariadne').service;
+  it('keeps an empty workspace catalog empty and unselected', async () => {
+    const service = createService(new MemoryStorage(), null).service;
 
     await expect(service.listWorkspaces()).resolves.toEqual([]);
-    await expect(service.listSelectableWorkspaces()).resolves.toEqual([
-      expect.objectContaining({ workspaceId: 'primary', name: 'Ariadne' })
-    ]);
-    expect(service.getSelectedWorkspaceId()).toBe('primary');
-    expect(service.isAssistantWorkspace('primary')).toBe(true);
-    expect(service.isAssistantWorkspace('workspace-opened')).toBe(false);
+    await expect(service.listSelectableWorkspaces()).resolves.toEqual([]);
+    expect(service.getSelectedWorkspaceId()).toBeNull();
   });
 
   it('persists explicit session pin choices independently from Runtime session projection', async () => {
@@ -88,7 +84,7 @@ describe('ConversationNavigationService', () => {
   it('opens a native-selected directory as a visible top-level workspace', async () => {
     const { service } = createService(
       new MemoryStorage(),
-      'E:\\Project\\Ariadne',
+      null,
       'E:\\Project\\LittleLives'
     );
     await service.listWorkspaces();
@@ -99,15 +95,15 @@ describe('ConversationNavigationService', () => {
       rootPath: 'E:\\Project\\LittleLives'
     }));
     expect(service.getSelectedWorkspaceId()).toBe('workspace-opened');
-    await expect(service.listWorkspaces()).resolves.toEqual([
+    await expect(service.listWorkspaces()).resolves.toContainEqual(
       expect.objectContaining({ workspaceId: 'workspace-opened', rootPath: 'E:\\Project\\LittleLives' })
-    ]);
+    );
   });
 
   it('notifies shared desktop modules when the selected workspace changes', async () => {
     const { service } = createService(
       new MemoryStorage(),
-      'E:\\Project\\Ariadne',
+      null,
       'E:\\Project\\LittleLives'
     );
     const observed: Array<string | null> = [];
@@ -116,15 +112,14 @@ describe('ConversationNavigationService', () => {
     await service.listWorkspaces();
     await service.openWorkspace();
     unsubscribe();
-    await service.selectWorkspace('primary');
 
-    expect(observed).toEqual([null, 'primary', 'workspace-opened']);
+    expect(observed).toEqual([null, 'workspace-opened']);
   });
 
   it('persists workspace pin, archive and restore state through the settings authority', async () => {
     const { service } = createService(
       new MemoryStorage(),
-      'E:\\Project\\Ariadne',
+      null,
       'E:\\Project\\LittleLives'
     );
     const opened = await service.openWorkspace();
@@ -155,27 +150,27 @@ describe('ConversationNavigationService', () => {
     );
     await service.listWorkspaces();
 
-    await expect(service.openWorkspace()).resolves.toEqual(expect.objectContaining({ workspaceId: 'primary' }));
+    await expect(service.openWorkspace()).resolves.toEqual(expect.objectContaining({ workspaceId: 'workspace-initial' }));
     expect(catalog).toHaveLength(1);
-    await expect(service.listWorkspaces()).resolves.toHaveLength(0);
+    await expect(service.listWorkspaces()).resolves.toHaveLength(1);
   });
 });
 
 function createService(
   storage: MemoryStorage,
-  workspaceRoot: string,
+  workspaceRoot: string | null,
   openedRoot: string | null = null
 ): {
   service: ConfiguredConversationNavigationService;
   catalog: AgentSettingsView['workspaces'];
 } {
-  const catalog: AgentSettingsView['workspaces'] = [{
-    workspaceId: 'primary',
+  const catalog: AgentSettingsView['workspaces'] = workspaceRoot === null ? [] : [{
+    workspaceId: 'workspace-initial',
     rootPath: workspaceRoot,
     access: 'write'
   }];
   const settings = (): AgentSettingsView => ({
-    schemaVersion: 3,
+    schemaVersion: 4,
     revision: 1,
     routingStrategy: 'cloud-first',
     permissionMode: 'request',
@@ -184,7 +179,6 @@ function createService(
       sandboxMode: 'workspace-write',
       allowedPermissions: ['read', 'write', 'shell', 'network', 'dangerous']
     },
-    workspaceRoot,
     workspaceAccess: 'write',
     workspaces: catalog.map((workspace) => ({ ...workspace })),
     localModelRoots: [],

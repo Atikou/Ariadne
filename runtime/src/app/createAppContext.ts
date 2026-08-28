@@ -925,7 +925,6 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
   const toolsDbPath = registry.getStorage()?.dbPath;
   const dataLifecycle = new DataLifecycleService({
     dataDir,
-    workspaceRoot,
     traceFile: paths.traceFile,
     tracesDir: paths.tracesDir,
     traceCatalog,

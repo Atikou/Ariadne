@@ -1,8 +1,6 @@
 import type { AgentSettingsView, AriadneApi } from '@shared/contract';
 
 const NAVIGATION_STORAGE_KEY = 'ariadne.conversation-navigation.v1';
-const INTERNAL_DEFAULT_WORKSPACE_ID = 'primary';
-
 export interface ConversationWorkspace {
   workspaceId: string;
   name: string;
@@ -21,7 +19,6 @@ export interface ConversationNavigationService {
   onWorkspacesChanged(listener: (workspaces: readonly ConversationWorkspace[]) => void): () => void;
   selectWorkspace(workspaceId: string): Promise<void>;
   isWorkspaceActive(workspaceId: string): boolean;
-  isAssistantWorkspace(workspaceId: string): boolean;
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
   archiveWorkspace(workspaceId: string): Promise<void>;
   restoreWorkspace(workspaceId: string): Promise<void>;
@@ -116,9 +113,7 @@ export class ConfiguredConversationNavigationService implements ConversationNavi
     if (!this.activeWorkspaces().some((candidate) => candidate.workspaceId === this.state.selectedWorkspaceId)) {
       this.state = {
         ...this.state,
-        selectedWorkspaceId: this.visibleWorkspaces()[0]?.workspaceId
-          ?? this.activeWorkspaces().find((workspace) => workspace.workspaceId === INTERNAL_DEFAULT_WORKSPACE_ID)?.workspaceId
-          ?? null
+        selectedWorkspaceId: null
       };
       this.persist();
     }
@@ -170,10 +165,6 @@ export class ConfiguredConversationNavigationService implements ConversationNavi
 
   isWorkspaceActive(workspaceId: string): boolean {
     return this.activeWorkspaces().some((workspace) => workspace.workspaceId === workspaceId);
-  }
-
-  isAssistantWorkspace(workspaceId: string): boolean {
-    return workspaceId === INTERNAL_DEFAULT_WORKSPACE_ID;
   }
 
   async setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void> {
@@ -242,8 +233,7 @@ export class ConfiguredConversationNavigationService implements ConversationNavi
   }
 
   private visibleWorkspaces(): readonly ConversationWorkspace[] {
-    return this.activeWorkspaces()
-      .filter((workspace) => workspace.workspaceId !== INTERNAL_DEFAULT_WORKSPACE_ID)
+    return [...this.activeWorkspaces()]
       .sort((left, right) => Number(right.pinned) - Number(left.pinned));
   }
 

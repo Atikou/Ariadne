@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 import { ContextManager } from "../context/ContextManager.js";
 import { InMemoryVectorStore } from "../context/VectorStore.js";
 import { DataLifecycleService } from "../lifecycle/DataLifecycleService.js";
-import { loadConfig } from "../config/loadConfig.js";
 import { TraceIndexStore } from "../trace/TraceIndexStore.js";
 import { resolveTracePaths } from "../trace/tracePaths.js";
 import { loadEnvFile } from "../util/env.js";
@@ -23,7 +22,6 @@ function formatBytes(n: number): string {
 function buildService(): DataLifecycleService {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const projectRoot = path.resolve(moduleDir, "..", "..");
-  const { workspaceRoot } = loadConfig();
   const dataDir = path.join(projectRoot, "data");
   const tracesDir = path.join(dataDir, "traces");
   const layout = resolveTracePaths(tracesDir);
@@ -37,7 +35,6 @@ function buildService(): DataLifecycleService {
   });
   return new DataLifecycleService({
     dataDir,
-    workspaceRoot,
     traceFile: layout.activeFile,
     tracesDir,
     traceCatalog: { tracesDir, index },

@@ -139,8 +139,7 @@ export const agentSettingsOperationSchema = z.discriminatedUnion('kind', [
     providerId: agentProviderIdSchema,
     patch: agentProviderSettingsPatchSchema
   }).strict(),
-  z.object({ kind: z.literal('runtimePolicy.replace'), policy: runtimePolicySnapshotSchema }).strict(),
-  z.object({ kind: z.literal('workspace.select'), rootPath: absolutePathSchema }).strict()
+  z.object({ kind: z.literal('runtimePolicy.replace'), policy: runtimePolicySnapshotSchema }).strict()
 ]);
 
 export const agentSettingsMutationSchema = z.object({
@@ -195,7 +194,7 @@ const agentWorkspaceSettingsViewSchema = z.object({
 }).strict();
 
 export const agentSettingsViewSchema = z.object({
-  schemaVersion: z.literal(3),
+  schemaVersion: z.literal(4),
   revision: z.number().int().positive(),
   routingStrategy: agentRoutingStrategySchema,
   permissionMode: z.enum(AGENT_PERMISSION_MODES),
@@ -204,9 +203,8 @@ export const agentSettingsViewSchema = z.object({
     sandboxMode: z.enum(AGENT_SANDBOX_MODES),
     allowedPermissions: z.array(z.enum(AGENT_TOOL_PERMISSIONS)).min(1).max(5)
   }).strict(),
-  workspaceRoot: absolutePathSchema,
   workspaceAccess: z.enum(['read', 'write']),
-  workspaces: z.array(agentWorkspaceSettingsViewSchema).min(1).max(32),
+  workspaces: z.array(agentWorkspaceSettingsViewSchema).max(32),
   localModelRoots: z.array(absolutePathSchema).max(8),
   providers: z.record(agentProviderIdSchema, agentProviderSettingsViewSchema),
   runtimePolicy: runtimePolicySnapshotSchema

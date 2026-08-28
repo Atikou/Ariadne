@@ -121,16 +121,12 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
       : routingSelectionValue(routingStrategy)
     : selectedModelId;
   const workspaceOptions = useMemo<readonly SelectMenuOption<string>[]>(() => {
-    const options: SelectMenuOption<string>[] = workspaces.map((workspace) => ({
+    return workspaces.map((workspace) => ({
       value: workspace.workspaceId,
       label: workspace.name,
       description: workspace.rootPath
     }));
-    if (selectedSession && !options.some((option) => option.value === selectedSession.workspaceId)) {
-      options.unshift({ value: selectedSession.workspaceId, label: 'Ariadne 助手' });
-    }
-    return options;
-  }, [selectedSession, workspaces]);
+  }, [workspaces]);
   const nodes = useMemo(() => runtime.messages.map(toConversationNode), [runtime.messages]);
   const activeRun = runtime.runs.find((run) => run.parentRunId === undefined && run.sessionId === runtime.selectedSessionId && [
     'queued', 'running', 'waiting_permission', 'waiting_decision', 'waiting_budget',
@@ -397,7 +393,10 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
           <div className="message-viewport" ref={viewportRef} onScroll={handleViewportScroll}>
             <div className="message-list" ref={messageListRef}>
               {nodes.length === 0
-                ? <EmptyConversation modelState={modelState} />
+                ? <EmptyConversation
+                    modelState={modelState}
+                    workspaceSelected={composerWorkspaceId !== null}
+                  />
                 : nodes.map((node) => (
                   <div id={`chat-node-${node.id}`} data-conversation-node key={node.id} className={`conversation-node conversation-node--${node.kind}`}>
                     <ConversationMessage
@@ -493,7 +492,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                     disabled={selectedSession !== undefined}
                     onChange={(workspaceId) => {
                       setDraftWorkspaceId(workspaceId);
-                      void services.conversationNavigation.selectWorkspace(workspaceId).catch(() => undefined);
+                      void services.conversationNavigation.selectWorkspace(workspaceId);
                     }}
                   />
                 : <span className="composer-workspace-empty"><Folder size={13} />请先打开工作区</span>}
@@ -502,9 +501,11 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
               ref={composerInputRef}
               value={draft}
               rows={1}
-              placeholder={running ? '继续输入：Enter 排到下一轮，Ctrl/⌘+Enter 在下一步介入' : modelState.composerPlaceholder}
+              placeholder={!composerWorkspaceId
+                ? '请先打开工作区'
+                : running ? '继续输入：Enter 排到下一轮，Ctrl/⌘+Enter 在下一步介入' : modelState.composerPlaceholder}
               aria-label="消息输入框"
-              disabled={!canChat}
+              disabled={!canChat || !composerWorkspaceId}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={onComposerKeyDown}
             />
@@ -644,8 +645,18 @@ function reasoningEffortLabel(value: 'none' | 'low' | 'medium' | 'high' | 'xhigh
   return { none: '无', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' }[value];
 }
 
-function EmptyConversation({ modelState }: { modelState: ChatModelState }): React.JSX.Element {
-  return <div className="empty-conversation"><span><Sparkles size={21} /></span><h2>{modelState.emptyTitle}</h2><p>{modelState.emptyDescription}</p></div>;
+function EmptyConversation({
+  modelState,
+  workspaceSelected
+}: {
+  modelState: ChatModelState;
+  workspaceSelected: boolean;
+}): React.JSX.Element {
+  const title = workspaceSelected ? modelState.emptyTitle : '请先打开工作区';
+  const description = workspaceSelected
+    ? modelState.emptyDescription
+    : '打开工作区后才能创建会话和启动 Runtime。';
+  return <div className="empty-conversation"><span><Sparkles size={21} /></span><h2>{title}</h2><p>{description}</p></div>;
 }
 
 function toConversationNode(message: RuntimeMessage): ConversationNode {

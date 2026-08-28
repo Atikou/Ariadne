@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { parse as parseToml, stringify as stringifyToml, type TomlTable } from 'smol-toml';
 import { z } from 'zod';
 import { modelInferenceProfileSchema, type ModelInferenceProfile } from '@ariadne/protocol/public';
@@ -75,7 +75,6 @@ const persistedProviderFileSchema = z.object({
   encryptedApiKey: encryptedApiKeySchema.optional()
 }).strict();
 const persistedAgentSettingsBase = {
-  schemaVersion: z.literal(3),
   revision: z.number().int().positive(),
   routingStrategy: agentRoutingStrategySchema,
   localModelRoots: z.array(z.string().min(1).max(32_768).refine(
@@ -84,16 +83,16 @@ const persistedAgentSettingsBase = {
 };
 const persistedAgentSettingsSchema = z.object({
   ...persistedAgentSettingsBase,
+  schemaVersion: z.literal(4),
   permissionMode: z.enum(AGENT_PERMISSION_MODES),
   customPermissions: customPermissionsSchema,
-  workspaceRoot: absoluteWorkspacePathSchema,
   workspaceAccess: z.enum(['read', 'write']),
-  workspaces: z.array(persistedWorkspaceSchema).min(1).max(32),
+  workspaces: z.array(persistedWorkspaceSchema).max(32),
   providers: z.record(agentProviderIdSchema, persistedProviderSchema),
   runtimePolicy: runtimePolicySnapshotSchema
 }).strict();
 const persistedAgentSettingsFileSchema = z.object({
-  schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+  schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
   revision: z.number().int().positive().optional(),
   routingStrategy: agentRoutingStrategySchema,
   localModelRoots: z.array(z.string().min(1).max(32_768).refine(
@@ -103,10 +102,14 @@ const persistedAgentSettingsFileSchema = z.object({
   customPermissions: customPermissionsSchema.optional(),
   workspaceRoot: absoluteWorkspacePathSchema.optional(),
   workspaceAccess: z.enum(['read', 'write']).optional(),
-  workspaces: z.array(persistedWorkspaceSchema).min(1).max(32).optional(),
+  workspaces: z.array(persistedWorkspaceSchema).max(32).optional(),
   providers: z.partialRecord(agentProviderIdSchema, persistedProviderFileSchema),
   runtimePolicy: runtimePolicySnapshotSchema.optional()
-}).strict();
+}).strict().superRefine((settings, context) => {
+  if (settings.schemaVersion === 4 && settings.workspaceRoot !== undefined) {
+    context.addIssue({ code: 'custom', path: ['workspaceRoot'], message: 'schemaVersion 4 does not use workspaceRoot.' });
+  }
+});
 
 type PersistedAgentSettings = z.infer<typeof persistedAgentSettingsSchema>;
 
@@ -137,7 +140,6 @@ export interface RuntimeAgentSettings {
   routingStrategy: AgentSettingsView['routingStrategy'];
   permissionMode: AgentPermissionMode;
   permissions: RuntimeAgentPermissionProfile;
-  workspaceRoot: string;
   workspaceAccess: 'read' | 'write';
   workspaces: AgentWorkspaceSettingsView[];
   localModelRoots: string[];
@@ -158,10 +160,9 @@ export class AgentSettingsRepository {
   constructor(
     private readonly filePath: string,
     private readonly cipher: SecretCipher,
-    private readonly defaultWorkspaceRoot: string,
-    private readonly legacyJsonPath?: string
+    private readonly legacyJsonPath = join(dirname(filePath), 'agent-settings.json')
   ) {
-    this.settings = createDefaultAgentSettings(defaultWorkspaceRoot);
+    this.settings = createDefaultAgentSettings();
   }
 
   async initialize(): Promise<void> {
@@ -175,22 +176,22 @@ export class AgentSettingsRepository {
     }
 
     try {
-      this.settings = parsePersistedAgentSettings(parseToml(raw), this.defaultWorkspaceRoot);
-    } catch {
+      this.settings = parsePersistedAgentSettings(parseToml(raw));
+    } catch (error) {
+      console.warn('Ariadne settings validation failed.', error instanceof Error ? error.message : error);
       await this.backupInvalidFile(this.filePath);
-      this.settings = createDefaultAgentSettings(this.defaultWorkspaceRoot);
+      this.settings = createDefaultAgentSettings();
     }
     await this.queueWrite(this.settings);
   }
 
   getView(): AgentSettingsView {
     return {
-      schemaVersion: 3,
+      schemaVersion: 4,
       revision: this.settings.revision,
       routingStrategy: this.settings.routingStrategy,
       permissionMode: this.settings.permissionMode,
       customPermissions: structuredClone(this.settings.customPermissions),
-      workspaceRoot: this.settings.workspaceRoot,
       workspaceAccess: this.settings.workspaceAccess,
       workspaces: this.settings.workspaces.map((workspace) => ({ ...workspace })),
       localModelRoots: [...this.settings.localModelRoots],
@@ -213,9 +214,10 @@ export class AgentSettingsRepository {
       routingStrategy: this.settings.routingStrategy,
       permissionMode: this.settings.permissionMode,
       permissions: resolveRuntimePermissionProfile(this.settings.permissionMode, this.settings.customPermissions),
-      workspaceRoot: this.settings.workspaceRoot,
       workspaceAccess: this.settings.workspaceAccess,
-      workspaces: this.settings.workspaces.map((workspace) => ({ ...workspace })),
+      workspaces: this.settings.workspaces
+        .filter((workspace) => workspace.archivedAt === undefined)
+        .map((workspace) => ({ ...workspace })),
       localModelRoots: [...this.settings.localModelRoots],
       providers: mapProviders(this.settings, (provider) => {
         const apiKey = this.tryDecrypt(provider.encryptedApiKey);
@@ -274,7 +276,7 @@ export class AgentSettingsRepository {
         }
         const next = persistedAgentSettingsSchema.parse({
           ...mutated,
-          schemaVersion: 3,
+          schemaVersion: 4,
           revision: this.settings.revision + 1
         });
         await this.writeSnapshot(next);
@@ -329,7 +331,6 @@ export class AgentSettingsRepository {
     workspaceId: string,
     archivedAt = new Date()
   ): Promise<AgentSettingsView> {
-    if (workspaceId === 'primary') throw new Error('默认会话目录不能归档。');
     const archivedAtIso = archivedAt.toISOString();
     await this.commitSettings((current) => updateWorkspace(current, workspaceId, (workspace) => {
       if (workspace.archivedAt) return workspace;
@@ -352,28 +353,27 @@ export class AgentSettingsRepository {
   }
 
   private async initializeMissingSettings(): Promise<void> {
-    if (this.legacyJsonPath) {
-      let legacyRaw: string | undefined;
+    let legacyRaw: string | undefined;
+    try {
+      legacyRaw = await readFile(this.legacyJsonPath, 'utf8');
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+    }
+    if (legacyRaw !== undefined) {
       try {
-        legacyRaw = await readFile(this.legacyJsonPath, 'utf8');
+        this.settings = parsePersistedAgentSettings(JSON.parse(legacyRaw));
       } catch (error) {
-        if (!isMissingFile(error)) throw error;
-      }
-      if (legacyRaw !== undefined) {
-        try {
-          this.settings = parsePersistedAgentSettings(JSON.parse(legacyRaw), this.defaultWorkspaceRoot);
-        } catch {
-          await this.backupInvalidFile(this.legacyJsonPath);
-          this.settings = createDefaultAgentSettings(this.defaultWorkspaceRoot);
-          await this.queueWrite(this.settings);
-          return;
-        }
+        console.warn('Legacy Ariadne settings validation failed.', error instanceof Error ? error.message : error);
+        await this.backupInvalidFile(this.legacyJsonPath);
+        this.settings = createDefaultAgentSettings();
         await this.queueWrite(this.settings);
-        await rename(this.legacyJsonPath, `${this.legacyJsonPath}.migrated-${Date.now()}`);
         return;
       }
+      await this.queueWrite(this.settings);
+      await rename(this.legacyJsonPath, `${this.legacyJsonPath}.migrated-${Date.now()}`);
+      return;
     }
-    this.settings = createDefaultAgentSettings(this.defaultWorkspaceRoot);
+    this.settings = createDefaultAgentSettings();
     await this.queueWrite(this.settings);
   }
 
@@ -411,7 +411,7 @@ export class AgentSettingsRepository {
         if (samePersistedSettings(mutated, this.settings)) return;
         const next = persistedAgentSettingsSchema.parse({
           ...mutated,
-          schemaVersion: 3,
+          schemaVersion: 4,
           revision: this.settings.revision + 1
         });
         await this.writeSnapshot(next);
@@ -473,7 +473,6 @@ function applySettingsOperations(
         }
         next.workspaceAccess = workspaceAccessFor(next.permissionMode, next.customPermissions);
         next.workspaces = normalizeWorkspaceCatalog(
-          next.workspaceRoot,
           next.workspaceAccess,
           next.workspaces
         );
@@ -503,14 +502,6 @@ function applySettingsOperations(
       case 'runtimePolicy.replace':
         next.runtimePolicy = structuredClone(operation.policy);
         break;
-      case 'workspace.select':
-        next.workspaceRoot = resolve(operation.rootPath);
-        next.workspaces = normalizeWorkspaceCatalog(
-          next.workspaceRoot,
-          next.workspaceAccess,
-          next.workspaces
-        );
-        break;
     }
   }
   return next;
@@ -520,21 +511,20 @@ function samePersistedSettings(left: PersistedAgentSettings, right: PersistedAge
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function createDefaultAgentSettings(defaultWorkspaceRoot: string): PersistedAgentSettings {
+function createDefaultAgentSettings(): PersistedAgentSettings {
   const customPermissions: AgentCustomPermissions = {
     approvalPolicy: 'risk-based',
     sandboxMode: 'workspace-write',
     allowedPermissions: [...AGENT_TOOL_PERMISSIONS]
   };
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     revision: 1,
     routingStrategy: 'cloud-first',
     permissionMode: 'request',
     customPermissions,
-    workspaceRoot: defaultWorkspaceRoot,
     workspaceAccess: 'write',
-    workspaces: [{ workspaceId: 'primary', rootPath: resolve(defaultWorkspaceRoot), access: 'write' }],
+    workspaces: [],
     localModelRoots: [],
     providers: Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => [id, {
       enabled: true,
@@ -556,25 +546,25 @@ function mapProviders<T>(
   return Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => [id, project(settings.providers[id])])) as Record<AgentProviderId, T>;
 }
 
-function parsePersistedAgentSettings(input: unknown, defaultWorkspaceRoot: string): PersistedAgentSettings {
+function parsePersistedAgentSettings(input: unknown): PersistedAgentSettings {
   const parsed = persistedAgentSettingsFileSchema.parse(input);
-  const defaults = createDefaultAgentSettings(defaultWorkspaceRoot);
+  const { workspaceRoot: _retiredWorkspaceRoot, ...supported } = parsed;
+  const defaults = createDefaultAgentSettings();
   const permissionMode = parsed.permissionMode ?? defaults.permissionMode;
   const customPermissions = parsed.customPermissions ?? defaults.customPermissions;
-  const workspaceRoot = resolve(parsed.workspaceRoot ?? defaults.workspaceRoot);
   const workspaceAccess = parsed.permissionMode
     ? workspaceAccessFor(permissionMode, customPermissions)
     : parsed.workspaceAccess ?? defaults.workspaceAccess;
+  const workspaces = migrateWorkspaceCatalog(parsed, workspaceAccess);
   return persistedAgentSettingsSchema.parse({
     ...defaults,
-    ...parsed,
-    schemaVersion: 3,
-    revision: parsed.revision ?? 1,
+    ...supported,
+    schemaVersion: 4,
+    revision: (parsed.revision ?? 1) + (parsed.schemaVersion === 4 ? 0 : 1),
     permissionMode,
     customPermissions,
-    workspaceRoot,
     workspaceAccess,
-    workspaces: normalizeWorkspaceCatalog(workspaceRoot, workspaceAccess, parsed.workspaces ?? []),
+    workspaces: normalizeWorkspaceCatalog(workspaceAccess, workspaces),
     providers: Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => {
       const saved = parsed.providers[id];
       return [id, saved
@@ -596,7 +586,6 @@ function toTomlDocument(settings: PersistedAgentSettings): TomlTable {
     revision: settings.revision,
     routingStrategy: settings.routingStrategy,
     permissionMode: settings.permissionMode,
-    workspaceRoot: settings.workspaceRoot,
     workspaceAccess: settings.workspaceAccess,
     localModelRoots: settings.localModelRoots,
     customPermissions: structuredClone(settings.customPermissions),
@@ -652,19 +641,11 @@ function workspaceAccessFor(mode: AgentPermissionMode, custom: AgentCustomPermis
 }
 
 function normalizeWorkspaceCatalog(
-  primaryRoot: string,
   access: 'read' | 'write',
   workspaces: readonly AgentWorkspaceSettingsView[]
 ): AgentWorkspaceSettingsView[] {
-  const normalizedPrimaryRoot = resolve(primaryRoot);
-  const existingPrimary = workspaces.find((workspace) => workspace.workspaceId === 'primary');
-  const result: AgentWorkspaceSettingsView[] = [{
-    workspaceId: 'primary',
-    rootPath: normalizedPrimaryRoot,
-    access,
-    ...workspaceLifecycleMetadata(existingPrimary)
-  }];
-  const workspaceIds = new Set(['primary']);
+  const result: AgentWorkspaceSettingsView[] = [];
+  const workspaceIds = new Set<string>();
   for (const workspace of workspaces) {
     const rootPath = resolve(workspace.rootPath);
     if (workspaceIds.has(workspace.workspaceId)
@@ -676,14 +657,28 @@ function normalizeWorkspaceCatalog(
   return result;
 }
 
-function workspaceLifecycleMetadata(
-  workspace: AgentWorkspaceSettingsView | undefined
-): Pick<AgentWorkspaceSettingsView, 'pinned' | 'archivedAt'> {
-  if (!workspace) return {};
-  return {
-    ...(workspace.pinned ? { pinned: true } : {}),
-    ...(workspace.archivedAt ? { archivedAt: workspace.archivedAt } : {})
-  };
+function migrateWorkspaceCatalog(
+  parsed: z.infer<typeof persistedAgentSettingsFileSchema>,
+  access: 'read' | 'write'
+): AgentWorkspaceSettingsView[] {
+  const candidates = (parsed.workspaces ?? []).map((workspace) => {
+    if (workspace.workspaceId !== 'primary') return workspace;
+    return {
+      ...workspace,
+      workspaceId: workspaceIdForRoot(workspace.rootPath)
+    };
+  });
+  if (parsed.workspaceRoot) {
+    const rootPath = resolve(parsed.workspaceRoot);
+    if (!candidates.some((workspace) => sameWorkspaceRoot(workspace.rootPath, rootPath))) {
+      candidates.unshift({
+        workspaceId: workspaceIdForRoot(rootPath),
+        rootPath,
+        access
+      });
+    }
+  }
+  return normalizeWorkspaceCatalog(access, candidates);
 }
 
 function updateWorkspace(

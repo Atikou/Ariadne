@@ -26,7 +26,6 @@ export interface SessionPurgeResult {
 
 export interface SessionPrivacyPurgerDeps {
   dataDir: string;
-  workspaceRoot: string;
   memoryDb: DatabaseManager;
   toolsDbPath?: string;
   traceCatalog: TraceCatalog;
@@ -56,7 +55,6 @@ export function purgeSessionPrivacy(
 
   const artifacts = cleanupSessionArtifacts({
     dataDir: deps.dataDir,
-    workspaceRoot: deps.workspaceRoot,
     sessionId,
     runIds,
     deleteTimeline: deps.policy.privacy.deleteActivityRunsOnSessionDelete,

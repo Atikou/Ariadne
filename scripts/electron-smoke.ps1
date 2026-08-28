@@ -110,6 +110,15 @@ $stdoutPath = Join-Path $artifactRoot "electron-runtime-smoke.stdout.log"
 $stderrPath = Join-Path $artifactRoot "electron-runtime-smoke.stderr.log"
 $smokeDataRoot = Join-Path ([IO.Path]::GetTempPath()) ("AriadneSmoke-" + [guid]::NewGuid().ToString("N"))
 $workspaceRoot = Join-Path $smokeDataRoot "workspace"
+$workspaceIdentity = [IO.Path]::GetFullPath($workspaceRoot).ToLowerInvariant()
+$workspaceHasher = [Security.Cryptography.SHA256]::Create()
+try {
+  $workspaceHashBytes = $workspaceHasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($workspaceIdentity))
+} finally {
+  $workspaceHasher.Dispose()
+}
+$workspaceHash = ($workspaceHashBytes | ForEach-Object { $_.ToString("x2") }) -join ""
+$workspaceId = "workspace-" + $workspaceHash.Substring(0, 20)
 $providerReadyPath = Join-Path $smokeDataRoot "provider-ready.json"
 $providerStatePath = Join-Path $smokeDataRoot "provider-state.json"
 $providerPfxPath = Join-Path $smokeDataRoot "provider.pfx"
@@ -144,7 +153,8 @@ $environmentNames = @(
   "ARIADNE_SMOKE_PROVIDER_BASE_URL",
   "ARIADNE_SMOKE_PROVIDER_MODEL",
   "ARIADNE_SMOKE_PROVIDER_STATE",
-  "ARIADNE_WORKSPACE_ROOT",
+  "ARIADNE_SMOKE_WORKSPACE_ROOT",
+  "ARIADNE_SMOKE_WORKSPACE_ID",
   "ARIADNE_RUNTIME_NODE_EXECUTABLE",
   "NODE_EXTRA_CA_CERTS",
   "DEEPSEEK_API_KEY",
@@ -186,7 +196,8 @@ try {
       "--state", $providerStatePath,
       "--ready", $providerReadyPath,
       "--pfx", $providerPfxPath,
-      "--passphrase", $providerPassphrase
+      "--passphrase", $providerPassphrase,
+      "--workspace-id", $workspaceId
     ) -RedirectStandardOutput $providerStdoutPath -RedirectStandardError $providerStderrPath
   $providerDeadline = [DateTime]::UtcNow.AddSeconds(15)
   while (-not (Test-Path -LiteralPath $providerReadyPath -PathType Leaf)) {
@@ -208,7 +219,8 @@ try {
   $env:ARIADNE_SMOKE_PROVIDER_BASE_URL = [string]$providerReady.baseUrl
   $env:ARIADNE_SMOKE_PROVIDER_MODEL = $providerModel
   $env:ARIADNE_SMOKE_PROVIDER_STATE = $providerStatePath
-  $env:ARIADNE_WORKSPACE_ROOT = $workspaceRoot
+  $env:ARIADNE_SMOKE_WORKSPACE_ROOT = $workspaceRoot
+  $env:ARIADNE_SMOKE_WORKSPACE_ID = $workspaceId
   $env:ARIADNE_RUNTIME_NODE_EXECUTABLE = $nodePath
   $env:NODE_EXTRA_CA_CERTS = $providerCertificatePath
   $env:OPENAI_API_KEY = "ariadne-electron-smoke-key"

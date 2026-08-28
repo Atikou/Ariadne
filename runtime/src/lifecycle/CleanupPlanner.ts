@@ -10,7 +10,7 @@ import {
   estimateDbRowBytes,
 } from "./dbRowCleanup.js";
 import { ActivityRunStore } from "../agent/timeline/ActivityRunStore.js";
-import { listSessionAgentStorageRoots } from "../agent/timeline/SessionAgentStorage.js";
+import { listWorkspaceSessionStorageRoots } from "../agent/timeline/WorkspaceSessionStorage.js";
 import { fileAgeDays, walkFiles } from "./fsUtils.js";
 import type { LifecyclePolicy } from "./types.js";
 import type {
@@ -33,7 +33,6 @@ const RISK_ORDER: Record<CleanupRisk, number> = { low: 0, medium: 1, high: 2 };
 
 export interface CleanupPlannerDeps {
   dataDir: string;
-  workspaceRoot: string;
   traceFile: string;
   tracesDir: string;
   notificationFile: string;
@@ -373,11 +372,7 @@ export class CleanupPlanner {
     now: number,
     activeRuns: Set<string>,
   ): void {
-    const storageRoots = [
-      ...listSessionAgentStorageRoots(this.deps.dataDir),
-      this.deps.workspaceRoot,
-    ];
-    for (const storageRoot of new Set(storageRoots)) {
+    for (const storageRoot of listWorkspaceSessionStorageRoots(this.deps.dataDir)) {
       const store = new ActivityRunStore(storageRoot);
       for (const runId of store.listRunIds()) {
         if (activeRuns.has(runId)) continue;
@@ -386,7 +381,7 @@ export class CleanupPlanner {
         if (manifest.pinned) continue;
         if (manifest.status === "running" || manifest.status === "pending") continue;
 
-        const runDir = path.join(storageRoot, ".agent", "runs", runId);
+        const runDir = path.join(storageRoot, "runs", runId);
         const summaryFile = path.join(runDir, "summary.md");
         if (!existsSync(summaryFile)) continue;
 

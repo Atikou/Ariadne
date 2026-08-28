@@ -1,5 +1,5 @@
 import { app, Menu, Notification, shell, Tray } from 'electron';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import type { RuntimeCapabilityRequest } from '@ariadne/protocol/host';
 import type {
   AgentSettingsMutation,
@@ -31,7 +31,7 @@ import { McpRemoteService } from './runtime/mcp-remote-service';
 import { PreferencesCoordinator } from './services/preferences-coordinator';
 import { MainWindowController } from './windows/main-window';
 import { RendererSource } from './windows/renderer-source';
-import { createDesktopRuntimeConfiguration, resolveDefaultWorkspaceRoot } from './runtime/runtime-configuration';
+import { createDesktopRuntimeConfiguration } from './runtime/runtime-configuration';
 import { RuntimeSupervisor } from './runtime/runtime-supervisor';
 import { runElectronSmokeTest } from './smoke/electron-smoke';
 import { shouldRestartRuntimeForAgentSettings } from './settings/agent-settings-effects';
@@ -45,17 +45,10 @@ export class ApplicationController {
   private removeIpcHandlers: (() => void) | null = null;
   private removeApprovalNotificationEvents: (() => void) | null = null;
   private readonly state = new StateRepository(join(app.getPath('userData'), 'state.json'));
-  private readonly defaultWorkspaceRoot = resolveDefaultWorkspaceRoot({
-    appPath: app.getAppPath(),
-    userDataPath: app.getPath('userData'),
-    packaged: app.isPackaged
-  });
   private readonly secretCipher = new ElectronSafeStorageCipher();
   private readonly agentSettings = new AgentSettingsRepository(
     join(app.getPath('userData'), 'settings.toml'),
-    this.secretCipher,
-    this.defaultWorkspaceRoot,
-    join(app.getPath('userData'), 'agent-settings.json')
+    this.secretCipher
   );
   private readonly mcpOAuthVault = new McpOAuthCredentialVault(
     join(app.getPath('userData'), 'mcp-oauth-vault.json'),
@@ -78,10 +71,7 @@ export class ApplicationController {
     this.gameActivity
   );
   private readonly preferences = new PreferencesCoordinator(this.state, this.systemCapabilities);
-  private readonly workspaceFiles = new WorkspaceFileService([{
-    workspaceId: 'primary',
-    rootPath: this.defaultWorkspaceRoot
-  }]);
+  private readonly workspaceFiles = new WorkspaceFileService([]);
   private readonly terminals = new TerminalSessionService((workspaceId) => (
     this.workspaceFiles.getRoot(workspaceId)
   ));
@@ -186,11 +176,22 @@ export class ApplicationController {
       this.mcpOAuthVault.initialize(),
       this.agentPersistenceKeyRing.initialize()
     ]);
+    if (process.env.ARIADNE_SMOKE_TEST === '1') {
+      const smokeWorkspaceRoot = process.env.ARIADNE_SMOKE_WORKSPACE_ROOT;
+      const expectedWorkspaceId = process.env.ARIADNE_SMOKE_WORKSPACE_ID;
+      if (!smokeWorkspaceRoot || !isAbsolute(smokeWorkspaceRoot) || !expectedWorkspaceId) {
+        throw new Error('Electron smoke workspace identity is not configured.');
+      }
+      const opened = await this.agentSettings.addWorkspaceRoot(smokeWorkspaceRoot);
+      if (opened.workspace.workspaceId !== expectedWorkspaceId) {
+        throw new Error('Electron smoke workspace identity does not match settings authority.');
+      }
+    }
     const initialRuntimeSettings = this.agentSettings.getRuntimeSettings();
     this.workspaceFiles.setWorkspaces(initialRuntimeSettings.workspaces);
     this.browser.configure(
       initialRuntimeSettings.runtimePolicy.browser,
-      initialRuntimeSettings.workspaces[0]?.workspaceId ?? 'primary'
+      null
     );
     await this.mcpRemote.configure(initialRuntimeSettings.runtimePolicy.mcp.servers);
     this.runtime.configure(this.createRuntimeConfiguration());
@@ -219,9 +220,11 @@ export class ApplicationController {
       });
     });
     await this.mainWindow.waitUntilRendererLoaded();
-    void this.runtime.start().catch(() => {
-      console.error('Runtime was unavailable during application startup.');
-    });
+    if (initialRuntimeSettings.workspaces.length > 0) {
+      void this.runtime.start().catch(() => {
+        console.error('Runtime was unavailable during application startup.');
+      });
+    }
     this.tray = await this.createTray();
     window.on('show', () => this.updateTrayMenu());
     window.on('hide', () => this.updateTrayMenu());
@@ -262,9 +265,7 @@ export class ApplicationController {
       if (!result.ok) return result;
       try {
         await this.applyCommittedAgentSettings(result.settings, result.effect, mutation.operations);
-        if (mutation.operations.some((operation) => (
-          operation.kind === 'permissions.set' || operation.kind === 'workspace.select'
-        ))) {
+        if (mutation.operations.some((operation) => operation.kind === 'permissions.set')) {
           this.notifyWorkspaceSettingsChanged(result.settings);
         }
         return result;
@@ -300,17 +301,29 @@ export class ApplicationController {
 
   private async archiveWorkspace(request: AgentWorkspaceRequest): Promise<AgentSettingsView> {
     return this.runAgentSettingsOperation(async () => {
+      const checkpoint = this.agentSettings.createCheckpoint();
       const saved = await this.agentSettings.archiveWorkspace(request.workspaceId);
-      this.notifyWorkspaceSettingsChanged(saved);
-      return saved;
+      try {
+        await this.applyAllAgentSettings(saved);
+        this.notifyWorkspaceSettingsChanged(saved);
+        return saved;
+      } catch (error) {
+        return this.rollbackAgentSettings(checkpoint, error);
+      }
     });
   }
 
   private async restoreWorkspace(request: AgentWorkspaceRequest): Promise<AgentSettingsView> {
     return this.runAgentSettingsOperation(async () => {
+      const checkpoint = this.agentSettings.createCheckpoint();
       const saved = await this.agentSettings.restoreWorkspace(request.workspaceId);
-      this.notifyWorkspaceSettingsChanged(saved);
-      return saved;
+      try {
+        await this.applyAllAgentSettings(saved);
+        this.notifyWorkspaceSettingsChanged(saved);
+        return saved;
+      } catch (error) {
+        return this.rollbackAgentSettings(checkpoint, error);
+      }
     });
   }
 
@@ -325,30 +338,47 @@ export class ApplicationController {
     operations: readonly AgentSettingsOperation[]
   ): Promise<void> {
     const changesWorkspaceBoundary = operations.some((operation) => (
-      operation.kind === 'permissions.set' || operation.kind === 'workspace.select'
+      operation.kind === 'permissions.set'
     ));
     const changesRuntimePolicy = operations.some((operation) => operation.kind === 'runtimePolicy.replace');
-    if (changesWorkspaceBoundary) this.workspaceFiles.setWorkspaces(saved.workspaces);
+    const activeWorkspaces = saved.workspaces.filter((workspace) => workspace.archivedAt === undefined);
+    if (changesWorkspaceBoundary) this.workspaceFiles.setWorkspaces(activeWorkspaces);
     if (changesWorkspaceBoundary || changesRuntimePolicy) {
       this.browser.configure(
         saved.runtimePolicy.browser,
-        saved.workspaces[0]?.workspaceId ?? 'primary'
+        null
       );
     }
     if (changesRuntimePolicy) await this.mcpRemote.configure(saved.runtimePolicy.mcp.servers);
     if (shouldRestartRuntimeForAgentSettings(effect)) {
-      await this.runtime.restart(this.createRuntimeConfiguration());
+      await this.synchronizeRuntime();
     }
   }
 
   private async applyAllAgentSettings(saved: AgentSettingsView): Promise<void> {
-    this.workspaceFiles.setWorkspaces(saved.workspaces);
+    const activeWorkspaces = saved.workspaces.filter((workspace) => workspace.archivedAt === undefined);
+    this.workspaceFiles.setWorkspaces(activeWorkspaces);
     this.browser.configure(
       saved.runtimePolicy.browser,
-      saved.workspaces[0]?.workspaceId ?? 'primary'
+      null
     );
     await this.mcpRemote.configure(saved.runtimePolicy.mcp.servers);
-    await this.runtime.restart(this.createRuntimeConfiguration());
+    await this.synchronizeRuntime();
+  }
+
+  private async synchronizeRuntime(): Promise<void> {
+    const configuration = this.createRuntimeConfiguration();
+    if (configuration.workspaces.length === 0) {
+      await this.runtime.stop('user_request');
+      this.runtime.configure(configuration);
+      return;
+    }
+    if (this.runtime.getStatus().availability === 'stopped') {
+      this.runtime.configure(configuration);
+      await this.runtime.start();
+      return;
+    }
+    await this.runtime.restart(configuration);
   }
 
   private async rollbackAgentSettings(

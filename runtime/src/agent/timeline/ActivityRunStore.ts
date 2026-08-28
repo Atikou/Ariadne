@@ -15,7 +15,7 @@ import type { RunActivityDetail } from "@ariadne/protocol/public";
 import type { ActivityAgentRun, ActivityRunManifest, AgentActivityEvent } from "./types.js";
 
 export function activityRunDir(storageRoot: string, runId: string): string {
-  return path.join(storageRoot, ".agent", "runs", runId);
+  return path.join(storageRoot, "runs", runId);
 }
 
 export function buildActivityRunManifest(
@@ -194,7 +194,7 @@ export class ActivityRunStore {
 
   /** 列出所有 timeline run 目录 id。 */
   listRunIds(): string[] {
-    const root = path.join(this.storageRoot, ".agent", "runs");
+    const root = path.join(this.storageRoot, "runs");
     if (!existsSync(root)) return [];
     return readdirSync(root, { withFileTypes: true })
       .filter((d) => d.isDirectory())

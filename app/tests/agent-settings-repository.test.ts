@@ -57,11 +57,11 @@ describe('AgentSettingsRepository', () => {
     const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-'));
     temporaryDirectories.push(directory);
     const file = join(directory, 'settings.toml');
-    const repository = new AgentSettingsRepository(file, cipher, directory);
+    const repository = new AgentSettingsRepository(file, cipher);
     await repository.initialize();
 
     const defaults = repository.getView();
-    expect(defaults.schemaVersion).toBe(3);
+    expect(defaults.schemaVersion).toBe(4);
     expect(defaults.revision).toBe(1);
     expect(defaults.routingStrategy).toBe('cloud-first');
     expect(defaults.runtimePolicy).toMatchObject({
@@ -77,9 +77,8 @@ describe('AgentSettingsRepository', () => {
     });
     expect(parseToml(await readFile(file, 'utf8'))).toMatchObject({
       permissionMode: 'request',
-      workspaceRoot: directory,
       workspaceAccess: 'write',
-      workspaces: [{ workspaceId: 'primary', rootPath: directory, access: 'write' }]
+      workspaces: []
     });
 
     await expectApplied(repository.mutate({
@@ -111,22 +110,19 @@ describe('AgentSettingsRepository', () => {
       workspace: { rootPath: openedWorkspace, access: 'write' }
     });
     expect(repository.getRuntimeSettings()).toMatchObject({
-      workspaceRoot: directory,
       workspaceAccess: 'write',
       workspaces: [
-        { workspaceId: 'primary', rootPath: directory, access: 'write' },
         { rootPath: openedWorkspace, access: 'write' }
       ]
     });
     await expect(repository.addWorkspaceRoot(openedWorkspace)).resolves.toMatchObject({ added: false });
-    expect(repository.getRuntimeSettings().workspaces).toHaveLength(2);
+    expect(repository.getRuntimeSettings().workspaces).toHaveLength(1);
     expect(repository.getRuntimeSettings().providers.openai.apiKey).toBe('sk-test-not-a-real-secret');
 
     const beforeWorkspaceUpdate = repository.getView();
     const workspaceMutation = await expectApplied(repository.mutate({
       expectedRevision: beforeWorkspaceUpdate.revision,
       operations: [
-        { kind: 'workspace.select', rootPath: join(directory, 'chosen-workspace') },
         {
           kind: 'permissions.set',
           mode: 'custom',
@@ -140,15 +136,13 @@ describe('AgentSettingsRepository', () => {
     }));
     expect(workspaceMutation.settings.revision).toBe(beforeWorkspaceUpdate.revision + 1);
     expect(repository.getRuntimeSettings()).toMatchObject({
-      workspaceRoot: join(directory, 'chosen-workspace'),
       workspaceAccess: 'read',
       workspaces: [
-        { workspaceId: 'primary', rootPath: join(directory, 'chosen-workspace'), access: 'read' },
         { rootPath: openedWorkspace, access: 'read' }
       ]
     });
 
-    const reloaded = new AgentSettingsRepository(file, cipher, directory);
+    const reloaded = new AgentSettingsRepository(file, cipher);
     await reloaded.initialize();
     expect(reloaded.getView().providers.openai.apiKeyStatus).toBe('configured');
     expect(reloaded.getView().providers.openai).toMatchObject({
@@ -156,10 +150,8 @@ describe('AgentSettingsRepository', () => {
       maxOutputTokens: 8_000
     });
     expect(reloaded.getView()).toMatchObject({
-      workspaceRoot: join(directory, 'chosen-workspace'),
       workspaceAccess: 'read',
       workspaces: [
-        { workspaceId: 'primary', rootPath: join(directory, 'chosen-workspace'), access: 'read' },
         { rootPath: openedWorkspace, access: 'read' }
       ]
     });
@@ -168,7 +160,7 @@ describe('AgentSettingsRepository', () => {
   it('supports an explicit clear action without treating an empty field as a replacement', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-clear-'));
     temporaryDirectories.push(directory);
-    const repository = new AgentSettingsRepository(join(directory, 'settings.toml'), cipher, directory);
+    const repository = new AgentSettingsRepository(join(directory, 'settings.toml'), cipher);
     await repository.initialize();
     const defaults = repository.getView();
     await expectApplied(repository.mutate({
@@ -204,7 +196,7 @@ describe('AgentSettingsRepository', () => {
   it('rejects stale revisions so Chat and Settings cannot overwrite each other', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-revision-'));
     temporaryDirectories.push(directory);
-    const repository = new AgentSettingsRepository(join(directory, 'settings.toml'), cipher, directory);
+    const repository = new AgentSettingsRepository(join(directory, 'settings.toml'), cipher);
     await repository.initialize();
     const sharedSnapshot = repository.getView();
 
@@ -251,8 +243,56 @@ describe('AgentSettingsRepository', () => {
     });
   });
 
-  it('adds newly registered Providers and model profiles without discarding existing settings', async () => {
+  it('migrates schema 3 settings by replacing the retired primary identity without losing its root', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-migration-'));
+    temporaryDirectories.push(directory);
+    const file = join(directory, 'settings.toml');
+    const original = new AgentSettingsRepository(file, cipher);
+    await original.initialize();
+    const currentDocument = parseToml(await readFile(file, 'utf8'));
+    const previousDocument = {
+      schemaVersion: 3,
+      revision: currentDocument.revision,
+      routingStrategy: 'local-first',
+      permissionMode: currentDocument.permissionMode,
+      workspaceRoot: directory,
+      workspaceAccess: currentDocument.workspaceAccess,
+      localModelRoots: currentDocument.localModelRoots,
+      customPermissions: currentDocument.customPermissions,
+      runtimePolicy: currentDocument.runtimePolicy,
+      workspaces: [
+        { workspaceId: 'primary', rootPath: directory, access: 'write' },
+        { workspaceId: 'workspace-kept', rootPath: join(directory, 'kept'), access: 'write' }
+      ],
+      providers: currentDocument.providers
+    };
+    (previousDocument.providers as Record<string, Record<string, unknown>>).openai!.model = 'legacy-openai';
+    await writeFile(file, stringifyToml(previousDocument));
+
+    const repository = new AgentSettingsRepository(file, cipher);
+    await repository.initialize();
+    const migrated = repository.getView();
+    expect(migrated.routingStrategy).toBe('local-first');
+    expect(migrated.schemaVersion).toBe(4);
+    expect(migrated.revision).toBe(2);
+    expect(migrated.runtimePolicy.embedding).toEqual({ provider: 'lexical' });
+    expect(migrated.workspaceAccess).toBe('write');
+    expect(migrated.workspaces).toEqual([
+      {
+        workspaceId: expect.stringMatching(/^workspace-[a-f0-9]{20}$/),
+        rootPath: directory,
+        access: 'write'
+      },
+      { workspaceId: 'workspace-kept', rootPath: join(directory, 'kept'), access: 'write' }
+    ]);
+    expect(migrated.providers.openai.model).toBe('legacy-openai');
+    expect(migrated.providers.kimi.model).toBe('kimi-k3');
+    expect(migrated.providers.deepseek.inference.reasoning?.efforts).toEqual(['high', 'max']);
+    expect(await readFile(file, 'utf8')).toContain('routingStrategy = "local-first"');
+  });
+
+  it('migrates the legacy JSON file without restoring an implicit workspace', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-legacy-json-'));
     temporaryDirectories.push(directory);
     const file = join(directory, 'settings.toml');
     const legacyFile = join(directory, 'agent-settings.json');
@@ -261,35 +301,35 @@ describe('AgentSettingsRepository', () => {
       routingStrategy: 'local-first',
       localModelRoots: [],
       providers: {
-        openai: { enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'legacy-openai', encryptedApiKey: null },
-        deepseek: { enabled: true, baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', encryptedApiKey: null },
-        anthropic: { enabled: false, baseUrl: 'https://api.anthropic.com', model: 'legacy-claude', encryptedApiKey: null }
+        openai: {
+          enabled: true,
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'legacy-openai',
+          encryptedApiKey: cipher.encrypt('legacy-secret')
+        }
       }
     }));
 
-    const repository = new AgentSettingsRepository(file, cipher, directory, legacyFile);
+    const repository = new AgentSettingsRepository(file, cipher);
     await repository.initialize();
-    const migrated = repository.getView();
-    expect(migrated.routingStrategy).toBe('local-first');
-    expect(migrated.schemaVersion).toBe(3);
-    expect(migrated.revision).toBe(1);
-    expect(migrated.runtimePolicy.embedding).toEqual({ provider: 'lexical' });
-    expect(migrated.workspaceRoot).toBe(directory);
-    expect(migrated.workspaceAccess).toBe('write');
-    expect(migrated.workspaces).toEqual([{ workspaceId: 'primary', rootPath: directory, access: 'write' }]);
-    expect(migrated.providers.openai.model).toBe('legacy-openai');
-    expect(migrated.providers.kimi.model).toBe('kimi-k3');
-    expect(migrated.providers.deepseek.inference.reasoning?.efforts).toEqual(['high', 'max']);
-    expect(await readFile(file, 'utf8')).toContain('routingStrategy = "local-first"');
+
+    expect(repository.getView()).toMatchObject({
+      schemaVersion: 4,
+      revision: 2,
+      routingStrategy: 'local-first',
+      workspaces: [],
+      providers: { openai: { model: 'legacy-openai', apiKeyStatus: 'configured' } }
+    });
+    expect(repository.getRuntimeSettings().providers.openai.apiKey).toBe('legacy-secret');
     expect((await readdir(directory)).some((name) => name.startsWith('agent-settings.json.migrated-'))).toBe(true);
     await expect(readFile(legacyFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('upgrades the previous schema-2 TOML in place while preserving encrypted credentials', async () => {
+  it('upgrades schema 2 settings without losing encrypted credentials', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-schema-2-'));
     temporaryDirectories.push(directory);
     const file = join(directory, 'settings.toml');
-    const original = new AgentSettingsRepository(file, cipher, directory);
+    const original = new AgentSettingsRepository(file, cipher);
     await original.initialize();
     const defaults = original.getView();
     await expectApplied(original.mutate({
@@ -306,22 +346,23 @@ describe('AgentSettingsRepository', () => {
     delete previousDocument.revision;
     await writeFile(file, stringifyToml(previousDocument));
 
-    const upgraded = new AgentSettingsRepository(file, cipher, directory);
+    const upgraded = new AgentSettingsRepository(file, cipher);
     await upgraded.initialize();
     expect(upgraded.getView()).toMatchObject({
-      schemaVersion: 3,
-      revision: 1,
+      schemaVersion: 4,
+      revision: 2,
       providers: { openai: { apiKeyStatus: 'configured' } }
     });
     expect(upgraded.getRuntimeSettings().providers.openai.apiKey).toBe('schema-two-secret');
-    expect(parseToml(await readFile(file, 'utf8'))).toMatchObject({ schemaVersion: 3, revision: 1 });
+    expect(parseToml(await readFile(file, 'utf8'))).toMatchObject({ schemaVersion: 4, revision: 2 });
+    expect((await readdir(directory)).some((name) => name.startsWith('settings.toml.invalid-'))).toBe(false);
   });
 
   it('recovers its write queue without exposing settings that failed to persist', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-recovery-'));
     temporaryDirectories.push(directory);
     const file = join(directory, 'settings.toml');
-    const repository = new AgentSettingsRepository(file, cipher, directory);
+    const repository = new AgentSettingsRepository(file, cipher);
     await repository.initialize();
     const initial = repository.getView();
     const checkpoint = repository.createCheckpoint();
@@ -356,7 +397,7 @@ describe('AgentSettingsRepository', () => {
     await writeFile(file, 'routingStrategy = [invalid');
     const now = vi.spyOn(Date, 'now').mockReturnValue(1_234_567_890);
     await mkdir(`${file}.invalid-1234567890`);
-    const repository = new AgentSettingsRepository(file, cipher, directory);
+    const repository = new AgentSettingsRepository(file, cipher);
 
     try {
       await expect(repository.initialize()).rejects.toThrow(
@@ -372,7 +413,7 @@ describe('AgentSettingsRepository', () => {
   it('serializes duplicate workspace additions', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-concurrent-'));
     temporaryDirectories.push(directory);
-    const repository = new AgentSettingsRepository(join(directory, 'settings.toml'), cipher, directory);
+    const repository = new AgentSettingsRepository(join(directory, 'settings.toml'), cipher);
     await repository.initialize();
     const workspaceRoot = join(directory, 'shared-workspace');
 
@@ -388,7 +429,7 @@ describe('AgentSettingsRepository', () => {
   it('persists workspace pinning and keeps archived workspaces recoverable', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-archive-'));
     temporaryDirectories.push(directory);
-    const repository = new AgentSettingsRepository(join(directory, 'settings.toml'), cipher, directory);
+    const repository = new AgentSettingsRepository(join(directory, 'settings.toml'), cipher);
     await repository.initialize();
     const opened = await repository.addWorkspaceRoot(join(directory, 'workspace-to-archive'));
     const workspaceId = opened.workspace.workspaceId;
@@ -403,7 +444,8 @@ describe('AgentSettingsRepository', () => {
       .toMatchObject({ archivedAt: archivedAt.toISOString() });
     expect(repository.getView().workspaces.find((workspace) => workspace.workspaceId === workspaceId))
       .not.toHaveProperty('pinned');
-    const reloaded = new AgentSettingsRepository(join(directory, 'settings.toml'), cipher, directory);
+    expect(repository.getRuntimeSettings().workspaces).toEqual([]);
+    const reloaded = new AgentSettingsRepository(join(directory, 'settings.toml'), cipher);
     await reloaded.initialize();
     expect(reloaded.getView().workspaces.find((workspace) => workspace.workspaceId === workspaceId))
       .toMatchObject({ archivedAt: archivedAt.toISOString() });
@@ -411,31 +453,46 @@ describe('AgentSettingsRepository', () => {
     await reloaded.restoreWorkspace(workspaceId);
     const restored = reloaded.getView().workspaces.find((workspace) => workspace.workspaceId === workspaceId);
     expect(restored).not.toHaveProperty('archivedAt');
+    expect(reloaded.getRuntimeSettings().workspaces).toEqual([
+      expect.objectContaining({ workspaceId })
+    ]);
   });
 
-  it('normalizes duplicate persisted workspace identifiers before Host authorization', async () => {
+  it('replaces retired primary and removes duplicate workspace identifiers during schema 3 migration', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-workspace-ids-'));
     temporaryDirectories.push(directory);
     const file = join(directory, 'settings.toml');
-    const legacyFile = join(directory, 'agent-settings.json');
-    await writeFile(legacyFile, JSON.stringify({
-      schemaVersion: 1,
-      routingStrategy: 'cloud-first',
+    const original = new AgentSettingsRepository(file, cipher);
+    await original.initialize();
+    const currentDocument = parseToml(await readFile(file, 'utf8'));
+    const previousDocument = {
+      schemaVersion: 3,
+      revision: currentDocument.revision,
+      routingStrategy: currentDocument.routingStrategy,
+      permissionMode: currentDocument.permissionMode,
       workspaceRoot: directory,
+      workspaceAccess: currentDocument.workspaceAccess,
+      localModelRoots: currentDocument.localModelRoots,
+      customPermissions: currentDocument.customPermissions,
+      runtimePolicy: currentDocument.runtimePolicy,
       workspaces: [
         { workspaceId: 'primary', rootPath: directory, access: 'write' },
         { workspaceId: 'duplicate', rootPath: join(directory, 'one'), access: 'write' },
         { workspaceId: 'duplicate', rootPath: join(directory, 'two'), access: 'write' }
       ],
-      localModelRoots: [],
-      providers: {}
-    }));
-    const repository = new AgentSettingsRepository(file, cipher, directory, legacyFile);
+      providers: currentDocument.providers
+    };
+    await writeFile(file, stringifyToml(previousDocument));
+    const repository = new AgentSettingsRepository(file, cipher);
 
     await repository.initialize();
 
     expect(repository.getView().workspaces).toEqual([
-      { workspaceId: 'primary', rootPath: directory, access: 'write' },
+      {
+        workspaceId: expect.stringMatching(/^workspace-[a-f0-9]{20}$/),
+        rootPath: directory,
+        access: 'write'
+      },
       { workspaceId: 'duplicate', rootPath: join(directory, 'one'), access: 'write' }
     ]);
   });

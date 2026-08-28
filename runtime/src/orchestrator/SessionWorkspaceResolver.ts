@@ -1,5 +1,5 @@
 import type { ContextManager } from "../context/ContextManager.js";
-import { sessionAgentStorageRoot } from "../agent/timeline/SessionAgentStorage.js";
+import { workspaceSessionStorageRoot } from "../agent/timeline/WorkspaceSessionStorage.js";
 
 export interface SessionWorkspaceResolverDeps {
   workspaceRoot: string;
@@ -32,7 +32,11 @@ export class SessionWorkspaceResolver {
   }
 
   activityRootForSession(sessionId: string): string {
-    return sessionAgentStorageRoot(this.deps.activityDataRoot, sessionId);
+    return workspaceSessionStorageRoot(
+      this.deps.activityDataRoot,
+      this.workspaceForSession(sessionId),
+      sessionId,
+    );
   }
 
   projectIdForSession(sessionId?: string, fallback?: string): string {

@@ -19,23 +19,6 @@ export interface DesktopRuntimeConfigurationInput {
   environment?: NodeJS.ProcessEnv;
 }
 
-interface DefaultWorkspaceRootInput {
-  appPath: string;
-  userDataPath: string;
-  packaged: boolean;
-  environment?: NodeJS.ProcessEnv;
-}
-
-export function resolveDefaultWorkspaceRoot(input: DefaultWorkspaceRootInput): string {
-  const configured = input.packaged
-    ? undefined
-    : (input.environment ?? process.env).ARIADNE_WORKSPACE_ROOT?.trim();
-  if (configured) return requireAbsoluteEnvironmentPath('ARIADNE_WORKSPACE_ROOT', configured);
-  return input.packaged
-    ? resolve(input.userDataPath, 'workspace')
-    : resolve(input.appPath, '..');
-}
-
 export function createDesktopRuntimeConfiguration(
   input: DesktopRuntimeConfigurationInput
 ): RuntimeSupervisorOptions {
@@ -84,7 +67,6 @@ export function createDesktopRuntimeConfiguration(
   delete environment.ARIADNE_MODEL_ROOTS;
   delete environment.ARIADNE_RUNTIME_PROFILE;
   delete environment.ARIADNE_WORKSPACE_ROOT;
-
   const modelProviders = AGENT_PROVIDER_IDS.map((providerId) => {
     const definition = AGENT_PROVIDER_CATALOG[providerId];
     const {

@@ -39,7 +39,6 @@ export type { SessionPurgeResult } from "./SessionPrivacyPurger.js";
 
 export interface DataLifecycleServiceDeps {
   dataDir: string;
-  workspaceRoot: string;
   traceFile: string;
   notificationFile: string;
   schedulerJournalFile: string;
@@ -67,7 +66,6 @@ export class DataLifecycleService {
     this.policy = loadLifecyclePolicy(deps.dataDir);
     this.inventory = new StorageInventoryService({
       dataDir: deps.dataDir,
-      workspaceRoot: deps.workspaceRoot,
       traceFile: deps.traceFile,
       notificationFile: deps.notificationFile,
       schedulerJournalFile: deps.schedulerJournalFile,
@@ -77,7 +75,6 @@ export class DataLifecycleService {
     this.journal = new CleanupJournal(deps.dataDir);
     this.pathGuard = new LifecyclePathGuard({
       dataDir: deps.dataDir,
-      workspaceRoot: deps.workspaceRoot,
     });
   }
 
@@ -195,7 +192,6 @@ export class DataLifecycleService {
   onSessionDeleted(sessionId: string, runIds: string[]): { runIds: string[]; bytesFreed: number } {
     const result = cleanupSessionArtifacts({
       dataDir: this.deps.dataDir,
-      workspaceRoot: this.deps.workspaceRoot,
       sessionId,
       runIds,
       deleteTimeline: this.policy.privacy.deleteActivityRunsOnSessionDelete,
@@ -206,7 +202,6 @@ export class DataLifecycleService {
   onRunDeleted(runId: string, sessionId?: string): RunArtifactCleanupResult {
     return deleteRunArtifacts({
       dataDir: this.deps.dataDir,
-      workspaceRoot: this.deps.workspaceRoot,
       runId,
       sessionId,
       removeTimeline: this.policy.privacy.deleteActivityRunsOnSessionDelete,
@@ -220,7 +215,6 @@ export class DataLifecycleService {
     return purgeSessionPrivacy(
       {
         dataDir: this.deps.dataDir,
-        workspaceRoot: this.deps.workspaceRoot,
         memoryDb: this.deps.memoryDb,
         toolsDbPath: this.deps.toolsDbPath,
         traceCatalog: this.deps.traceCatalog,
@@ -237,7 +231,6 @@ export class DataLifecycleService {
     return new CleanupPlanner(
       {
         dataDir: this.deps.dataDir,
-        workspaceRoot: this.deps.workspaceRoot,
         traceFile: this.deps.traceFile,
         tracesDir: this.deps.tracesDir,
         notificationFile: this.deps.notificationFile,

@@ -17,6 +17,24 @@ afterEach(async () => {
 });
 
 describe('RuntimeSupervisor', () => {
+  it('keeps Runtime stopped when no workspace is configured', async () => {
+    const options = createSupervisorOptions(
+      path.resolve(process.cwd(), 'tests', 'fixtures', 'runtime-fixture.cjs'),
+      process.env,
+      []
+    );
+    options.workspaces = [];
+    const supervisor = new RuntimeSupervisor(options);
+    supervisors.push(supervisor);
+
+    expect(supervisor.getStatus().availability).toBe('stopped');
+    await expect(supervisor.start()).rejects.toMatchObject({
+      code: 'runtime_workspace_missing',
+      retryable: false
+    });
+    expect(supervisor.getStatus().availability).toBe('stopped');
+  });
+
   it('owns the real Runtime child and exposes only public command results', async () => {
     const supervisor = createSupervisor(
       path.resolve(process.cwd(), '..', 'runtime', 'dist', 'entry', 'runtime-process.js')

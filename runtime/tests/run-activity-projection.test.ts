@@ -141,7 +141,7 @@ describe("run activity graph", () => {
       operation: "shell",
     });
     expect(readFileSync(
-      path.join(workspaceRoot, ".agent", "runs", "run-2", "raw-tool-calls.jsonl"),
+      path.join(workspaceRoot, "runs", "run-2", "raw-tool-calls.jsonl"),
       "utf8",
     )).not.toContain("secret-value");
   });

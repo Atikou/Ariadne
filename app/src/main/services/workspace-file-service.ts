@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { readdir, realpath } from 'node:fs/promises';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { WorkspaceDirectoryListing, WorkspaceDirectoryRequest } from '@shared/contract';
@@ -26,12 +26,7 @@ export class WorkspaceFileService {
   }
 
   setWorkspaces(workspaces: readonly WorkspaceFileRoot[]): void {
-    if (workspaces.length < 1 || workspaces.length > MAX_WORKSPACES) {
-      throw new Error('Workspace catalog must contain between 1 and 32 entries.');
-    }
-    if (!workspaces.some((workspace) => workspace.workspaceId === 'primary')) {
-      throw new Error('Workspace catalog must contain the primary workspace.');
-    }
+    if (workspaces.length > MAX_WORKSPACES) throw new Error('Workspace catalog cannot exceed 32 entries.');
 
     const identities = new Set<string>();
     const lexicalRoots = new Set<string>();
@@ -56,7 +51,6 @@ export class WorkspaceFileService {
     const canonicalRoots = new Set<string>();
     for (const workspace of workspaces) {
       const rootPath = resolve(workspace.rootPath);
-      mkdirSync(rootPath, { recursive: true });
       const canonicalRoot = realpathSync.native(rootPath);
       const canonicalIdentity = pathIdentity(canonicalRoot);
       if (canonicalRoots.has(canonicalIdentity)) {
