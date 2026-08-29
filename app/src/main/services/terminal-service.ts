@@ -10,10 +10,13 @@ import { spawn } from 'node-pty';
 import type {
   CreateTerminalSessionRequest,
   ResizeTerminalRequest,
+  SignalTerminalRequest,
+  TerminalRecoveryRecord,
   TerminalSession,
   WriteTerminalRequest
 } from '@shared/contract';
 import { IPC_CHANNELS } from '@shared/ipc';
+import type { TerminalSessionJournal } from '../persistence/terminal-session-journal';
 
 const MAX_SESSIONS_PER_RENDERER = 8;
 
@@ -33,7 +36,10 @@ export class TerminalSessionService {
   private readonly removeOutputListener: () => void;
   private readonly removeDoneListener: () => void;
 
-  public constructor(private readonly resolveWorkingDirectory: (workspaceId: string) => string) {
+  public constructor(
+    private readonly resolveWorkingDirectory: (workspaceId: string) => string,
+    private readonly journal: TerminalSessionJournal
+  ) {
     this.removeOutputListener = this.registry.onOutput(({ snapshot, chunk }) => {
       const owner = this.ownerFor(snapshot);
       if (!owner || owner.isDestroyed()) return;
@@ -48,17 +54,38 @@ export class TerminalSessionService {
       if (owner && !owner.isDestroyed()) {
         owner.send(IPC_CHANNELS.terminalExit, { sessionId: snapshot.id, work: snapshot });
       }
+      void this.journal.finish(snapshot.id, {
+        status: requireTerminalStatus(snapshot.status),
+        ...(snapshot.exitCode === undefined ? {} : { exitCode: snapshot.exitCode }),
+        ...(snapshot.detail === undefined ? {} : { detail: snapshot.detail })
+      }).catch((error: unknown) => {
+        console.error('Unable to persist terminal completion.', error);
+      });
       this.sessionOwners.delete(snapshot.id);
       this.releaseOwnerIfIdle(Number(snapshot.owner.ownerId));
     });
   }
 
-  public create(owner: WebContents, request: CreateTerminalSessionRequest): TerminalSession {
+  public async initialize(): Promise<void> {
+    await this.journal.initialize();
+  }
+
+  public listRecoveryRecords(): TerminalRecoveryRecord[] {
+    return this.journal.list();
+  }
+
+  public async create(owner: WebContents, request: CreateTerminalSessionRequest): Promise<TerminalSession> {
     if (process.platform !== 'win32') throw new Error('PowerShell and CMD terminals require Windows.');
     const cwd = this.resolveWorkingDirectory(request.workspaceId);
     const shell = resolveShell(request.shell);
     this.owners.set(owner.id, owner);
     this.watchOwner(owner);
+    await this.journal.start({
+      sessionId: request.sessionId,
+      workspaceId: request.workspaceId,
+      shell: request.shell,
+      ...(request.restartOf === undefined ? {} : { restartOf: request.restartOf })
+    });
 
     let cancelled = false;
     let work: LiveWorkSnapshot;
@@ -114,6 +141,10 @@ export class TerminalSessionService {
       }
       });
     } catch (error) {
+      await this.journal.finish(request.sessionId, {
+        status: 'failed',
+        detail: error instanceof Error ? error.message.slice(0, 4_096) : String(error).slice(0, 4_096)
+      });
       this.releaseOwnerIfIdle(owner.id);
       throw error;
     }
@@ -133,6 +164,11 @@ export class TerminalSessionService {
       columns: request.columns,
       rows: request.rows
     });
+  }
+
+  public async signal(ownerId: number, request: SignalTerminalRequest): Promise<void> {
+    const owner = this.ownerForId(ownerId, request.sessionId);
+    await this.registry.signal(owner, request.sessionId, request.signal);
   }
 
   public async close(ownerId: number, sessionId: string): Promise<void> {
@@ -155,6 +191,7 @@ export class TerminalSessionService {
     this.ownerDestroyedListeners.clear();
     this.owners.clear();
     this.sessionOwners.clear();
+    await this.journal.flush();
   }
 
   private ownerFor(snapshot: LiveWorkSnapshot): WebContents | undefined {
@@ -195,6 +232,13 @@ export class TerminalSessionService {
     }
     this.owners.delete(ownerId);
   }
+}
+
+function requireTerminalStatus(status: LiveWorkSnapshot['status']): TerminalRecoveryRecord['status'] {
+  if (status === 'running' || status === 'stopping') {
+    throw new Error('terminal_completion_status_invalid');
+  }
+  return status;
 }
 
 function terminalOwner(ownerId: number, workspaceId: string): LiveWorkOwner {

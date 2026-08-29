@@ -21,6 +21,7 @@ import {
   closeTerminalRequestSchema,
   createTerminalSessionRequestSchema,
   resizeTerminalRequestSchema,
+  signalTerminalRequestSchema,
   agentInputDeliveryOutboxSettleRequestSchema,
   parseAgentInputDeliveryOutboxStageRequest,
   runtimeDesktopRequestSchema,
@@ -96,6 +97,9 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
   });
   const terminalResizeListener = createValidatedTerminalListener(dependencies, resizeTerminalRequestSchema, (event, request) => {
     return dependencies.terminals.resize(event.sender.id, request);
+  });
+  const terminalSignalListener = createValidatedTerminalListener(dependencies, signalTerminalRequestSchema, (event, request) => {
+    return dependencies.terminals.signal(event.sender.id, request);
   });
   const terminalCloseListener = createValidatedTerminalListener(dependencies, closeTerminalRequestSchema, (event, request) => {
     return dependencies.terminals.close(event.sender.id, request.sessionId);
@@ -305,8 +309,13 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     trusted(event);
     return dependencies.terminals.create(event.sender, createTerminalSessionRequestSchema.parse(input));
   });
+  ipcMain.handle(IPC_CHANNELS.terminalRecoveryList, (event) => {
+    trusted(event);
+    return dependencies.terminals.listRecoveryRecords();
+  });
   ipcMain.on(IPC_CHANNELS.terminalWrite, terminalWriteListener);
   ipcMain.on(IPC_CHANNELS.terminalResize, terminalResizeListener);
+  ipcMain.on(IPC_CHANNELS.terminalSignal, terminalSignalListener);
   ipcMain.on(IPC_CHANNELS.terminalClose, terminalCloseListener);
 
   ipcMain.handle(IPC_CHANNELS.windowHide, (event) => {
@@ -336,6 +345,7 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     removeSpeechEvents();
     ipcMain.removeListener(IPC_CHANNELS.terminalWrite, terminalWriteListener);
     ipcMain.removeListener(IPC_CHANNELS.terminalResize, terminalResizeListener);
+    ipcMain.removeListener(IPC_CHANNELS.terminalSignal, terminalSignalListener);
     ipcMain.removeListener(IPC_CHANNELS.terminalClose, terminalCloseListener);
     for (const renderer of dependencies.mainWindow.getPrivilegedRendererContents()) {
       void dependencies.terminals.closeOwnedBy(renderer.id);

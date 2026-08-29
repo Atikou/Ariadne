@@ -12,8 +12,16 @@ describe('terminal session lifecycle', () => {
     expect(panel).toContain('startedShells.has(value)');
     expect(panel).toContain('key={`${value}-${workspaceId}-${restartKeys[value]}`}');
     expect(panel).toContain("active={activeShell === value}");
-    expect(panel).toContain('}, [onMetadata, services, shell, workspaceId]);');
+    expect(panel).toContain('}, [onMetadata, restartOf, services, shell, workspaceId]);');
     expect(styles).toContain('.terminal-viewport.is-active { display: block; }');
+  });
+
+  it('surfaces Main-crash recovery without replaying terminal commands', async () => {
+    const panel = await readFile(join(rendererRoot, 'modules', 'terminal', 'TerminalPanel.tsx'), 'utf8');
+    expect(panel).toContain('services.terminal.listRecoveryRecords()');
+    expect(panel).toContain('命令不会自动重放');
+    expect(panel).toContain('显式重启最近终端');
+    expect(panel).toContain('...(restartOf === undefined ? {} : { restartOf })');
   });
 
   it('updates live xterm canvases when the global theme changes', async () => {

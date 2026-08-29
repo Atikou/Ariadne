@@ -49,6 +49,7 @@ export interface SandboxProcessHandle {
 export interface SandboxProcessLease extends SandboxProcessHandle {
   writeStdin(chunk: string | Buffer): Promise<void>;
   endStdin(): Promise<void>;
+  signal(signal: 'interrupt' | 'terminate' | 'kill'): Promise<void>;
 }
 
 export interface ProcessSandbox {

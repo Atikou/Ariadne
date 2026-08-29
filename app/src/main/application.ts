@@ -18,6 +18,7 @@ import { AgentPersistenceKeyRingStore } from './persistence/agent-persistence-ke
 import { McpOAuthCredentialVault } from './persistence/mcp-oauth-credential-vault';
 import { ElectronSafeStorageCipher } from './persistence/secret-cipher';
 import { StateRepository } from './persistence/state-repository';
+import { TerminalSessionJournal } from './persistence/terminal-session-journal';
 import { registerIpcHandlers } from './ipc/register-ipc';
 import {
   ElectronAutoLaunchService,
@@ -83,9 +84,13 @@ export class ApplicationController {
   );
   private readonly preferences = new PreferencesCoordinator(this.state, this.systemCapabilities);
   private readonly workspaceFiles = new WorkspaceFileService([]);
-  private readonly terminals = new TerminalSessionService((workspaceId) => (
-    this.workspaceFiles.getRoot(workspaceId)
-  ));
+  private readonly terminalJournal = new TerminalSessionJournal(
+    join(app.getPath('userData'), 'terminal-sessions.json')
+  );
+  private readonly terminals = new TerminalSessionService(
+    (workspaceId) => this.workspaceFiles.getRoot(workspaceId),
+    this.terminalJournal
+  );
   private readonly browser = new BrowserService({
     audit: (event) => {
       console.info('[browser-audit]', JSON.stringify(event));
@@ -195,7 +200,8 @@ export class ApplicationController {
       this.agentSettings.initialize(),
       this.agentInputDeliveryOutbox.initialize(),
       this.mcpOAuthVault.initialize(),
-      this.agentPersistenceKeyRing.initialize()
+      this.agentPersistenceKeyRing.initialize(),
+      this.terminals.initialize()
     ]);
     await this.speech.initialize(this.state.getPreferences().speech);
     if (process.env.ARIADNE_SMOKE_TEST === '1') {

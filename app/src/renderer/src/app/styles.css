@@ -970,6 +970,7 @@ kbd { padding: 2px 5px; color: var(--text-3); background: var(--bg-1); border: 1
 /* Native terminal shell retained alongside the restored desktop workspace. */
 .terminal-panel { display: grid; width: 100%; height: 100%; min-width: 0; min-height: 0; grid-template-rows: 33px minmax(0, 1fr); overflow: hidden; background: var(--bg-1); }
 .terminal-toolbar { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 10px; padding: 0 7px; background: var(--bg-2); border-bottom: 1px solid var(--border-subtle); }
+.terminal-recovery { display: flex; align-items: center; gap: 8px; padding: 7px 10px; color: var(--warning); background: color-mix(in srgb, var(--warning) 9%, var(--bg-2)); border-bottom: 1px solid color-mix(in srgb, var(--warning) 28%, var(--border-subtle)); font-size: 11px; }.terminal-recovery span { flex: 1; }.terminal-recovery button { flex: 0 0 auto; }
 .terminal-shell-switcher { display: flex; align-items: center; gap: 2px; }
 .terminal-shell-switcher button { display: flex; height: 25px; align-items: center; gap: 5px; padding: 0 7px; color: var(--text-3); background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm); font-size: 10px; cursor: pointer; }
 .terminal-shell-switcher button:hover { color: var(--text-1); background: var(--bg-hover); }

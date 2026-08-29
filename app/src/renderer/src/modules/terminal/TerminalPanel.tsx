@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { RotateCw, SquareTerminal } from 'lucide-react';
+import { RotateCw, SquareTerminal, TriangleAlert } from 'lucide-react';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XtermTerminal, type ITheme } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
-import type { TerminalShell } from '@shared/contract';
+import type { TerminalRecoveryRecord, TerminalShell } from '@shared/contract';
 import type { FeaturePanelProps, ModuleServices } from '@renderer/core/modules/module-contract';
 
 type TerminalStatus = 'starting' | 'running' | 'exited' | 'error';
@@ -18,7 +18,9 @@ interface TerminalSessionViewProps {
   shell: TerminalShell;
   active: boolean;
   services: ModuleServices;
+  restartOf?: string | undefined;
   onMetadata(shell: TerminalShell, metadata: SessionMetadata): void;
+  onRestarted(sessionId: string): void;
 }
 
 const SHELLS: ReadonlyArray<{ value: TerminalShell; label: string }> = [
@@ -48,6 +50,8 @@ export function TerminalPanel({ services }: FeaturePanelProps): React.JSX.Elemen
     cmd: initialWorkspaceId
   });
   const [restartKeys, setRestartKeys] = useState<Record<TerminalShell, number>>({ powershell: 0, cmd: 0 });
+  const [restartSources, setRestartSources] = useState<Partial<Record<TerminalShell, string>>>({});
+  const [recoveryRecords, setRecoveryRecords] = useState<TerminalRecoveryRecord[]>([]);
   const [metadata, setMetadata] = useState<Record<TerminalShell, SessionMetadata>>(INITIAL_METADATA);
   const activeMetadata = metadata[activeShell];
   const activeWorkspaceId = sessionWorkspaceIds[activeShell];
@@ -68,6 +72,12 @@ export function TerminalPanel({ services }: FeaturePanelProps): React.JSX.Elemen
       });
     });
     return unsubscribe;
+  }, [services]);
+
+  useEffect(() => {
+    void services.terminal.listRecoveryRecords().then((records) => {
+      setRecoveryRecords(records.filter((record) => record.status === 'interrupted'));
+    }).catch(() => undefined);
   }, [services]);
 
   const updateMetadata = useCallback((shell: TerminalShell, next: SessionMetadata): void => {
@@ -98,6 +108,15 @@ export function TerminalPanel({ services }: FeaturePanelProps): React.JSX.Elemen
     }));
     setMetadata((current) => ({ ...current, [activeShell]: INITIAL_METADATA[activeShell] }));
     setRestartKeys((current) => ({ ...current, [activeShell]: current[activeShell] + 1 }));
+  };
+
+  const restartRecovered = (record: TerminalRecoveryRecord): void => {
+    setSelectedWorkspaceId(record.workspaceId);
+    setSessionWorkspaceIds((current) => ({ ...current, [record.shell]: record.workspaceId }));
+    setStartedShells((current) => new Set([...current, record.shell]));
+    setRestartSources((current) => ({ ...current, [record.shell]: record.sessionId }));
+    setRestartKeys((current) => ({ ...current, [record.shell]: current[record.shell] + 1 }));
+    setActiveShell(record.shell);
   };
 
   return (
@@ -133,6 +152,13 @@ export function TerminalPanel({ services }: FeaturePanelProps): React.JSX.Elemen
           </button>
         </div>
       </header>
+      {recoveryRecords.length > 0 && (
+        <div className="terminal-recovery" role="status">
+          <TriangleAlert size={14} />
+          <span>上次 Main 进程退出时有 {recoveryRecords.length} 个终端被中断，命令不会自动重放。</span>
+          <button type="button" onClick={() => restartRecovered(recoveryRecords[0]!)}>显式重启最近终端</button>
+        </div>
+      )}
       <div className="terminal-session-stack">
         {SHELLS.flatMap(({ value }) => {
           const workspaceId = sessionWorkspaceIds[value];
@@ -143,7 +169,17 @@ export function TerminalPanel({ services }: FeaturePanelProps): React.JSX.Elemen
             shell={value}
             active={activeShell === value}
             services={services}
+            restartOf={restartSources[value]}
             onMetadata={updateMetadata}
+            onRestarted={(sessionId) => {
+              setRestartSources((current) => {
+                if (current[value] !== sessionId) return current;
+                const next = { ...current };
+                delete next[value];
+                return next;
+              });
+              setRecoveryRecords((current) => current.filter((record) => record.sessionId !== sessionId));
+            }}
           />];
         })}
       </div>
@@ -151,7 +187,15 @@ export function TerminalPanel({ services }: FeaturePanelProps): React.JSX.Elemen
   );
 }
 
-function TerminalSessionView({ workspaceId, shell, active, services, onMetadata }: TerminalSessionViewProps): React.JSX.Element {
+function TerminalSessionView({
+  workspaceId,
+  shell,
+  active,
+  services,
+  restartOf,
+  onMetadata,
+  onRestarted
+}: TerminalSessionViewProps): React.JSX.Element {
   const viewportRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XtermTerminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -222,7 +266,8 @@ function TerminalSessionView({ workspaceId, shell, active, services, onMetadata 
       workspaceId,
       shell,
       columns: Math.max(2, terminal.cols),
-      rows: Math.max(1, terminal.rows)
+      rows: Math.max(1, terminal.rows),
+      ...(restartOf === undefined ? {} : { restartOf })
     }).then((session) => {
       if (disposed) {
         services.terminal.close({ sessionId });
@@ -233,6 +278,7 @@ function TerminalSessionView({ workspaceId, shell, active, services, onMetadata 
         throw new Error('终端工作区与请求不一致。');
       }
       sessionReadyRef.current = true;
+      if (restartOf !== undefined) onRestarted(restartOf);
       onMetadata(shell, { status: 'running', cwd: session.cwd });
       if (activeRef.current) {
         fitAndResize(terminal, fitAddon, services, sessionId);
@@ -259,7 +305,7 @@ function TerminalSessionView({ workspaceId, shell, active, services, onMetadata 
       if (terminalRef.current === terminal) terminalRef.current = null;
       if (fitAddonRef.current === fitAddon) fitAddonRef.current = null;
     };
-  }, [onMetadata, services, shell, workspaceId]);
+  }, [onMetadata, restartOf, services, shell, workspaceId]);
 
   useEffect(() => {
     if (!active) return;

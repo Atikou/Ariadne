@@ -41,6 +41,7 @@ internal sealed class InteractiveInputFrame
     public required string Type { get; init; }
     public required string ExecutionId { get; init; }
     public string? DataBase64 { get; init; }
+    public string? Signal { get; init; }
 }
 
 internal sealed class WriteScopeRequest

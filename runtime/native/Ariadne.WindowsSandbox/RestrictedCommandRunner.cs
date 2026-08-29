@@ -7,6 +7,8 @@ internal static class RestrictedCommandRunner
 {
     private const uint TimeoutExitCode = 124;
     private const uint ResidualProcessExitCode = 137;
+    private const uint TerminatedExitCode = 143;
+    private const uint KilledExitCode = 137;
     private static readonly SecurityIdentifier RestrictedCodeSid = new("S-1-5-12");
 
     internal static async Task<NativeExecutionResult> ExecuteAsync(
@@ -114,6 +116,7 @@ internal static class RestrictedCommandRunner
                         "protocol_failure",
                         "interactive execution input is unavailable"),
                     inputStream,
+                    job,
                     request.ExecutionId,
                     stdinCancellation.Token)
                 : WriteInputAsync(inputStream, stdin);
@@ -243,6 +246,7 @@ internal static class RestrictedCommandRunner
     private static async Task RelayInteractiveInputAsync(
         TextReader reader,
         Stream stream,
+        WindowsJobObject job,
         string executionId,
         CancellationToken cancellationToken)
     {
@@ -259,6 +263,20 @@ internal static class RestrictedCommandRunner
                 {
                     stream.Dispose();
                     return;
+                }
+                if (string.Equals(frame.Type, "signal", StringComparison.Ordinal))
+                {
+                    var signal = ExecutionValidator.DecodeInteractiveSignal(frame, executionId);
+                    if (signal == "interrupt")
+                    {
+                        await stream.WriteAsync(new byte[] { 0x03 }, cancellationToken);
+                        await stream.FlushAsync(cancellationToken);
+                    }
+                    else
+                    {
+                        job.Terminate(signal == "kill" ? KilledExitCode : TerminatedExitCode);
+                    }
+                    continue;
                 }
                 var chunk = ExecutionValidator.DecodeInteractiveInput(frame, executionId);
                 await stream.WriteAsync(chunk, cancellationToken);

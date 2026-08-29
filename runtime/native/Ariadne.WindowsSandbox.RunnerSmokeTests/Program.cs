@@ -531,6 +531,26 @@ try
         timeoutResult.TimedOut,
         $"wall_timeout_was_not_enforced:exit={timeoutResult.ExitCode}:stderr={timeoutResult.Stderr}");
 
+    var signalRequest = Request(
+        "workspace-write",
+        workspace,
+        "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 30\"",
+        timeoutMs: 10_000,
+        interactive: true);
+    var signalInput = new StringReader(
+        $"{{\"type\":\"signal\",\"executionId\":\"{signalRequest.ExecutionId}\",\"signal\":\"kill\"}}\n" +
+        $"{{\"type\":\"stdin_end\",\"executionId\":\"{signalRequest.ExecutionId}\"}}\n");
+    var signalResult = await RunAsync(
+        signalRequest,
+        currentSid,
+        writeCapabilitySid,
+        writeCapabilitySid,
+        signalInput);
+    Require(
+        signalResult.ExitCode != 0 && !signalResult.TimedOut,
+        $"interactive_signal_did_not_stop_job:exit={signalResult.ExitCode}:stderr={signalResult.Stderr}");
+    Console.WriteLine("interactive_signal_smoke_ok");
+
     var sentinel = Path.Combine(workspace, "descendant-escaped.txt");
     var treeCommand = $"start \"\" /b cmd.exe /d /s /c \"ping 127.0.0.1 -n 3 ^>nul ^& echo escaped^>\\\"{sentinel}\\\"\"";
     var treeResult = await RunAsync(
@@ -661,7 +681,8 @@ async Task<NativeExecutionResult> RunAsync(
     ExecutionRequest request,
     SecurityIdentifier currentSid,
     SecurityIdentifier writerSid,
-    SecurityIdentifier restrictionSid)
+    SecurityIdentifier restrictionSid,
+    TextReader? interactiveInput = null)
 {
     ExecutionValidator.Validate(request);
     var sink = new CapturingSink();
@@ -673,7 +694,8 @@ async Task<NativeExecutionResult> RunAsync(
             restrictionSid.Value,
             filesystemCapabilitySid.Value,
             RequireWriterMembership: false),
-        sink);
+        sink,
+        interactiveInput);
     Require(sink.StartedCount == 1 && sink.ResultCount == 1, "runner_protocol_terminal_count_invalid");
     Require(sink.OutputBytes <= request.MaxOutputBytes, "runner_protocol_output_limit_invalid");
     return result;
@@ -1230,6 +1252,32 @@ static void VerifyExecutionInputProtocolContract()
             ExecutionId = executionId,
         }, executionId),
         "interactive_end_frame_rejected");
+    foreach (var signal in new[] { "interrupt", "terminate", "kill" })
+    {
+        var signalFrame = new InteractiveInputFrame
+        {
+            Type = "signal",
+            ExecutionId = executionId,
+            Signal = signal,
+        };
+        Require(
+            ExecutionValidator.DecodeInteractiveSignal(signalFrame, executionId) == signal &&
+            !ExecutionValidator.IsInteractiveEnd(signalFrame, executionId),
+            $"interactive_{signal}_signal_frame_rejected");
+    }
+    try
+    {
+        _ = ExecutionValidator.DecodeInteractiveSignal(new InteractiveInputFrame
+        {
+            Type = "signal",
+            ExecutionId = executionId,
+            Signal = "unsupported",
+        }, executionId);
+        throw new InvalidOperationException("unsupported_interactive_signal_was_accepted");
+    }
+    catch (RequestException)
+    {
+    }
     var excessiveToolRoots = Request("read-only", workspace, "echo rejected");
     excessiveToolRoots.ToolReadRoots.AddRange(
         Enumerable.Range(0, 65).Select(index => Path.Combine(workspace, $"tool-{index}")));

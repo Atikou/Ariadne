@@ -162,9 +162,11 @@ $providerProcess = $null
 $boundaryProcess = $null
 $process = $null
 $desktopRecoveryProcess = $null
+$mainCrashKilled = $false
 $environmentNames = @(
   "ARIADNE_SMOKE_TEST",
   "ARIADNE_SMOKE_DESKTOP_DELIVERY_VERIFY",
+  "ARIADNE_SMOKE_FORCE_MAIN_CRASH_AFTER_RESULT",
   "ARIADNE_SMOKE_TEST_OUTPUT",
   "ARIADNE_SMOKE_USER_DATA",
   "ARIADNE_SMOKE_PROVIDER_BASE_URL",
@@ -250,6 +252,7 @@ try {
   $env:ARIADNE_RUNTIME_NODE_EXECUTABLE = $nodePath
   $env:NODE_EXTRA_CA_CERTS = $providerCertificatePath
   $env:OPENAI_API_KEY = "ariadne-electron-smoke-key"
+  $env:ARIADNE_SMOKE_FORCE_MAIN_CRASH_AFTER_RESULT = "1"
   Remove-Item Env:ARIADNE_SMOKE_DESKTOP_DELIVERY_VERIFY -ErrorAction SilentlyContinue
   Remove-Item Env:DEEPSEEK_API_KEY, Env:MOONSHOT_API_KEY, Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
   $boundaryProcess = Start-Process -FilePath $nodePath -PassThru -WindowStyle Hidden `
@@ -269,7 +272,11 @@ try {
   # exit code after the asynchronous crash/restart watcher completes.
   [void]$process.Handle
   $runtimeKillPhase = 0
+  $mainCrashDeadline = [DateTime]::UtcNow.AddMinutes(3)
   while (-not $process.HasExited) {
+    if ([DateTime]::UtcNow -ge $mainCrashDeadline) {
+      throw "Electron smoke did not reach the Main crash boundary before the deadline."
+    }
     if ($runtimeKillPhase -lt 5 -and (Test-Path -LiteralPath $providerStatePath -PathType Leaf)) {
       $providerSnapshot = $null
       try {
@@ -313,6 +320,22 @@ try {
         }
       }
     }
+    if (
+      $runtimeKillPhase -eq 5 `
+      -and (Test-Path -LiteralPath $resultPath -PathType Leaf)
+    ) {
+      $stoppedMain = Stop-Process -Id $process.Id -Force -PassThru
+      if (-not $stoppedMain.WaitForExit(5000)) {
+        throw "Electron smoke Main process did not exit after the recovery boundary kill."
+      }
+      $mainCrashKilled = $true
+    }
+    elseif (Test-Path -LiteralPath $resultPath -PathType Leaf) {
+      $earlyResult = Get-Content -Raw -Encoding UTF8 -LiteralPath $resultPath | ConvertFrom-Json
+      if ($earlyResult.passed -ne $true) {
+        throw "Electron smoke failed before the Main crash boundary."
+      }
+    }
     Start-Sleep -Milliseconds 10
     $process.Refresh()
   }
@@ -321,8 +344,8 @@ try {
   if ($runtimeKillPhase -ne 5) {
     throw "Electron smoke completed only $runtimeKillPhase of 5 Runtime boundary kills."
   }
-  if ($process.ExitCode -ne 0) {
-    throw "Electron smoke test failed with exit code $($process.ExitCode)."
+  if (-not $mainCrashKilled) {
+    throw "Electron smoke did not execute the Main crash boundary."
   }
   if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
     throw "Electron smoke test did not create a result file."
@@ -332,6 +355,7 @@ try {
     throw "Electron smoke result did not pass."
   }
   $env:ARIADNE_SMOKE_DESKTOP_DELIVERY_VERIFY = "1"
+  Remove-Item Env:ARIADNE_SMOKE_FORCE_MAIN_CRASH_AFTER_RESULT -ErrorAction SilentlyContinue
   $desktopRecoveryProcess = Start-Process -FilePath $electronPath -ArgumentList $appRoot `
     -PassThru -WindowStyle Hidden -RedirectStandardOutput $desktopRecoveryStdoutPath `
     -RedirectStandardError $desktopRecoveryStderrPath

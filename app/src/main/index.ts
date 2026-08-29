@@ -75,7 +75,7 @@ if (!hasSingleInstanceLock) {
           console.error('Electron smoke verification failed.', error);
         }
         process.exitCode = exitCode;
-        app.quit();
+        if (process.env.ARIADNE_SMOKE_FORCE_MAIN_CRASH_AFTER_RESULT !== '1') app.quit();
       }
     })
     .catch((error: unknown) => {

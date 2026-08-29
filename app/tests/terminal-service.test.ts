@@ -1,4 +1,7 @@
 import type { WebContents } from 'electron';
+import { mkdtemp } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const pty = vi.hoisted(() => {
@@ -33,6 +36,7 @@ const pty = vi.hoisted(() => {
 vi.mock('node-pty', () => ({ spawn: pty.spawn }));
 
 import { IPC_CHANNELS } from '../src/shared/ipc.js';
+import { TerminalSessionJournal } from '../src/main/persistence/terminal-session-journal.js';
 import { TerminalSessionService } from '../src/main/services/terminal-service.js';
 
 describe('TerminalSessionService live-work boundary', () => {
@@ -41,8 +45,8 @@ describe('TerminalSessionService live-work boundary', () => {
   it('publishes PTY output and completion through the shared cursor lifecycle', async () => {
     const sent: { channel: string; payload: unknown }[] = [];
     const owner = rendererOwner(7, sent);
-    const service = new TerminalSessionService(() => 'E:\\workspace');
-    const session = service.create(owner, {
+    const service = await createService();
+    const session = await service.create(owner, {
       sessionId: '8a74a717-d9c7-4a09-a038-83c138362f1e',
       workspaceId: 'workspace-main',
       shell: 'powershell',
@@ -87,8 +91,8 @@ describe('TerminalSessionService live-work boundary', () => {
   it('kills and joins all PTYs owned by a destroyed renderer', async () => {
     const sent: { channel: string; payload: unknown }[] = [];
     const owner = rendererOwner(8, sent);
-    const service = new TerminalSessionService(() => 'E:\\workspace');
-    service.create(owner, {
+    const service = await createService();
+    await service.create(owner, {
       sessionId: '8a74a717-d9c7-4a09-a038-83c138362f1e',
       workspaceId: 'workspace-main',
       shell: 'cmd',
@@ -106,7 +110,56 @@ describe('TerminalSessionService live-work boundary', () => {
     });
     await service.dispose();
   });
+
+  it('recovers a Main-crashed PTY as interrupted and links an explicit restart', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ariadne-terminal-recovery-'));
+    const journalPath = join(root, 'terminal-sessions.json');
+    const firstJournal = new TerminalSessionJournal(journalPath);
+    const first = new TerminalSessionService(() => 'E:\\workspace', firstJournal);
+    await first.initialize();
+    await first.create(rendererOwner(9, []), {
+      sessionId: '8a74a717-d9c7-4a09-a038-83c138362f1e',
+      workspaceId: 'workspace-main',
+      shell: 'powershell',
+      columns: 80,
+      rows: 24
+    });
+    await firstJournal.flush();
+
+    // A new Main process opens the journal without disposing the old in-memory service.
+    const recoveredJournal = new TerminalSessionJournal(journalPath);
+    const recovered = new TerminalSessionService(() => 'E:\\workspace', recoveredJournal);
+    await recovered.initialize();
+    expect(recovered.listRecoveryRecords()[0]).toMatchObject({
+      sessionId: '8a74a717-d9c7-4a09-a038-83c138362f1e',
+      status: 'interrupted',
+      detail: 'main_process_lost'
+    });
+
+    const restarted = await recovered.create(rendererOwner(10, []), {
+      sessionId: '3ec82c63-a12d-4de0-9f15-bd6847d92fa6',
+      workspaceId: 'workspace-main',
+      shell: 'powershell',
+      columns: 80,
+      rows: 24,
+      restartOf: '8a74a717-d9c7-4a09-a038-83c138362f1e'
+    });
+    expect(restarted.id).toBe('3ec82c63-a12d-4de0-9f15-bd6847d92fa6');
+    expect(recovered.listRecoveryRecords()[0]).toMatchObject({
+      sessionId: restarted.id,
+      restartOf: '8a74a717-d9c7-4a09-a038-83c138362f1e',
+      status: 'running'
+    });
+  });
 });
+
+async function createService(): Promise<TerminalSessionService> {
+  const root = await mkdtemp(join(tmpdir(), 'ariadne-terminal-service-'));
+  const journal = new TerminalSessionJournal(join(root, 'terminal-sessions.json'));
+  const service = new TerminalSessionService(() => 'E:\\workspace', journal);
+  await service.initialize();
+  return service;
+}
 
 function rendererOwner(
   id: number,

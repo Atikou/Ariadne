@@ -436,6 +436,14 @@ export class WindowsNativeSandbox implements InteractiveProcessSandbox {
           executionId,
         }));
       },
+      async signal(signal) {
+        if (!interactive) throw new Error("sandbox_process_not_interactive");
+        await writeHelperFrame(helper, SandboxInteractiveInputFrameSchema.parse({
+          type: "signal",
+          executionId,
+          signal,
+        }));
+      },
     };
   }
 
@@ -643,6 +651,9 @@ function immediateLease(
       throw new Error("sandbox_process_unavailable");
     },
     async endStdin() {},
+    async signal() {
+      throw new Error("sandbox_process_unavailable");
+    },
   };
 }
 
@@ -659,6 +670,9 @@ function failedLease(
       throw new Error("sandbox_process_unavailable");
     },
     async endStdin() {},
+    async signal() {
+      throw new Error("sandbox_process_unavailable");
+    },
   };
 }
 

@@ -81,9 +81,11 @@ const api: AriadneApi = {
       subscribe(IPC_CHANNELS.systemApprovalNavigation, listener)
   },
   terminal: {
+    listRecoveryRecords: () => ipcRenderer.invoke(IPC_CHANNELS.terminalRecoveryList),
     create: (request) => ipcRenderer.invoke(IPC_CHANNELS.terminalCreate, request),
     write: (request) => ipcRenderer.send(IPC_CHANNELS.terminalWrite, request),
     resize: (request) => ipcRenderer.send(IPC_CHANNELS.terminalResize, request),
+    signal: (request) => ipcRenderer.send(IPC_CHANNELS.terminalSignal, request),
     close: (request) => ipcRenderer.send(IPC_CHANNELS.terminalClose, request),
     onOutput: (listener) => subscribe<TerminalOutputEvent>(IPC_CHANNELS.terminalOutput, listener),
     onExit: (listener) => subscribe<TerminalExitEvent>(IPC_CHANNELS.terminalExit, listener)

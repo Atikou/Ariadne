@@ -338,7 +338,8 @@ export const createTerminalSessionRequestSchema = z
     workspaceId: workspaceIdSchema,
     shell: z.enum(['powershell', 'cmd']),
     columns: terminalColumnsSchema,
-    rows: terminalRowsSchema
+    rows: terminalRowsSchema,
+    restartOf: terminalSessionIdSchema.optional()
   })
   .strict();
 
@@ -359,6 +360,13 @@ export const resizeTerminalRequestSchema = z
 
 export const closeTerminalRequestSchema = z
   .object({ sessionId: terminalSessionIdSchema })
+  .strict();
+
+export const signalTerminalRequestSchema = z
+  .object({
+    sessionId: terminalSessionIdSchema,
+    signal: z.enum(['interrupt', 'terminate', 'kill'])
+  })
   .strict();
 
 export const workspaceDirectoryRequestSchema = z

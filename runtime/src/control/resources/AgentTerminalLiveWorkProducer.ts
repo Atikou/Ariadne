@@ -159,7 +159,9 @@ export class AgentTerminalLiveWorkProducer {
           resize: (size) => send({ type: 'resize', ...size }),
           signal: (signal) => {
             if (signal !== 'interrupt') terminationRequested = true;
-            return send({ type: 'signal', signal });
+            return signal === 'interrupt'
+              ? send({ type: 'signal', signal })
+              : lease.signal(signal);
           }
         };
       }

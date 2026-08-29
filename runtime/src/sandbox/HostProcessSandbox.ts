@@ -160,6 +160,15 @@ export class HostProcessSandbox implements InteractiveProcessSandbox {
         stdinEnded = true;
         child?.stdin?.end();
       },
+      async signal(signal) {
+        if (!interactive) throw new Error("sandbox_process_not_interactive");
+        if (signal === "interrupt") {
+          await writeChildInput(child, Buffer.from("\x03", "utf8"));
+          return;
+        }
+        cancelRequested = true;
+        terminateProcessTree(child);
+      },
     };
   }
 }

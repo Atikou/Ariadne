@@ -46,6 +46,7 @@ export interface AgentProcessLease {
   cancel(): void;
   writeStdin(chunk: string | Buffer): Promise<void>;
   endStdin(): Promise<void>;
+  signal(signal: 'interrupt' | 'terminate' | 'kill'): Promise<void>;
 }
 
 export interface AgentProcessSandbox {

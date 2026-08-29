@@ -441,6 +441,19 @@ export interface CreateTerminalSessionRequest {
   shell: TerminalShell;
   columns: number;
   rows: number;
+  restartOf?: string | undefined;
+}
+
+export interface TerminalRecoveryRecord {
+  sessionId: string;
+  workspaceId: string;
+  shell: TerminalShell;
+  status: 'running' | 'completed' | 'failed' | 'killed' | 'interrupted';
+  startedAt: string;
+  updatedAt: string;
+  restartOf?: string | undefined;
+  exitCode?: number | undefined;
+  detail?: string | undefined;
 }
 
 export interface TerminalSession {
@@ -464,6 +477,11 @@ export interface ResizeTerminalRequest {
 
 export interface CloseTerminalRequest {
   sessionId: string;
+}
+
+export interface SignalTerminalRequest {
+  sessionId: string;
+  signal: 'interrupt' | 'terminate' | 'kill';
 }
 
 export interface TerminalOutputEvent {
@@ -561,9 +579,11 @@ export interface AriadneApi {
     onApprovalNavigation(listener: (request: ApprovalNavigationRequest) => void): () => void;
   };
   terminal: {
+    listRecoveryRecords(): Promise<TerminalRecoveryRecord[]>;
     create(request: CreateTerminalSessionRequest): Promise<TerminalSession>;
     write(request: WriteTerminalRequest): void;
     resize(request: ResizeTerminalRequest): void;
+    signal(request: SignalTerminalRequest): void;
     close(request: CloseTerminalRequest): void;
     onOutput(listener: (event: TerminalOutputEvent) => void): () => void;
     onExit(listener: (event: TerminalExitEvent) => void): () => void;

@@ -205,6 +205,11 @@ export const SandboxInteractiveInputFrameSchema = z.discriminatedUnion("type", [
     type: z.literal("stdin_end"),
     executionId: nonEmptyString.max(512),
   }).strict(),
+  z.object({
+    type: z.literal("signal"),
+    executionId: nonEmptyString.max(512),
+    signal: z.enum(["interrupt", "terminate", "kill"]),
+  }).strict(),
 ]);
 export type SandboxInteractiveInputFrame = z.infer<typeof SandboxInteractiveInputFrameSchema>;
 

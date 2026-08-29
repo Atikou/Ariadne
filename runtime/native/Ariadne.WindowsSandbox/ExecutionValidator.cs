@@ -115,11 +115,28 @@ internal static class ExecutionValidator
         {
             return true;
         }
+        if (string.Equals(frame.Type, "signal", StringComparison.Ordinal) && frame.DataBase64 is null)
+        {
+            _ = DecodeInteractiveSignal(frame, executionId);
+            return false;
+        }
         if (!string.Equals(frame.Type, "stdin", StringComparison.Ordinal))
         {
             throw new RequestException("interactive stdin frame type is invalid");
         }
         return false;
+    }
+
+    internal static string DecodeInteractiveSignal(InteractiveInputFrame frame, string executionId)
+    {
+        if (!string.Equals(frame.Type, "signal", StringComparison.Ordinal) ||
+            !string.Equals(frame.ExecutionId, executionId, StringComparison.Ordinal) ||
+            frame.DataBase64 is not null ||
+            frame.Signal is not ("interrupt" or "terminate" or "kill"))
+        {
+            throw new RequestException("interactive signal frame is invalid");
+        }
+        return frame.Signal;
     }
 
     internal static byte[] DecodeStdin(string? stdinBase64)

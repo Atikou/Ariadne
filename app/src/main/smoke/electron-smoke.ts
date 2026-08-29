@@ -99,6 +99,12 @@ interface DesktopRestartDeliveryResult {
   retainedBeforeSettlement: boolean;
   absentFromProjection: boolean;
   settled: boolean;
+  terminalInterruptedRecovered: boolean;
+  terminalRecoveryVisible: boolean;
+  terminalPanelVisible: boolean;
+  terminalExplicitRestartLinked: boolean;
+  terminalRecoverySessionId: string | null;
+  terminalScreenshot: string | null;
   fatalError: string | null;
   completedAt: string;
 }
@@ -1183,7 +1189,7 @@ export async function runElectronSmokeTest(
   } finally {
     window.webContents.removeListener('console-message', onConsoleMessage);
     window.hide();
-    app.quit();
+    if (process.env.ARIADNE_SMOKE_FORCE_MAIN_CRASH_AFTER_RESULT !== '1') app.quit();
   }
 }
 
@@ -1292,6 +1298,12 @@ async function verifyDeliveryDesktopRestart(
     retainedBeforeSettlement: false,
     absentFromProjection: false,
     settled: false,
+    terminalInterruptedRecovered: false,
+    terminalRecoveryVisible: false,
+    terminalPanelVisible: false,
+    terminalExplicitRestartLinked: false,
+    terminalRecoverySessionId: null,
+    terminalScreenshot: null,
     fatalError: null,
     completedAt: new Date().toISOString()
   };
@@ -1359,6 +1371,36 @@ async function verifyDeliveryDesktopRestart(
       await window.ariadne.agentInputDeliveryOutbox.settle({ commandId: record.commandId });
       const settled = !(await window.ariadne.agentInputDeliveryOutbox.list())
         .some((candidate) => candidate.commandId === record.commandId);
+      const terminalRecords = await window.ariadne.terminal.listRecoveryRecords();
+      const interruptedTerminal = terminalRecords.find((candidate) => (
+        candidate.workspaceId === ${JSON.stringify(workspaceId)}
+        && candidate.status === 'interrupted'
+        && candidate.detail === 'main_process_lost'
+      ));
+      const terminalInterruptedRecovered = interruptedTerminal !== undefined;
+      const terminalTab = Array.from(document.querySelectorAll('.module-tab')).find((candidate) => (
+        candidate instanceof HTMLElement
+        && (candidate.dataset.moduleId === 'terminal' || candidate.textContent?.trim() === '终端')
+      ));
+      if (terminalTab instanceof HTMLElement) {
+        terminalTab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      }
+      await delay(100);
+      let recoveryBanner = null;
+      const recoveryDeadline = Date.now() + 10_000;
+      while (Date.now() < recoveryDeadline) {
+        const candidate = document.querySelector('.terminal-recovery');
+        if (candidate instanceof HTMLElement && candidate.textContent?.includes('命令不会自动重放')) {
+          recoveryBanner = candidate;
+          break;
+        }
+        await delay(50);
+      }
+      const terminalRecoveryVisible = recoveryBanner !== null;
+      const terminalPanel = document.querySelector('.terminal-panel');
+      const terminalPanelVisible = terminalPanel instanceof HTMLElement
+        && terminalPanel.getBoundingClientRect().height > 0
+        && getComputedStyle(terminalPanel).visibility !== 'hidden';
       return {
         commandId: record.commandId,
         inputId: record.command.inputId,
@@ -1366,14 +1408,45 @@ async function verifyDeliveryDesktopRestart(
         receiptRecovered,
         retainedBeforeSettlement,
         absentFromProjection,
-        settled
+        settled,
+        terminalInterruptedRecovered,
+        terminalRecoveryVisible,
+        terminalPanelVisible,
+        terminalRecoverySessionId: interruptedTerminal?.sessionId ?? null
       };
     })()`, true) as Omit<DesktopRestartDeliveryResult, 'passed' | 'fatalError' | 'completedAt'>;
     Object.assign(result, observation);
+    const terminalScreenshot = 'terminal-main-crash-recovery.png';
+    await window.webContents.executeJavaScript(
+      'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))',
+      true
+    );
+    await writeFile(join(outputRoot, terminalScreenshot), (await window.webContents.capturePage()).toPNG());
+    result.terminalScreenshot = terminalScreenshot;
+    result.terminalExplicitRestartLinked = await window.webContents.executeJavaScript(`(async () => {
+      const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const restart = document.querySelector('.terminal-recovery button');
+      if (!(restart instanceof HTMLButtonElement)) return false;
+      restart.click();
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        const linked = (await window.ariadne.terminal.listRecoveryRecords()).some((candidate) => (
+          candidate.restartOf === ${JSON.stringify(result.terminalRecoverySessionId)}
+          && candidate.status === 'running'
+        ));
+        if (linked) return true;
+        await delay(50);
+      }
+      return false;
+    })()`, true) as boolean;
     result.passed = result.receiptRecovered
       && result.retainedBeforeSettlement
       && result.absentFromProjection
-      && result.settled;
+      && result.settled
+      && result.terminalInterruptedRecovered
+      && result.terminalRecoveryVisible
+      && result.terminalPanelVisible
+      && result.terminalExplicitRestartLinked;
   } catch (error) {
     result.fatalError = error instanceof Error ? error.stack ?? error.message : String(error);
   }
