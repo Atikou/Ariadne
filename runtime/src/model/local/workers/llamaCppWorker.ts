@@ -123,6 +123,7 @@ async function generate(id: string, input: RuntimeGeneratePayload): Promise<void
           signal: controller.signal,
           stopOnAbortSignal: true,
           maxTokens: input.maxTokens,
+          budgets: { thoughtTokens: 0 },
           temperature: input.temperature,
           onTextChunk: (delta) => send({ id, type: "token", delta }),
         });

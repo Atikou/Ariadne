@@ -1,4 +1,11 @@
-import { useEffect, useRef, type FunctionComponent } from 'react';
+import {
+  Component,
+  useEffect,
+  useRef,
+  type ErrorInfo,
+  type FunctionComponent,
+  type ReactNode
+} from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
 import type { ModuleServices, FeatureModuleDefinition, ModuleId } from './module-contract';
 
@@ -103,8 +110,46 @@ function createPanelAdapter(
 
     return (
       <div ref={hostRef} className="module-panel-host">
-        <FeaturePanel moduleId={definition.id} services={services} />
+        <ModulePanelErrorBoundary moduleId={definition.id} moduleName={definition.name}>
+          <FeaturePanel moduleId={definition.id} services={services} />
+        </ModulePanelErrorBoundary>
       </div>
     );
   };
+}
+
+interface ModulePanelErrorBoundaryProps {
+  moduleId: ModuleId;
+  moduleName: string;
+  children: ReactNode;
+}
+
+interface ModulePanelErrorBoundaryState {
+  error: Error | null;
+}
+
+class ModulePanelErrorBoundary extends Component<
+  ModulePanelErrorBoundaryProps,
+  ModulePanelErrorBoundaryState
+> {
+  state: ModulePanelErrorBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: Error): ModulePanelErrorBoundaryState {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    console.error(`Module ${this.props.moduleId} failed to render`, error, info);
+  }
+
+  render(): ReactNode {
+    if (!this.state.error) return this.props.children;
+    return (
+      <section className="module-panel-error" role="alert">
+        <h2>{this.props.moduleName}暂时无法显示</h2>
+        <p>该模块发生了界面错误，Ariadne 其他功能仍可继续使用。</p>
+        <button type="button" onClick={() => this.setState({ error: null })}>重试</button>
+      </section>
+    );
+  }
 }

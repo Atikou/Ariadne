@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
-import { FolderLock, ListChecks, ShieldCheck } from 'lucide-react';
+import { FolderLock, ListChecks, MessageCircleQuestion, ShieldCheck } from 'lucide-react';
 import type { ModuleServices } from '@renderer/core/modules/module-contract';
 import {
   runtimeRequestErrorMessage,
   useRuntimeSnapshot,
   type RuntimePermissionDecision,
   type RuntimePlanDecision,
+  type RuntimeUserQuestionDecision,
   type RuntimeRun,
   type RuntimeStore
 } from '@renderer/core/runtime/runtime-store';
@@ -14,7 +15,8 @@ import { PlanContractView } from '@renderer/modules/agent-plan/PlanContractView'
 
 type PendingApproval =
   | { kind: 'permission'; id: string; createdAt: string; request: RuntimePermissionDecision }
-  | { kind: 'plan'; id: string; createdAt: string; handoff: RuntimePlanDecision };
+  | { kind: 'plan'; id: string; createdAt: string; handoff: RuntimePlanDecision }
+  | { kind: 'user_question'; id: string; createdAt: string; question: RuntimeUserQuestionDecision };
 
 export function ConversationApprovalCards(
   { services, sessionId }: { services: ModuleServices; sessionId: string | null },
@@ -42,12 +44,24 @@ export function ConversationApprovalCards(
           id: handoff.handoffId,
           createdAt: handoff.createdAt,
           handoff
+        })),
+      ...snapshot.userQuestions
+        .filter((question) => (
+          question.status === 'pending'
+          && belongsToSession(question.sessionId, question.runId)
+        ))
+        .map((question) => ({
+          kind: 'user_question' as const,
+          id: question.decisionId,
+          createdAt: question.createdAt,
+          question
         }))
     ].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }, [
     sessionId,
     snapshot.permissions,
     snapshot.planHandoffs,
+    snapshot.userQuestions,
     snapshot.runs,
   ]);
 
@@ -73,10 +87,73 @@ export function ConversationApprovalCards(
             handoff={current.handoff}
             runtime={services.runtime}
           />}
+          {current.kind === 'user_question' && <UserQuestionAnswer
+            question={current.question}
+            runtime={services.runtime}
+          />}
         </section>;
       })}
     </div>
   );
+}
+
+function UserQuestionAnswer({ question, runtime }: {
+  question: RuntimeUserQuestionDecision;
+  runtime: RuntimeStore;
+}): React.JSX.Element {
+  const [answer, setAnswer] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (content: string): Promise<void> => {
+    const normalized = content.trim();
+    if (submitting || normalized.length === 0) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await runtime.answerUserQuestion(question, normalized);
+    } catch (responseError) {
+      setSubmitting(false);
+      setError(runtimeRequestErrorMessage(responseError, '提交回答失败。'));
+    }
+  };
+
+  return <div className="approval-center-body">
+    <div className="approval-center-title">
+      <strong><MessageCircleQuestion size={16} />{question.headline}</strong>
+      <span>等待回答</span>
+    </div>
+    <p>{question.prompt}</p>
+    {question.options && <div className="approval-center-actions">
+      {question.options.map((option) => <button
+        type="button"
+        className="secondary-button"
+        key={option.optionId}
+        disabled={submitting || !question.actionAvailable}
+        title={option.description}
+        onClick={() => void submit(`${option.optionId}: ${option.label}`)}
+      >{option.label}</button>)}
+    </div>}
+    <textarea
+      className="agent-inbox-edit"
+      aria-label="回答 Agent 问题"
+      value={answer}
+      disabled={submitting || !question.actionAvailable}
+      onChange={(event) => setAnswer(event.target.value)}
+      placeholder="输入其他回答"
+      rows={3}
+    />
+    {!question.actionAvailable && <p className="approval-center-error">当前问题已失效或回答通道不可用。</p>}
+    {error && <p className="approval-center-error">{error}</p>}
+    <div className="approval-center-actions">
+      <button
+        type="button"
+        className="primary-button"
+        disabled={submitting || !question.actionAvailable || answer.trim().length === 0}
+        onClick={() => void submit(answer)}
+      >提交回答</button>
+    </div>
+  </div>;
 }
 
 function PermissionRequestApproval({ request, runtime }: {
@@ -192,5 +269,7 @@ function approvalHeading(kind: PendingApproval['kind']): { title: string; subtit
       return { title: '具体操作授权', subtitle: '确认即将执行的工具和目标' };
     case 'plan':
       return { title: '执行计划确认', subtitle: '确认计划后进入执行阶段' };
+    case 'user_question':
+      return { title: 'Agent 需要你的输入', subtitle: '回答后从同一个持久 Run 继续' };
   }
 }

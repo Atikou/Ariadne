@@ -100,6 +100,13 @@ export type AgentRunEventPayload =
       readonly reason: string;
     }
   | {
+      readonly type: 'run.inference_turn_interrupted';
+      readonly turnId: string;
+      readonly attemptId: string;
+      readonly recoveryDecisionId: string;
+      readonly reason: string;
+    }
+  | {
       readonly type: 'plan.version_created';
       readonly planId: string;
       readonly planVersion: number;

@@ -14,6 +14,7 @@ export type ConversationRunHandoffDerivedIdKind =
 
 export type ConversationAuthorityDerivedIdKind =
   | 'session-created-event'
+  | 'session-updated-event'
   | 'message-accepted-event'
   | 'agent-result-command'
   | 'agent-result-event'
@@ -31,6 +32,7 @@ export async function deriveConversationAuthorityId(
 ): Promise<string> {
   if (![
     'session-created-event',
+    'session-updated-event',
     'message-accepted-event',
     'agent-result-command',
     'agent-result-event',

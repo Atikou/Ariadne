@@ -21,6 +21,9 @@ const MAX_DIRECTIVE_COLLECTION_LENGTH = 256;
 
 export type AgentDirectiveJsonValue = AgentToolJsonValue;
 
+export type AgentSubagentMode = 'one_shot' | 'continuable';
+export const DEFAULT_AGENT_SUBAGENT_PROVIDER_ID = 'ariadne.in_process';
+
 export interface AgentToolInvocationDirective {
   readonly toolCallId: string;
   readonly tool: AgentPinnedToolIdentity;
@@ -32,6 +35,19 @@ export interface AgentToolInvocationDirective {
 export interface AgentSubagentDirective {
   readonly description: string;
   readonly prompt: string;
+  readonly mode: AgentSubagentMode;
+  readonly providerId?: string;
+}
+
+export interface AgentUserQuestionOption {
+  readonly optionId: string;
+  readonly label: string;
+  readonly description?: string;
+}
+
+export interface AgentUserQuestion {
+  readonly prompt: string;
+  readonly options?: readonly AgentUserQuestionOption[];
 }
 
 export type AgentPlanStepImpact =
@@ -69,6 +85,10 @@ export type AgentDirective =
   | {
       readonly kind: 'delegate_subagent';
       readonly subagent: AgentSubagentDirective;
+    }
+  | {
+      readonly kind: 'ask_user';
+      readonly question: AgentUserQuestion;
     }
   | {
       readonly kind: 'checkpoint';
@@ -119,6 +139,14 @@ export type AgentCommittedDirective =
       readonly delegationId: string;
       readonly childRunId: string;
       readonly objectiveDigest: string;
+      readonly mode: AgentSubagentMode;
+      readonly providerId: string;
+    }
+  | {
+      readonly kind: 'ask_user';
+      readonly decisionId: string;
+      readonly questionRef: string;
+      readonly questionDigest: string;
     }
   | {
       readonly kind: 'checkpoint';
@@ -221,7 +249,12 @@ export function assertValidAgentDirective(directive: AgentDirective): void {
       }
       assertExactObjectKeys(
         directive.subagent,
-        ['description', 'prompt'],
+        [
+          'description',
+          'prompt',
+          'mode',
+          ...(directive.subagent.providerId === undefined ? [] : ['providerId'])
+        ],
         'directive.subagent'
       );
       assertBoundedNonEmpty(
@@ -234,6 +267,22 @@ export function assertValidAgentDirective(directive: AgentDirective): void {
         'directive.subagent.prompt',
         MAX_DIRECTIVE_CONTENT_LENGTH
       );
+      if (
+        directive.subagent.mode !== 'one_shot'
+        && directive.subagent.mode !== 'continuable'
+      ) {
+        throw new AgentRunInvariantError('directive.subagent.mode is invalid.');
+      }
+      if (directive.subagent.providerId !== undefined) {
+        assertCanonicalPublicId(
+          directive.subagent.providerId,
+          'directive.subagent.providerId'
+        );
+      }
+      return;
+    case 'ask_user':
+      assertExactObjectKeys(directive, ['kind', 'question'], 'directive');
+      assertUserQuestion(directive.question, 'directive.question');
       return;
     case 'checkpoint':
       assertExactObjectKeys(directive, ['kind', 'reason'], 'directive');
@@ -280,7 +329,7 @@ export function assertValidCommittedAgentDirective(
     } else if (directive.kind === 'delegate_subagent') {
       assertExactObjectKeys(
         directive,
-        ['kind', 'delegationId', 'childRunId', 'objectiveDigest'],
+        ['kind', 'delegationId', 'childRunId', 'objectiveDigest', 'mode', 'providerId'],
         'committedDirective'
       );
       assertCanonicalPublicId(
@@ -295,6 +344,22 @@ export function assertValidCommittedAgentDirective(
         directive.objectiveDigest,
         'committedDirective.objectiveDigest'
       );
+      if (directive.mode !== 'one_shot' && directive.mode !== 'continuable') {
+        throw new AgentRunInvariantError('committedDirective.mode is invalid.');
+      }
+      assertCanonicalPublicId(
+        directive.providerId,
+        'committedDirective.providerId'
+      );
+    } else if (directive.kind === 'ask_user') {
+      assertExactObjectKeys(
+        directive,
+        ['kind', 'decisionId', 'questionRef', 'questionDigest'],
+        'committedDirective'
+      );
+      assertCanonicalPublicId(directive.decisionId, 'committedDirective.decisionId');
+      assertCanonicalPublicId(directive.questionRef, 'committedDirective.questionRef');
+      assertSha256Digest(directive.questionDigest, 'committedDirective.questionDigest');
     } else if (directive.kind === 'respond') {
       assertExactObjectKeys(
         directive,
@@ -414,6 +479,47 @@ export function assertValidCommittedAgentDirective(
     assertUniqueValue(effectIds, candidate.effectId, 'effectId');
     assertUniqueValue(toolCallIds, candidate.toolCallId, 'toolCallId');
     assertUniqueValue(idempotencyKeys, candidate.idempotencyKey, 'idempotencyKey');
+  });
+}
+
+function assertUserQuestion(question: AgentUserQuestion, field: string): void {
+  if (!isPlainObject(question)) {
+    throw new AgentRunInvariantError(`${field} must be a plain object.`);
+  }
+  assertAllowedObjectKeys(question, ['prompt', 'options'], field);
+  if (!Object.prototype.hasOwnProperty.call(question, 'prompt')) {
+    throw new AgentRunInvariantError(`${field} is missing required field "prompt".`);
+  }
+  assertBoundedNonEmpty(question.prompt, `${field}.prompt`, 8_192);
+  if (question.options === undefined) return;
+  if (
+    !Array.isArray(question.options)
+    || question.options.length < 2
+    || question.options.length > 8
+  ) {
+    throw new AgentRunInvariantError(`${field}.options must contain 2 to 8 options.`);
+  }
+  assertDenseDataArray(question.options, `${field}.options`);
+  const optionIds = new Set<string>();
+  question.options.forEach((option, index) => {
+    const path = `${field}.options[${String(index)}]`;
+    if (!isPlainObject(option)) {
+      throw new AgentRunInvariantError(`${path} must be a plain object.`);
+    }
+    assertAllowedObjectKeys(option, ['optionId', 'label', 'description'], path);
+    if (
+      !Object.prototype.hasOwnProperty.call(option, 'optionId')
+      || !Object.prototype.hasOwnProperty.call(option, 'label')
+    ) {
+      throw new AgentRunInvariantError(`${path} is missing a required field.`);
+    }
+    const candidate = option as unknown as AgentUserQuestionOption;
+    assertCanonicalPublicId(candidate.optionId, `${path}.optionId`);
+    assertBoundedNonEmpty(candidate.label, `${path}.label`, 256);
+    if (candidate.description !== undefined) {
+      assertBoundedNonEmpty(candidate.description, `${path}.description`, 1_024);
+    }
+    assertUniqueValue(optionIds, candidate.optionId, 'question optionId');
   });
 }
 

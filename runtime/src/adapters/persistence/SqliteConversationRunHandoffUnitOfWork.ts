@@ -28,6 +28,7 @@ import type {
   ConversationAuthorityTransaction,
   ConversationAuthorityUnitOfWork,
   CreateConversationSessionCommit,
+  MutateConversationSessionCommit,
   ProjectConversationAgentStartFailureCommit,
   ProjectConversationAgentResultCommit
 } from '../../control/ports/ConversationAuthorityPersistence.js';
@@ -57,6 +58,9 @@ import {
 import {
   readConversationProjectionRecords
 } from './conversation/projection/SqliteConversationProjectionReader.js';
+import {
+  insertConversationSessionVersion
+} from './conversation/ConversationSessionVersionStore.js';
 import {
   assertMessageContentDigest,
   parseAuthorityCommandRow,
@@ -284,6 +288,31 @@ ConversationProjectionReader {
     ));
   }
 
+  public readMessageVersion(
+    messageId: string,
+    version: number
+  ): Promise<ConversationMessageVersion | null> {
+    assertCanonicalId(messageId, 'message version lookup');
+    if (!Number.isSafeInteger(version) || version < 1) {
+      throw storageInvariant('message_version_lookup_invalid');
+    }
+    return this.scheduleOperation((signal) => this.executeDatabaseTransaction(
+      'read',
+      () => {
+        signal.throwIfAborted();
+        const row = this.database.prepare(
+          `SELECT message_id, version, session_id, workspace_id, role,
+                  payload_json, content_digest, created_at
+           FROM conversation_message_versions WHERE message_id=? AND version=?`
+        ).get(messageId, version) as MessageVersionRow | undefined;
+        return row === undefined
+          ? null
+          : parseMessageVersionRow(row, `message-version:${messageId}:${String(version)}`);
+      },
+      signal
+    ));
+  }
+
   public readSagaByMessage(
     messageId: string,
     messageVersion: number
@@ -445,7 +474,7 @@ class SqliteConversationTransaction implements ConversationAuthorityTransaction 
     this.assertActive();
     assertCanonicalId(sessionId, 'session lookup');
     const row = this.database.prepare(
-      `SELECT session_id, workspace_id, version, created_at, updated_at
+      `SELECT session_id, workspace_id, version, title, status, created_at, updated_at
        FROM conversation_sessions WHERE session_id=?`
     ).get(sessionId) as SessionRow | undefined;
     return row === undefined ? null : parseSessionRow(row, `session:${sessionId}`);
@@ -582,15 +611,18 @@ class SqliteConversationTransaction implements ConversationAuthorityTransaction 
     try {
       this.database.prepare(
         `INSERT INTO conversation_sessions(
-           session_id, workspace_id, version, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?)`
+           session_id, workspace_id, version, title, status, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`
       ).run(
         commit.session.sessionId,
         commit.session.workspaceId,
         commit.session.version,
+        commit.session.title,
+        commit.session.status,
         commit.session.createdAt,
         commit.session.updatedAt
       );
+      insertConversationSessionVersion(this.database, commit.session);
       insertAuthorityReceiptAndEvent(
         this.database,
         commit.receipt,
@@ -603,13 +635,107 @@ class SqliteConversationTransaction implements ConversationAuthorityTransaction 
     }
   }
 
+  public async loadSessionVersion(
+    sessionId: string,
+    version: number
+  ): Promise<ConversationSession | null> {
+    this.assertActive();
+    assertCanonicalId(sessionId, 'session version lookup');
+    if (!Number.isSafeInteger(version) || version < 1) {
+      throw storageInvariant('session_version_lookup_invalid');
+    }
+    const row = this.database.prepare(
+      `SELECT session_id, workspace_id, version, title, status, created_at, updated_at
+       FROM conversation_session_versions WHERE session_id=? AND version=?`
+    ).get(sessionId, version) as SessionRow | undefined;
+    return row === undefined
+      ? null
+      : parseSessionRow(row, `session-version:${sessionId}:${String(version)}`);
+  }
+
+  public async commitMutatedSession(
+    commit: MutateConversationSessionCommit
+  ): Promise<void> {
+    this.beginCommit();
+    assertValidConversationSession(commit.session);
+    assertValidConversationAuthorityReceipt(commit.receipt);
+    assertValidConversationAuthorityEvent(commit.event);
+    if (
+      commit.receipt.kind !== 'conversation.mutate_session'
+      || commit.event.type !== 'conversation.session.updated'
+      || commit.session.version !== commit.expectedSessionVersion + 1
+      || commit.event.sessionVersion !== commit.session.version
+      || commit.receipt.resultingSessionVersion !== commit.session.version
+      || (
+        commit.event.mutation.kind === 'rename'
+          ? commit.session.title !== commit.event.mutation.title
+          : commit.session.status !== commit.event.mutation.status
+      )
+    ) throw authorityStorageCorruption('mutate_session_commit_binding_invalid');
+    const currentRow = this.database.prepare(
+      `SELECT session_id, workspace_id, version, title, status, created_at, updated_at
+       FROM conversation_sessions WHERE session_id=?`
+    ).get(commit.session.sessionId) as SessionRow | undefined;
+    if (currentRow === undefined) {
+      throw new ConversationAuthorityError(
+        'CONVERSATION_SESSION_NOT_FOUND',
+        `Conversation session "${commit.session.sessionId}" does not exist.`
+      );
+    }
+    const current = parseSessionRow(currentRow, `session:${commit.session.sessionId}:mutation-cas`);
+    if (current.workspaceId !== commit.session.workspaceId) {
+      throw new ConversationAuthorityError(
+        'CONVERSATION_WORKSPACE_MISMATCH',
+        'Conversation Session workspace differs at mutation commit.'
+      );
+    }
+    if (current.version !== commit.expectedSessionVersion) {
+      throw new ConversationAuthorityError(
+        'CONVERSATION_SESSION_VERSION_CONFLICT',
+        `Expected Conversation session version ${String(commit.expectedSessionVersion)}, found ${String(current.version)}.`
+      );
+    }
+    try {
+      const updated = this.database.prepare(
+        `UPDATE conversation_sessions
+         SET version=?, title=?, status=?, updated_at=?
+         WHERE session_id=? AND workspace_id=? AND version=?`
+      ).run(
+        commit.session.version,
+        commit.session.title,
+        commit.session.status,
+        commit.session.updatedAt,
+        commit.session.sessionId,
+        commit.session.workspaceId,
+        commit.expectedSessionVersion
+      );
+      if (Number(updated.changes) !== 1) {
+        throw new ConversationAuthorityError(
+          'CONVERSATION_SESSION_VERSION_CONFLICT',
+          'Conversation Session mutation CAS failed.'
+        );
+      }
+      insertConversationSessionVersion(this.database, commit.session);
+      insertAuthorityReceiptAndEvent(
+        this.database,
+        commit.receipt,
+        commit.expectedSessionVersion,
+        commit.event
+      );
+    } catch (error) {
+      if (error instanceof ConversationAuthorityError) throw error;
+      if (isConstraintError(error)) throw authorityCommandConflict(error);
+      throw error;
+    }
+  }
+
   public async commitAcceptedUserMessage(
     commit: AcceptConversationUserMessageCommit
   ): Promise<void> {
     this.beginCommit();
     assertAcceptedMessageCommit(commit);
     const currentRow = this.database.prepare(
-      `SELECT session_id, workspace_id, version, created_at, updated_at
+      `SELECT session_id, workspace_id, version, title, status, created_at, updated_at
        FROM conversation_sessions WHERE session_id=?`
     ).get(commit.session.sessionId) as SessionRow | undefined;
     if (currentRow === undefined) {
@@ -658,6 +784,7 @@ class SqliteConversationTransaction implements ConversationAuthorityTransaction 
           'Conversation Session CAS failed.'
         );
       }
+      insertConversationSessionVersion(this.database, commit.session);
       this.database.prepare(
         `INSERT INTO conversation_message_heads(
            message_id, session_id, workspace_id, latest_version,
@@ -726,7 +853,7 @@ class SqliteConversationTransaction implements ConversationAuthorityTransaction 
     this.beginCommit();
     assertProjectedAssistantTerminalCommit(commit);
     const currentRow = this.database.prepare(
-      `SELECT session_id, workspace_id, version, created_at, updated_at
+      `SELECT session_id, workspace_id, version, title, status, created_at, updated_at
        FROM conversation_sessions WHERE session_id=?`
     ).get(commit.session.sessionId) as SessionRow | undefined;
     if (currentRow === undefined) {
@@ -777,6 +904,7 @@ class SqliteConversationTransaction implements ConversationAuthorityTransaction 
           'Conversation Session Agent result CAS failed.'
         );
       }
+      insertConversationSessionVersion(this.database, commit.session);
       this.database.prepare(
         `INSERT INTO conversation_message_heads(
            message_id, session_id, workspace_id, latest_version,

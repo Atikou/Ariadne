@@ -37,7 +37,8 @@ import { DeferredProjectionWakeEventSink } from './DeferredProjectionWakeEventSi
 import type { AgentProcessSandboxFactory } from '../control/ports/AgentProcessSandbox.js';
 import type { RuntimeCapabilityManifest } from '../ingress/RuntimeCapabilityManifest.js';
 import {
-  compileProductionRuntimeCapabilityManifest
+  compileProductionRuntimeCapabilityManifest,
+  resolveAgentControlRuntimeServices
 } from './ProductionRuntimeCapabilityManifest.js';
 
 export const ARIADNE_RUNTIME_VERSION = '0.1.0';
@@ -134,6 +135,7 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
           : { processSandboxFactory: this.dependencies.processSandboxFactory })
       });
       const capabilityManifest = this.capabilityManifest;
+      const runtimeServices = resolveAgentControlRuntimeServices(capabilityManifest);
       registry.register({
         name: 'capability_manifest',
         close: (context) => capabilityManifest.close(context)
@@ -152,7 +154,10 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
         capabilityManifest,
         hostCapabilities: input.hostCapabilities,
         emitEvent: input.emitEvent,
-        runtimeVersion
+        runtimeVersion,
+        ...(runtimeServices.telemetry === undefined
+          ? {}
+          : { providerTelemetry: runtimeServices.telemetry })
       });
       const application = this.application;
       registry.register({
@@ -179,6 +184,7 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
           runtimeInstanceId: bootstrap.runtimeInstanceId,
           agentAdmissionAuthoritySource: bootstrap.agentAdmissionAuthoritySource,
           modelProviders: bootstrap.modelProviders,
+          subagentProviders: bootstrap.subagentProviders,
           workspaces: bootstrap.workspaces,
           runtimePolicy: bootstrap.runtimePolicy,
           credentialEnvironment: process.env,
@@ -188,7 +194,8 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
             : { modelInferenceGateway: application.modelInferenceGateway }),
           publicEventSink: projectionWakeEventSink,
           hostCapabilities: input.hostCapabilities,
-          capabilityManifest
+          agentToolCatalogSnapshots: capabilityManifest.agentToolCatalogSnapshots,
+          runtimeServices
         });
         const agentControl = this.agentControl;
         registry.register({
@@ -659,15 +666,35 @@ async function attemptShutdownStep(
 }
 
 function initializationErrorCode(error: unknown): string {
-  const structuredCode = typeof error === 'object' && error !== null && 'code' in error
+  return deepestInitializationErrorCode(error, new Set(), 0)
+    ?? 'RUNTIME_INITIALIZATION_FAILED';
+}
+
+function deepestInitializationErrorCode(
+  error: unknown,
+  visited: Set<object>,
+  depth: number
+): string | null {
+  if (depth > 16 || typeof error !== 'object' || error === null || visited.has(error)) {
+    return null;
+  }
+  visited.add(error);
+
+  const causes: unknown[] = [];
+  if (error instanceof AggregateError) causes.push(...error.errors);
+  if ('cause' in error) causes.push((error as { cause?: unknown }).cause);
+  for (const cause of causes) {
+    const nested = deepestInitializationErrorCode(cause, visited, depth + 1);
+    if (nested !== null) return nested;
+  }
+
+  const structuredCode = 'code' in error
     ? String((error as { code?: unknown }).code ?? '')
     : '';
   if (/^[A-Z][A-Z0-9_]{2,63}$/u.test(structuredCode)) return structuredCode;
   const message = error instanceof Error ? error.message : '';
   const token = message.split(':', 1)[0] ?? '';
-  return /^[a-z][a-z0-9_]{1,63}$/u.test(token)
-    ? token.toUpperCase()
-    : 'RUNTIME_INITIALIZATION_FAILED';
+  return /^[a-z][a-z0-9_]{1,63}$/u.test(token) ? token.toUpperCase() : null;
 }
 
 function digestCommand(command: RuntimeCommandEnvelope['command']): string {

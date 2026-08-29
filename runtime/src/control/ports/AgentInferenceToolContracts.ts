@@ -4,11 +4,13 @@ import type {
   AgentRunBinding,
   AgentToolJsonValue
 } from '@ariadne/agent-core';
+import type { AgentToolModelSemanticsV1 } from './AgentToolExecution.js';
 
 /** Data-only model view of one exact immutable executable Tool contract. */
-export interface AgentInferenceToolContractDescriptorV1 {
-  readonly descriptorVersion: 1;
+export interface AgentInferenceToolContractDescriptorV2 {
+  readonly descriptorVersion: 2;
   readonly tool: AgentPinnedToolIdentity;
+  readonly model: AgentToolModelSemanticsV1;
   readonly inputSchema: AgentToolJsonValue;
   readonly scopeSemantics:
     | 'none'
@@ -34,5 +36,5 @@ export interface AgentInferenceToolContractReader {
   readInferenceToolContracts(
     request: ReadAgentInferenceToolContractsRequest,
     signal: AbortSignal
-  ): Promise<readonly AgentInferenceToolContractDescriptorV1[]>;
+  ): Promise<readonly AgentInferenceToolContractDescriptorV2[]>;
 }

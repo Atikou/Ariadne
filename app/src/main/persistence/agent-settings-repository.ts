@@ -5,6 +5,13 @@ import { parse as parseToml, stringify as stringifyToml, type TomlTable } from '
 import { z } from 'zod';
 import { modelInferenceProfileSchema, type ModelInferenceProfile } from '@ariadne/protocol/public';
 import {
+  acpSubagentProviderConfigurationSchema,
+  assistantChatProfileSchema,
+  createDefaultAssistantChatProfile,
+  type AssistantChatProfile,
+  type AcpSubagentProviderConfiguration
+} from '@ariadne/protocol/settings';
+import {
   createDefaultRuntimePolicySnapshot,
   runtimePolicySnapshotSchema,
   type RuntimePolicySnapshot
@@ -74,6 +81,18 @@ const persistedProviderFileSchema = z.object({
   inference: modelInferenceProfileSchema.optional(),
   encryptedApiKey: encryptedApiKeySchema.optional()
 }).strict();
+const persistedAcpSubagentProviderSchema = acpSubagentProviderConfigurationSchema.extend({
+  enabled: z.boolean()
+}).strict();
+const legacyAssistantChatProfileSchema = z.object({
+  mode: z.enum(['standard', 'unrestricted']),
+  name: z.string().trim().min(1).max(64),
+  systemPrompt: z.string().trim().min(1).max(32_768)
+}).strict();
+const persistedAssistantChatProfileFileSchema = z.union([
+  assistantChatProfileSchema,
+  legacyAssistantChatProfileSchema
+]);
 const persistedAgentSettingsBase = {
   revision: z.number().int().positive(),
   routingStrategy: agentRoutingStrategySchema,
@@ -83,31 +102,37 @@ const persistedAgentSettingsBase = {
 };
 const persistedAgentSettingsSchema = z.object({
   ...persistedAgentSettingsBase,
-  schemaVersion: z.literal(4),
+  schemaVersion: z.literal(7),
+  assistant: assistantChatProfileSchema,
   permissionMode: z.enum(AGENT_PERMISSION_MODES),
   customPermissions: customPermissionsSchema,
   workspaceAccess: z.enum(['read', 'write']),
   workspaces: z.array(persistedWorkspaceSchema).max(32),
   providers: z.record(agentProviderIdSchema, persistedProviderSchema),
+  subagentProviders: z.array(persistedAcpSubagentProviderSchema).max(8),
   runtimePolicy: runtimePolicySnapshotSchema
 }).strict();
 const persistedAgentSettingsFileSchema = z.object({
-  schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
+  schemaVersion: z.union([
+    z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6), z.literal(7)
+  ]),
   revision: z.number().int().positive().optional(),
   routingStrategy: agentRoutingStrategySchema,
   localModelRoots: z.array(z.string().min(1).max(32_768).refine(
     (value) => /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value)
   )).max(8),
+  assistant: persistedAssistantChatProfileFileSchema.optional(),
   permissionMode: z.enum(AGENT_PERMISSION_MODES).optional(),
   customPermissions: customPermissionsSchema.optional(),
   workspaceRoot: absoluteWorkspacePathSchema.optional(),
   workspaceAccess: z.enum(['read', 'write']).optional(),
   workspaces: z.array(persistedWorkspaceSchema).max(32).optional(),
   providers: z.partialRecord(agentProviderIdSchema, persistedProviderFileSchema),
+  subagentProviders: z.array(persistedAcpSubagentProviderSchema).max(8).optional(),
   runtimePolicy: runtimePolicySnapshotSchema.optional()
 }).strict().superRefine((settings, context) => {
-  if (settings.schemaVersion === 4 && settings.workspaceRoot !== undefined) {
-    context.addIssue({ code: 'custom', path: ['workspaceRoot'], message: 'schemaVersion 4 does not use workspaceRoot.' });
+  if (settings.schemaVersion >= 4 && settings.workspaceRoot !== undefined) {
+    context.addIssue({ code: 'custom', path: ['workspaceRoot'], message: 'Current settings do not use workspaceRoot.' });
   }
 });
 
@@ -137,6 +162,7 @@ export interface RuntimeAgentPermissionProfile {
 
 export interface RuntimeAgentSettings {
   revision: number;
+  assistant: AssistantChatProfile;
   routingStrategy: AgentSettingsView['routingStrategy'];
   permissionMode: AgentPermissionMode;
   permissions: RuntimeAgentPermissionProfile;
@@ -144,6 +170,7 @@ export interface RuntimeAgentSettings {
   workspaces: AgentWorkspaceSettingsView[];
   localModelRoots: string[];
   providers: Record<AgentProviderId, RuntimeAgentProviderSettings>;
+  subagentProviders: Array<AcpSubagentProviderConfiguration & { enabled: boolean }>;
   runtimePolicy: RuntimePolicySnapshot;
 }
 
@@ -187,8 +214,9 @@ export class AgentSettingsRepository {
 
   getView(): AgentSettingsView {
     return {
-      schemaVersion: 4,
+      schemaVersion: 7,
       revision: this.settings.revision,
+      assistant: structuredClone(this.settings.assistant),
       routingStrategy: this.settings.routingStrategy,
       permissionMode: this.settings.permissionMode,
       customPermissions: structuredClone(this.settings.customPermissions),
@@ -204,6 +232,10 @@ export class AgentSettingsRepository {
         inference: structuredClone(provider.inference),
         apiKeyStatus: this.apiKeyStatus(provider.encryptedApiKey)
       })),
+      subagentProviders: this.settings.subagentProviders.map((provider) => ({
+        ...provider,
+        args: [...provider.args]
+      })),
       runtimePolicy: structuredClone(this.settings.runtimePolicy)
     };
   }
@@ -211,6 +243,7 @@ export class AgentSettingsRepository {
   getRuntimeSettings(): RuntimeAgentSettings {
     return {
       revision: this.settings.revision,
+      assistant: structuredClone(this.settings.assistant),
       routingStrategy: this.settings.routingStrategy,
       permissionMode: this.settings.permissionMode,
       permissions: resolveRuntimePermissionProfile(this.settings.permissionMode, this.settings.customPermissions),
@@ -231,6 +264,10 @@ export class AgentSettingsRepository {
           ...(apiKey ? { apiKey } : {})
         };
       }),
+      subagentProviders: this.settings.subagentProviders.map((provider) => ({
+        ...provider,
+        args: [...provider.args]
+      })),
       runtimePolicy: structuredClone(this.settings.runtimePolicy)
     };
   }
@@ -276,7 +313,7 @@ export class AgentSettingsRepository {
         }
         const next = persistedAgentSettingsSchema.parse({
           ...mutated,
-          schemaVersion: 4,
+          schemaVersion: 7,
           revision: this.settings.revision + 1
         });
         await this.writeSnapshot(next);
@@ -411,7 +448,7 @@ export class AgentSettingsRepository {
         if (samePersistedSettings(mutated, this.settings)) return;
         const next = persistedAgentSettingsSchema.parse({
           ...mutated,
-          schemaVersion: 4,
+          schemaVersion: 7,
           revision: this.settings.revision + 1
         });
         await this.writeSnapshot(next);
@@ -481,6 +518,9 @@ function applySettingsOperations(
       case 'routing.set':
         next.routingStrategy = operation.strategy;
         break;
+      case 'assistant.replace':
+        next.assistant = structuredClone(operation.assistant);
+        break;
       case 'modelRoots.replace':
         next.localModelRoots = [...new Set(operation.roots)];
         break;
@@ -499,6 +539,12 @@ function applySettingsOperations(
         else if (patch.apiKey) target.encryptedApiKey = cipher.encrypt(patch.apiKey);
         break;
       }
+      case 'subagentProviders.replace':
+        next.subagentProviders = operation.providers.map((provider) => ({
+          ...provider,
+          args: [...provider.args]
+        }));
+        break;
       case 'runtimePolicy.replace':
         next.runtimePolicy = structuredClone(operation.policy);
         break;
@@ -518,8 +564,9 @@ function createDefaultAgentSettings(): PersistedAgentSettings {
     allowedPermissions: [...AGENT_TOOL_PERMISSIONS]
   };
   return {
-    schemaVersion: 4,
+    schemaVersion: 7,
     revision: 1,
+    assistant: createDefaultAssistantChatProfile(),
     routingStrategy: 'cloud-first',
     permissionMode: 'request',
     customPermissions,
@@ -535,6 +582,7 @@ function createDefaultAgentSettings(): PersistedAgentSettings {
       inference: structuredClone(AGENT_PROVIDER_CATALOG[id].defaultInference),
       encryptedApiKey: null
     }])) as PersistedAgentSettings['providers'],
+    subagentProviders: [],
     runtimePolicy: createDefaultRuntimePolicySnapshot()
   };
 }
@@ -559,8 +607,9 @@ function parsePersistedAgentSettings(input: unknown): PersistedAgentSettings {
   return persistedAgentSettingsSchema.parse({
     ...defaults,
     ...supported,
-    schemaVersion: 4,
-    revision: (parsed.revision ?? 1) + (parsed.schemaVersion === 4 ? 0 : 1),
+    schemaVersion: 7,
+    revision: (parsed.revision ?? 1) + (parsed.schemaVersion === 7 ? 0 : 1),
+    assistant: migrateAssistantChatProfile(parsed.assistant, defaults.assistant),
     permissionMode,
     customPermissions,
     workspaceAccess,
@@ -576,7 +625,20 @@ function parsePersistedAgentSettings(input: unknown): PersistedAgentSettings {
           }
         : defaults.providers[id]];
     })),
+    subagentProviders: parsed.subagentProviders ?? defaults.subagentProviders,
     runtimePolicy: parsed.runtimePolicy ?? defaults.runtimePolicy
+  });
+}
+
+function migrateAssistantChatProfile(
+  profile: z.infer<typeof persistedAssistantChatProfileFileSchema> | undefined,
+  fallback: AssistantChatProfile
+): AssistantChatProfile {
+  if (profile === undefined) return structuredClone(fallback);
+  return assistantChatProfileSchema.parse({
+    name: profile.name,
+    systemPrompt: profile.systemPrompt,
+    userPersona: 'userPersona' in profile ? profile.userPersona : ''
   });
 }
 
@@ -584,6 +646,7 @@ function toTomlDocument(settings: PersistedAgentSettings): TomlTable {
   const document = {
     schemaVersion: settings.schemaVersion,
     revision: settings.revision,
+    assistant: structuredClone(settings.assistant),
     routingStrategy: settings.routingStrategy,
     permissionMode: settings.permissionMode,
     workspaceAccess: settings.workspaceAccess,
@@ -602,6 +665,10 @@ function toTomlDocument(settings: PersistedAgentSettings): TomlTable {
         inference: structuredClone(provider.inference),
         ...(provider.encryptedApiKey ? { encryptedApiKey: provider.encryptedApiKey } : {})
       }];
+    })),
+    subagentProviders: settings.subagentProviders.map((provider) => ({
+      ...provider,
+      args: [...provider.args]
     }))
   };
   return JSON.parse(JSON.stringify(document)) as TomlTable;

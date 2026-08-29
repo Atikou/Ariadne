@@ -22,8 +22,8 @@
 | [项目结构](project-structure.md) | 当前目录、依赖方向和数据目录 |
 | [验证说明](verification.md) | 当前门禁、Electron smoke 的准确边界和发布验收 |
 | [Agent inbox 与运行中交互](agent-inbox.md) | 同一 Run 的 next-turn/next-step、持久领取、投影和恢复语义 |
-| [v3 长上下文生命周期](long-context-v3.md) | Conversation 历史、精确容量、压力压缩、Tool result pruning 与溢出恢复边界 |
-| [SubAgent v3 产品闭环](subagent-v3.md) | one-shot ordinary Child 的 Directive、原子委派、调度、结果回灌、投影与剩余边界 |
+| [v3 长上下文生命周期](long-context-v3.md) | Conversation 历史、精确容量、压力压缩、可恢复 Tool result spill 与溢出恢复边界 |
+| [SubAgent v3 生命周期与产品闭环](subagent-v3.md) | one-shot/continuable ordinary Child 的 Directive、原子委派、持久等待、direct-parent send、结果回灌、投影与剩余边界 |
 | [Runtime Capability Manifest](capability-manifest.md) | bootstrap 冻结的 Provider 图、Tool contribution、status 和生命周期 |
 | [机器可读验收矩阵](verification-matrix.json) | 发布脚本消费的逐模块证据状态 |
 | [Renderer UI 架构](ui-architecture.md) | Feature Store、Public Projection 和桌面能力边界 |
@@ -33,7 +33,7 @@
 
 ## 审计快照
 
-[Ariadne 与 deepseek-harness 对比审计](deepseek-harness-comparison-audit-2026-08-26.md) 固定了 Ariadne 当前工作树和 deepseek-harness 指定 commit，用于记录差距、优先级和验收条件。它是日期化审计，不替代当前实现架构。
+[Ariadne 与 deepseek-harness 对比审计](deepseek-harness-comparison-audit-2026-08-28.md) 固定了 Ariadne 当前工作树和 deepseek-harness 指定 commit，用于记录差距、优先级和验收条件。它是日期化审计，不替代当前实现架构。
 
 ## 架构决策
 

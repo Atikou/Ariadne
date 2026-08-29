@@ -6,6 +6,7 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const appPackage = readJson('app/package.json');
 const schemaManifest = readJson('runtime/config/schema-compatibility.json');
 const embeddingManifest = readJson('runtime/config/embedding-models.json');
+const toolArtifactManifest = readJson('runtime/config/first-party-tool-artifacts.json');
 const verificationMatrix = readJson('docs/verification-matrix.json');
 const includePath = path.resolve(
   projectRoot,
@@ -41,6 +42,13 @@ assert(
   'Newer database write rejection policy is missing.'
 );
 assert(embeddingManifest.schemaVersion === 1, 'Embedding asset manifest version is invalid.');
+assert(
+  toolArtifactManifest.schemaVersion === 1
+  && toolArtifactManifest.algorithm === 'ariadne-tool-module-closure-v1'
+  && Array.isArray(toolArtifactManifest.modules)
+  && toolArtifactManifest.modules.length > 0,
+  'First-party Tool artifact manifest is invalid.'
+);
 assert(
   embeddingManifest.models?.every((model) =>
     model.weightsCommitted === false

@@ -7,6 +7,7 @@ import { InterruptionPolicy } from '../services/interruption-policy';
 import { resolveWindowOptions } from './window-state';
 import { RENDERER_PARTITION } from './renderer-source';
 import { isCurrentDocumentNavigation, isTrustedDockviewPopoutUrl } from './window-navigation-policy';
+import { titleBarOverlayForTheme } from './title-bar-appearance';
 
 const POPOUT_MINIMUM_WIDTH = 320;
 const POPOUT_MINIMUM_HEIGHT = 240;
@@ -59,11 +60,7 @@ export class MainWindowController {
       backgroundColor: '#090b10',
       title: 'Ariadne',
       titleBarStyle: 'hidden',
-      titleBarOverlay: {
-        color: '#111318',
-        symbolColor: '#d9dde7',
-        height: 44
-      },
+      titleBarOverlay: titleBarOverlayForTheme('dark'),
       webPreferences: mainWebPreferences
     });
 

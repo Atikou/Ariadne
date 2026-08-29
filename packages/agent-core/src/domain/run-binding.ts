@@ -1,5 +1,6 @@
 import { AgentRunInvariantError } from './errors.js';
 import type { AgentRunId } from './values.js';
+import type { AgentSubagentMode } from './directive.js';
 import {
   assertCanonicalPublicId,
   assertNonNegativeInteger,
@@ -57,8 +58,32 @@ export interface AgentBudgetGrant {
 }
 
 export interface AgentExecutionProfile {
-  readonly mode: 'agent' | 'plan';
+  readonly mode: 'chat' | 'agent' | 'plan';
+  readonly subagentProviders?: readonly AgentSubagentProviderBinding[];
 }
+
+export interface AgentSubagentProviderBinding {
+  readonly providerId: string;
+  readonly displayName: string;
+  readonly configurationDigest: string;
+  readonly transport: 'ordinary_run' | 'external_process';
+  readonly supportedModes: readonly AgentSubagentMode[];
+  readonly supportsStructuredReport: boolean;
+  readonly inheritsParentContext: boolean;
+  readonly usesParentTools: boolean;
+}
+
+export const DEFAULT_AGENT_SUBAGENT_PROVIDER_BINDING: AgentSubagentProviderBinding =
+Object.freeze({
+  providerId: 'ariadne.in_process',
+  displayName: 'Ariadne ordinary Child Run',
+  configurationDigest: 'sha256:7100da8c93bd1cb522a2d203f3285d3d8e2b12a4d1fb257ef2f6e7f40c3e7d07',
+  transport: 'ordinary_run',
+  supportedModes: Object.freeze(['one_shot', 'continuable'] as const),
+  supportsStructuredReport: false,
+  inheritsParentContext: true,
+  usesParentTools: true
+});
 
 interface AgentRunBindingFields {
   readonly sessionId: string;
@@ -109,6 +134,8 @@ export type AgentObjectiveReference =
       readonly parentRunId: AgentRunId;
       readonly delegationId: string;
       readonly objectiveDigest: string;
+      readonly mode: AgentSubagentMode;
+      readonly providerId: string;
     };
 
 export function assertValidAgentRunBinding(binding: AgentRunBinding): void {
@@ -181,9 +208,26 @@ export function cloneAgentRunBinding(binding: AgentRunBinding): AgentRunBinding 
     ? { bindingVersion: 3, ...fields }
     : {
         bindingVersion: 4,
-        executionProfile: { ...binding.executionProfile },
+        executionProfile: cloneAgentExecutionProfile(binding.executionProfile),
         ...fields
       };
+}
+
+export function cloneAgentExecutionProfile(
+  profile: AgentExecutionProfile
+): AgentExecutionProfile {
+  assertValidExecutionProfile(profile);
+  return {
+    mode: profile.mode,
+    ...(profile.subagentProviders === undefined
+      ? {}
+      : {
+          subagentProviders: profile.subagentProviders.map((provider) => ({
+            ...provider,
+            supportedModes: [...provider.supportedModes]
+          }))
+        })
+  };
 }
 
 export function agentRunExecutionMode(
@@ -210,6 +254,16 @@ export function assertAgentChildRunBindingSubset(
     && agentRunExecutionMode(child) !== 'plan'
   ) {
     throw subsetError('A child cannot expand its parent execution profile.');
+  }
+  if (
+    parent.bindingVersion === 4
+    && child.bindingVersion === 4
+    && !sameSubagentProviderBindings(
+      parent.executionProfile.subagentProviders,
+      child.executionProfile.subagentProviders
+    )
+  ) {
+    throw subsetError('A child must retain the exact SubAgent Provider Catalog snapshot.');
   }
   if (parent.budget.runId !== parentRunId) {
     throw subsetError('The parent Budget grant must belong to parentRunId.');
@@ -307,7 +361,7 @@ function assertValidObjectiveReference(reference: AgentObjectiveReference): void
   if (reference.kind === 'parent_delegation') {
     assertPlainDataObjectWithExactKeys(
       reference,
-      ['kind', 'parentRunId', 'delegationId', 'objectiveDigest'],
+      ['kind', 'parentRunId', 'delegationId', 'objectiveDigest', 'mode', 'providerId'],
       'run.binding.objectiveRef'
     );
     assertCanonicalPublicId(
@@ -322,6 +376,13 @@ function assertValidObjectiveReference(reference: AgentObjectiveReference): void
       reference.objectiveDigest,
       'run.binding.objectiveRef.objectiveDigest'
     );
+    if (reference.mode !== 'one_shot' && reference.mode !== 'continuable') {
+      throw new AgentRunInvariantError('run.binding.objectiveRef.mode is invalid.');
+    }
+    assertCanonicalPublicId(
+      reference.providerId,
+      'run.binding.objectiveRef.providerId'
+    );
     return;
   }
   throw new AgentRunInvariantError('run.binding.objectiveRef kind is invalid.');
@@ -330,12 +391,87 @@ function assertValidObjectiveReference(reference: AgentObjectiveReference): void
 function assertValidExecutionProfile(profile: AgentExecutionProfile): void {
   assertPlainDataObjectWithExactKeys(
     profile,
-    ['mode'],
+    profile.subagentProviders === undefined
+      ? ['mode']
+      : ['mode', 'subagentProviders'],
     'run.binding.executionProfile'
   );
-  if (profile.mode !== 'agent' && profile.mode !== 'plan') {
+  if (profile.mode !== 'chat' && profile.mode !== 'agent' && profile.mode !== 'plan') {
     throw new AgentRunInvariantError('run.binding.executionProfile.mode is invalid.');
   }
+  if (profile.subagentProviders !== undefined) {
+    assertDenseDataArray(
+      profile.subagentProviders,
+      'run.binding.executionProfile.subagentProviders'
+    );
+    if (profile.subagentProviders.length === 0 || profile.subagentProviders.length > 16) {
+      throw new AgentRunInvariantError(
+        'run.binding.executionProfile.subagentProviders has an invalid size.'
+      );
+    }
+    let previous: string | undefined;
+    profile.subagentProviders.forEach((provider, index) => {
+      const field = `run.binding.executionProfile.subagentProviders[${String(index)}]`;
+      assertPlainDataObjectWithExactKeys(provider, [
+        'providerId',
+        'displayName',
+        'configurationDigest',
+        'transport',
+        'supportedModes',
+        'supportsStructuredReport',
+        'inheritsParentContext',
+        'usesParentTools'
+      ], field);
+      assertCanonicalPublicId(provider.providerId, `${field}.providerId`);
+      assertSha256Digest(provider.configurationDigest, `${field}.configurationDigest`);
+      if (previous !== undefined && compareCanonicalId(previous, provider.providerId) >= 0) {
+        throw new AgentRunInvariantError(
+          'run.binding.executionProfile.subagentProviders must be sorted without duplicates.'
+        );
+      }
+      previous = provider.providerId;
+      if (
+        provider.displayName.length === 0
+        || provider.displayName.trim() !== provider.displayName
+        || provider.displayName.length > 256
+        || (provider.transport !== 'ordinary_run' && provider.transport !== 'external_process')
+        || typeof provider.supportsStructuredReport !== 'boolean'
+        || typeof provider.inheritsParentContext !== 'boolean'
+        || typeof provider.usesParentTools !== 'boolean'
+      ) throw new AgentRunInvariantError(`${field} has invalid metadata.`);
+      assertDenseDataArray(provider.supportedModes, `${field}.supportedModes`);
+      if (
+        provider.supportedModes.length === 0
+        || provider.supportedModes.length > 2
+        || new Set(provider.supportedModes).size !== provider.supportedModes.length
+        || provider.supportedModes.some(
+          (mode) => mode !== 'one_shot' && mode !== 'continuable'
+        )
+      ) throw new AgentRunInvariantError(`${field}.supportedModes is invalid.`);
+    });
+  }
+}
+
+function sameSubagentProviderBindings(
+  left: readonly AgentSubagentProviderBinding[] | undefined,
+  right: readonly AgentSubagentProviderBinding[] | undefined
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.length === right.length && left.every((provider, index) => {
+    const candidate = right[index];
+    return candidate !== undefined
+      && provider.providerId === candidate.providerId
+      && provider.displayName === candidate.displayName
+      && provider.configurationDigest === candidate.configurationDigest
+      && provider.transport === candidate.transport
+      && provider.supportsStructuredReport === candidate.supportsStructuredReport
+      && provider.inheritsParentContext === candidate.inheritsParentContext
+      && provider.usesParentTools === candidate.usesParentTools
+      && provider.supportedModes.length === candidate.supportedModes.length
+      && provider.supportedModes.every(
+        (mode, modeIndex) => mode === candidate.supportedModes[modeIndex]
+      );
+  });
 }
 
 function assertValidWorkspace(workspace: AgentWorkspaceBinding): void {
@@ -586,7 +722,9 @@ function cloneObjectiveReference(reference: AgentObjectiveReference): AgentObjec
         kind: 'parent_delegation',
         parentRunId: reference.parentRunId,
         delegationId: reference.delegationId,
-        objectiveDigest: reference.objectiveDigest
+        objectiveDigest: reference.objectiveDigest,
+        mode: reference.mode,
+        providerId: reference.providerId
       };
 }
 

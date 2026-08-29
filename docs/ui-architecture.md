@@ -1,6 +1,6 @@
 # Renderer UI 架构
 
-> 核对日期：2026-08-26
+> 核对日期：2026-08-29
 
 Renderer 使用 React 与 Dockview。业务状态只来自 Public Projection v3；文件、终端、设置等桌面能力通过固定 Preload API 调用 Electron Main。
 
@@ -8,7 +8,7 @@ Renderer 使用 React 与 Dockview。业务状态只来自 Public Projection v3�
 
 | 模块 | 当前数据来源 | 边界 |
 |---|---|---|
-| Chat | v3 Session、Message、Model Projection | 创建会话、发送消息、选择执行模式和模型 |
+| Chat | v3 Session、Message、Model Projection | 创建、重命名、归档/恢复会话，发送消息，选择执行模式和模型 |
 | Session Activity | Conversation/Run Projection | 只读会话活动 |
 | Agent Status | Run Projection | 展示状态并发出 v3 Cancel |
 | Plan / Permission | Decision Projection | 使用 opaque action token 发出 v3 Decision |
@@ -18,7 +18,7 @@ Renderer 使用 React 与 Dockview。业务状态只来自 Public Projection v3�
 | Terminal | Main 管理的 node-pty 会话 | 桌面能力，不等于 Agent 的持久终端 Tool |
 | Settings | Main 的设置仓库 | Provider、工作区、权限模式和桌面偏好 |
 
-Agent Status 已消费 one-shot SubAgent 的 Parent/Child Run Projection。Background Task、Scheduler、Memory 管理以及外部/continuable SubAgent Provider 当前仍没有 v3 product consumer，不应增加占位按钮或用本地 Mock 伪装成可用能力。
+Agent Status 已消费 one-shot/continuable SubAgent 的 Parent/Child Run Projection，并为等待输入的 continuable Child 提供 direct-parent follow-up、为运行中 Child 提供非终态 interrupt。Settings 可配置 fresh-process ACP one-shot Provider。旧 Background Task 已删除；Scheduler、Memory 管理、批量 Child、外部 continuable/Codex/Claude Provider 当前仍没有 v3 product consumer，不应增加占位按钮或用本地 Mock 伪装成可用能力。
 
 ## 状态流
 
@@ -33,9 +33,11 @@ startup
 Renderer 当前只发送：
 
 - `conversation.session.create.v3`；
+- `conversation.session.rename.v3`、`conversation.session.archive.v3`、`conversation.session.restore.v3`；
 - `conversation.message.accept.v3`；
 - `agent.decision.resolve.v3`；
-- `agent.run.cancel.v3`。
+- `agent.run.cancel.v3`；
+- `agent.inbox.*.v3` 与 direct-parent SubAgent 控制命令。
 
 Renderer 不读取 Host DTO，不访问 Runtime 源码，也不使用旧 `runtime.snapshot.get`、`events.replay` 或分散 Proposal/Permission/Plan 列表修补状态。
 
@@ -51,6 +53,7 @@ Renderer 不读取 Host DTO，不访问 Runtime 源码，也不使用旧 `runtim
 ## 交互原则
 
 - 所有业务状态必须可追溯到 Public Projection；不使用 Mock 任务或伪造执行进度。
+- Session title/status 是 Conversation Authority；本机导航存储只拥有 pin/unread，不能覆盖 Projection 生命周期。
 - Permission/Plan 只展示 Runtime 提供的 sanitized Decision presentation；Renderer 不推断权限范围。
 - Runtime 不可用时禁用真实操作并显示稳定诊断，不自动切换到本地替代状态。
 - Workspace 导航偏好不提升文件、终端或 Agent 权限。

@@ -39,7 +39,7 @@ describe('ProtectedAgentRunInteractionMessageResolver', () => {
     }, {
       messageId: 'message-interaction-inbox',
       turnId: 'turn-interaction-continuation',
-      role: 'user',
+      role: 'system',
       content: 'Continue with this constraint.',
       occurredAt: at(3)
     }]);
@@ -51,7 +51,103 @@ describe('ProtectedAgentRunInteractionMessageResolver', () => {
       contentDigest: CONTENT_DIGEST
     });
   });
+
+  it('reconstructs a protected user question followed by its exact claimed answer', async () => {
+    const run = await answeredQuestionRun();
+    const payload = {
+      format: 'ariadne.user-question' as const,
+      schemaVersion: 1 as const,
+      prompt: 'Which deployment target should be used?',
+      options: [
+        { optionId: 'local', label: 'Local only' },
+        {
+          optionId: 'remote',
+          label: 'Remote host',
+          description: 'Requires network access.'
+        }
+      ]
+    };
+    const loadDirectivePayload = vi.fn(async () => payload);
+    const messages = await new ProtectedAgentRunInteractionMessageResolver({
+      loadDirectivePayload
+    }).resolveInteractionMessages(run);
+
+    expect(messages).toEqual([{
+      messageId: expect.stringMatching(/^agent-interaction-assistant:/),
+      turnId: 'turn-interaction-continuation',
+      role: 'assistant',
+      content: 'Which deployment target should be used?\n- Local only\n- Remote host: Requires network access.',
+      occurredAt: at(2)
+    }, {
+      messageId: 'message-interaction-inbox',
+      turnId: 'turn-interaction-continuation',
+      role: 'user',
+      content: 'local: Local only',
+      occurredAt: at(3)
+    }]);
+    expect(loadDirectivePayload).toHaveBeenCalledWith({
+      runId: RUN_ID,
+      artifactId: 'question-interaction-source',
+      kind: 'user_question',
+      directiveDigest: DIRECTIVE_DIGEST,
+      contentDigest: CONTENT_DIGEST
+    });
+  });
 });
+
+async function answeredQuestionRun(): Promise<AgentRun> {
+  const base = await continuedRun();
+  const assistantQuestion = 'Which deployment target should be used?\n- Local only\n- Remote host: Requires network access.';
+  const answer = 'local: Local only';
+  const continuationInput: AgentTurnInputModelData = {
+    messages: [
+      ...INPUT.messages,
+      { kind: 'text', role: 'assistant', content: assistantQuestion },
+      { kind: 'text', role: 'user', content: answer }
+    ],
+    availableTools: []
+  };
+  const continuation = base.turns[1]!;
+  const run: AgentRun = {
+    ...base,
+    turns: [{
+      ...base.turns[0]!,
+      attempts: [{
+        ...base.turns[0]!.attempts[0]!,
+        state: {
+          status: 'succeeded',
+          finishedAt: at(2),
+          directive: {
+            kind: 'ask_user',
+            decisionId: 'decision-interaction-source',
+            questionRef: 'question-interaction-source',
+            questionDigest: CONTENT_DIGEST
+          },
+          directiveDigest: DIRECTIVE_DIGEST
+        }
+      }]
+    }, {
+      ...continuation,
+      intention: {
+        ...continuation.intention,
+        inputDigest: await digestAgentTurnInput(continuationInput),
+        inputSummary: summarizeAgentTurnInput(continuationInput)
+      }
+    }],
+    inbox: [{
+      ...base.inbox[0]!,
+      delivery: 'next_step',
+      content: answer,
+      source: {
+        kind: 'user_question_answer',
+        decisionId: 'decision-interaction-source',
+        questionDigest: CONTENT_DIGEST
+      }
+    }]
+  };
+  assertValidAgentRun(run);
+  return run;
+}
 
 async function continuedRun(): Promise<AgentRun> {
   const binding = {
@@ -127,7 +223,7 @@ async function continuedRun(): Promise<AgentRun> {
     messages: [
       ...INPUT.messages,
       { kind: 'text', role: 'assistant', content: 'Protected first response.' },
-      { kind: 'text', role: 'user', content: 'Continue with this constraint.' }
+      { kind: 'text', role: 'system', content: 'Continue with this constraint.' }
     ],
     availableTools: []
   };
@@ -193,6 +289,12 @@ async function continuedRun(): Promise<AgentRun> {
       delivery: 'next_turn',
       content: 'Continue with this constraint.',
       contentDigest: `sha256:${'f'.repeat(64)}`,
+      source: {
+        kind: 'live_work',
+        jobId: 'job-interaction-inbox',
+        workKind: 'process',
+        status: 'completed'
+      },
       queuedAt: at(1),
       updatedAt: at(3),
       state: 'claimed',

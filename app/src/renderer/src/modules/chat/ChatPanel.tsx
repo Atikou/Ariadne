@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { ArrowDown, Check, Copy, Folder, Hand, Send, Settings2, ShieldAlert, ShieldCheck, Sparkles } from 'lucide-react';
+import { ArrowDown, Check, Copy, Folder, Hand, Image as ImageIcon, Mic, MicOff, Send, Settings2, ShieldAlert, ShieldCheck, Sparkles, X } from 'lucide-react';
 import type {
   ChatRoutingStrategy,
+  EncodedImageAttachmentV3,
   ModelInferenceOptions,
   ModelSummary,
+} from '@ariadne/protocol/public';
+import {
+  IMAGE_ATTACHMENT_MEDIA_TYPES_V3,
+  MAX_IMAGE_ATTACHMENTS_PER_MESSAGE_V3,
+  MAX_IMAGE_ATTACHMENT_MESSAGE_BYTES_V3,
+  MAX_IMAGE_ATTACHMENT_SOURCE_BYTES_V3,
+  PERSONAL_ASSISTANT_WORKSPACE_ID
 } from '@ariadne/protocol/public';
 import type { AgentPermissionMode, AgentSettingsView } from '@shared/contract';
 import {
@@ -28,6 +36,9 @@ import { ComposerAddMenu } from './ComposerAddMenu';
 import { deriveChatModelState, type ChatModelState } from './chat-model-state';
 import type { ConversationWorkspace } from '@renderer/core/conversations/conversation-navigation-service';
 import { useConversationPresentationRevision } from '@renderer/core/conversations/use-conversation-presentation';
+import { useSpeechSnapshot } from '@renderer/core/speech/speech-coordinator';
+import './ImageAttachments.css';
+import './AgentInputDelivery.css';
 
 const AUTO_MODEL_ID = '__auto__';
 const AUTO_ROUTING_PREFIX = `${AUTO_MODEL_ID}:`;
@@ -44,10 +55,18 @@ const permissionModeOptions: readonly SelectMenuOption<AgentPermissionMode>[] = 
   { value: 'custom', label: '自定义 (settings.toml)', description: '使用 settings.toml 中定义的权限', icon: <Settings2 size={16} /> }
 ];
 
+interface DraftImageAttachment extends EncodedImageAttachmentV3 {
+  readonly clientId: string;
+  readonly bytes: number;
+}
+
 export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
   const runtime = useRuntimeSnapshot(services.runtime);
+  const speech = useSpeechSnapshot(services.speech);
   useConversationPresentationRevision(services.conversationNavigation);
   const [draft, setDraft] = useState('');
+  const [draftImages, setDraftImages] = useState<readonly DraftImageAttachment[]>([]);
+  const [draftImageError, setDraftImageError] = useState<string | null>(null);
   const [selectedModelId, setSelectedModelId] = useState(AUTO_MODEL_ID);
   const [routingStrategy, setRoutingStrategy] = useState<ChatRoutingStrategy>('local-first');
   const [permissionMode, setPermissionMode] = useState<AgentPermissionMode>('request');
@@ -67,13 +86,20 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   const viewportRef = useRef<HTMLDivElement>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const followLatestRef = useRef(true);
   const defaultsLoadedRef = useRef(false);
+  const speechDraftBasesRef = useRef(new Map<string, string>());
   const selectedSession = runtime.sessions.find((session) => session.sessionId === runtime.selectedSessionId);
-  const composerWorkspaceId = selectedSession?.workspaceId ?? draftWorkspaceId;
+  const composerWorkspaceId = selectedSession?.workspaceId
+    ?? draftWorkspaceId
+    ?? PERSONAL_ASSISTANT_WORKSPACE_ID;
+  const assistantMode = composerWorkspaceId === PERSONAL_ASSISTANT_WORKSPACE_ID;
   const planModeAvailable = runtime.status.availability === 'ready'
-    && runtime.status.capabilities.includes('companion.agent-plan');
-  const planModeEnabled = services.runtime.isPlanModeEnabled(runtime.selectedSessionId);
+    && runtime.status.capabilities.includes('companion.agent-plan')
+    && !assistantMode;
+  const planModeEnabled = !assistantMode
+    && services.runtime.isPlanModeEnabled(runtime.selectedSessionId);
   const modelState = useMemo(() => deriveChatModelState({
     runtimeAvailability: runtime.status.availability,
     planModeAvailable,
@@ -90,6 +116,12 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   const availableModels = modelState.readyModels;
   const eligibleModels = modelState.eligibleModels;
   const selectedModel = eligibleModels.find((model) => model.id === selectedModelId);
+  const automaticVisionModel = eligibleModels.find((model) => model.supportsVision);
+  const effectiveVisionModel = selectedModelId === AUTO_MODEL_ID
+    ? automaticVisionModel
+    : selectedModel?.supportsVision
+      ? selectedModel
+      : undefined;
   const selectedInference = selectedModel
     ? inferenceByModel[selectedModel.id] ?? defaultInference(selectedModel)
     : undefined;
@@ -121,11 +153,18 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
       : routingSelectionValue(routingStrategy)
     : selectedModelId;
   const workspaceOptions = useMemo<readonly SelectMenuOption<string>[]>(() => {
-    return workspaces.map((workspace) => ({
-      value: workspace.workspaceId,
-      label: workspace.name,
-      description: workspace.rootPath
-    }));
+    return [
+      {
+        value: PERSONAL_ASSISTANT_WORKSPACE_ID,
+        label: '个人助手',
+        description: '全电脑只读；不能修改文件或执行命令'
+      },
+      ...workspaces.map((workspace) => ({
+        value: workspace.workspaceId,
+        label: workspace.name,
+        description: `Agent 工作区 · ${workspace.rootPath}`
+      }))
+    ];
   }, [workspaces]);
   const nodes = useMemo(() => runtime.messages.map(toConversationNode), [runtime.messages]);
   const activeRun = runtime.runs.find((run) => run.parentRunId === undefined && run.sessionId === runtime.selectedSessionId && [
@@ -135,8 +174,15 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   const running = Boolean(activeRun);
   const runActionAvailable = activeRun?.origin === 'projection';
   const inboxAvailable = runtime.status.capabilities.includes('agent.inbox');
-  const queuedInputs = activeRun?.inbox.filter((input) => input.state === 'queued') ?? [];
+  const queuedInputs = activeRun?.inbox.filter((input) => (
+    input.state === 'queued' && input.source === undefined
+  )) ?? [];
+  const agentInputDeliveries = runtime.agentInputDeliveries.filter((receipt) => (
+    receipt.sessionId === runtime.selectedSessionId
+  ));
   const sending = runtime.messages.some((message) => message.deliveryState === 'pending');
+  const imageAttachmentsAvailable = !running && canChat && effectiveVisionModel !== undefined;
+  const hasDraftInput = draft.trim().length > 0 || draftImages.length > 0;
 
   useEffect(() => {
     if (
@@ -180,6 +226,20 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
 
   useEffect(() => services.events.subscribe('chat:new-draft-requested', ({ workspaceId }) => {
     setDraftWorkspaceId(workspaceId);
+    requestAnimationFrame(() => composerInputRef.current?.focus());
+  }), [services.events]);
+
+  useEffect(() => services.events.subscribe('speech:composer-transcript', ({ requestId, text, final }) => {
+    setDraft((current) => {
+      let base = speechDraftBasesRef.current.get(requestId);
+      if (base === undefined) {
+        base = current;
+        speechDraftBasesRef.current.set(requestId, base);
+      }
+      const separator = base.trim().length > 0 && text.trim().length > 0 ? ' ' : '';
+      return `${base}${separator}${text}`;
+    });
+    if (final) speechDraftBasesRef.current.delete(requestId);
     requestAnimationFrame(() => composerInputRef.current?.focus());
   }), [services.events]);
 
@@ -303,10 +363,45 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
     };
   }, [setFollowingLatest]);
 
+  const addSelectedImages = async (files: FileList | null): Promise<void> => {
+    if (files === null || files.length === 0) return;
+    setDraftImageError(null);
+    try {
+      const next = await encodeDraftImages(files);
+      if (draftImages.length + next.length > MAX_IMAGE_ATTACHMENTS_PER_MESSAGE_V3) {
+        throw new Error(`每条消息最多添加 ${MAX_IMAGE_ATTACHMENTS_PER_MESSAGE_V3} 张图片。`);
+      }
+      const combined = [...draftImages, ...next];
+      if (combined.reduce((sum, image) => sum + image.bytes, 0)
+        > MAX_IMAGE_ATTACHMENT_MESSAGE_BYTES_V3) {
+        throw new Error('图片合计不能超过 2 MB。');
+      }
+      setDraftImages(combined);
+    } catch (error) {
+      setDraftImageError(error instanceof Error ? error.message : '无法读取所选图片。');
+    } finally {
+      if (imageInputRef.current) imageInputRef.current.value = '';
+    }
+  };
+
   const send = async (delivery: 'next_turn' | 'next_step' = 'next_turn'): Promise<void> => {
     const message = draft;
-    if (!message.trim() || !composerWorkspaceId || sending || !canChat || (planModeEnabled && !planModeAvailable)) return;
+    const images = draftImages;
+    if (
+      (message.trim().length === 0 && images.length === 0)
+      || sending
+      || !canChat
+      || (planModeEnabled && !planModeAvailable)
+    ) return;
+    if (images.length > 0 && (activeRun || effectiveVisionModel === undefined)) {
+      setDraftImageError(activeRun
+        ? '运行中的补充输入暂不支持图片；请等待当前任务结束。'
+        : '所选模型不支持图片理解。');
+      return;
+    }
     setDraft('');
+    setDraftImages([]);
+    setDraftImageError(null);
     setFollowingLatest(true);
     try {
       if (activeRun && inboxAvailable) {
@@ -315,14 +410,28 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
         throw new Error('runtime_capability_missing:agent.inbox');
       } else {
         await services.runtime.sendMessage(message, {
-          ...(selectedModelId !== AUTO_MODEL_ID ? { modelId: selectedModelId } : {}),
+          ...(images.length > 0
+            ? { modelId: effectiveVisionModel!.id }
+            : selectedModelId !== AUTO_MODEL_ID
+              ? { modelId: selectedModelId }
+              : {}),
           ...(selectedInference ? { inference: selectedInference } : {}),
           ...(planModeEnabled ? {} : { routingStrategy }),
-          workspaceId: composerWorkspaceId
+          workspaceId: composerWorkspaceId,
+          ...(images.length === 0
+            ? {}
+            : {
+                attachments: images.map(({ mediaType, data, name }) => ({
+                  mediaType,
+                  data,
+                  ...(name === undefined ? {} : { name })
+                }))
+              })
         });
       }
     } catch {
       setDraft(message);
+      setDraftImages(images);
     }
   };
 
@@ -375,7 +484,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
         <header className="chat-header">
           <div>
             <h1 id={`${moduleId}-title`}>{selectedSession
-              ? services.conversationNavigation.sessionTitle(selectedSession.sessionId, selectedSession.title)
+              ? selectedSession.title
               : 'Ariadne 助手'}</h1>
             <span className="chat-subtitle" data-runtime-availability={runtime.status.availability}><span className="presence-dot" /> Runtime {formatRuntimeAvailability(runtime.status.availability)}</span>
           </div>
@@ -393,10 +502,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
           <div className="message-viewport" ref={viewportRef} onScroll={handleViewportScroll}>
             <div className="message-list" ref={messageListRef}>
               {nodes.length === 0
-                ? <EmptyConversation
-                    modelState={modelState}
-                    workspaceSelected={composerWorkspaceId !== null}
-                  />
+                ? <EmptyConversation modelState={modelState} />
                 : nodes.map((node) => (
                   <div id={`chat-node-${node.id}`} data-conversation-node key={node.id} className={`conversation-node conversation-node--${node.kind}`}>
                     <ConversationMessage
@@ -433,6 +539,62 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
 
         <div className="composer-wrap">
           <div className="composer">
+            {agentInputDeliveries.length > 0 && (
+              <div
+                className="agent-input-deliveries"
+                aria-label="Agent 输入投递状态"
+                aria-live="polite"
+              >
+                {agentInputDeliveries.map((receipt) => (
+                  <div
+                    className="agent-input-delivery"
+                    data-state={receipt.state}
+                    data-command-id={receipt.commandId}
+                    key={receipt.commandId}
+                  >
+                    <span className="agent-input-delivery-state">
+                      {agentInputDeliveryLabel(receipt.state)}
+                    </span>
+                    <code title={receipt.commandId}>#{receipt.commandId.slice(0, 8)}</code>
+                    <span className="agent-input-delivery-content">{receipt.content}</span>
+                    {receipt.error && (
+                      <span className="agent-input-delivery-error" title={receipt.error}>
+                        {receipt.error}
+                      </span>
+                    )}
+                    {receipt.state === 'reconcile' && (
+                      <button
+                        type="button"
+                        disabled={runtime.status.availability !== 'ready'}
+                        onClick={() => void services.runtime.reconcileAgentInputDelivery(
+                          receipt.commandId
+                        )}
+                      >重新确认</button>
+                    )}
+                    {receipt.state === 'failed' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDraft((current) => current.trim().length === 0
+                            ? receipt.content
+                            : `${current}\n${receipt.content}`);
+                          services.runtime.dismissAgentInputDelivery(receipt.commandId);
+                          requestAnimationFrame(() => composerInputRef.current?.focus());
+                        }}
+                      >恢复输入</button>
+                    )}
+                    {receipt.state === 'accepted' && (
+                      <button
+                        type="button"
+                        onClick={() => services.runtime.dismissAgentInputDelivery(
+                          receipt.commandId
+                        )}
+                      >关闭</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
             {queuedInputs.length > 0 && activeRun && (
               <div className="agent-inbox" aria-label="Agent 输入队列">
                 {queuedInputs.map((input) => (
@@ -481,31 +643,63 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
               </div>
             )}
             <div className="composer-context-bar">
-              {composerWorkspaceId && workspaceOptions.length > 0
-                ? <SelectMenu<string>
+              <SelectMenu<string>
                     className="composer-workspace-menu"
-                    ariaLabel="选择工作区"
+                    ariaLabel="选择助手或 Agent 工作区"
                     placement="top"
-                    leadingIcon={<Folder size={13} />}
+                    leadingIcon={assistantMode ? <Sparkles size={13} /> : <Folder size={13} />}
                     value={composerWorkspaceId}
                     options={workspaceOptions}
                     disabled={selectedSession !== undefined}
                     onChange={(workspaceId) => {
-                      setDraftWorkspaceId(workspaceId);
-                      void services.conversationNavigation.selectWorkspace(workspaceId);
+                      if (workspaceId === PERSONAL_ASSISTANT_WORKSPACE_ID) {
+                        setDraftWorkspaceId(null);
+                        services.conversationNavigation.selectAssistant();
+                      } else {
+                        setDraftWorkspaceId(workspaceId);
+                        void services.conversationNavigation.selectWorkspace(workspaceId);
+                      }
                     }}
                   />
-                : <span className="composer-workspace-empty"><Folder size={13} />请先打开工作区</span>}
             </div>
+            <input
+              ref={imageInputRef}
+              className="composer-image-file-input"
+              type="file"
+              accept={IMAGE_ATTACHMENT_MEDIA_TYPES_V3.join(',')}
+              multiple
+              aria-label="选择图片附件"
+              tabIndex={-1}
+              onChange={(event) => void addSelectedImages(event.target.files)}
+            />
+            {draftImages.length > 0 && (
+              <div className="composer-image-drafts" aria-label="待发送图片">
+                {draftImages.map((image) => (
+                  <figure className="composer-image-draft" key={image.clientId}>
+                    <img
+                      src={`data:${image.mediaType};base64,${image.data}`}
+                      alt={image.name ?? '待发送图片'}
+                    />
+                    <figcaption>{image.name ?? '图片'}</figcaption>
+                    <button
+                      type="button"
+                      aria-label={`移除 ${image.name ?? '图片'}`}
+                      onClick={() => setDraftImages((current) => current.filter(
+                        (candidate) => candidate.clientId !== image.clientId
+                      ))}
+                    ><X size={13} /></button>
+                  </figure>
+                ))}
+              </div>
+            )}
+            {draftImageError && <p className="composer-image-error" role="alert">{draftImageError}</p>}
             <textarea
               ref={composerInputRef}
               value={draft}
               rows={1}
-              placeholder={!composerWorkspaceId
-                ? '请先打开工作区'
-                : running ? '继续输入：Enter 排到下一轮，Ctrl/⌘+Enter 在下一步介入' : modelState.composerPlaceholder}
+              placeholder={running ? '继续输入：Enter 排到下一轮，Ctrl/⌘+Enter 在下一步介入' : modelState.composerPlaceholder}
               aria-label="消息输入框"
-              disabled={!canChat || !composerWorkspaceId}
+              disabled={!canChat}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={onComposerKeyDown}
             />
@@ -514,10 +708,22 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                 <ComposerAddMenu
                   planModeAvailable={planModeAvailable}
                   planModeEnabled={planModeEnabled}
+                  imageAttachmentsAvailable={imageAttachmentsAvailable}
+                  {...(imageAttachmentsAvailable
+                    ? {}
+                    : {
+                        imageAttachmentsDisabledReason: running
+                          ? '运行中的补充输入暂不支持图片'
+                          : '当前没有可用的视觉模型'
+                      })}
+                  {...(assistantMode
+                    ? { planModeDisabledReason: '选择一个工作区后才能使用计划模式' }
+                    : {})}
                   onPlanModeChange={(enabled) => services.runtime.setPlanModeEnabled(
                     enabled,
                     runtime.selectedSessionId
                   )}
+                  onAddImages={() => imageInputRef.current?.click()}
                 />
                 <SelectMenu<string>
                   className="composer-model-menu"
@@ -566,27 +772,41 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                 )}
               </div>
               <div className="composer-action-controls">
-                <SelectMenu<AgentPermissionMode>
-                  className="composer-permission-mode-menu"
-                  ariaLabel="选择 Agent 权限模式"
-                  placement="top"
-                  value={permissionMode}
-                  options={permissionModeOptions}
-                  disabled={savingPermissionMode}
-                  onChange={(nextPermissionMode) => void changePermissionMode(nextPermissionMode)}
-                />
+                {!assistantMode && (
+                  <SelectMenu<AgentPermissionMode>
+                    className="composer-permission-mode-menu"
+                    ariaLabel="选择 Agent 权限模式"
+                    placement="top"
+                    value={permissionMode}
+                    options={permissionModeOptions}
+                    disabled={savingPermissionMode}
+                    onChange={(nextPermissionMode) => void changePermissionMode(nextPermissionMode)}
+                  />
+                )}
                 <button
                   type="button"
-                  className={`send-button${running && !draft.trim() ? ' send-button--stop' : ''}`}
-                  disabled={sending || (running && !draft.trim()
+                  className={`composer-mic-button${speech.foregroundRequestId ? ' is-active' : ''}`}
+                  aria-label={speech.foregroundRequestId ? '停止语音输入' : '开始语音输入'}
+                  title={speech.status.availability === 'disabled'
+                    ? '请先在设置中启用语音模块'
+                    : speech.status.detail}
+                  disabled={!speech.status.capabilities.includes('stt')}
+                  onClick={() => void services.speech.toggleForegroundRecognition().catch((error) => {
+                    console.error('Unable to toggle speech recognition.', error);
+                  })}
+                >{speech.foregroundRequestId ? <MicOff size={15} /> : <Mic size={15} />}</button>
+                <button
+                  type="button"
+                  className={`send-button${running && !hasDraftInput ? ' send-button--stop' : ''}`}
+                  disabled={sending || (running && !hasDraftInput
                     ? !runActionAvailable
-                    : !draft.trim() || !composerWorkspaceId || !canChat)}
-                  onClick={() => running && activeRun && !draft.trim()
+                    : !hasDraftInput || !canChat)}
+                  onClick={() => running && activeRun && !hasDraftInput
                     ? void services.runtime.cancelRun(activeRun)
                     : void send('next_turn')}
-                  aria-label={running && !draft.trim() ? '取消 Agent 任务' : running ? '排到下一轮' : '发送消息'}
+                  aria-label={running && !hasDraftInput ? '取消 Agent 任务' : running ? '排到下一轮' : '发送消息'}
                 >
-                  {running && !draft.trim() ? <span className="send-stop-glyph" aria-hidden="true" /> : <Send size={16} />}
+                  {running && !hasDraftInput ? <span className="send-stop-glyph" aria-hidden="true" /> : <Send size={16} />}
                 </button>
               </div>
             </div>
@@ -645,18 +865,23 @@ function reasoningEffortLabel(value: 'none' | 'low' | 'medium' | 'high' | 'xhigh
   return { none: '无', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' }[value];
 }
 
-function EmptyConversation({
-  modelState,
-  workspaceSelected
-}: {
-  modelState: ChatModelState;
-  workspaceSelected: boolean;
-}): React.JSX.Element {
-  const title = workspaceSelected ? modelState.emptyTitle : '请先打开工作区';
-  const description = workspaceSelected
-    ? modelState.emptyDescription
-    : '打开工作区后才能创建会话和启动 Runtime。';
-  return <div className="empty-conversation"><span><Sparkles size={21} /></span><h2>{title}</h2><p>{description}</p></div>;
+function EmptyConversation({ modelState }: { modelState: ChatModelState }): React.JSX.Element {
+  return <div className="empty-conversation"><span><Sparkles size={21} /></span><h2>{modelState.emptyTitle}</h2><p>{modelState.emptyDescription}</p></div>;
+}
+
+function agentInputDeliveryLabel(
+  state: 'pending' | 'accepted' | 'reconcile' | 'failed'
+): string {
+  switch (state) {
+    case 'pending':
+      return '提交中';
+    case 'accepted':
+      return '已接收';
+    case 'reconcile':
+      return '等待确认';
+    case 'failed':
+      return '发送失败';
+  }
 }
 
 function toConversationNode(message: RuntimeMessage): ConversationNode {
@@ -678,6 +903,9 @@ function toConversationNode(message: RuntimeMessage): ConversationNode {
     time: new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     summary: summary.slice(0, 160),
     content,
+    ...(message.attachments === undefined
+      ? {}
+      : { attachments: message.attachments.map((attachment) => ({ ...attachment })) }),
     status: message.status,
     ...(message.runId ? { runId: message.runId } : {}),
     ...(message.processingDurationMs !== undefined
@@ -709,7 +937,20 @@ function ConversationMessage({
   return <div className={isUser ? 'user-message-block' : 'assistant-message-block'}>
     <div className={isUser ? 'user-message' : 'assistant-message'}>
       {isUser
-        ? <p className="message-content">{visibleText}</p>
+        ? <>
+            {node.attachments && node.attachments.length > 0 && (
+              <div className="message-image-attachments" aria-label="图片附件">
+                {node.attachments.map((attachment) => (
+                  <div className="message-image-attachment" key={attachment.attachmentId}>
+                    <ImageIcon size={18} aria-hidden="true" />
+                    <span>{attachment.name ?? '图片'}</span>
+                    <small>{attachment.width} × {attachment.height} · {formatBytes(attachment.bytes)}</small>
+                  </div>
+                ))}
+              </div>
+            )}
+            {visibleText && <p className="message-content">{visibleText}</p>}
+          </>
         : <div className="assistant-message-content">
             <RunProcessingDisclosure
               reasoning={node.reasoning}
@@ -759,4 +1000,46 @@ function MessageCopyButton({ text, subject, onCopy }: { text: string; subject: s
       copyResetTimerRef.current = window.setTimeout(() => setCopied(false), 1_600);
     }).catch(() => setCopied(false));
   }}>{copied ? <Check size={14} /> : <Copy size={14} />}</button>;
+}
+
+async function encodeDraftImages(files: FileList): Promise<readonly DraftImageAttachment[]> {
+  const selected = Array.from(files);
+  if (selected.length > MAX_IMAGE_ATTACHMENTS_PER_MESSAGE_V3) {
+    throw new Error(`每条消息最多添加 ${MAX_IMAGE_ATTACHMENTS_PER_MESSAGE_V3} 张图片。`);
+  }
+  return Promise.all(selected.map(async (file) => {
+    if (!IMAGE_ATTACHMENT_MEDIA_TYPES_V3.includes(
+      file.type as (typeof IMAGE_ATTACHMENT_MEDIA_TYPES_V3)[number]
+    )) {
+      throw new Error(`不支持 ${file.name || '所选文件'} 的图片格式。`);
+    }
+    if (file.size < 1 || file.size > MAX_IMAGE_ATTACHMENT_SOURCE_BYTES_V3) {
+      throw new Error(`${file.name || '图片'} 必须小于 2 MB。`);
+    }
+    const mediaType = file.type as EncodedImageAttachmentV3['mediaType'];
+    const data = bytesToBase64(new Uint8Array(await file.arrayBuffer()));
+    const normalizedName = file.name.trim().slice(0, 256);
+    return {
+      clientId: crypto.randomUUID(),
+      mediaType,
+      data,
+      bytes: file.size,
+      ...(normalizedName.length === 0 ? {} : { name: normalizedName })
+    };
+  }));
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function formatBytes(bytes: number): string {
+  return bytes < 1_024
+    ? `${bytes} B`
+    : `${(bytes / 1_024).toFixed(bytes < 10_240 ? 1 : 0)} KB`;
 }

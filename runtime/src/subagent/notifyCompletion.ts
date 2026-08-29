@@ -1,4 +1,4 @@
-import type { NotificationQueue } from "../background/NotificationQueue.js";
+import type { NotificationQueue } from '../notifications/NotificationQueue.js';
 import type { SubAgentStatus } from "./types.js";
 
 export function enqueueSubAgentCompletionNotification(

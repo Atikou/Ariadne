@@ -13,19 +13,30 @@ export interface ExactAgentModelBindingAvailability {
   hasExactBinding(binding: AgentRun['binding']['model']): boolean;
 }
 
+export interface ExactAgentSubagentProviderCatalogAvailability {
+  isRestorable(binding: AgentRun['binding']): boolean;
+}
+
 /** Startup/dispatch preflight for immutable model and Tool authorities. */
 export class ProductionAgentRunWorkAuthorityVerifier
 implements AgentRunWorkAuthorityVerifier {
   public constructor(
     private readonly models: ExactAgentModelBindingAvailability,
-    private readonly catalogs: AgentAdmissionToolCatalogProvider
+    private readonly catalogs: AgentAdmissionToolCatalogProvider,
+    private readonly subagentProviders?: ExactAgentSubagentProviderCatalogAvailability
   ) {}
 
-  public async assertRestorable(run: AgentRun, signal: AbortSignal): Promise<void> {
+  public async assessRestorability(
+    run: AgentRun,
+    signal: AbortSignal
+  ): ReturnType<AgentRunWorkAuthorityVerifier['assessRestorability']> {
     signal.throwIfAborted();
     assertValidAgentRun(run);
     if (!this.models.hasExactBinding(run.binding.model)) {
       throw unavailable('model_binding_unavailable');
+    }
+    if (this.subagentProviders?.isRestorable(run.binding) === false) {
+      throw unavailable('subagent_provider_catalog_unavailable');
     }
     const reference = {
       referenceVersion: 1 as const,
@@ -35,7 +46,7 @@ implements AgentRunWorkAuthorityVerifier {
     };
     const catalog = await this.catalogs.readToolCatalog(reference, signal);
     signal.throwIfAborted();
-    if (catalog === null) throw unavailable('tool_catalog_unavailable');
+    if (catalog === null) return { status: 'retired_tool_catalog' };
     let availableTools;
     try {
       availableTools = catalog.resolveAdmissionTools(run.binding);
@@ -55,6 +66,7 @@ implements AgentRunWorkAuthorityVerifier {
         throw unavailable('effect_tool_authority_unavailable');
       }
     }
+    return { status: 'restorable' };
   }
 }
 
@@ -64,9 +76,9 @@ export class AgentRunWorkAuthorityUnavailableError extends Error {
   public constructor(
     public readonly reason:
       | 'model_binding_unavailable'
-      | 'tool_catalog_unavailable'
       | 'tool_catalog_binding_drift'
-      | 'effect_tool_authority_unavailable',
+      | 'effect_tool_authority_unavailable'
+      | 'subagent_provider_catalog_unavailable',
     options?: ErrorOptions
   ) {
     super(`Agent Run work authority is unavailable: ${reason}.`, options);

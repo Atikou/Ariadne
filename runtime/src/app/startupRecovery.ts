@@ -1,5 +1,5 @@
 import type { PausedRunStore } from "../agent/PausedRunStore.js";
-import type { NotificationQueue } from "../background/NotificationQueue.js";
+import type { NotificationQueue } from '../notifications/NotificationQueue.js';
 import type { PlanHandoffStore } from "../policy/PlanHandoffStore.js";
 import type { PermissionRequestStore } from "../policy/PermissionRequestStore.js";
 import type { RunAggregateRepository } from "../run/RunAggregateRepository.js";

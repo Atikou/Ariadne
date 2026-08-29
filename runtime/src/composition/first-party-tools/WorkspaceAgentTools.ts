@@ -1,5 +1,4 @@
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import path from 'node:path';
+import { readdir } from 'node:fs/promises';
 
 import type { AgentToolJsonValue } from '@ariadne/agent-core';
 
@@ -7,10 +6,10 @@ import type {
   TrustedAgentToolRegistrationV1
 } from '../../adapters/tool/TrustedAgentToolCatalogCompiler.js';
 import type { AgentProcessSandbox } from '../../control/ports/AgentProcessSandbox.js';
+import { LocalWorkspaceFileService } from '../../adapters/filesystem/LocalWorkspaceFileService.js';
 import {
   MAX_DIRECTORY_ENTRIES,
   MAX_PROCESS_OUTPUT_BYTES,
-  MAX_TEXT_BYTES,
   compareCodeUnits,
   failed,
   hasUnknownKeys,
@@ -19,28 +18,28 @@ import {
   objectSchema,
   optionalStringObject,
   registration,
-  requiredStringObject,
-  requiredStringPairObject,
   requiredStringProperty,
   requireWorkspace,
   resolveExistingWorkspacePath,
-  resolveWritableWorkspacePath,
   stringArrayProperty,
   stringProperty,
   succeeded,
   type FirstPartyProcessSandboxFactory,
   type WorkspaceBinding
 } from './FirstPartyAgentToolSupport.js';
+import { createWorkspaceFileAgentToolRegistrations } from './WorkspaceFileAgentTools.js';
+import { createWorkspaceSearchAgentToolRegistrations } from './WorkspaceSearchAgentTools.js';
 
 export function createWorkspaceAgentToolRegistrations(
   roots: ReadonlyMap<string, WorkspaceBinding>,
   processSandboxFactory?: FirstPartyProcessSandboxFactory
 ): readonly TrustedAgentToolRegistrationV1[] {
+  const workspaceFiles = new LocalWorkspaceFileService();
   return [
     listFilesRegistration(roots),
-    readFileRegistration(roots),
-    runCommandRegistration(roots, processSandboxFactory),
-    writeFileRegistration(roots)
+    ...createWorkspaceFileAgentToolRegistrations(roots, workspaceFiles),
+    ...createWorkspaceSearchAgentToolRegistrations(roots, workspaceFiles),
+    runCommandRegistration(roots, processSandboxFactory)
   ];
 }
 
@@ -48,7 +47,13 @@ function listFilesRegistration(
   roots: ReadonlyMap<string, WorkspaceBinding>
 ): TrustedAgentToolRegistrationV1 {
   return registration({
+    implementationModuleUrl: import.meta.url,
     toolName: 'workspace.list_files',
+    model: {
+      description: 'List the immediate entries of one approved Workspace directory.',
+      guidance: ['Use workspace.glob for recursive path discovery.']
+    },
+    presentation: { kind: 'file_search', label: '列出工作区文件', resultVisibility: 'protected' },
     capabilityIds: ['workspace.read'],
     requiredWorkspaceAccess: 'read',
     sideEffect: 'read',
@@ -86,81 +91,21 @@ function listFilesRegistration(
   });
 }
 
-function readFileRegistration(
-  roots: ReadonlyMap<string, WorkspaceBinding>
-): TrustedAgentToolRegistrationV1 {
-  return registration({
-    toolName: 'workspace.read_file',
-    capabilityIds: ['workspace.read'],
-    requiredWorkspaceAccess: 'read',
-    sideEffect: 'read',
-    approval: 'never',
-    inputSchema: objectSchema({
-      path: { type: 'string', description: 'Workspace-relative UTF-8 file path.' }
-    }, ['path']),
-    outputSchema: { type: 'object' },
-    validate: (input) => requiredStringObject(input, 'path'),
-    execute: async (input, context) => {
-      try {
-        const workspace = requireWorkspace(roots, context, 'read');
-        const relativePath = requiredStringProperty(input, 'path');
-        const target = await resolveExistingWorkspacePath(workspace.rootPath, relativePath);
-        const bytes = await readFile(target);
-        if (bytes.byteLength > MAX_TEXT_BYTES) throw new Error('file_exceeds_read_limit');
-        return succeeded({
-          path: normalizeRelativePath(relativePath),
-          content: bytes.toString('utf8'),
-          byteLength: bytes.byteLength
-        });
-      } catch (error) {
-        return failed('workspace_read_failed', error);
-      }
-    }
-  });
-}
-
-function writeFileRegistration(
-  roots: ReadonlyMap<string, WorkspaceBinding>
-): TrustedAgentToolRegistrationV1 {
-  return registration({
-    toolName: 'workspace.write_file',
-    capabilityIds: ['workspace.write'],
-    requiredWorkspaceAccess: 'write',
-    sideEffect: 'write',
-    approval: 'required',
-    inputSchema: objectSchema({
-      path: { type: 'string', description: 'Workspace-relative UTF-8 file path.' },
-      content: { type: 'string', description: 'Complete replacement content.' }
-    }, ['content', 'path']),
-    outputSchema: { type: 'object' },
-    validate: (input) => requiredStringPairObject(input, 'path', 'content'),
-    execute: async (input, context) => {
-      try {
-        const workspace = requireWorkspace(roots, context, 'write');
-        const relativePath = requiredStringProperty(input, 'path');
-        const content = requiredStringProperty(input, 'content', true);
-        const byteLength = Buffer.byteLength(content, 'utf8');
-        if (byteLength > MAX_TEXT_BYTES) throw new Error('file_exceeds_write_limit');
-        const target = await resolveWritableWorkspacePath(workspace.rootPath, relativePath);
-        await mkdir(path.dirname(target), { recursive: true });
-        await writeFile(target, content, 'utf8');
-        return succeeded({
-          path: normalizeRelativePath(relativePath),
-          byteLength
-        });
-      } catch (error) {
-        return failed('workspace_write_failed', error);
-      }
-    }
-  });
-}
-
 function runCommandRegistration(
   roots: ReadonlyMap<string, WorkspaceBinding>,
   processSandboxFactory?: FirstPartyProcessSandboxFactory
 ): TrustedAgentToolRegistrationV1 {
   return registration({
+    implementationModuleUrl: import.meta.url,
     toolName: 'workspace.run_command',
+    model: {
+      description: 'Run one bounded executable with an explicit argument vector inside the approved Workspace sandbox.',
+      guidance: [
+        'No shell syntax is accepted.',
+        'Prefer structured Workspace Tools for reading, searching, or editing files.'
+      ]
+    },
+    presentation: { kind: 'command', label: '运行工作区命令', resultVisibility: 'protected' },
     capabilityIds: ['workspace.shell'],
     requiredWorkspaceAccess: 'write',
     sideEffect: 'external',

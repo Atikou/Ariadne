@@ -48,17 +48,19 @@ Ariadne 是独立设计、独立实现、独立发布的桌面 Agent 产品。�
 - `app/src/renderer/src/core/runtime/runtime-store.ts`：1,269 行，混合传输、缓存、投影和领域修复。
 - `runtime/src/agent/RunPolicyTypes.ts`：基础类型反向引用具体实现，是 18 文件循环的中心。
 
-截至 2026-08-26 的当前状态：
+截至 2026-08-28 的当前状态：
 
 - `RuntimeFacade.ts` 已删除；生产入口为 `RuntimeKernelApplication`、`ComposedRuntimeIngress` 和 `DefaultAgentControlRuntimeFactory`。
 - Public 命令面已收口到 Runtime status、Projection snapshot/commit replay、v3 Session/Message、v3 Decision 和 v3 Cancel；未知命令不再 fallback。
 - Node IPC 与 Headless Transport 只依赖 `RuntimeIngress`；Runtime Command、Conversation、Agent Control 与 Public Projection 数据库物理隔离。
-- Agent Control schema v5 / ledger revision 49 持有 Run/Turn/Inference/Decision/Effect、Plan、Budget、Delegation、Child Run、execution intent 和受保护 Turn 输入快照。
-- 默认生产 Composition 已由 bootstrap 冻结的 Capability Manifest 统一装配公开能力和 immutable Tool Catalog；exact model inference、Effect dispatch、因果 continuation、follow-up inference、work scheduler 和 started-work recovery gate 消费该快照。
-- Public Projection v3 的生产 publisher 覆盖 Conversation、Agent Run/Decision 和 Model；Renderer 只使用 snapshot + commit replay。
+- Agent Control schema v7 / ledger revision 55 持有 Run/Turn/Inference/Decision/Effect、Plan、Budget、Delegation、continuable Child `waiting_input`、durable `user_question`、interrupted-inference 因果证据、SubAgent execution Provider 身份/隔离能力/配置摘要、execution intent 和受保护 Turn/Directive 输入快照。旧 v5 store 必须显式执行 v5→v6、再执行 v6→v7 的离线迁移；Runtime 启动不隐式改写旧 ledger。
+- 默认生产 Composition 已由 bootstrap 冻结的 Capability Manifest 统一装配公开能力、immutable Tool Catalog 和 Provider service 图；compiler 按 `consumes`/`provides` 注入受声明约束的依赖。Workspace/Skill/mode contributors 先生成完整 instruction snapshot，再由终端 Provider 将 instruction assembly、Telemetry、live-work 汇成类型化 Agent Control service bundle。exact model inference、Effect dispatch、因果 continuation、follow-up inference、work scheduler 和 started-work recovery gate 消费该快照。
+- Public Projection v3 的生产 publisher 覆盖 Conversation、Agent Run/Decision、Model 和精确 Attempt inference stream；Renderer 只使用 snapshot + commit replay。
+- live-work completion 通过带 `live_work` 来源的系统 inbox 进入同一 Run：Agent UoW commit 是 scheduler/projection wake 的前置条件，成功投递后 registry 才确认 notification；shutdown 在 Store freeze 前 close/join 并排空 completion sink。Agent pipe process、沙箱内 PTY 与 Main PTY 共用控制语义；Runtime 重启会在 scheduler 前从活跃 Run 的受保护成功 `process_start`/`terminal_start` Effect 结果幂等写入 `interrupted`，且不宣称旧 handle/output 可恢复。正式 Windows Sandbox PTY/signal 验收与 Main PTY 强杀恢复仍未完成。
+- `ask_user` 是 Agent Control Directive，不是 Renderer callback 或普通 Tool。问题/选项先进入受保护 `user_question` Directive payload，Run 以精确 Decision/checkpoint 等待；回答 action 绑定 question ref/digest，并与带 `user_question_answer` 来源的 `next_step` inbox 输入原子提交。后续 Turn 才 claim 回答并重建 assistant question → user answer 历史。
 - Architecture Gate 当前通过：0 SCC、0 循环边、0 规则违规；文件和依赖边数量以命令输出为准。
-- 当前真实 Electron Agent smoke 已覆盖 direct、真实 Composer 中同一 Run 的运行中 inbox continuation、Tool continuation、Decision allow/deny、运行中取消，以及 inference/effect/projection 三个持久边界的 Runtime 强杀恢复；它使用确定性进程外 HTTPS Provider fixture，不代表 Live Provider、本地模型或真实 Browser/MCP 已验收。
-- v3 已接入 Conversation 历史、确定性 Context compaction、Tool result pruning、有界 Provider overflow recovery，以及 one-shot ordinary Child SubAgent 闭环；spill、精确 tokenizer、Diagnostics publisher、外部/continuable SubAgent Provider、完整 Hooks/Telemetry/Provider Resilience 等仍未完成。
+- 当前真实 Electron Agent smoke 已覆盖 token/reasoning stream、direct、真实 Composer 中同一 Run 的运行中 inbox continuation、稳定 command receipt/权威对账、ask-user 卡片与等待态恢复、Tool continuation、Decision allow/deny、运行中取消，以及 inbox response loss、user-question waiting、inference、effect、projection 五个持久边界的 Runtime 强杀恢复；它使用确定性进程外 HTTPS Provider fixture，不代表 Live Provider、本地模型或真实 Browser/MCP 已验收。
+- v3 已接入 Conversation 历史、确定性 Context compaction、可恢复 SpillRef、request-envelope-bound Provider usage anchor、有界 Provider overflow recovery、exact Provider 并发/速率/首输出前重试/熔断、one-shot/continuable ordinary Child、运行中非终态 Child interrupt、fresh-process ACP one-shot Provider、可取消 scoped Skill snapshot/last-good、固定 package 资源读取与 model/user policy、Manifest-owned 可信 Hook Provider 生命周期、脱敏 Diagnostics 和受控 Telemetry。尚未完成的是外部 continuable/reconnect、批量 Child、人类 Skill command catalog，以及外部动态 Hook 包的签名/发现（当前有意不开放）。
 
 ## 3. 架构原则
 
@@ -360,8 +362,9 @@ intended -> authorized -> started
 - 后续 Turn 显式绑定 source Turn、Attempt、Directive digest，以及原始顺序的
   Effect/toolCall 集合；
 - 一个 `invoke_tools` 批次的全部 Effect 进入已知终态后，才允许创建唯一下一 Turn；
-- v3 使用 canonical `ariadne.agent-effect-results.v3` 文本协议，不伪造
-  Provider-native Tool role 或 Tool-call history；
+- Engine 从受保护 Effect payload 恢复 digest-bound 原始 Tool 输入，并投影为
+  Provider-neutral typed Tool-call/Tool-result blocks；OpenAI、Anthropic 与嵌入式
+  本地模型各自序列化为原生 Tool history，不存在文本 fallback；
 - 首轮 Inference 继续由 execution-intent ledger 独占，后续 Inference 由独立
   follow-up owner 独占，二者不能 fallback 或互相抢占；
 - 启动发现 `started` Effect/Inference 时进入显式 `uncertain` 恢复，绝不盲目重放。

@@ -237,11 +237,14 @@ export class AgentStartedWorkRecoveryCoordinator {
       && (
         cause?.kind === 'effect_results'
         || cause?.kind === 'inbox_inputs'
+        || cause?.kind === 'interrupted_inference'
         || cause?.kind === 'child_results'
       )
       && cause.sourceTurnId === work.sourceTurnId
       && cause.sourceAttemptId === work.sourceAttemptId
-      && cause.sourceDirectiveDigest === work.sourceDirectiveDigest;
+      && (cause.kind === 'interrupted_inference'
+        ? cause.recoveryDecisionId === work.recoveryDecisionId
+        : cause.sourceDirectiveDigest === work.sourceDirectiveDigest);
     const exactDelegation = work.kind === 'recovery_uncertain_delegated_inference'
       && cause?.kind === 'delegation_objective'
       && cause.parentRunId === work.parentRunId

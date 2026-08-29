@@ -56,9 +56,9 @@ function readProjectionRecordsUnchecked(
       );
     }
     const sessionRow = database.prepare(
-      `SELECT session_id, workspace_id, version, created_at, updated_at
-       FROM conversation_sessions WHERE session_id=?`
-    ).get(event.sessionId) as SessionRow | undefined;
+      `SELECT session_id, workspace_id, version, title, status, created_at, updated_at
+       FROM conversation_session_versions WHERE session_id=? AND version=?`
+    ).get(event.sessionId, event.sessionVersion) as SessionRow | undefined;
     if (sessionRow === undefined) {
       throw authorityStorageCorruption(
         `projection-event:${String(cursor)}:session_missing`
@@ -70,8 +70,8 @@ function readProjectionRecordsUnchecked(
     );
     if (
       session.workspaceId !== event.workspaceId
-      || session.version < event.sessionVersion
-      || Date.parse(session.updatedAt) < Date.parse(event.occurredAt)
+      || session.version !== event.sessionVersion
+      || session.updatedAt !== event.occurredAt
       || (
         event.type === 'conversation.session.created'
         && (

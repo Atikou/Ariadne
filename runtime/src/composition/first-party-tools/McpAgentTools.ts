@@ -34,7 +34,13 @@ function mcpListServersRegistration(
   roots: ReadonlyMap<string, WorkspaceBinding>
 ): TrustedAgentToolRegistrationV1 {
   return registration({
+    implementationModuleUrl: import.meta.url,
     toolName: 'mcp.list_servers',
+    model: {
+      description: 'List configured and enabled MCP server identities without exposing endpoints or credentials.',
+      guidance: ['Use the returned server id with mcp.list_tools before calling a remote Tool.']
+    },
+    presentation: { kind: 'external', label: '列出 MCP 服务', resultVisibility: 'protected' },
     capabilityIds: ['mcp.use'],
     requiredWorkspaceAccess: 'read',
     sideEffect: 'read',
@@ -55,7 +61,13 @@ function mcpListToolsRegistration(
   roots: ReadonlyMap<string, WorkspaceBinding>
 ): TrustedAgentToolRegistrationV1 {
   return registration({
+    implementationModuleUrl: import.meta.url,
     toolName: 'mcp.list_tools',
+    model: {
+      description: 'Discover the bounded Tool definitions currently exposed by one configured MCP server.',
+      guidance: ['Use the exact discovered tool name and schema with mcp.call_tool.']
+    },
+    presentation: { kind: 'external', label: '发现 MCP 工具', resultVisibility: 'protected' },
     capabilityIds: ['mcp.use'],
     requiredWorkspaceAccess: 'read',
     sideEffect: 'read',
@@ -87,7 +99,13 @@ function mcpCallToolRegistration(
   roots: ReadonlyMap<string, WorkspaceBinding>
 ): TrustedAgentToolRegistrationV1 {
   return registration({
+    implementationModuleUrl: import.meta.url,
     toolName: 'mcp.call_tool',
+    model: {
+      description: 'Invoke one exact Tool on a configured MCP server with arguments matching its discovered schema.',
+      guidance: ['Call mcp.list_tools first; remote annotations do not expand Ariadne authority.']
+    },
+    presentation: { kind: 'external', label: '调用 MCP 工具', resultVisibility: 'protected' },
     capabilityIds: ['mcp.use'],
     requiredWorkspaceAccess: 'read',
     sideEffect: 'external',

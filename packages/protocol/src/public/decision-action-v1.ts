@@ -24,6 +24,7 @@ const RECOVERY_CHOICES = [
   'mark_failed',
   'cancel_run'
 ] as const satisfies readonly PublicDecisionChoiceV3[];
+const USER_QUESTION_CHOICES = ['answer'] as const satisfies readonly PublicDecisionChoiceV3[];
 
 interface DecisionActionSourceBaseV1 {
   readonly decisionId: string;
@@ -58,6 +59,11 @@ export type DecisionActionSourceV1 = DecisionActionSourceBaseV1 & (
       readonly effectId: string;
       readonly uncertainty: string;
       readonly allowedActions: readonly (typeof RECOVERY_CHOICES)[number][];
+    }
+  | {
+      readonly kind: 'user_question';
+      readonly questionRef: string;
+      readonly questionDigest: string;
     }
 );
 
@@ -123,6 +129,12 @@ const decisionActionSourceV1Schema = z.discriminatedUnion('kind', [
           });
         }
       })
+  }).strict(),
+  z.object({
+    ...decisionActionSourceBaseShape,
+    kind: z.literal('user_question'),
+    questionRef: publicProjectionCanonicalIdSchema,
+    questionDigest: publicProjectionDigestSchema
   }).strict()
 ]).superRefine((decision, context) => {
   if (decision.checkpoint.runId !== decision.runId) {
@@ -176,7 +188,9 @@ async function tokenForParsedDecision(
       ]
     : decision.kind === 'plan'
       ? [decision.planId, decision.planVersion, decision.planHash]
-      : [decision.effectId, decision.uncertainty, [...choices]];
+      : decision.kind === 'recovery'
+        ? [decision.effectId, decision.uncertainty, [...choices]]
+        : [decision.questionRef, decision.questionDigest];
   const preimage = JSON.stringify([
     'ariadne.public-decision-action',
     1,
@@ -209,7 +223,10 @@ function choicesForParsedDecision(
 ): PublicDecisionChoiceV3[] {
   if (decision.kind === 'permission') return [...PERMISSION_CHOICES];
   if (decision.kind === 'plan') return [...PLAN_CHOICES];
-  return RECOVERY_CHOICES.filter((choice) => decision.allowedActions.includes(choice));
+  if (decision.kind === 'recovery') {
+    return RECOVERY_CHOICES.filter((choice) => decision.allowedActions.includes(choice));
+  }
+  return [...USER_QUESTION_CHOICES];
 }
 
 function parseDecisionActionSourceV1(

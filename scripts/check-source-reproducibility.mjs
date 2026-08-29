@@ -50,7 +50,15 @@ for (const relative of trackedFiles) {
     failures.push(`Forbidden generated, runtime, or secret path is tracked: ${normalized}`);
   }
   if (!isTextPolicyFile(normalized)) continue;
-  const content = readFileSync(path.join(projectRoot, relative), 'utf8');
+  const absolute = path.join(projectRoot, relative);
+  if (!existsSync(absolute)) {
+    // A working-tree deletion is already represented by the exact clean-tree
+    // gate above. Re-reporting every deleted legacy path makes an intentional
+    // cleanup look like a stale generated snapshot; after commit, ls-files no
+    // longer returns the path. A clean checkout cannot reach this branch.
+    continue;
+  }
+  const content = readFileSync(absolute, 'utf8');
   if (/C:\\Users\\Administrator|E:\\Project\\Ariadne/i.test(content)) {
     failures.push(`Machine-specific absolute path is stored in ${normalized}.`);
   }

@@ -1,4 +1,8 @@
-import type { CompanionMessageReasoning, RunSummary } from '@ariadne/protocol/public';
+import type {
+  CompanionMessageReasoning,
+  ImageAttachmentRefV3,
+  RunSummary
+} from '@ariadne/protocol/public';
 import type { RuntimeRun } from '@renderer/core/runtime/runtime-store';
 
 export type ConversationNodeKind =
@@ -21,6 +25,7 @@ export interface ConversationNode {
   time: string;
   summary: string;
   content?: string;
+  attachments?: readonly ImageAttachmentRefV3[];
   runId?: string;
   processingDurationMs?: number;
   deliveryState?: 'pending' | 'failed';

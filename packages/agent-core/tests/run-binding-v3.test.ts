@@ -106,7 +106,9 @@ describe('AgentRunBinding v3', () => {
           kind: 'parent_delegation',
           parentRunId: selfParent.runId,
           delegationId: 'delegation-self',
-          objectiveDigest: `sha256:${'f'.repeat(64)}`
+          objectiveDigest: `sha256:${'f'.repeat(64)}`,
+          mode: 'one_shot',
+          providerId: 'ariadne.in_process'
         }
       }
     })).rejects.toThrow(/cannot be its own parent/);
@@ -276,7 +278,9 @@ function childBinding(parent: AgentRunBinding): AgentRunBinding {
       kind: 'parent_delegation',
       parentRunId: parent.budget.runId,
       delegationId: 'delegation-child',
-      objectiveDigest: `sha256:${'7'.repeat(64)}`
+      objectiveDigest: `sha256:${'7'.repeat(64)}`,
+      mode: 'one_shot',
+      providerId: 'ariadne.in_process'
     },
     workspace: {
       ...parent.workspace,

@@ -14,11 +14,16 @@ import type {
   RuntimeCapabilityManifest
 } from '../../ingress/RuntimeCapabilityManifest.js';
 import { createShutdownContext, type ShutdownContext } from '../../ingress/ShutdownContext.js';
+import { compileRuntimeCapabilityDefinitionGraph } from './RuntimeCapabilityDefinitionGraph.js';
 import type {
   RuntimeCapabilityHandle,
   RuntimeCapabilityProvider,
   RuntimeCapabilityStartContext
 } from './RuntimeCapabilityProvider.js';
+import {
+  createRuntimeCapabilityProviderStartContext,
+  publishRuntimeCapabilityHandleServices
+} from './RuntimeCapabilityServiceResolver.js';
 
 interface StartedProvider {
   readonly definition: RuntimeCapabilityDefinitionSnapshot;
@@ -29,17 +34,20 @@ export async function compileRuntimeCapabilityManifest(
   context: RuntimeCapabilityStartContext,
   providers: readonly RuntimeCapabilityProvider[]
 ): Promise<RuntimeCapabilityManifest> {
-  const providerSnapshots = snapshotProviders(providers);
-  validateDefinitions(providerSnapshots);
-  const ordered = topologicallyOrder(providerSnapshots);
+  const ordered = compileRuntimeCapabilityDefinitionGraph(providers);
   const started: StartedProvider[] = [];
+  const services = new Map<string, unknown>();
   try {
     for (const provider of ordered) {
-      const handle = await provider.start(context);
-      validateHandle(provider.definition.id, handle);
+      const handle = await provider.start(createRuntimeCapabilityProviderStartContext(
+        context,
+        provider.definition,
+        services
+      ));
+      publishRuntimeCapabilityHandleServices(provider.definition, handle, services);
       started.push({ definition: provider.definition, handle });
     }
-    return createManifest(started);
+    return createManifest(started, services);
   } catch (error) {
     const cleanupContext = createShutdownContext(Date.now() + 5_000);
     let cleanup: readonly unknown[];
@@ -54,17 +62,15 @@ export async function compileRuntimeCapabilityManifest(
   }
 }
 
-function createManifest(started: readonly StartedProvider[]): RuntimeCapabilityManifest {
+function createManifest(
+  started: readonly StartedProvider[],
+  services: ReadonlyMap<string, unknown>
+): RuntimeCapabilityManifest {
   const publicCapabilities: RuntimeCapability[] = [];
   const tools: TrustedAgentToolRegistrationV1[] = [];
   const publicOwners = new Map<RuntimeCapability, string>();
-  const services = new Map<string, unknown>();
   for (const item of started) {
     for (const capability of item.handle.publicCapabilities) {
-      runtimeCapabilitySchema.parse(capability);
-      if (!item.definition.publicCapabilities.includes(capability)) {
-        throw new Error(`runtime_capability_public_not_declared:${item.definition.id}:${capability}`);
-      }
       const owner = publicOwners.get(capability);
       if (owner !== undefined) {
         throw new Error(`runtime_capability_public_duplicate:${capability}:${owner}`);
@@ -73,15 +79,6 @@ function createManifest(started: readonly StartedProvider[]): RuntimeCapabilityM
       publicCapabilities.push(capability);
     }
     tools.push(...(item.handle.tools ?? []));
-    for (const [serviceId, service] of Object.entries(item.handle.services ?? {})) {
-      if (!item.definition.provides.includes(serviceId)) {
-        throw new Error(`runtime_capability_service_not_declared:${item.definition.id}:${serviceId}`);
-      }
-      if (service === undefined || services.has(serviceId)) {
-        throw new Error(`runtime_capability_service_duplicate:${serviceId}`);
-      }
-      services.set(serviceId, service);
-    }
   }
   const catalog = compileTrustedAgentToolCatalog({
     catalogId: FIRST_PARTY_AGENT_TOOL_CATALOG_ID,
@@ -92,7 +89,9 @@ function createManifest(started: readonly StartedProvider[]): RuntimeCapabilityM
   if (
     catalog.catalogDigest !== FIRST_PARTY_AGENT_TOOL_CATALOG_DIGEST
     || !sameValues(toolNames, FIRST_PARTY_AGENT_TOOL_NAMES)
-  ) throw new Error('runtime_capability_tool_catalog_contract_drift');
+  ) throw new Error(
+    `runtime_capability_tool_catalog_contract_drift:${catalog.catalogDigest}:${toolNames.join(',')}`
+  );
 
   const diagnostics = Object.freeze(started.map((item) => Object.freeze({
     definition: item.definition,
@@ -114,116 +113,29 @@ function createManifest(started: readonly StartedProvider[]): RuntimeCapabilityM
     agentToolCatalogSnapshots: Object.freeze([catalog]),
     service: <T>(serviceId: string): T | undefined => services.get(serviceId) as T | undefined,
     diagnosticSnapshot: () => diagnostics,
-    prepareShutdown: async (context) => {
+    prepareShutdown: async (shutdown) => {
       if (prepared || closed) {
-        context.throwIfExpired();
+        shutdown.throwIfExpired();
         return;
       }
-      const failures = await invokeReverse(started, context, 'prepareShutdown');
+      const failures = await invokeReverse(started, shutdown, 'prepareShutdown');
       if (failures.length > 0) {
         throw new AggregateError(failures, 'runtime_capability_prepare_shutdown_failed');
       }
       prepared = true;
     },
-    close: async (context) => {
+    close: async (shutdown) => {
       if (closed) {
-        context.throwIfExpired();
+        shutdown.throwIfExpired();
         return;
       }
-      const failures = await invokeReverse(started, context, 'close');
+      const failures = await invokeReverse(started, shutdown, 'close');
       if (failures.length > 0) {
         throw new AggregateError(failures, 'runtime_capability_shutdown_failed');
       }
       closed = true;
     }
   });
-}
-
-function validateDefinitions(providers: readonly RuntimeCapabilityProvider[]): void {
-  const ids = new Set<string>();
-  const services = new Set<string>();
-  const publicOwners = new Map<RuntimeCapability, string>();
-  for (const provider of providers) {
-    const definition = provider.definition;
-    if (!canonicalId(definition.id) || !/^\d+\.\d+$/u.test(definition.contractVersion)) {
-      throw new Error('runtime_capability_definition_invalid');
-    }
-    if (ids.has(definition.id)) throw new Error(`runtime_capability_duplicate:${definition.id}`);
-    ids.add(definition.id);
-    const declaredPublic = new Set<RuntimeCapability>();
-    for (const capability of definition.publicCapabilities) {
-      runtimeCapabilitySchema.parse(capability);
-      if (declaredPublic.has(capability)) {
-        throw new Error(`runtime_capability_public_declaration_duplicate:${capability}`);
-      }
-      declaredPublic.add(capability);
-      const owner = publicOwners.get(capability);
-      if (owner !== undefined) {
-        throw new Error(`runtime_capability_public_owner_duplicate:${capability}:${owner}`);
-      }
-      publicOwners.set(capability, definition.id);
-    }
-    for (const service of definition.provides) {
-      if (!canonicalId(service) || services.has(service)) {
-        throw new Error(`runtime_capability_service_invalid:${service}`);
-      }
-      services.add(service);
-    }
-  }
-  for (const provider of providers) {
-    for (const required of provider.definition.requires) {
-      if (!ids.has(required)) throw new Error(`runtime_capability_requirement_missing:${required}`);
-    }
-  }
-}
-
-function snapshotProviders(
-  providers: readonly RuntimeCapabilityProvider[]
-): readonly RuntimeCapabilityProvider[] {
-  return Object.freeze(providers.map((provider) => Object.freeze({
-    definition: Object.freeze({
-      id: provider.definition.id,
-      contractVersion: provider.definition.contractVersion,
-      requires: Object.freeze([...provider.definition.requires]),
-      provides: Object.freeze([...provider.definition.provides]),
-      publicCapabilities: Object.freeze([...provider.definition.publicCapabilities])
-    }),
-    start: provider.start
-  })));
-}
-
-function topologicallyOrder(
-  providers: readonly RuntimeCapabilityProvider[]
-): readonly RuntimeCapabilityProvider[] {
-  const remaining = new Map(providers.map((provider) => [provider.definition.id, provider]));
-  const resolved = new Set<string>();
-  const ordered: RuntimeCapabilityProvider[] = [];
-  while (remaining.size > 0) {
-    const ready = [...remaining.values()]
-      .filter((provider) => provider.definition.requires.every((id) => resolved.has(id)))
-      .sort((left, right) => compareCodeUnits(left.definition.id, right.definition.id));
-    if (ready.length === 0) throw new Error('runtime_capability_dependency_cycle');
-    for (const provider of ready) {
-      remaining.delete(provider.definition.id);
-      resolved.add(provider.definition.id);
-      ordered.push(provider);
-    }
-  }
-  return ordered;
-}
-
-function validateHandle(id: string, handle: RuntimeCapabilityHandle): void {
-  if (handle === null || typeof handle !== 'object' || !Array.isArray(handle.publicCapabilities)) {
-    throw new Error(`runtime_capability_handle_invalid:${id}`);
-  }
-  if (
-    handle.services !== undefined
-    && (
-      handle.services === null
-      || typeof handle.services !== 'object'
-      || Array.isArray(handle.services)
-    )
-  ) throw new Error(`runtime_capability_services_invalid:${id}`);
 }
 
 async function invokeReverse(
@@ -241,10 +153,6 @@ async function invokeReverse(
     }
   }
   return failures;
-}
-
-function canonicalId(value: string): boolean {
-  return /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/u.test(value);
 }
 
 function sameValues(left: readonly string[], right: readonly string[]): boolean {

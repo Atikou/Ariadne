@@ -15,6 +15,46 @@ const httpsOriginSchema = httpsUrlSchema.refine((value) => {
 }, 'Expected an HTTPS origin without path, query, credentials, or fragment.');
 const toolPermissionSchema = z.enum(['read', 'write', 'shell', 'network', 'dangerous']);
 
+/** User-owned chat persona. This does not grant tools or change execution authority. */
+export const assistantChatProfileSchema = z.object({
+  name: z.string().trim().min(1).max(64),
+  systemPrompt: z.string().trim().min(1).max(32_768),
+  userPersona: z.string().trim().max(32_768)
+}).strict();
+
+export type AssistantChatProfile = z.infer<typeof assistantChatProfileSchema>;
+
+export function createDefaultAssistantChatProfile(): AssistantChatProfile {
+  return {
+    name: 'Ariadne',
+    systemPrompt: '你是 Ariadne，本机上的个人 AI 助手。请使用与用户一致的语言自然、直接地回答；保持事实准确，不虚构已经执行的操作；没有把握时明确说明。',
+    userPersona: ''
+  };
+}
+
+/** Safe, credential-free configuration shared by Settings and Runtime bootstrap. */
+export const acpSubagentProviderConfigurationSchema = z.object({
+  kind: z.literal('acp_stdio'),
+  providerId: opaqueReferenceSchema.refine(
+    (value) => value !== 'ariadne.in_process',
+    'The built-in SubAgent provider identity is reserved.'
+  ),
+  displayName: z.string().trim().min(1).max(256),
+  command: absolutePathSchema,
+  args: z.array(z.string().max(32_768).refine(
+    (value) => !/[\u0000\r\n]/u.test(value),
+    'ACP process arguments cannot contain NUL or line breaks.'
+  )).max(64),
+  permissionPolicy: z.enum(['reject', 'allow']),
+  networkAccess: z.enum(['offline', 'online-approved']),
+  timeoutMs: z.number().int().min(1_000).max(24 * 60 * 60 * 1_000),
+  disposeGraceMs: z.number().int().min(100).max(60_000)
+}).strict();
+
+export type AcpSubagentProviderConfiguration = z.infer<
+  typeof acpSubagentProviderConfigurationSchema
+>;
+
 const mcpServerBaseSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9_-]*$/u),
   enabled: z.boolean(),

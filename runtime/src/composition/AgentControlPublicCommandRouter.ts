@@ -17,14 +17,8 @@ import type {
   SqlitePublicProjectionStore
 } from '../adapters/persistence/SqlitePublicProjectionStore.js';
 import {
-  ConversationAuthorityError
-} from '../conversation/ConversationAuthority.js';
-import {
   deriveConversationAuthorityId
 } from '../conversation/ConversationRunHandoffIds.js';
-import {
-  ConversationRunHandoffError
-} from '../conversation/ConversationRunHandoffSaga.js';
 import {
   ConversationAuthorityService
 } from '../control/conversation/ConversationAuthorityService.js';
@@ -39,11 +33,15 @@ import type { RuntimeCommandEnvelope } from '../ingress/RuntimeIngress.js';
 import type {
   RuntimeCommandReconciliation
 } from '../control/ports/RuntimeCommandJournal.js';
+import type { ConversationAttachmentStore } from '../control/ports/ConversationAttachmentStore.js';
 import {
   AgentControlConversationMessageAdmissionError,
   type AgentControlExecutionPipeline
 } from './ProductionAgentControlExecutionPipelineFactory.js';
 import { AgentInboxPublicCommandHandler } from './AgentInboxPublicCommandHandler.js';
+import { AgentSubagentInterruptPublicCommandHandler } from './AgentSubagentInterruptPublicCommandHandler.js';
+import { publicConversationFailure } from './ConversationPublicCommandFailures.js';
+import { ConversationSessionPublicCommandHandler } from './ConversationSessionPublicCommandHandler.js';
 import {
   completedPublicError,
   publicRunMutationFailure
@@ -54,6 +52,7 @@ export interface AgentControlPublicCommandRouterOptions {
   readonly conversationCommandNow?: () => Date;
   readonly agentDecisionCommandNow?: () => Date;
   readonly agentInboxCommandNow?: () => Date;
+  readonly attachmentStore?: ConversationAttachmentStore;
 }
 
 export interface AgentControlPublicCommandRouterCallbacks {
@@ -73,8 +72,10 @@ export class AgentControlPublicCommandRouter {
   private readonly agentDecisionAuthority: AgentDecisionAuthorityService;
   private readonly agentCommands: AgentRunCommandService;
   private readonly agentInbox: AgentInboxPublicCommandHandler;
-  private readonly authorizedWorkspaceIds: ReadonlySet<string>;
+  private readonly subagentInterrupt: AgentSubagentInterruptPublicCommandHandler;
+  private readonly conversationSessions: ConversationSessionPublicCommandHandler;
   private readonly conversationCommandNow: () => Date;
+  private readonly attachmentStore: ConversationAttachmentStore | undefined;
 
   public constructor(
     private readonly unitOfWork: SqliteAgentRunUnitOfWork,
@@ -94,8 +95,21 @@ export class AgentControlPublicCommandRouter {
       wakeWorkScheduler: () => this.executionPipeline?.runWorkScheduler.wake(),
       wakeProjectionDrain: callbacks.wakeProjectionDrain
     }, options.agentInboxCommandNow);
-    this.authorizedWorkspaceIds = new Set(options.authorizedWorkspaceIds ?? []);
+    this.subagentInterrupt = new AgentSubagentInterruptPublicCommandHandler(
+      unitOfWork,
+      executionPipeline,
+      callbacks.wakeProjectionDrain
+    );
     this.conversationCommandNow = options.conversationCommandNow ?? (() => new Date());
+    this.conversationSessions = new ConversationSessionPublicCommandHandler(
+      conversation,
+      {
+        wakeProjectionDrain: callbacks.wakeProjectionDrain,
+        resolveCommandTime: (commandId) => this.resolveConversationCommandTime(commandId)
+      },
+      options.authorizedWorkspaceIds
+    );
+    this.attachmentStore = options.attachmentStore;
   }
 
   public async executeOwnedCommand(
@@ -103,7 +117,10 @@ export class AgentControlPublicCommandRouter {
   ): Promise<RuntimeApplicationCommandResult | null> {
     switch (envelope.command.kind) {
       case 'conversation.session.create.v3':
-        return this.executeCreateConversationSession(envelope, envelope.command);
+      case 'conversation.session.rename.v3':
+      case 'conversation.session.archive.v3':
+      case 'conversation.session.restore.v3':
+        return this.conversationSessions.execute(envelope, envelope.command);
       case 'conversation.message.accept.v3':
         return this.executeAcceptConversationMessage(envelope, envelope.command);
       case 'agent.decision.resolve.v3':
@@ -113,7 +130,10 @@ export class AgentControlPublicCommandRouter {
       case 'agent.inbox.enqueue.v3':
       case 'agent.inbox.replace.v3':
       case 'agent.inbox.remove.v3':
+      case 'agent.subagent.send.v3':
         return this.agentInbox.execute(envelope, envelope.command);
+      case 'agent.subagent.interrupt.v3':
+        return this.subagentInterrupt.execute(envelope, envelope.command);
       case 'projection.snapshot.get': {
         if (
           envelope.command.contractVersion
@@ -146,6 +166,9 @@ export class AgentControlPublicCommandRouter {
       case 'projection.commits.read':
         return { kind: 'not_committed' };
       case 'conversation.session.create.v3':
+      case 'conversation.session.rename.v3':
+      case 'conversation.session.archive.v3':
+      case 'conversation.session.restore.v3':
       case 'conversation.message.accept.v3': {
         const committed = await this.conversation.readCommittedAuthorityCommand(
           envelope.commandId
@@ -178,7 +201,8 @@ export class AgentControlPublicCommandRouter {
       }
       case 'agent.inbox.enqueue.v3':
       case 'agent.inbox.replace.v3':
-      case 'agent.inbox.remove.v3': {
+      case 'agent.inbox.remove.v3':
+      case 'agent.subagent.send.v3': {
         const result = await this.executeOwnedCommand(envelope);
         if (result === null || result.settlement !== 'completed') {
           throw new Error('agent_inbox_command_reconciliation_invalid');
@@ -187,72 +211,18 @@ export class AgentControlPublicCommandRouter {
           ? { kind: 'committed', outcome: result.outcome }
           : { kind: 'not_committed' };
       }
+      case 'agent.subagent.interrupt.v3': {
+        const result = await this.executeOwnedCommand(envelope);
+        if (result === null || result.settlement !== 'completed') {
+          throw new Error('agent_subagent_interrupt_reconciliation_invalid');
+        }
+        return result.outcome.ok
+          ? { kind: 'committed', outcome: result.outcome }
+          : { kind: 'not_committed' };
+      }
       default:
         return null;
     }
-  }
-
-  private async executeCreateConversationSession(
-    envelope: RuntimeCommandEnvelope,
-    command: Extract<
-      RuntimeCommandEnvelope['command'],
-      { readonly kind: 'conversation.session.create.v3' }
-    >
-  ): Promise<RuntimeApplicationCommandResult> {
-    envelope.signal.throwIfAborted();
-    if (
-      this.authorizedWorkspaceIds.size > 0
-      && !this.authorizedWorkspaceIds.has(command.workspaceId)
-    ) {
-      return completedPublicError(
-        envelope,
-        'workspace_not_authorized',
-        'The Workspace is not authorized by this Runtime bootstrap.',
-        false
-      );
-    }
-    const [eventId, occurredAt] = await Promise.all([
-      deriveConversationAuthorityId('session-created-event', envelope.commandId),
-      this.resolveConversationCommandTime(envelope.commandId)
-    ]);
-    envelope.signal.throwIfAborted();
-    const authorityCommand = {
-      kind: 'conversation.create_session',
-      commandId: envelope.commandId,
-      eventId,
-      sessionId: command.sessionId,
-      workspaceId: command.workspaceId,
-      expectedVersion: null,
-      occurredAt
-    } as const;
-    let result;
-    try {
-      result = await this.conversationAuthority.createSession(authorityCommand);
-    } catch (error) {
-      envelope.signal.throwIfAborted();
-      const committed = await this.conversation.readCommittedAuthorityCommand(
-        envelope.commandId
-      );
-      if (committed !== null) {
-        result = await this.conversationAuthority.createSession(authorityCommand);
-      } else {
-        const failure = publicConversationFailure(envelope, error);
-        if (failure !== null) return failure;
-        throw error;
-      }
-    }
-    this.callbacks.wakeProjectionDrain();
-    return {
-      outcome: {
-        ok: true,
-        result: {
-          kind: 'conversation.session.created.v3',
-          sessionId: result.session.sessionId,
-          version: 1
-        }
-      },
-      settlement: 'completed'
-    };
   }
 
   private async executeAcceptConversationMessage(
@@ -307,6 +277,32 @@ export class AgentControlPublicCommandRouter {
       this.resolveConversationCommandTime(envelope.commandId)
     ]);
     envelope.signal.throwIfAborted();
+    let attachments;
+    if (command.attachments !== undefined) {
+      if (this.attachmentStore === undefined) {
+        return completedPublicError(
+          envelope,
+          'conversation_attachment_unavailable',
+          'Image attachments are unavailable in this Runtime.',
+          false
+        );
+      }
+      try {
+        attachments = await this.attachmentStore.saveImages(
+          command.attachments,
+          envelope.signal
+        );
+      } catch {
+        envelope.signal.throwIfAborted();
+        return completedPublicError(
+          envelope,
+          'conversation_attachment_invalid',
+          'One or more image attachments could not be validated and stored.',
+          false
+        );
+      }
+    }
+    envelope.signal.throwIfAborted();
     const authorityCommand = {
       kind: 'conversation.accept_user_message',
       commandId: envelope.commandId,
@@ -317,6 +313,7 @@ export class AgentControlPublicCommandRouter {
       messageId: command.messageId,
       expectedMessageVersion: null,
       content: command.content,
+      ...(attachments === undefined ? {} : { attachments }),
       execution: command.execution ?? { mode: 'agent' as const },
       sagaId,
       handoffCommandId,
@@ -533,73 +530,6 @@ export class AgentControlPublicCommandRouter {
     }
     return now.toISOString();
   }
-}
-
-function publicConversationFailure(
-  envelope: RuntimeCommandEnvelope,
-  error: unknown
-): RuntimeApplicationCommandResult | null {
-  if (error instanceof ConversationAuthorityError) {
-    switch (error.code) {
-      case 'CONVERSATION_SESSION_ALREADY_EXISTS':
-        return completedPublicError(
-          envelope,
-          'conversation_session_exists',
-          'The Conversation session already exists.',
-          false
-        );
-      case 'CONVERSATION_SESSION_NOT_FOUND':
-        return completedPublicError(
-          envelope,
-          'conversation_session_not_found',
-          'The Conversation session does not exist.',
-          false
-        );
-      case 'CONVERSATION_SESSION_VERSION_CONFLICT':
-        return completedPublicError(
-          envelope,
-          'conversation_version_conflict',
-          'The Conversation changed before this command was applied.',
-          false
-        );
-      case 'CONVERSATION_WORKSPACE_MISMATCH':
-        return completedPublicError(
-          envelope,
-          'conversation_workspace_mismatch',
-          'The Conversation does not belong to that Workspace.',
-          false
-        );
-      case 'CONVERSATION_MESSAGE_ALREADY_EXISTS':
-      case 'CONVERSATION_COMMAND_CONFLICT':
-        return completedPublicError(
-          envelope,
-          'conversation_command_conflict',
-          'The Conversation command conflicts with an existing immutable fact.',
-          false
-        );
-      case 'CONVERSATION_INVARIANT':
-      case 'CONVERSATION_STORAGE_CORRUPTION':
-        return null;
-    }
-  }
-  if (error instanceof ConversationRunHandoffError) {
-    switch (error.code) {
-      case 'HANDOFF_ALREADY_EXISTS':
-      case 'HANDOFF_NOT_FOUND':
-      case 'HANDOFF_VERSION_CONFLICT':
-      case 'HANDOFF_COMMAND_CONFLICT':
-      case 'HANDOFF_INVALID_TRANSITION':
-        return completedPublicError(
-          envelope,
-          'conversation_handoff_conflict',
-          'The Conversation handoff conflicts with an existing immutable fact.',
-          false
-        );
-      case 'HANDOFF_INVARIANT':
-        return null;
-    }
-  }
-  return null;
 }
 
 function publicDecisionFailure(

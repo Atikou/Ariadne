@@ -6,13 +6,13 @@ import type {
   PreparedAgentDecision
 } from '@ariadne/agent-core';
 
-import { ConfiguredAgentLifecycleHooks } from './ConfiguredAgentLifecycleHooks.js';
+import type { AgentLifecycleHooks } from '../control/ports/AgentLifecycleHooks.js';
 
 /** Connects typed v3 dispatch boundaries to configured Hooks without payload access. */
 export class ProductionAgentLifecycleBridge
 implements AgentDispatchLifecycleObserver {
   public constructor(
-    private readonly hooks: ConfiguredAgentLifecycleHooks,
+    private readonly hooks: AgentLifecycleHooks,
     private readonly terminalObserver?: {
       closeOwner(runId: string): void | Promise<void>;
     }
@@ -48,7 +48,7 @@ implements AgentDispatchLifecycleObserver {
 export class LifecycleHookedAgentEngine implements AgentEngine {
   public constructor(
     private readonly inner: AgentEngine,
-    private readonly hooks: ConfiguredAgentLifecycleHooks
+    private readonly hooks: AgentLifecycleHooks
   ) {}
 
   public prepare(input: AgentTurnInput, signal: AbortSignal): Promise<PreparedAgentDecision> {

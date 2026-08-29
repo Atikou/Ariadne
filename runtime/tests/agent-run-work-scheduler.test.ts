@@ -384,8 +384,9 @@ describe('AgentRunWorkScheduler', () => {
       ports,
       {
         authorityVerifier: {
-          assertRestorable: vi.fn(async (run) => {
+          assessRestorability: vi.fn(async (run) => {
             order.push(`verify:${run.version}`);
+            return { status: 'restorable' };
           })
         }
       }
@@ -420,6 +421,252 @@ describe('AgentRunWorkScheduler', () => {
       .rejects.toBeInstanceOf(AgentRunWorkSchedulerShutdownError);
     const signal = vi.mocked(ports.effects.dispatch).mock.calls[0]?.[1];
     expect(signal?.aborted).toBe(true);
+  });
+
+  it('interrupts an active follow-up into explicit recovery without cancelling the Child Run', async () => {
+    let current: AgentRunWorkClassification = terminal(RUN_ID, 5);
+    const started = deferred<void>();
+    const ports = rejectingPorts();
+    ports.followUps.dispatchOwned = vi.fn(async (_request, signal) => {
+      started.resolve();
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) resolve();
+        else signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      return {
+        status: 'waiting_recovery',
+        reason: 'inference_outcome_uncertain',
+        result: {
+          status: 'uncertain',
+          recoveryDecisionId: 'recovery-interrupted-follow-up',
+          run: { runId: RUN_ID, version: 7 },
+          turn: { turnId: FOLLOW_UP_TURN_ID },
+          attempt: {
+            attemptId: FOLLOW_UP_ATTEMPT_ID,
+            state: { status: 'uncertain' }
+          }
+        }
+      };
+    });
+    const scheduler = createScheduler(
+      mutableQuery(() => [resumable(current)]),
+      classifierForDynamic(() => current),
+      ports
+    );
+    await scheduler.start();
+    current = followUp(RUN_ID, 6);
+    const drain = scheduler.drainOnce();
+    await started.promise;
+
+    const interruption = scheduler.interruptActiveTurn({
+      commandId: 'interrupt-active-follow-up',
+      runId: RUN_ID,
+      expectedVersion: 6,
+      finalize: vi.fn(async (recovery) => {
+        expect(recovery).toEqual({
+          runId: RUN_ID,
+          runVersion: 7,
+          turnId: FOLLOW_UP_TURN_ID,
+          attemptId: FOLLOW_UP_ATTEMPT_ID,
+          recoveryDecisionId: 'recovery-interrupted-follow-up'
+        });
+        current = wait(RUN_ID, 8, 'waiting_continuation_input');
+        return { runId: RUN_ID, runVersion: 8 };
+      })
+    });
+
+    await expect(interruption).resolves.toEqual({
+      status: 'interrupted',
+      runId: RUN_ID,
+      runVersion: 8,
+      turnId: FOLLOW_UP_TURN_ID,
+      attemptId: FOLLOW_UP_ATTEMPT_ID,
+      recoveryDecisionId: 'recovery-interrupted-follow-up'
+    });
+    await expect(drain).resolves.toMatchObject({ dispatchedFollowUps: 1 });
+    expect(scheduler.getFault()).toBeNull();
+    await scheduler.shutdown(FUTURE);
+  });
+
+  it('durably retires one unavailable Catalog Run without blocking unrelated work', async () => {
+    const retiredRunId = 'run-retired-catalog';
+    const currentRunId = 'run-current-catalog';
+    const retiredWork = dispatchEffect(retiredRunId, 4);
+    const currentWork = dispatchEffect(currentRunId, 4);
+    let retiredActive = true;
+    let currentActive = true;
+    const query = mutableQuery(() => [
+      ...(retiredActive ? [resumable(retiredWork)] : []),
+      ...(currentActive ? [resumable(currentWork)] : [])
+    ]);
+    const ports = rejectingPorts();
+    ports.effects.dispatch = vi.fn(async (request) => {
+      expect(request.runId).toBe(currentRunId);
+      currentActive = false;
+      return {
+        run: { runId: currentRunId, version: 5 },
+        effect: { effectId: EFFECT_ID, state: { status: 'succeeded' } },
+        status: 'succeeded'
+      };
+    });
+    const retiredTerminalize = vi.fn(async (run: AgentRun) => {
+      expect(run.runId).toBe(retiredRunId);
+      retiredActive = false;
+      return {
+        receiptVersion: 1 as const,
+        commandId: 'retire-catalog-command',
+        runId: retiredRunId,
+        runVersion: 5,
+        checkpointVersion: 5,
+        status: 'failed' as const,
+        reason: 'tool_catalog_retired' as const,
+        errorCode: 'agent_tool_catalog_retired' as const,
+        replayed: false
+      };
+    });
+    const scheduler = createScheduler(
+      query,
+      classifierFor([retiredWork, currentWork]),
+      ports,
+      {
+        authorityVerifier: {
+          assessRestorability: vi.fn(async (run) => ({
+            status: run.runId === retiredRunId
+              ? 'retired_tool_catalog' as const
+              : 'restorable' as const
+          }))
+        },
+        retiredToolCatalogTerminalizations: {
+          terminalize: retiredTerminalize
+        }
+      }
+    );
+
+    await scheduler.start();
+    scheduler.assertHealthy();
+    expect(retiredTerminalize).toHaveBeenCalledOnce();
+    expect(ports.effects.dispatch).toHaveBeenCalledOnce();
+    expect(scheduler.getFault()).toBeNull();
+    await scheduler.shutdown(FUTURE);
+  });
+
+  it('settles abandoned started work before retiring its unavailable Catalog', async () => {
+    let current = startedEffect(RUN_ID, 4);
+    let active = true;
+    const order: string[] = [];
+    const scheduler = createScheduler(
+      mutableQuery(() => active ? [resumable(current)] : []),
+      classifierForDynamic(() => current),
+      rejectingPorts(),
+      {
+        authorityVerifier: {
+          assessRestorability: vi.fn(async (run) => {
+            order.push(`verify:${run.version}`);
+            return { status: 'retired_tool_catalog' };
+          })
+        },
+        startedWorkRecovery: {
+          recover: vi.fn(async (work) => {
+            order.push(`recover:${work.expectedVersion}`);
+            current = wait(RUN_ID, 5, 'recovering_uncertain_effect');
+            return {
+              receiptVersion: 1,
+              commandId: 'recover-before-retirement',
+              runId: RUN_ID,
+              runVersion: 5,
+              subjectKind: 'effect',
+              subjectId: EFFECT_ID,
+              recoveryDecisionId: 'retirement-recovery-decision',
+              replayed: false
+            };
+          })
+        },
+        retiredToolCatalogTerminalizations: {
+          terminalize: vi.fn(async (run) => {
+            order.push(`retire:${run.version}`);
+            active = false;
+            return {
+              receiptVersion: 1,
+              commandId: 'retire-after-recovery',
+              runId: RUN_ID,
+              runVersion: 6,
+              checkpointVersion: 6,
+              status: 'failed',
+              reason: 'tool_catalog_retired',
+              errorCode: 'agent_tool_catalog_retired',
+              replayed: false
+            };
+          })
+        }
+      }
+    );
+
+    await scheduler.start();
+    expect(order).toEqual([
+      'verify:4',
+      'recover:4',
+      'verify:5',
+      'retire:5'
+    ]);
+    scheduler.assertHealthy();
+    await scheduler.shutdown(FUTURE);
+  });
+
+  it('retires delegated Child Runs before their Parent and rescans Parent versions', async () => {
+    const parentRunId = 'run-retired-parent';
+    const childRunId = 'run-retired-child';
+    let parentWork = dispatchEffect(parentRunId, 4);
+    const childWork = dispatchEffect(childRunId, 4);
+    let parentActive = true;
+    let childActive = true;
+    const retirementOrder: string[] = [];
+    const query = mutableQuery(() => [
+      ...(parentActive ? [resumable(parentWork)] : []),
+      ...(childActive ? [resumable(childWork, {
+        kind: 'parent_delegation',
+        parentRunId
+      } as AgentRun['binding']['objectiveRef'])] : [])
+    ]);
+    const scheduler = createScheduler(
+      query,
+      {
+        classify: vi.fn((run: AgentRun) => (
+          run.runId === parentRunId ? parentWork : childWork
+        ))
+      },
+      rejectingPorts(),
+      {
+        authorityVerifier: {
+          assessRestorability: vi.fn(async () => ({
+            status: 'retired_tool_catalog'
+          }))
+        },
+        retiredToolCatalogTerminalizations: {
+          terminalize: vi.fn(async (run) => {
+            retirementOrder.push(`${run.runId}:${String(run.version)}`);
+            if (run.runId === childRunId) {
+              childActive = false;
+              parentWork = dispatchEffect(parentRunId, 5);
+              return retiredCatalogReceipt(childRunId, 5, 5);
+            }
+            if (run.version === 4) {
+              throw new AgentRunVersionConflictError(parentRunId, 4, 5);
+            }
+            parentActive = false;
+            return retiredCatalogReceipt(parentRunId, 6, 6);
+          })
+        }
+      }
+    );
+
+    await scheduler.start();
+    expect(retirementOrder).toEqual([
+      `${childRunId}:4`,
+      `${parentRunId}:4`,
+      `${parentRunId}:5`
+    ]);
+    scheduler.assertHealthy();
+    await scheduler.shutdown(FUTURE);
   });
 });
 
@@ -521,10 +768,27 @@ function classifierForDynamic(
   };
 }
 
-function resumable(work: AgentRunWorkClassification): ReadyResumableAgentRunRecovery {
+function resumable(
+  work: AgentRunWorkClassification,
+  objectiveRef: AgentRun['binding']['objectiveRef'] = {
+    kind: 'conversation_objective'
+  } as AgentRun['binding']['objectiveRef']
+): ReadyResumableAgentRunRecovery {
   const run = {
     runId: work.runId,
-    version: work.expectedVersion
+    version: work.expectedVersion,
+    binding: {
+      objectiveRef,
+      toolCatalog: {
+        catalogId: 'catalog-fixture',
+        revision: 1,
+        digest: DIRECTIVE_DIGEST
+      }
+    },
+    state: {
+      status: 'running',
+      checkpointVersion: work.checkpointVersion
+    }
   } as AgentRun;
   return {
     ready: true,
@@ -539,6 +803,24 @@ function resumable(work: AgentRunWorkClassification): ReadyResumableAgentRunReco
     },
     turnInputPayloads: [],
     effectPayloads: []
+  };
+}
+
+function retiredCatalogReceipt(
+  runId: string,
+  runVersion: number,
+  checkpointVersion: number
+) {
+  return {
+    receiptVersion: 1 as const,
+    commandId: `retire-${runId}-${String(runVersion)}`,
+    runId,
+    runVersion,
+    checkpointVersion,
+    status: 'failed' as const,
+    reason: 'tool_catalog_retired' as const,
+    errorCode: 'agent_tool_catalog_retired' as const,
+    replayed: false
   };
 }
 

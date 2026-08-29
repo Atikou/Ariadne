@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { recoverOnStartup } from "../src/app/startupRecovery.js";
-import { NotificationQueue } from "../src/background/NotificationQueue.js";
+import { NotificationQueue } from '../src/notifications/NotificationQueue.js';
 import { DatabaseManager } from "../src/context/DatabaseManager.js";
 import { RunAggregateRepository } from "../src/run/RunAggregateRepository.js";
 

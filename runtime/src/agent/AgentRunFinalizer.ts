@@ -1,4 +1,4 @@
-import type { AgentNotification } from "../background/types.js";
+import type { AgentNotification } from '../notifications/types.js';
 import type { ContextManager } from "../context/ContextManager.js";
 import type { ProjectIndex } from "../context/ProjectIndex.js";
 import type { AgentPromptStrategySummary, AgentRouterDecisionSummary } from "../model-router/agent-routing-summary.js";

@@ -1,11 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { RotateCcw, Search, Waypoints } from 'lucide-react';
 import type { DockviewApi } from 'dockview-react';
 import type { ThemePreference } from '@shared/contract';
 import { builtinModuleRegistry } from '@renderer/core/modules/builtin-modules';
 import type { ModuleId, ModuleServices } from '@renderer/core/modules/module-contract';
+import { MODULE_IDS } from '@renderer/core/modules/module-ids';
 import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
 import { formatRuntimeAvailability } from '@renderer/core/runtime/runtime-labels';
+import { SettingsDialog } from '@renderer/modules/settings/SettingsDialog';
 import { ConfirmDialog } from '@renderer/shared/ui/ActionDialog';
 import { ActivityBar } from './ActivityBar';
 import { CommandPalette } from './CommandPalette';
@@ -20,10 +22,12 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('loading');
   const [commandOpen, setCommandOpen] = useState(false);
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [effectiveTheme, setEffectiveTheme] = useState<EffectiveTheme>(() => (
     window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   ));
   const runtime = useRuntimeSnapshot(services.runtime);
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -59,13 +63,21 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
   }, []);
 
   const handleOpenModule = (id: ModuleId): void => {
+    if (id === MODULE_IDS.settings) {
+      setCommandOpen(false);
+      setSettingsOpen(true);
+      return;
+    }
     if (dockviewApi) openModule(dockviewApi, builtinModuleRegistry, id);
   };
 
   const handleOpenModules = (ids: readonly ModuleId[]): void => {
-    if (!dockviewApi) return;
-    for (const id of ids) openModule(dockviewApi, builtinModuleRegistry, id);
+    for (const id of ids) handleOpenModule(id);
   };
+
+  const visibleOpenModuleIds = settingsOpen
+    ? new Set([...openModuleIds, MODULE_IDS.settings])
+    : openModuleIds;
 
   useEffect(() => services.events.subscribe('module:open', (id) => {
     const definition = builtinModuleRegistry.get(id);
@@ -93,7 +105,7 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
           </span>
           <ModuleMenu
             modules={builtinModuleRegistry.list()}
-            openModuleIds={openModuleIds}
+            openModuleIds={visibleOpenModuleIds}
             onOpenModule={handleOpenModule}
           />
           <button className="icon-button" type="button" title="重置布局" onClick={() => setResetDialogOpen(true)}>
@@ -102,12 +114,15 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
         </div>
       </header>
       <div className="app-main">
-        <ActivityBar openModuleIds={openModuleIds} onOpen={handleOpenModules} />
+        <ActivityBar openModuleIds={visibleOpenModuleIds} onOpen={handleOpenModules} />
         <div className="workspace-frame">
           <Workspace
             registry={builtinModuleRegistry}
             services={services}
-            onApiReady={setDockviewApi}
+            onApiReady={(api) => {
+              api.getPanel(MODULE_IDS.settings)?.api.close();
+              setDockviewApi(api);
+            }}
             onOpenModulesChanged={setOpenModuleIds}
             onSaveStatusChanged={setSaveStatus}
             effectiveTheme={effectiveTheme}
@@ -132,6 +147,7 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
           setResetDialogOpen(false);
         }}
       />
+      <SettingsDialog open={settingsOpen} services={services} onClose={closeSettings} />
     </main>
   );
 }

@@ -1,21 +1,39 @@
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
 const options = parseArguments(process.argv.slice(2));
 const agentDatabasePath = requireOption(options, 'agent-db');
 const projectionDatabasePath = requireOption(options, 'projection-db');
+const providerStatePath = requireOption(options, 'provider-state');
+const inboxMarkerPath = requireOption(options, 'inbox-marker');
+const questionMarkerPath = requireOption(options, 'question-marker');
 const effectMarkerPath = requireOption(options, 'effect-marker');
 const projectionMarkerPath = requireOption(options, 'projection-marker');
 
 let agent = null;
 let projection = null;
-const deadline = Date.now() + 180_000;
+const deadline = Date.now() + 240_000;
 
 try {
   while (Date.now() < deadline) {
     agent ??= openWhenReady(agentDatabasePath);
     projection ??= openWhenReady(projectionDatabasePath);
     try {
+      if (
+        agent !== null
+        && !existsSync(inboxMarkerPath)
+        && agentInboxInputCommitted(agent)
+      ) {
+        writeFileSync(inboxMarkerPath, 'agent_inbox_input_authority_committed', 'utf8');
+      }
+      if (
+        agent !== null
+        && !existsSync(questionMarkerPath)
+        && crashQuestionRequested(providerStatePath)
+        && userQuestionWaiting(agent)
+      ) {
+        writeFileSync(questionMarkerPath, 'user_question_waiting_authority_committed', 'utf8');
+      }
       if (agent !== null && !existsSync(effectMarkerPath) && effectStarted(agent)) {
         writeFileSync(effectMarkerPath, 'effect_started_authority_committed', 'utf8');
       }
@@ -31,13 +49,50 @@ try {
       // Writers use zero busy timeout and fail closed. The observer never
       // competes by retrying a busy snapshot in the same turn.
     }
-    if (existsSync(effectMarkerPath) && existsSync(projectionMarkerPath)) process.exit(0);
+    if (
+      existsSync(inboxMarkerPath)
+      && existsSync(questionMarkerPath)
+      && existsSync(effectMarkerPath)
+      && existsSync(projectionMarkerPath)
+    ) process.exit(0);
     await delay(5);
   }
   throw new Error('electron_smoke_boundary_watcher_timeout');
 } finally {
   projection?.close();
   agent?.close();
+}
+
+function crashQuestionRequested(path) {
+  if (!existsSync(path)) return false;
+  try {
+    const state = JSON.parse(readFileSync(path, 'utf8'));
+    return state?.scenarios?.crash_question?.requests >= 1;
+  } catch {
+    return false;
+  }
+}
+
+function userQuestionWaiting(database) {
+  return database.prepare(`
+    SELECT 1 AS observed
+      FROM agent_v3_runs
+     WHERE state_status='waiting'
+       AND json_extract(aggregate_json, '$.state.reason')='user_question'
+     ORDER BY updated_at DESC
+     LIMIT 1
+  `).get()?.observed === 1;
+}
+
+function agentInboxInputCommitted(database) {
+  return database.prepare(`
+    SELECT 1 AS observed
+      FROM agent_v3_outbox
+     WHERE json_extract(event_json, '$.payload.type')='inbox.input_enqueued'
+       AND json_extract(event_json, '$.payload.input.content')='ARIADNE_SMOKE_DELIVERY_INPUT'
+     ORDER BY cursor DESC
+     LIMIT 1
+  `).get()?.observed === 1;
 }
 
 function openWhenReady(path) {

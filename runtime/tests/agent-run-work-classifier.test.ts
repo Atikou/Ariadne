@@ -359,6 +359,62 @@ describe('AgentRunWorkClassifier', () => {
     });
   });
 
+  it('waits on an exact user question and schedules its durable answer continuation', () => {
+    const questionDigest = digest('8');
+    const question = directiveRun({
+      kind: 'ask_user',
+      decisionId: 'decision-user-question',
+      questionRef: 'question-user-question',
+      questionDigest
+    });
+    question.state = {
+      status: 'waiting',
+      reason: 'user_question',
+      checkpointVersion: 2,
+      decision: {
+        kind: 'user_question',
+        decisionId: 'decision-user-question',
+        runId: RUN_ID,
+        checkpoint: { runId: RUN_ID, version: 2 },
+        requestedAt: at(1),
+        questionRef: 'question-user-question',
+        questionDigest
+      }
+    };
+    assertValidAgentRun(question);
+    expect(classifyAgentRunWork(question)).toEqual({
+      kind: 'wait',
+      reason: 'waiting_user_question',
+      runId: RUN_ID,
+      expectedVersion: 2,
+      checkpointVersion: 2,
+      subjectIds: ['decision-user-question', 'question-user-question']
+    });
+
+    const answer = queuedInbox('input-user-question-answer', 'next_step', 2);
+    question.version = 3;
+    question.state = { status: 'running', checkpointVersion: 3, enteredAt: at(2) };
+    question.inbox = [{
+      ...answer,
+      source: {
+        kind: 'user_question_answer',
+        decisionId: 'decision-user-question',
+        questionDigest
+      }
+    }];
+    question.updatedAt = at(2);
+    assertValidAgentRun(question);
+    expect(classifyAgentRunWork(question)).toMatchObject({
+      kind: 'continue_inbox',
+      runId: RUN_ID,
+      expectedVersion: 3,
+      sourceTurnId: SOURCE_TURN_ID,
+      sourceAttemptId: SOURCE_ATTEMPT_ID,
+      sourceDirectiveDigest: digest('6'),
+      inputIds: ['input-user-question-answer']
+    });
+  });
+
   it('reports a running aggregate with no owned action as a health fault', () => {
     const run = directiveRun({ kind: 'complete' });
 
@@ -934,7 +990,9 @@ function delegationBinding(): AgentRun['binding'] {
     kind: 'parent_delegation',
     parentRunId: 'run-parent',
     delegationId: 'delegation-work',
-    objectiveDigest: digest('9')
+    objectiveDigest: digest('9'),
+    providerId: 'ariadne.in_process',
+    mode: 'one_shot'
   });
 }
 

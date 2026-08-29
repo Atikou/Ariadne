@@ -14,7 +14,12 @@ import {
   runtimeResultSchema,
   modelInferenceProfileSchema
 } from './public.js';
-import { runtimePolicySnapshotSchema } from './settings.js';
+import {
+  acpSubagentProviderConfigurationSchema,
+  assistantChatProfileSchema,
+  runtimePolicySnapshotSchema,
+  type AcpSubagentProviderConfiguration
+} from './settings.js';
 import { agentAdmissionAuthoritySourceSchema } from './host/agent-admission-authority-source.js';
 
 export {
@@ -125,6 +130,7 @@ export const modelProviderBootstrapSchema = z.object({
   providerId: nonEmptyIdSchema,
   name: nonEmptyIdSchema,
   protocol: z.enum(['openai-compatible', 'anthropic-messages']),
+  usageReporting: z.enum(['none', 'openai-stream-options', 'anthropic-events']).optional(),
   credentialEnvironmentVariable: z.string().regex(/^[A-Z][A-Z0-9_]{2,127}$/),
   enabled: z.boolean(),
   baseUrl: z.string().url().max(2_048).refine(
@@ -132,6 +138,7 @@ export const modelProviderBootstrapSchema = z.object({
     'Runtime model providers require HTTPS.'
   ),
   model: z.string().trim().min(1).max(256),
+  supportsVision: z.boolean().optional(),
   contextWindowTokens: z.number().int().min(8_192).max(10_000_000),
   maxOutputTokens: z.number().int().min(256).max(1_000_000),
   inference: modelInferenceProfileSchema
@@ -139,6 +146,13 @@ export const modelProviderBootstrapSchema = z.object({
   (provider) => provider.maxOutputTokens < provider.contextWindowTokens,
   'Model output reserve must be smaller than the context window.'
 );
+
+/**
+ * One enabled, fresh-process ACP SubAgent backend. Executables are absolute
+ * deployment facts; credentials are deliberately not serialized through IPC.
+ */
+export const acpSubagentProviderBootstrapSchema =
+  acpSubagentProviderConfigurationSchema;
 
 export const runtimeBootstrapSchema = z
   .object({
@@ -151,6 +165,7 @@ export const runtimeBootstrapSchema = z
     dataRoot: canonicalAbsoluteDataRootSchema,
     modelRoots: z.array(z.string().trim().min(1).max(32_768)).max(16),
     modelProviders: z.array(modelProviderBootstrapSchema).max(16).optional(),
+    subagentProviders: z.array(acpSubagentProviderBootstrapSchema).max(8).optional(),
     routingStrategy: z.enum([
       'local-first',
       'cloud-first',
@@ -159,6 +174,7 @@ export const runtimeBootstrapSchema = z
     ]).optional(),
     agentPermissions: agentPermissionsBootstrapSchema.optional(),
     agentAdmissionAuthoritySource: agentAdmissionAuthoritySourceSchema,
+    assistantProfile: assistantChatProfileSchema.optional(),
     runtimePolicy: runtimePolicySnapshotSchema,
     profile: z.string().trim().min(1).max(128),
     workspaces: z.array(workspaceBootstrapSchema).min(1).max(32),
@@ -293,6 +309,21 @@ export const browserCapabilityOperationSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('browser.download'), url: browserHttpsUrlSchema }).strict()
 ]);
 
+export const computerReadCapabilityOperationSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('computer.list_directory'),
+    path: z.string().trim().min(1).max(32_768)
+  }).strict(),
+  z.object({
+    kind: z.literal('computer.read_text_file'),
+    path: z.string().trim().min(1).max(32_768)
+  }).strict(),
+  z.object({
+    kind: z.literal('computer.open_path'),
+    path: z.string().trim().min(1).max(32_768)
+  }).strict()
+]);
+
 const mcpConnectionIdSchema = z.string().uuid();
 const jsonRpcIdSchema = z.union([z.string().max(512), z.number().int().safe()]);
 const mcpJsonRpcMessageSchema = z.union([
@@ -402,6 +433,13 @@ export const runtimeCapabilityRequestSchema = z.discriminatedUnion('capability',
     ...envelopeFields,
     type: z.literal('capability_request'),
     requestId: nonEmptyIdSchema,
+    capability: z.literal('computer_read'),
+    operation: computerReadCapabilityOperationSchema
+  }).strict(),
+  z.object({
+    ...envelopeFields,
+    type: z.literal('capability_request'),
+    requestId: nonEmptyIdSchema,
     capability: z.literal('browser'),
     operation: browserCapabilityOperationSchema
   }).strict(),
@@ -451,6 +489,7 @@ export const runtimeToHostMessageSchema = z.discriminatedUnion('type', [
 export type RuntimeBootstrap = z.infer<typeof runtimeBootstrapSchema>;
 export type RuntimeBuildManifest = z.infer<typeof runtimeBuildManifestSchema>;
 export type ModelProviderBootstrap = z.infer<typeof modelProviderBootstrapSchema>;
+export type AcpSubagentProviderBootstrap = AcpSubagentProviderConfiguration;
 export type AgentPermissionsBootstrap = z.infer<typeof agentPermissionsBootstrapSchema>;
 export type RuntimeReady = z.infer<typeof runtimeReadySchema>;
 export type RuntimeRequest = z.infer<typeof runtimeRequestSchema>;
@@ -463,12 +502,14 @@ export type RuntimeShutdownComplete = z.infer<typeof runtimeShutdownCompleteSche
 export type RuntimeCapabilityRequest = z.infer<typeof runtimeCapabilityRequestSchema>;
 export type HostCapabilityResponse = z.infer<typeof hostCapabilityResponseSchema>;
 export type BrowserCapabilityOperation = z.infer<typeof browserCapabilityOperationSchema>;
+export type ComputerReadCapabilityOperation = z.infer<typeof computerReadCapabilityOperationSchema>;
 export type McpRemoteCapabilityOperation = z.infer<typeof mcpRemoteCapabilityOperationSchema>;
 export type AgentPersistenceCapabilityOperation = z.infer<
   typeof agentPersistenceCapabilityOperationSchema
 >;
 export type AgentPersistenceKeyRing = z.infer<typeof agentPersistenceKeyRingSchema>;
 export type HostCapabilityOperation =
+  | ComputerReadCapabilityOperation
   | BrowserCapabilityOperation
   | McpRemoteCapabilityOperation
   | AgentPersistenceCapabilityOperation;

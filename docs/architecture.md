@@ -42,7 +42,7 @@ Public v3 命令面为：
 |---|---|
 | Runtime Kernel | `runtime.status.get` |
 | Agent Control | `projection.snapshot.get`、`projection.commits.read` |
-| Conversation Authority | `conversation.session.create.v3`、`conversation.message.accept.v3` |
+| Conversation Authority | `conversation.session.create.v3`、`conversation.session.rename.v3`、`conversation.session.archive.v3`、`conversation.session.restore.v3`、`conversation.message.accept.v3` |
 | Agent Control | `agent.decision.resolve.v3`、`agent.run.cancel.v3` |
 
 任何未归属命令都返回 `runtime_command_not_supported`。Ingress 不会先尝试新 Control 再回退到旧实现。
@@ -58,9 +58,9 @@ dataRoot/data/
 ```
 
 - Runtime Command Journal 只拥有 command identity、digest、执行确定性和有界 replay outcome。
-- Conversation Store 是 Session、Message 和 Conversation-to-Agent Handoff 的唯一 Writer。
+- Conversation Store 是版本化 Session title/status、Message 和 Conversation-to-Agent Handoff 的唯一 Writer；精确 Session version 是不可变 replay source。
 - Agent Control Store 是 Run、Turn、Inference Attempt、Decision、Effect、Plan、Budget、Delegation、Checkpoint、Receipt 和 Outbox 的唯一 Writer。
-- Public Projection 是可重建读模型，只由 Conversation、Agent Run 和 Model publisher 更新。
+- Public Projection 是可重建读模型，只由 Conversation、Agent Run、Model、inference stream 和 observability publisher 更新。
 - Trace、Renderer cache 和进程内队列都不能驱动恢复。
 
 跨数据库流程使用持久 Saga/Inbox/Outbox，不做长期双写。外部 I/O 前先提交 intention/start；未知结果进入明确的 `uncertain` 或 recovery 状态。
@@ -75,7 +75,7 @@ Message accepted
   -> durable execution intent
   -> deterministic exact-capacity context preparation
   -> inference-start checkpoint with context request digests
-  -> exact model inference
+  -> exact model inference + attempt-scoped public stream projection
   -> respond | request decision | invoke tool | delegate SubAgent
   -> authorized effect dispatch
   -> causal effect-result continuation
@@ -83,9 +83,9 @@ Message accepted
   -> terminal result projection
 ```
 
-当前默认生产 Composition 在 bootstrap 时先启动静态 Capability Provider 并冻结单一 Manifest，再由它向 Runtime Kernel 和 Agent Control 提供公开能力与 immutable first-party Tool Catalog。`ProductionAgentControlExecutionPipelineFactory`、`AgentRunWorkScheduler` 和精确模型网关只消费该已验证快照。Tool 身份、schema、输入摘要、工作区、能力授权和模型绑定在 admission 时固定；执行时不得按名称重新解析成另一实现。
+当前默认生产 Composition 在 bootstrap 时先编译静态 Capability Provider 图并冻结单一 Manifest，再由它向 Runtime Kernel 和 Agent Control 提供公开能力与 immutable first-party Tool Catalog。Provider 用 `dependsOn` 声明纯顺序、用 `consumes`/`provides` 声明实际 service 依赖；compiler 只把已声明且已启动的 service 注入 Provider scope。Workspace/Skill/mode instruction contributors 先组合为全有或全无的准入快照，再与 Telemetry、live-work 一起由终端 Provider 组装为类型化 Agent Control service bundle；默认 Factory 不再从 Manifest 按字符串查找扩展 service，也不再拼接系统提示。Tool 身份、schema、中立 model description/guidance、可公开静态 kind/label、输入摘要、工作区、能力授权和模型绑定在 admission 时固定；执行和投影时不得按名称重新解析成另一实现或展示映射，Tool input/result 仍留在受保护边界。
 
-Plan、Budget、Delegation 和 Child Run 已进入 Agent Core/Control 权威模型。one-shot SubAgent 已接通模型 Directive、原子 Child Run 创建、普通 v3 调度、终态结果回灌、公开父子投影和 UI 状态；外部/continuable Provider 与专用 Child 控制面尚未接入。
+Plan、Budget、Delegation 和 Child Run 已进入 Agent Core/Control 权威模型。one-shot/continuable SubAgent 已接通模型 Directive、原子 Child Run 创建、普通 v3 调度、持久 `waiting_input`、direct-parent send、运行中非终态 interrupt、终态结果回灌、公开父子/Provider 投影和 UI 状态；冻结 execution Provider seam 与 Settings 可配置的 fresh-process ACP one-shot adapter 已接入，Codex/Claude 与外部 continuable 尚未接入。
 
 ## 5. Public Projection 与 Renderer
 
@@ -93,32 +93,39 @@ Renderer 冷启动读取 `projection.snapshot.get`，随后通过 `projection.co
 
 - Conversation Session/Message；
 - Agent Run/Decision/Activity；
-- Model Catalog。
+- Model Catalog；
+- 精确 Run/Turn/Attempt 的 bounded token/reasoning stream。
 
 Agent lifecycle diagnostics 由独立 observability publisher 脱敏后写入同一 Projection，支持 cursor/digest 重放、稳定 delivery 去重和 512 条 retention。它不是完整 Prompt/Tool 日志，也不拥有恢复权威。
 
-Renderer 的写操作只使用 v3 Session/Message、Decision 和 Cancel 命令。它不再使用旧 `runtime.snapshot.get`、`events.replay`、Proposal/Permission/Plan 分散命令，也不从多个 legacy Store 修补领域状态。
+Renderer 的写操作只使用 v3 Session lifecycle/Message、Decision、Cancel 和 Agent inbox 命令。Session title 与 archive/restore 只来自 Runtime Projection；本机导航存储仅保留 pin/unread。Renderer 不再使用旧 `runtime.snapshot.get`、`events.replay`、Proposal/Permission/Plan 分散命令，也不从多个 legacy Store 修补领域状态。
 
 ## 6. 能力接线状态
 
 | 分类 | 当前状态 |
 |---|---|
 | Conversation、Agent Run、Decision、Cancel、Projection | 已进入 v3 生产路径 |
+| Inference stream | exact Attempt 的 reasoning 与公开 `respond.content` 可持久重放；terminal Message 仍是唯一最终权威 |
 | Workspace、first-party Tools、Browser、经授权 MCP | 已进入 Tool Catalog；真实端到端验收仍不完整 |
-| Skills | bootstrap 固定 catalog metadata/revision；正文只经 `skill.load` 按需进入 protected continuation |
-| Hooks | 8 个 typed lifecycle extension point 已进入 v3；pre 可拒绝，post observer-only |
-| Context | Conversation 历史、压力压缩、Tool result pruning、overflow recovery 已进入 v3；spill 与精确 tokenizer 未完成 |
+| Skills | 静态 Provider 按 Workspace 生成可取消 complete/incomplete snapshot；瞬时失败使用 last-good，权威缺失清除它；package revision 覆盖正文与有界资源，model/user policy 进入 invocation-neutral snapshot；正文与资源只经 admission-pinned `skill.load` / `skill.resource.read` 进入 protected continuation |
+| Hooks | 8 个 typed lifecycle extension point 由 Manifest-owned 静态可信 Provider service 管理；pre 可拒绝、admission 只能收窄，post observer-only；handler set 与 Provider 按反向顺序关闭 |
+| Context | Conversation 历史、压力压缩、复用 protected Effect payload 的可恢复 Tool result spill、request-envelope-bound Provider usage anchor、overflow recovery 已进入 v3；缺 usage Provider 的本地 tokenizer、semantic compaction 与 Live Provider 验收未完成 |
 | Memory/Embedding | 有旧实现和测试，但没有完整 v3 生产 consumer |
-| SubAgent | one-shot ordinary Child Run 已形成 v3 产品闭环；外部/continuable Provider 未接入 |
-| Background/Scheduler | 有旧模块基础，没有 v3 产品闭环 |
+| SubAgent | one-shot/continuable ordinary Child Run、list/status/send/interrupt、冻结 execution Provider seam 与 fresh-process ACP one-shot adapter 已接入；外部 continuable/Codex/Claude 尚未接入 |
+| Scheduler | 有旧 cron/interval/file/git 模块基础，没有 v3 产品闭环；旧 Background process/trigger contract 已删除 |
 | Diagnostics/Telemetry | lifecycle diagnostics 已持久、脱敏、可重放；Telemetry 只在 exporter 启动成功后宣告 |
-| Provider Resilience | 有 schema/实现片段，v3 Provider consumer 尚未完成 |
+| Provider Resilience | 冻结 policy 已进入 exact v3 transport；按 Provider/model/settings 隔离并发、速率、首语义输出前重试和熔断，429/5xx/timeout 与有界 Retry-After 有确定性测试 |
 
 Runtime status 只读取 bootstrap 冻结 Manifest 中已成功启动 Provider 的输出，不再自行读取配置拼接清单。协议枚举但没有 Provider owner 的条目进入 `unwiredPublicCapabilities` 审计结果，不能出现在 status。详见 [Runtime Capability Manifest](capability-manifest.md)。
 
 ## 7. 生命周期与安全
 
 - Main 是唯一 Runtime 进程所有者；握手、请求和关闭分别有界。
+- Runtime pipe process、沙箱内 Agent PTY 与 Main PTY producer 共用 `@ariadne/live-work`：registry 统一 owner、生命周期、UTF-8 输出游标、有限保留、互斥输入、resize/signal/wait、完成通知和 cancel/join；OS handle 仍由各 backend 持有且不伪装为可跨重启恢复。
+- Agent 通过 `process_start/terminal_start` 创建 producer，通过 `job_list/job_output/job_write/job_resize/job_signal/job_wait/job_kill` 使用唯一控制面。Agent PTY worker 运行在原 Sandbox lease/Windows Job 中；Terminal 的 Preload 事件携带同一 live-work snapshot/chunk。
+- Agent live-work 完成由专用 bridge 转成 `source.kind=live_work` 的系统 inbox 输入；只有 UoW 提交成功后才唤醒 work scheduler 与 Public Projection。关机 barrier 在 Store freeze 前 close/join live work 并排空 completion sink。
+- Agent 主动提问由 `ask_user` Directive 进入 Agent Control：受保护问题载荷、`waiting/user_question` Decision、公开脱敏展示、回答 action 和 `user_question_answer` inbox receipt 构成同一持久链路；Renderer 不持有等待 Promise，也不能绕过 Decision token 直接恢复 Run。
+- Runtime 启动恢复不依赖已丢失的 registry：它在 scheduler 启动前扫描活跃 Run 的受保护成功 `workspace.process_start`/`workspace.terminal_start` Effect 结果，把仍声明 `running` 且没有终态 inbox 事实的 Job 幂等收敛为 `interrupted`。旧 handle/output 不会被伪装为可恢复资源。
 - Startup recovery 是 readiness 屏障；未完成恢复时不接受普通命令。
 - Shutdown 先拒绝新命令、停止并 join producer/scheduler、排空投影，再冻结和释放 Store owner fence。
 - Renderer 不接收密钥、PID、端口、绝对路径或内部异常对象。
@@ -133,4 +140,4 @@ Runtime status 只读取 bootstrap 冻结 Manifest 中已成功启动 Provider �
 - BGE-M3 或其他实际 Embedding 资产；
 - 正式签名安装包的全新安装、N-1 升级、失败回滚、降级和卸载。
 
-验证证据见 [验证说明](verification.md)，能力差距与路线见 [deepseek-harness 对比审计](deepseek-harness-comparison-audit-2026-08-26.md)。
+验证证据见 [验证说明](verification.md)，能力差距与路线见 [deepseek-harness 对比审计](deepseek-harness-comparison-audit-2026-08-28.md)。

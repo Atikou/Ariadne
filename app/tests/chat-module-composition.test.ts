@@ -19,7 +19,8 @@ describe('Chat module composition', () => {
     expect(sidebar).toContain("services.events.emit('chat:new-draft-requested'");
     expect(sidebar).toContain('services.runtime.clearSessionSelection()');
     expect(sidebar).toContain('selectSession(session)');
-    expect(sidebar).not.toContain('services.runtime.renameSession(');
+    expect(sidebar).toContain('services.runtime.renameSession(session, title)');
+    expect(sidebar).not.toContain('services.conversationNavigation.renameSession(');
     expect(sidebar).not.toContain('services.runtime.deleteSession(');
     expect(sidebar).toContain('services.conversationNavigation.listWorkspaces()');
     expect(sidebar).toContain('services.conversationNavigation.openWorkspace()');
@@ -36,20 +37,21 @@ describe('Chat module composition', () => {
     expect(moduleIds).not.toContain('conversations.list');
   });
 
-  it('nests every session under its explicit workspace', async () => {
+  it('separates personal-assistant sessions from Agent workspace sessions', async () => {
     const [sidebar, styles] = await Promise.all([
       readFile(join(rendererRoot, 'modules', 'chat', 'ConversationSidebar.tsx'), 'utf8'),
       readFile(join(rendererRoot, 'app', 'styles.css'), 'utf8')
     ]);
 
-    expect(sidebar).not.toContain('assistantSessions');
-    expect(sidebar).not.toContain('isAssistantWorkspace');
-    expect(sidebar).not.toContain('conversation-assistant-sessions');
+    expect(sidebar).toContain('assistantSessions');
+    expect(sidebar).toContain('PERSONAL_ASSISTANT_WORKSPACE_ID');
+    expect(sidebar).toContain('services.conversationNavigation.selectAssistant()');
+    expect(sidebar).toContain('<span>个人助手</span>');
     expect(sidebar).toContain('conversation-workspace-group');
     expect(sidebar).toContain('conversation-workspace-sessions');
     expect(sidebar).toContain("workspaceChild ? ' is-workspace-child' : ''");
     expect(sidebar).toContain('pendingApprovalSessionIds(runtime)');
-    expect(sidebar).toContain('materializedSessionIds.has(session.sessionId)');
+    expect(sidebar).not.toContain('materializedSessionIds.has(session.sessionId)');
     expect(sidebar).toContain('pendingSessionIds.has(session.sessionId)');
     expect(sidebar).toContain('<span className="conversation-approval-badge">等待批准</span>');
     expect(sidebar).toContain('className="conversation-approval-spinner"');
@@ -79,7 +81,10 @@ describe('Chat module composition', () => {
     expect(sidebar).toContain('重命名聊天');
     expect(sidebar).toContain('归档聊天');
     expect(sidebar).toContain('标记为未读');
-    expect(sidebar).toContain('services.conversationNavigation.archiveSession(target.sessionId)');
+    expect(sidebar).toContain('services.runtime.archiveSession(session)');
+    expect(sidebar).not.toContain('services.conversationNavigation.archiveSession(');
+    expect(sidebar).not.toContain('materializedSessionIds');
+    expect(sidebar).not.toContain('runtime.messages.map');
     expect(sidebar).toContain('services.conversationNavigation.setSessionUnread');
     expect(sidebar).not.toContain('Pencil');
     expect(sidebar).not.toContain('conversation-meta');
@@ -112,7 +117,8 @@ describe('Chat module composition', () => {
     expect(selectMenu).toContain("onMouseEnter={() => {");
     expect(selectMenu).toContain("document.addEventListener('scroll', scheduleUpdate, true)");
     expect(styles).toMatch(/\.select-menu-popover\s*\{[^}]*position:\s*fixed;[^}]*overflow-y:\s*auto;/);
-    expect(styles).toMatch(/\.select-menu-option\s*\{[^}]*min-height:\s*30px;[^}]*padding:\s*4px 7px;/);
+    expect(styles).toMatch(/\.select-menu-option\s*\{[^}]*min-height:\s*34px;[^}]*padding:\s*6px 9px;/);
+    expect(styles).toMatch(/\.select-menu-trigger:focus-visible\s*\{[^}]*border-color:\s*var\(--accent\);[^}]*box-shadow:/);
   });
 
   it('nests routing under automatic model selection and keeps permission modes at the right edge', async () => {

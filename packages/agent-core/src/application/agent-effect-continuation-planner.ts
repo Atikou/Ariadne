@@ -13,6 +13,7 @@ import type {
   AgentTurnInputMessage,
   AgentTurnInputModelData
 } from './agent-engine.js';
+import type { AgentInboxInput } from '../domain/inbox.js';
 import {
   assertAgentRunCommitArtifactDigests,
   assertAgentTurnInputSnapshotMatchesTurn,
@@ -128,7 +129,7 @@ implements AgentEffectContinuationPlanner {
         ...appended,
         ...inboxInputs.map((input) => ({
           kind: 'text' as const,
-          role: 'user' as const,
+          role: inboxRole(input),
           content: input.content
         }))
       ],
@@ -219,6 +220,10 @@ implements AgentEffectContinuationPlanner {
     await assertAgentRunCommitArtifactDigests(run, transition.run, artifacts);
     return { command, checkpoint, turnInput, turnInputCommit, artifacts };
   }
+}
+
+function inboxRole(input: AgentInboxInput): 'user' | 'system' {
+  return input.source?.kind === 'live_work' ? 'system' : 'user';
 }
 
 function requireSucceededToolAttempt(

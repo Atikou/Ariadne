@@ -9,10 +9,12 @@ import {
   type AgentAdmissionAuthoritySource,
   type AgentAdmissionAuthoritySourceManifest
 } from '@ariadne/protocol/host';
+import { COMPUTER_READ_SCOPE_ID } from '@ariadne/protocol/public';
 
 export interface MainAdmissionWorkspaceConfiguration {
   readonly workspaceId: string;
   readonly access: 'read' | 'write';
+  readonly kind: 'assistant' | 'agent';
   readonly archivedAt?: string | undefined;
 }
 
@@ -59,8 +61,7 @@ export function buildAgentAdmissionAuthoritySource(
       : [])
   ];
   if (
-    activeWorkspaces.length === 0
-    || authorizedModels.length === 0
+    authorizedModels.length === 0
     || hasDuplicate(activeWorkspaces.map((workspace) => workspace.workspaceId))
     || hasDuplicate(input.modelProviders.map((provider) => provider.providerId))
   ) return disabledSource('not_configured');
@@ -104,27 +105,40 @@ function createManifest(input: {
   readonly deadlineAt: string;
 }): AgentAdmissionAuthoritySourceManifest {
   const { workspace, model, settingsRevision } = input;
-  const scopeIds = [workspace.workspaceId];
+  const workspaceScopeIds = [workspace.workspaceId];
+  const computerScopeIds = [COMPUTER_READ_SCOPE_ID];
+  const scopeIds = [...new Set([...workspaceScopeIds, ...computerScopeIds])].sort(compareCodeUnits);
   const permissionSet = new Set(input.allowedPermissions);
-  const capabilityIds = [
-    ...(permissionSet.has('network') ? ['browser.use'] : []),
-    ...(input.mcpEnabled && permissionSet.has('network') ? ['mcp.use'] : []),
-    ...(input.skillsEnabled ? ['skills.read'] : []),
-    'workspace.read',
-    ...(workspace.access === 'write' && permissionSet.has('shell')
-      ? ['workspace.shell']
-      : []),
-    ...(workspace.access === 'write' && permissionSet.has('write')
-      ? ['workspace.write']
-      : [])
-  ].sort(compareCodeUnits);
+  const capabilityIds = (workspace.kind === 'assistant'
+    ? ['computer.read']
+    : [
+        ...(permissionSet.has('network') ? ['browser.use'] : []),
+        ...(input.mcpEnabled && permissionSet.has('network') ? ['mcp.use'] : []),
+        ...(input.skillsEnabled ? ['skills.read'] : []),
+        'computer.read',
+        'workspace.read',
+        ...(workspace.access === 'write' && permissionSet.has('shell')
+          ? ['workspace.shell']
+          : []),
+        ...(workspace.access === 'write' && permissionSet.has('write')
+          ? ['workspace.write']
+          : [])
+      ]).sort(compareCodeUnits);
   const capabilitySet = new Set(capabilityIds);
   const allowedToolNames = FIRST_PARTY_AGENT_TOOL_NAMES.filter((toolName) => (
+    toolName.startsWith('computer.')
+    || (workspace.kind === 'agent' && (
     toolName === 'workspace.list_files'
     || toolName === 'workspace.read_file'
+    || toolName === 'workspace.effect_result_read'
     || (toolName === 'skill.load' && capabilitySet.has('skills.read'))
     || (
-      (toolName === 'workspace.run_command' || toolName.startsWith('workspace.process_'))
+      (
+        toolName === 'workspace.run_command'
+        || toolName.startsWith('workspace.process_')
+        || toolName.startsWith('workspace.terminal_')
+        || toolName.startsWith('workspace.job_')
+      )
       && capabilitySet.has('workspace.shell')
     )
     || (toolName === 'workspace.write_file' && capabilitySet.has('workspace.write'))
@@ -137,6 +151,7 @@ function createManifest(input: {
         || capabilitySet.has('workspace.write')
       )
     )
+    ))
   ));
   const identity = `${workspace.workspaceId}:${String(settingsRevision)}`;
   return {
@@ -168,7 +183,10 @@ function createManifest(input: {
     capabilityGrant: {
       grantId: `workspace-grant:${identity}`,
       revision: settingsRevision,
-      capabilities: capabilityIds.map((capabilityId) => ({ capabilityId, scopeIds }))
+      capabilities: capabilityIds.map((capabilityId) => ({
+        capabilityId,
+        scopeIds: capabilityId === 'computer.read' ? computerScopeIds : workspaceScopeIds
+      }))
     },
     toolCatalog: {
       catalogId: FIRST_PARTY_AGENT_TOOL_CATALOG_ID,

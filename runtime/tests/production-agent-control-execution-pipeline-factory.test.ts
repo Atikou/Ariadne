@@ -9,6 +9,7 @@ import type {
 } from '@ariadne/protocol/host';
 import { AgentPlanBudgetChildRunService } from '@ariadne/agent-core';
 import { PUBLIC_PROJECTION_CONTRACT_VERSION } from '@ariadne/protocol/public';
+import { createDefaultRuntimePolicySnapshot } from '@ariadne/protocol/settings';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -33,10 +34,13 @@ import {
   ProductionAgentControlExecutionPipelineFactory,
   type AgentControlExecutionPipeline
 } from '../src/composition/ProductionAgentControlExecutionPipelineFactory.js';
+import { createConfiguredAgentLifecycleHookService } from '../src/composition/ProductionAgentLifecycleHookService.js';
 import type {
-  AgentToolContractDocumentV1,
+  AgentToolContractDocumentV2,
   AgentToolExecutableImplementationV1
 } from '../src/control/ports/AgentToolExecution.js';
+import type { AgentProcessSandbox } from '../src/control/ports/AgentProcessSandbox.js';
+import type { AgentInstructionAssemblyService } from '../src/control/ports/AgentInstructionAssembly.js';
 import type { RuntimeCommandEnvelope } from '../src/ingress/RuntimeIngress.js';
 import { createShutdownContext } from '../src/ingress/ShutdownContext.js';
 
@@ -44,6 +48,7 @@ const roots: string[] = [];
 const NOW = Date.parse('2026-01-01T00:00:00.000Z');
 const DEADLINE = '2099-01-01T00:00:00.000Z';
 const PROVIDER_SECRET = 'pipeline-test-secret';
+const RUNTIME_POLICY = createDefaultRuntimePolicySnapshot();
 
 afterEach(() => {
   for (const root of roots.splice(0)) {
@@ -72,7 +77,8 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
         unitOfWork,
         conversation,
         agentAdmissionAuthoritySource: enabledSource(catalog),
-        modelProviders: [provider()]
+        modelProviders: [provider()],
+        runtimePolicy: RUNTIME_POLICY
       })).rejects.toMatchObject({
         code: 'AGENT_EXECUTION_TOOL_CATALOG_MISSING'
       });
@@ -90,6 +96,7 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
       runtimeInstanceId: '00000000-0000-4000-8000-000000000041',
       agentAdmissionAuthoritySource: enabledSource(catalog),
       modelProviders: [provider()],
+      runtimePolicy: RUNTIME_POLICY,
       hostCapabilities: {
         request: async () => { throw new Error('development_keyring_not_expected'); }
       }
@@ -120,7 +127,8 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
         agentAdmissionAuthoritySource: enabledSource(catalog, {
           deadlineAt: '2025-01-01T00:00:00.000Z'
         }),
-        modelProviders: [provider()]
+        modelProviders: [provider()],
+        runtimePolicy: RUNTIME_POLICY
       }));
       expectAdmissionFailure(
         () => expired.assertConversationMessageAdmission('workspace-v3'),
@@ -134,7 +142,8 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
         unitOfWork,
         conversation,
         agentAdmissionAuthoritySource: enabledSource(catalog),
-        modelProviders: [provider()]
+        modelProviders: [provider()],
+        runtimePolicy: RUNTIME_POLICY
       }));
       expectAdmissionFailure(
         () => unbound.assertConversationMessageAdmission('workspace-v3'),
@@ -179,22 +188,10 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
   it('runs accepted Conversation work through durable Handoff, exact Provider I/O, and settlement', async () => {
     const catalog = trustedCatalog();
     let admissionNow = NOW;
-    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(
-      JSON.stringify({
-        model: 'model-v3',
-        choices: [{
-          index: 0,
-          message: {
-            role: 'assistant',
-            content: JSON.stringify({
-              protocol: 'ariadne.agent-directive.v3',
-              directive: { kind: 'respond', content: 'completed by pure v3' }
-            })
-          }
-        }]
-      }),
-      { status: 200, headers: { 'content-type': 'application/json' } }
-    ));
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => providerResponse({
+      protocol: 'ariadne.agent-directive.v3',
+      directive: { kind: 'respond', content: 'completed by pure v3' }
+    }));
     const harness = await createHarness(
       catalog,
       enabledSource(catalog),
@@ -257,7 +254,8 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
         kind: 'delegate_subagent',
         subagent: {
           description: 'Inspect one bounded subsystem',
-          prompt: 'Inspect the bounded subsystem and report the decisive evidence.'
+          prompt: 'Inspect the bounded subsystem and report the decisive evidence.',
+          mode: 'one_shot'
         }
       },
       { kind: 'respond', content: 'child evidence' },
@@ -343,6 +341,169 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
       const parentContinuation = JSON.stringify(requestBody(fetch.mock.calls[2]?.[1]));
       expect(parentContinuation).toContain('ariadne.subagent-results');
       expect(parentContinuation).toContain('child evidence');
+    } finally {
+      await harness.runtime.shutdown(createShutdownContext(Date.now() + 5_000));
+    }
+  });
+
+  it('requires the shared process sandbox before publishing a configured ACP Provider', async () => {
+    const catalog = trustedCatalog();
+    await withStores(async ({ unitOfWork, conversation }) => {
+      const input = {
+        unitOfWork,
+        conversation,
+        agentAdmissionAuthoritySource: enabledSource(catalog),
+        modelProviders: [provider()],
+        runtimePolicy: RUNTIME_POLICY,
+        subagentProviders: [acpProvider()],
+        workspaces: [{
+          workspaceId: 'workspace-v3',
+          label: 'Workspace',
+          rootPath: process.cwd(),
+          access: 'write' as const
+        }]
+      };
+      await expect(factory([catalog]).create(input)).rejects.toMatchObject({
+        code: 'AGENT_EXECUTION_PIPELINE_OPTIONS_INVALID'
+      });
+
+      await expect(factory([catalog]).create({
+        ...input,
+        processSandboxForWorkspace: () => unavailableSandbox()
+      })).resolves.toMatchObject({
+        handoffProducer: expect.any(Object),
+        runWorkScheduler: expect.any(Object)
+      });
+    });
+  });
+
+  it('keeps one continuable Child Run across inbox turns before explicit completion', async () => {
+    const catalog = trustedCatalog();
+    const responses = [
+      {
+        kind: 'delegate_subagent',
+        subagent: {
+          description: 'Investigate one subsystem across follow-up turns',
+          prompt: 'Inspect the subsystem, report the first finding, then wait.',
+          mode: 'continuable'
+        }
+      },
+      { kind: 'respond', content: 'first child finding' },
+      { kind: 'complete', outputRef: 'final-child-evidence' },
+      { kind: 'respond', content: 'parent used final child evidence' }
+    ];
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+      const directive = responses.shift();
+      if (directive === undefined) throw new Error('unexpected_continuable_provider_call');
+      return providerResponse({
+        protocol: 'ariadne.agent-directive.v3',
+        directive
+      });
+    });
+    const source = enabledSource(catalog);
+    source.manifests[0]!.rootBudget.vector.modelTurns = 8;
+    const harness = await createHarness(catalog, source, fetch);
+    try {
+      await harness.runtime.start();
+      await createSession(harness.runtime);
+      const accepted = await harness.runtime.executeOwnedCommand(
+        messageEnvelope('message-continuable-subagent-e2e')
+      );
+      const sagaId = requireAcceptedSagaId(accepted);
+      await expect.poll(
+        () => harness.conversation.countPendingHandoffOutbox(),
+        { timeout: 2_000, interval: 5 }
+      ).toBe(0);
+      const saga = await harness.conversation.transaction(
+        (transaction) => transaction.loadSaga(sagaId)
+      );
+      if (saga?.stage.kind !== 'agent_run_linked') {
+        throw new Error('pipeline_continuable_parent_not_linked');
+      }
+      await harness.pipeline.executionScheduler.drainOnce();
+      const parent = await harness.unitOfWork.transaction(
+        (transaction) => transaction.loadRun(saga.stage.runId)
+      );
+      const delegation = await harness.unitOfWork.transaction(async (transaction) => {
+        const items = await transaction.listDelegationsByParent?.(saga.stage.runId);
+        return items?.[0] ?? null;
+      });
+      if (parent === null || delegation === null) {
+        throw new Error('pipeline_continuable_delegation_missing');
+      }
+
+      await harness.pipeline.runWorkScheduler.drainOnce();
+      const waitingChild = await harness.unitOfWork.transaction(
+        (transaction) => transaction.loadRun(delegation.childRunId)
+      );
+      expect(waitingChild).toMatchObject({
+        runId: delegation.childRunId,
+        binding: {
+          executionProfile: {
+            subagentProviders: [{ providerId: 'ariadne.in_process' }]
+          },
+          objectiveRef: { kind: 'parent_delegation', mode: 'continuable' }
+        },
+        state: { status: 'waiting_input' },
+        turns: [{ attempts: [{ state: { directive: { kind: 'respond' } } }] }]
+      });
+      if (waitingChild === null) throw new Error('pipeline_continuable_child_missing');
+
+      await expect(harness.runtime.executeOwnedCommand(envelope({
+        kind: 'agent.subagent.send.v3',
+        contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+        parentRunId: parent.runId,
+        childRunId: waitingChild.runId,
+        sessionId: waitingChild.binding.sessionId,
+        inputId: 'continuable-follow-up-input',
+        content: 'Use the first finding to finish and return final evidence.'
+      }, 'send-continuable-follow-up'))).resolves.toMatchObject({
+        outcome: {
+          ok: true,
+          result: {
+            kind: 'agent.subagent.input.sent.v3',
+            parentRunId: parent.runId,
+            childRunId: waitingChild.runId
+          }
+        }
+      });
+      await harness.pipeline.runWorkScheduler.drainOnce();
+      const completedChild = await harness.unitOfWork.transaction(
+        (transaction) => transaction.loadRun(waitingChild.runId)
+      );
+      expect(completedChild).toMatchObject({
+        state: {
+          status: 'completed',
+          outputRef: expect.stringMatching(/^directive-artifact:[0-9a-f]{64}$/u)
+        },
+        turns: [
+          {},
+          {
+            intention: { cause: { kind: 'inbox_inputs' } },
+            attempts: [{ state: { directive: { kind: 'complete' } } }]
+          }
+        ]
+      });
+      if (completedChild === null || completedChild.state.status !== 'completed') {
+        throw new Error('pipeline_continuable_child_not_completed');
+      }
+
+      await new AgentPlanBudgetChildRunService(harness.unitOfWork).observeChildTerminal({
+        kind: 'control.children.observe_terminal',
+        commandId: 'observe-continuable-child-e2e',
+        runId: parent.runId,
+        expectedVersion: parent.version,
+        occurredAt: completedChild.updatedAt,
+        childRunId: completedChild.runId,
+        childRunVersion: completedChild.version,
+        childStatus: 'completed'
+      });
+      await harness.pipeline.runWorkScheduler.drainOnce();
+      const completedParent = await harness.unitOfWork.transaction(
+        (transaction) => transaction.loadRun(parent.runId)
+      );
+      expect(completedParent?.state.status).toBe('completed');
+      expect(fetch).toHaveBeenCalledTimes(4);
     } finally {
       await harness.runtime.shutdown(createShutdownContext(Date.now() + 5_000));
     }
@@ -581,34 +742,28 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
       const assistantTransport = messages.at(-2);
       const resultTransport = messages.at(-1);
       expect(assistantTransport?.role).toBe('assistant');
-      expect(resultTransport?.role).toBe('user');
-      const assistantPayload = parseJsonText(assistantTransport?.content);
-      const resultPayload = parseJsonText(resultTransport?.content);
-      expect(assistantTransport?.content).toBe(canonicalTestJson(assistantPayload));
-      expect(resultTransport?.content).toBe(canonicalTestJson(resultPayload));
-      expect(assistantPayload).toMatchObject({
-        protocol: 'ariadne.agent-directive.v3',
-        directive: {
-          kind: 'invoke_tools',
-          invocations: [{
-            effectId: effect.effectId,
-            toolCallId: 'workspace-read-call-v3',
-            tool: { toolName: 'workspace.read' }
-          }]
+      expect(resultTransport?.role).toBe('tool');
+      expect(assistantTransport?.content).toBeNull();
+      expect(assistantTransport?.tool_calls).toEqual([{
+        id: expect.stringMatching(/^history_[a-f0-9]{40}$/u),
+        type: 'function',
+        function: {
+          name: expect.stringMatching(/^ariadne_[a-f0-9]{32}$/u),
+          arguments: expect.any(String)
         }
+      }]);
+      const nativeCall = assistantTransport?.tool_calls?.[0];
+      if (nativeCall === undefined) throw new Error('provider_native_tool_call_missing');
+      expect(JSON.parse(nativeCall.function.arguments)).toEqual({
+        input: { path: 'README.md' },
+        scope: []
       });
-      expect(resultPayload).toEqual({
-        protocol: 'ariadne.agent-effect-results.v3',
-        sourceDirectiveDigest: recovery.run.turns[0]?.attempts[0]?.state.status === 'succeeded'
-          ? recovery.run.turns[0].attempts[0].state.directiveDigest
-          : '',
-        results: [{
-          effectId: effect.effectId,
-          toolCallId: 'workspace-read-call-v3',
-          status: 'succeeded',
-          result: { path: 'README.md', content: 'pure Ariadne v3' }
-        }]
+      expect(resultTransport?.tool_call_id).toBe(nativeCall.id);
+      expect(JSON.parse(String(resultTransport?.content))).toEqual({
+        status: 'succeeded',
+        output: { path: 'README.md', content: 'pure Ariadne v3' }
       });
+      expect(JSON.stringify(messages)).not.toContain(effect.effectId);
 
       releaseFollowUp();
       await expect(workDrain).resolves.toMatchObject({
@@ -657,7 +812,7 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
     }
   });
 
-  it('fails startup before Provider or Tool I/O when an active Run exact Catalog is unavailable', async () => {
+  it('durably retires an active Run when its exact Catalog is unavailable after upgrade', async () => {
     const execute = vi.fn<AgentToolExecutableImplementationV1['execute']>(
       async () => ({ status: 'succeeded', result: { mustNotRun: true } })
     );
@@ -681,6 +836,7 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
     );
     vi.spyOn(harness.pipeline.runWorkScheduler, 'wake')
       .mockImplementation(() => undefined);
+    let retiredRunId = '';
     try {
       await harness.runtime.start();
       await createSession(harness.runtime);
@@ -699,6 +855,7 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
       if (saga?.stage.kind !== 'agent_run_linked') {
         throw new Error('pipeline_startup_drift_run_not_linked');
       }
+      retiredRunId = saga.stage.runId;
       await expect(harness.unitOfWork.transaction(
         (transaction) => transaction.loadRun(saga.stage.runId)
       )).resolves.toMatchObject({
@@ -732,13 +889,21 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
       agentAdmissionAuthoritySource: enabledSource(replacementCatalog, {
         permissionMode: 'trusted'
       }),
-      modelProviders: [provider()]
+      modelProviders: [provider()],
+      runtimePolicy: RUNTIME_POLICY
     }));
     const context = createShutdownContext(Date.now() + 5_000);
     try {
-      await expect(pipeline.runWorkScheduler.start()).rejects.toMatchObject({
-        code: 'AGENT_RUN_WORK_AUTHORITY_UNAVAILABLE',
-        reason: 'tool_catalog_unavailable'
+      await expect(pipeline.runWorkScheduler.start()).resolves.toBeUndefined();
+      pipeline.runWorkScheduler.assertHealthy();
+      await expect(unitOfWork.transaction(
+        (transaction) => transaction.loadRun(retiredRunId)
+      )).resolves.toMatchObject({
+        state: {
+          status: 'failed',
+          errorCode: 'agent_tool_catalog_retired',
+          message: expect.stringContaining('immutable Tool Catalog')
+        }
       });
       expect(restartFetch).not.toHaveBeenCalled();
       expect(execute).not.toHaveBeenCalled();
@@ -786,6 +951,8 @@ function factory(
   return new ProductionAgentControlExecutionPipelineFactory({
     toolCatalogSnapshots: catalogs,
     credentialEnvironment: options.credentials ?? { EXACT_KEY: PROVIDER_SECRET },
+    instructionAssembly: testInstructionAssembly(),
+    lifecycleHooks: createConfiguredAgentLifecycleHookService([]),
     recoveryReporter: {
       reportExecutionIntentRecovery: vi.fn(async () => undefined)
     },
@@ -794,6 +961,32 @@ function factory(
     executionScheduler: { intervalMs: 60_000 },
     ...(options.fetch === undefined ? {} : { fetch: options.fetch })
   });
+}
+
+function testInstructionAssembly(): AgentInstructionAssemblyService {
+  return {
+    assemble: async (request) => {
+      const content = request.executionMode === 'plan'
+        ? 'Plan mode is read-only. Inspect with read-only tools when needed, then respond with a concrete implementation plan. Do not request or invoke write or shell tools.'
+        : request.executionMode === 'chat'
+          ? 'You are the local personal assistant. You may inspect and open computer resources only through the advertised read-only tools. Never modify, delete, move, create, or execute files or commands.'
+          : '';
+      return {
+        snapshotVersion: 1,
+        complete: true,
+        subject: { ...request },
+        blocks: content.length === 0 ? [] : [{
+          blockId: request.executionMode,
+          contributorId: 'test.mode-policy',
+          contributorVersion: '1.0.0',
+          order: 300_000,
+          scope: { kind: 'mode', mode: request.executionMode },
+          revision: `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`,
+          content
+        }]
+      };
+    }
+  };
 }
 
 async function createHarness(
@@ -819,7 +1012,8 @@ async function createHarness(
     unitOfWork,
     conversation,
     agentAdmissionAuthoritySource: source,
-    modelProviders: [provider()]
+    modelProviders: [provider()],
+    runtimePolicy: RUNTIME_POLICY
   }));
   const runtime = new ComposedAgentControlRuntime(
     unitOfWork,
@@ -1028,11 +1222,20 @@ function trustedCatalog(options: {
   readonly execute?: AgentToolExecutableImplementationV1['execute'];
 } = {}): TrustedAgentToolCatalogSnapshot {
   const artifacts = artifactBytes();
-  const document: AgentToolContractDocumentV1 = {
-    documentVersion: 1,
+  const document: AgentToolContractDocumentV2 = {
+    documentVersion: 2,
     toolName: 'workspace.read',
     toolVersion: '1.0.0',
     providerId: 'ariadne.builtin',
+    model: {
+      description: 'Read one approved Workspace resource.',
+      guidance: ['Use only the exact approved scope.']
+    },
+    presentation: {
+      kind: 'file_read',
+      label: '读取工作区资源',
+      resultVisibility: 'protected'
+    },
     inputSchema: { type: 'object' },
     outputSchema: { type: 'object' },
     capabilityIds: ['workspace.read'],
@@ -1079,12 +1282,21 @@ function trustedPlanCatalog(): TrustedAgentToolCatalogSnapshot {
     capabilityId: string,
     access: 'read' | 'write',
     sideEffect: 'read' | 'write'
-  ): { document: AgentToolContractDocumentV1; executable: AgentToolExecutableImplementationV1 } => ({
+  ): { document: AgentToolContractDocumentV2; executable: AgentToolExecutableImplementationV1 } => ({
     document: {
-      documentVersion: 1,
+      documentVersion: 2,
       toolName,
       toolVersion: '1.0.0',
       providerId: 'ariadne.builtin',
+      model: {
+        description: `Use the approved ${toolName} Tool.`,
+        guidance: ['Use only the exact approved scope.']
+      },
+      presentation: {
+        kind: sideEffect === 'read' ? 'file_read' : 'file_change',
+        label: toolName,
+        resultVisibility: 'protected'
+      },
       inputSchema: { type: 'object' },
       outputSchema: { type: 'object' },
       capabilityIds: [capabilityId],
@@ -1121,13 +1333,39 @@ function trustedPlanCatalog(): TrustedAgentToolCatalogSnapshot {
 }
 
 function providerResponse(content: unknown): Response {
-  return new Response(JSON.stringify({
-    model: 'model-v3',
-    choices: [{
-      index: 0,
-      message: { role: 'assistant', content: JSON.stringify(content) }
-    }]
-  }), { status: 200, headers: { 'content-type': 'application/json' } });
+  return new Response([
+    `data: ${JSON.stringify({
+      model: 'model-v3',
+      choices: [{
+        index: 0,
+        delta: { content: JSON.stringify(content) },
+        finish_reason: 'stop'
+      }]
+    })}\n\n`,
+    'data: [DONE]\n\n'
+  ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+}
+
+function acpProvider(): NonNullable<RuntimeBootstrap['subagentProviders']>[number] {
+  return {
+    kind: 'acp_stdio',
+    providerId: 'external.acp',
+    displayName: 'External ACP',
+    command: process.execPath,
+    args: [],
+    permissionPolicy: 'reject',
+    networkAccess: 'offline',
+    timeoutMs: 60_000,
+    disposeGraceMs: 2_000
+  };
+}
+
+function unavailableSandbox(): AgentProcessSandbox {
+  return {
+    mode: 'read-only',
+    runFile: async () => { throw new Error('sandbox_not_expected'); },
+    openFileLease: () => { throw new Error('sandbox_not_expected'); }
+  };
 }
 
 function requestBody(init: RequestInit | undefined): unknown {
@@ -1137,31 +1375,22 @@ function requestBody(init: RequestInit | undefined): unknown {
 
 function requireProviderMessages(
   value: unknown
-): readonly { readonly role: string; readonly content: string }[] {
+): readonly {
+  readonly role: string;
+  readonly content: unknown;
+  readonly tool_call_id?: string;
+  readonly tool_calls?: readonly {
+    readonly id: string;
+    readonly type: string;
+    readonly function: { readonly name: string; readonly arguments: string };
+  }[];
+}[] {
   if (typeof value !== 'object' || value === null || !('messages' in value)) {
     throw new Error('provider_request_messages_missing');
   }
   const messages = (value as { readonly messages?: unknown }).messages;
   if (!Array.isArray(messages)) throw new Error('provider_request_messages_invalid');
-  return messages as readonly { readonly role: string; readonly content: string }[];
-}
-
-function parseJsonText(value: unknown): unknown {
-  if (typeof value !== 'string') throw new Error('provider_message_content_invalid');
-  return JSON.parse(value);
-}
-
-function canonicalTestJson(value: unknown): string {
-  if (value === null) return 'null';
-  if (typeof value === 'string' || typeof value === 'boolean') {
-    return JSON.stringify(value);
-  }
-  if (typeof value === 'number') return JSON.stringify(Object.is(value, -0) ? 0 : value);
-  if (Array.isArray(value)) return `[${value.map(canonicalTestJson).join(',')}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).sort().map((key) =>
-    `${JSON.stringify(key)}:${canonicalTestJson(record[key])}`
-  ).join(',')}}`;
+  return messages as ReturnType<typeof requireProviderMessages>;
 }
 
 function artifactBytes(): AgentToolExecutableImplementationV1['artifacts'] {

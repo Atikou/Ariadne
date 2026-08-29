@@ -10,7 +10,7 @@ import {
   type AgentTurnInputPayloadReader
 } from '@ariadne/agent-core';
 
-/** Reads only the exact protected schema-v5 Turn snapshot; no live-authority rebuild exists. */
+/** Reads only the exact protected Turn snapshot; no live-authority rebuild exists. */
 export class ProductionAgentInferenceExecutionInputReader
 implements AgentInferenceExecutionInputReader {
   public constructor(
@@ -56,13 +56,25 @@ implements AgentInferenceExecutionInputReader {
         run,
         messages: snapshot.messages.map((message) => message.kind === 'text'
           ? { kind: 'text', role: message.role, content: message.content }
-          : {
-              kind: 'effect_result',
-              effectId: message.effectId,
-              toolCallId: message.toolCallId,
-              status: message.status,
-              result: cloneJsonValue(message.result)
-            }),
+          : message.kind === 'image'
+            ? {
+                kind: 'image',
+                role: message.role,
+                owner: { ...message.owner },
+                attachment: {
+                  ...message.attachment,
+                  ...(message.attachment.originalDimensions === undefined
+                    ? {}
+                    : { originalDimensions: { ...message.attachment.originalDimensions } })
+                }
+              }
+            : {
+                kind: 'effect_result',
+                effectId: message.effectId,
+                toolCallId: message.toolCallId,
+                status: message.status,
+                result: cloneJsonValue(message.result)
+              }),
         availableTools: snapshot.availableTools.map((available, index) => (
           cloneAgentAvailableTool(available, `executionInput.availableTools[${String(index)}]`)
         ))

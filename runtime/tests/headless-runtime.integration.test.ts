@@ -59,7 +59,8 @@ describe("headless NDJSON Runtime", () => {
       type: "command",
       requestId: "expired-1",
       commandId: "headless-expired-1",
-      deadlineAt: new Date(Date.now() - 1).toISOString(),
+      // Keep this independent from host clock adjustments between test and child process.
+      deadlineAt: "2000-01-01T00:00:00.000Z",
       command: { kind: "projection.snapshot.get", contractVersion: "3.0" },
     });
     await expect(first.waitForResponse("expired-1")).resolves.toMatchObject({

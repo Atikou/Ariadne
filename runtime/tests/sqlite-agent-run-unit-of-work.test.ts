@@ -221,7 +221,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
     });
 
     expect(database.schemaVersion).toBe(AGENT_CONTROL_DB_SCHEMA_VERSION);
-    expect(AGENT_CONTROL_LEDGER_REVISION).toBe(49);
+    expect(AGENT_CONTROL_LEDGER_REVISION).toBe(55);
     expect(countRows(database, 'agent_v3_runs')).toBe(1);
     expect(countRows(database, 'agent_v3_commands')).toBe(8);
     expect(countRows(database, 'agent_v3_events')).toBe(16);
@@ -497,6 +497,70 @@ describe('SqliteAgentRunUnitOfWork', () => {
       effectId,
       inputDigest: testEffectInputDigest('run-waiting-recovery', effectId),
       input: testEffectInput(effectId)
+    });
+  });
+
+  it('reopens exact semantic-compaction evidence from the durable inference checkpoint', async () => {
+    const { root, database } = createDatabase();
+    const unitOfWork = createUnitOfWork(database);
+    const service = new AgentRunCommandService(unitOfWork);
+    const runId = 'run-semantic-compaction-reopen';
+    const semanticCompaction = {
+      protocol: 'ariadne.semantic-context-compaction.v1',
+      sourceDigest: `sha256:${'1'.repeat(64)}`,
+      summaryDigest: `sha256:${'2'.repeat(64)}`,
+      sourceItems: 12,
+      selectedItems: 5,
+      omittedItems: 7,
+      summaryCharacters: 1_024
+    } as const;
+    await service.execute(startCommand(runId, 'command-start-semantic-compaction'), {
+      turnInputPayloads: [],
+      effectPayloads: []
+    });
+    await service.execute({
+      kind: 'run.begin',
+      commandId: 'command-begin-semantic-compaction',
+      runId,
+      expectedVersion: 1,
+      occurredAt: at(1)
+    }, {
+      checkpoint: {
+        checkpointVersion: 1,
+        payload: {
+          format: 'ariadne.agent-checkpoint',
+          schemaVersion: 1,
+          engineContinuation: { phase: 'inference_started' },
+          modelContext: {
+            format: 'ariadne.model-context',
+            schemaVersion: 1,
+            lifecycle: 'compacted',
+            semanticCompaction
+          }
+        },
+        createdAt: at(1)
+      },
+      turnInputPayloads: [],
+      effectPayloads: []
+    });
+
+    await closeUnitOfWork(unitOfWork);
+    closeDatabase(database);
+    const reopened = openDatabase(root);
+    const reopenedUnitOfWork = createUnitOfWork(reopened);
+    await expect(reopenedUnitOfWork.loadCheckpoint({
+      runId,
+      checkpointVersion: 1,
+      runVersion: 2,
+      commandId: 'command-begin-semantic-compaction',
+      createdAt: at(1)
+    })).resolves.toMatchObject({
+      runId,
+      checkpointVersion: 1,
+      runVersion: 2,
+      payload: {
+        modelContext: { semanticCompaction }
+      }
     });
   });
 
@@ -1217,11 +1281,11 @@ describe('SqliteAgentRunUnitOfWork', () => {
     expect(readDatabaseSnapshot(memoryPath)).toEqual(memoryBefore);
   });
 
-  it('creates the authoritative schema-v5/ledger-v49 format on a pristine file and reopens it', () => {
+  it('creates the authoritative schema-v7/ledger-v55 format on a pristine file and reopens it', () => {
     const root = createTemporaryRoot();
     const first = openAgentControlDatabase(root);
     try {
-      expect(readUserVersion(first.database)).toBe(5);
+      expect(readUserVersion(first.database)).toBe(7);
       expect(first.database.prepare(
         'SELECT version, name FROM schema_migrations ORDER BY version'
       ).all()).toEqual([{
@@ -1230,6 +1294,12 @@ describe('SqliteAgentRunUnitOfWork', () => {
       }, {
         version: 5,
         name: 'agent_control_v3_protected_turn_inputs'
+      }, {
+        version: 6,
+        name: 'agent_control_v3_continuable_subagent_waiting_input'
+      }, {
+        version: 7,
+        name: 'agent_control_v3_durable_user_question'
       }]);
     } finally {
       closeOwnedSqliteDatabase(first.database, first.ownerLease);
@@ -1251,6 +1321,28 @@ describe('SqliteAgentRunUnitOfWork', () => {
       .toEqual(beforeReopen);
   });
 
+  it('requires an offline migration for a schema-v5 store without waiting-input authority', () => {
+    const root = createTemporaryRoot();
+    const initialized = openAgentControlDatabase(root);
+    closeOwnedSqliteDatabase(initialized.database, initialized.ownerLease);
+    const databasePath = resolveAgentControlDatabasePath(root);
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      BEGIN IMMEDIATE;
+      DROP INDEX idx_agent_v3_runs_waiting_input;
+      DELETE FROM schema_migrations WHERE version>=6;
+      PRAGMA user_version = 5;
+      COMMIT;
+    `);
+    legacy.close();
+    const before = readAgentControlSchemaSnapshot(databasePath);
+
+    expect(() => new SqliteAgentRunUnitOfWork(root)).toThrow(
+      'agent_control_offline_migration_required:agent_control_schema:5:7'
+    );
+    expect(readAgentControlSchemaSnapshot(databasePath)).toEqual(before);
+  });
+
   it('rejects an empty schema-v4 store and leaves it byte-for-byte logically unchanged', () => {
     const root = createTemporaryRoot();
     const initialized = openAgentControlDatabase(root);
@@ -1260,9 +1352,10 @@ describe('SqliteAgentRunUnitOfWork', () => {
     legacy.exec('BEGIN IMMEDIATE;');
     try {
       legacy.exec(`
+        DROP INDEX idx_agent_v3_runs_waiting_input;
         DROP INDEX idx_agent_v3_turn_inputs_command;
         DROP TABLE agent_v3_turn_inputs;
-        DELETE FROM schema_migrations WHERE version=5;
+        DELETE FROM schema_migrations WHERE version IN (5, 6, 7);
         PRAGMA user_version = 4;
         COMMIT;
       `);
@@ -1278,7 +1371,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
     expect(Object.values(before.rows).every((rows) => rows.length === 0)).toBe(true);
 
     expect(() => new SqliteAgentRunUnitOfWork(root)).toThrow(
-      'agent_control_offline_migration_required:agent_control_schema:4:5'
+      'agent_control_offline_migration_required:agent_control_schema:4:7'
     );
     expect(readAgentControlSchemaSnapshot(databasePath)).toEqual(before);
   });
@@ -1395,7 +1488,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
     const before = readAgentControlSchemaSnapshot(databasePath);
 
     expect(() => new SqliteAgentRunUnitOfWork(root)).toThrow(
-      'agent_control_offline_migration_required:agent_control_schema:1:5'
+      'agent_control_offline_migration_required:agent_control_schema:1:7'
     );
 
     expect(readAgentControlSchemaSnapshot(databasePath)).toEqual(before);
@@ -1421,7 +1514,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
     legacy.close();
 
     expect(() => new SqliteAgentRunUnitOfWork(root)).toThrow(
-      'agent_control_offline_migration_required:agent_control_schema:2:5'
+      'agent_control_offline_migration_required:agent_control_schema:2:7'
     );
 
     const unchanged = new DatabaseSync(databasePath, { readOnly: true });
@@ -1950,7 +2043,9 @@ function multiRunStartCommit(commandId: string): AgentRunCommandCommit {
       kind: 'parent_delegation',
       parentRunId,
       delegationId,
-      objectiveDigest: `sha256:${'e'.repeat(64)}`
+      objectiveDigest: `sha256:${'e'.repeat(64)}`,
+      providerId: 'ariadne.in_process',
+      mode: 'one_shot'
     },
     budget: {
       ...startCommand(runId, commandId).binding.budget,

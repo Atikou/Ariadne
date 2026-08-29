@@ -4,9 +4,7 @@ import { randomUUID } from "node:crypto";
 
 import { Cron } from "croner";
 
-import { evaluateOutputRules } from "../background/outputMatcher.js";
-import type { BackgroundTaskRecord } from "../background/types.js";
-import type { NotificationQueue } from "../background/NotificationQueue.js";
+import type { NotificationQueue } from '../notifications/NotificationQueue.js';
 import type { TraceLogger } from "../trace/TraceLogger.js";
 import { FileWatchHub, matchFilePattern, type FileWatchEvent } from "./FileWatchHub.js";
 import { GitStatusHub, type GitStatusSnapshot } from "./GitStatusHub.js";
@@ -166,30 +164,6 @@ export class Scheduler {
 
   cancel(id: string): TriggerTransitionResult {
     return this.transition(id, "cancel");
-  }
-
-  /** M8：后台任务完成时匹配 event 触发器。 */
-  handleBackgroundCompleted(record: BackgroundTaskRecord): void {
-    for (const trigger of this.triggers.values()) {
-      if (trigger.status !== "active" || trigger.kind !== "event") continue;
-      if (trigger.eventType !== "background_completed") continue;
-      const wantStatus = trigger.eventFilter?.status;
-      if (wantStatus && wantStatus !== record.status) continue;
-      const pattern = trigger.eventFilter?.outputPattern;
-      if (pattern) {
-        const results = evaluateOutputRules(record, [
-          {
-            name: "scheduler_filter",
-            pattern,
-            regex: trigger.eventFilter?.outputRegex,
-            ignoreCase: trigger.eventFilter?.outputIgnoreCase,
-            stream: trigger.eventFilter?.outputStream ?? "both",
-          },
-        ]);
-        if (!results[0]?.matched) continue;
-      }
-      this.fire(trigger);
-    }
   }
 
   /** M8：Git 状态变化时匹配 git_changed 触发器。 */

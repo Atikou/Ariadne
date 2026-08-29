@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('v3 Decision action UI', () => {
-  it('offers only the migrated Permission and Plan actions and keeps resume disabled', async () => {
+  it('offers only exact Permission, Plan, and user-question actions and keeps resume disabled', async () => {
     const root = join(process.cwd(), 'src', 'renderer', 'src');
     const [approvalCenter, permissionPanel, planPanel] = await Promise.all([
       readFile(join(root, 'app', 'ApprovalCenter.tsx'), 'utf8'),
@@ -13,6 +13,8 @@ describe('v3 Decision action UI', () => {
 
     expect(approvalCenter).toContain("decision === 'allow' ? 'allow_once' : 'deny'");
     expect(approvalCenter).toContain('respondToPlan(handoff, decision)');
+    expect(approvalCenter).toContain('answerUserQuestion(question, normalized)');
+    expect(approvalCenter).toContain('回答后从同一个持久 Run 继续');
     expect(permissionPanel).toContain("respondToPermission(request, 'allow_once')");
     expect(permissionPanel).toContain("respondToPermission(request, 'deny')");
     expect(permissionPanel).not.toContain('allow_session');

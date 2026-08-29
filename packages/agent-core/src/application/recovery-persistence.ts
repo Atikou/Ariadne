@@ -53,6 +53,7 @@ export interface AgentDirectivePayloadCommit {
   readonly artifactId: string;
   readonly kind:
     | 'response_content'
+    | 'user_question'
     | 'checkpoint_reason'
     | 'completion_output'
     | 'failure_message';
@@ -76,6 +77,8 @@ export type AgentTurnInputAuthorityReference =
       readonly parentRunId: string;
       readonly delegationId: string;
       readonly objectiveDigest: string;
+      readonly mode: 'one_shot' | 'continuable';
+      readonly providerId: string;
     };
 
 export interface AgentTurnInputSnapshotV1 {
@@ -891,6 +894,8 @@ function assertExactCurrentContinuationSuffix(
 
   const inputIds = cause.kind === 'inbox_inputs'
     ? cause.inputIds
+    : cause.kind === 'interrupted_inference'
+      ? cause.inputIds
     : cause.kind === 'effect_results'
       ? cause.inboxInputIds ?? []
       : [];
@@ -903,7 +908,7 @@ function assertExactCurrentContinuationSuffix(
         || input.state !== 'claimed'
         || input.claimedTurnId !== turnId
         || message.kind !== 'text'
-        || message.role !== 'user'
+        || message.role !== (input.source?.kind === 'live_work' ? 'system' : 'user')
         || message.content !== input.content;
     })
   ) throw turnInputConflict(run.runId, 'turn_input_cause_mismatch');
@@ -912,6 +917,13 @@ function assertExactCurrentContinuationSuffix(
   if (cause.kind === 'inbox_inputs') {
     const assistant = messages[beforeInputs - 1];
     if (assistant?.kind !== 'text' || assistant.role !== 'assistant') {
+      throw turnInputConflict(run.runId, 'turn_input_cause_mismatch');
+    }
+    return;
+  }
+  if (cause.kind === 'interrupted_inference') {
+    const interruption = messages[beforeInputs - 1];
+    if (interruption?.kind !== 'text' || interruption.role !== 'system') {
       throw turnInputConflict(run.runId, 'turn_input_cause_mismatch');
     }
     return;
@@ -1065,12 +1077,14 @@ function authorityMatchesBinding(
   }
   return authority.kind === 'parent_delegation'
     && isExactDataObject(authority, [
-    'kind', 'parentRunId', 'delegationId', 'objectiveDigest'
+    'kind', 'parentRunId', 'delegationId', 'objectiveDigest', 'mode', 'providerId'
   ])
     && objective.kind === 'parent_delegation'
     && authority.parentRunId === objective.parentRunId
     && authority.delegationId === objective.delegationId
-    && authority.objectiveDigest === objective.objectiveDigest;
+    && authority.objectiveDigest === objective.objectiveDigest
+    && authority.mode === objective.mode
+    && authority.providerId === objective.providerId;
 }
 
 function sameTurnCause(left: AgentTurnCause, right: AgentTurnCause): boolean {
@@ -1099,6 +1113,12 @@ function sameTurnCause(left: AgentTurnCause, right: AgentTurnCause): boolean {
         && left.sourceTurnId === right.sourceTurnId
         && left.sourceAttemptId === right.sourceAttemptId
         && left.sourceDirectiveDigest === right.sourceDirectiveDigest
+        && sameStringArray(left.inputIds, right.inputIds);
+    case 'interrupted_inference':
+      return right.kind === left.kind
+        && left.sourceTurnId === right.sourceTurnId
+        && left.sourceAttemptId === right.sourceAttemptId
+        && left.recoveryDecisionId === right.recoveryDecisionId
         && sameStringArray(left.inputIds, right.inputIds);
     case 'child_results':
       return right.kind === left.kind
@@ -1165,6 +1185,14 @@ function collectDirectiveArtifactReferences(
             kind: 'response_content',
             directiveDigest: attempt.state.directiveDigest,
             contentDigest: directive.contentDigest
+          };
+          break;
+        case 'ask_user':
+          reference = {
+            artifactId: directive.questionRef,
+            kind: 'user_question',
+            directiveDigest: attempt.state.directiveDigest,
+            contentDigest: directive.questionDigest
           };
           break;
         case 'checkpoint':

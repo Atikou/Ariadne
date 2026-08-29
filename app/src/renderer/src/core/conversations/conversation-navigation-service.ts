@@ -18,27 +18,21 @@ export interface ConversationNavigationService {
   onSelectedWorkspaceChanged(listener: (workspaceId: string | null) => void): () => void;
   onWorkspacesChanged(listener: (workspaces: readonly ConversationWorkspace[]) => void): () => void;
   selectWorkspace(workspaceId: string): Promise<void>;
+  selectAssistant(): void;
   isWorkspaceActive(workspaceId: string): boolean;
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
   archiveWorkspace(workspaceId: string): Promise<void>;
   restoreWorkspace(workspaceId: string): Promise<void>;
   isSessionPinned(sessionId: string, runtimePinned: boolean): boolean;
   setSessionPinned(sessionId: string, pinned: boolean): void;
-  sessionTitle(sessionId: string, runtimeTitle: string): string;
-  isSessionArchived(sessionId: string): boolean;
   isSessionUnread(sessionId: string): boolean;
-  renameSession(sessionId: string, title: string): void;
-  archiveSession(sessionId: string): void;
-  restoreSession(sessionId: string): void;
   setSessionUnread(sessionId: string, unread: boolean): void;
   getSessionPresentationRevision(): number;
   onSessionPresentationChanged(listener: () => void): () => void;
 }
 
 interface StoredSessionPreference {
-  title?: string;
   pinned?: boolean;
-  archived?: true;
   unread?: true;
 }
 
@@ -47,7 +41,7 @@ type StoredSessionPreferencePatch = {
 };
 
 interface StoredConversationNavigation {
-  schemaVersion: 2;
+  schemaVersion: 3;
   selectedWorkspaceId: string | null;
   sessionPreferences: Record<string, StoredSessionPreference>;
 }
@@ -163,6 +157,10 @@ export class ConfiguredConversationNavigationService implements ConversationNavi
     this.setSelectedWorkspaceId(workspaceId);
   }
 
+  selectAssistant(): void {
+    this.setSelectedWorkspaceId(null);
+  }
+
   isWorkspaceActive(workspaceId: string): boolean {
     return this.activeWorkspaces().some((workspace) => workspace.workspaceId === workspaceId);
   }
@@ -187,32 +185,8 @@ export class ConfiguredConversationNavigationService implements ConversationNavi
     this.updateSessionPreference(sessionId, { pinned });
   }
 
-  sessionTitle(sessionId: string, runtimeTitle: string): string {
-    return this.state.sessionPreferences[sessionId]?.title ?? runtimeTitle;
-  }
-
-  isSessionArchived(sessionId: string): boolean {
-    return this.state.sessionPreferences[sessionId]?.archived === true;
-  }
-
   isSessionUnread(sessionId: string): boolean {
     return this.state.sessionPreferences[sessionId]?.unread === true;
-  }
-
-  renameSession(sessionId: string, title: string): void {
-    const normalized = title.trim();
-    if (!normalized || normalized.length > 80) {
-      throw new Error('会话名称必须包含 1 至 80 个字符。');
-    }
-    this.updateSessionPreference(sessionId, { title: normalized });
-  }
-
-  archiveSession(sessionId: string): void {
-    this.updateSessionPreference(sessionId, { archived: true, unread: undefined });
-  }
-
-  restoreSession(sessionId: string): void {
-    this.updateSessionPreference(sessionId, { archived: undefined });
   }
 
   setSessionUnread(sessionId: string, unread: boolean): void {
@@ -312,7 +286,7 @@ export function workspaceNameFromPath(rootPath: string): string {
 
 function readStoredNavigation(storage: Pick<Storage, 'getItem' | 'setItem'>): StoredConversationNavigation {
   const fallback: StoredConversationNavigation = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     selectedWorkspaceId: null,
     sessionPreferences: {}
   };
@@ -321,9 +295,24 @@ function readStoredNavigation(storage: Pick<Storage, 'getItem' | 'setItem'>): St
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as unknown;
     if (isStoredNavigation(parsed)) return parsed;
+    if (isV2StoredNavigation(parsed)) {
+      return {
+        schemaVersion: 3,
+        selectedWorkspaceId: parsed.selectedWorkspaceId,
+        sessionPreferences: Object.fromEntries(
+          Object.entries(parsed.sessionPreferences).flatMap(([sessionId, preference]) => {
+            const retained = {
+              ...(preference.pinned === undefined ? {} : { pinned: preference.pinned }),
+              ...(preference.unread === undefined ? {} : { unread: preference.unread })
+            };
+            return Object.keys(retained).length === 0 ? [] : [[sessionId, retained]];
+          })
+        )
+      };
+    }
     if (isLegacyStoredNavigation(parsed)) {
       return {
-        schemaVersion: 2,
+        schemaVersion: 3,
         selectedWorkspaceId: parsed.selectedWorkspaceId,
         sessionPreferences: Object.fromEntries(
           Object.entries(parsed.pinOverrides).map(([sessionId, pinned]) => [sessionId, { pinned }])
@@ -339,7 +328,7 @@ function readStoredNavigation(storage: Pick<Storage, 'getItem' | 'setItem'>): St
 function isStoredNavigation(value: unknown): value is StoredConversationNavigation {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<StoredConversationNavigation>;
-  if (candidate.schemaVersion !== 2) return false;
+  if (candidate.schemaVersion !== 3) return false;
   if (candidate.selectedWorkspaceId !== null && typeof candidate.selectedWorkspaceId !== 'string') return false;
   if (!candidate.sessionPreferences || typeof candidate.sessionPreferences !== 'object') return false;
   const entries = Object.entries(candidate.sessionPreferences);
@@ -355,17 +344,51 @@ function isStoredSessionPreference(value: unknown): value is StoredSessionPrefer
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const candidate = value as Record<string, unknown>;
   const keys = Object.keys(candidate);
-  return keys.length <= 4
-    && keys.every((key) => ['title', 'pinned', 'archived', 'unread'].includes(key))
-    && (candidate.title === undefined || (
-      typeof candidate.title === 'string'
-      && candidate.title.trim() === candidate.title
-      && candidate.title.length >= 1
-      && candidate.title.length <= 80
-    ))
+  return keys.length <= 2
+    && keys.every((key) => ['pinned', 'unread'].includes(key))
     && (candidate.pinned === undefined || typeof candidate.pinned === 'boolean')
-    && (candidate.archived === undefined || candidate.archived === true)
     && (candidate.unread === undefined || candidate.unread === true);
+}
+
+interface V2StoredConversationNavigation {
+  schemaVersion: 2;
+  selectedWorkspaceId: string | null;
+  sessionPreferences: Record<string, {
+    title?: string;
+    pinned?: boolean;
+    archived?: true;
+    unread?: true;
+  }>;
+}
+
+function isV2StoredNavigation(value: unknown): value is V2StoredConversationNavigation {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<V2StoredConversationNavigation>;
+  if (
+    candidate.schemaVersion !== 2
+    || (candidate.selectedWorkspaceId !== null && typeof candidate.selectedWorkspaceId !== 'string')
+    || candidate.sessionPreferences === null
+    || typeof candidate.sessionPreferences !== 'object'
+    || Array.isArray(candidate.sessionPreferences)
+  ) return false;
+  const entries = Object.entries(candidate.sessionPreferences);
+  return entries.length <= 5_000 && entries.every(([sessionId, value]) => {
+    if (
+      sessionId.length < 1
+      || sessionId.length > 512
+      || value === null
+      || typeof value !== 'object'
+      || Array.isArray(value)
+    ) return false;
+    const preference = value as Record<string, unknown>;
+    return Object.keys(preference).every((key) => (
+      ['title', 'pinned', 'archived', 'unread'].includes(key)
+    ))
+      && (preference.title === undefined || typeof preference.title === 'string')
+      && (preference.pinned === undefined || typeof preference.pinned === 'boolean')
+      && (preference.archived === undefined || preference.archived === true)
+      && (preference.unread === undefined || preference.unread === true);
+  });
 }
 
 interface LegacyStoredConversationNavigation {

@@ -5,8 +5,17 @@ import {
   runtimeResultSchema,
   runtimeStatusSchema
 } from '@ariadne/protocol/public';
-import { runtimePolicySnapshotSchema } from '@ariadne/protocol/settings';
-import type { JsonObject, JsonValue } from './contract';
+import {
+  acpSubagentProviderConfigurationSchema,
+  assistantChatProfileSchema,
+  runtimePolicySnapshotSchema
+} from '@ariadne/protocol/settings';
+import type {
+  AgentInputDeliveryOutboxRecord,
+  AgentInputDeliveryOutboxStageRequest,
+  JsonObject,
+  JsonValue
+} from './contract';
 import {
   AGENT_APPROVAL_POLICIES,
   AGENT_PERMISSION_MODES,
@@ -77,13 +86,69 @@ export const gameDetectionRuleSchema = z
   })
   .strict();
 
+const agentInputDeliveryCommandSchema = runtimeCommandSchema.refine(
+  (command) => command.kind === 'agent.inbox.enqueue.v3',
+  'Only Agent inbox enqueue commands may enter the delivery outbox.'
+);
+
+export const agentInputDeliveryOutboxStageRequestSchema = z
+  .object({
+    commandId: z.string().trim().min(1).max(256),
+    command: agentInputDeliveryCommandSchema
+  })
+  .strict();
+
+export const agentInputDeliveryOutboxSettleRequestSchema = z
+  .object({ commandId: z.string().trim().min(1).max(256) })
+  .strict();
+
+const agentInputDeliveryOutboxRecordSchema = z
+  .object({
+    commandId: z.string().trim().min(1).max(256),
+    command: agentInputDeliveryCommandSchema,
+    createdAt: z.string().datetime()
+  })
+  .strict();
+
+export function parseAgentInputDeliveryOutboxStageRequest(
+  input: unknown
+): AgentInputDeliveryOutboxStageRequest {
+  return agentInputDeliveryOutboxStageRequestSchema.parse(input) as AgentInputDeliveryOutboxStageRequest;
+}
+
+export function parseAgentInputDeliveryOutboxRecords(
+  input: unknown
+): AgentInputDeliveryOutboxRecord[] {
+  const parsed: unknown = z.array(agentInputDeliveryOutboxRecordSchema).max(100).parse(input);
+  return parsed as AgentInputDeliveryOutboxRecord[];
+}
+
+export const speechPreferencesSchema = z
+  .object({
+    enabled: z.boolean(),
+    moduleRoot: absoluteSpeechRootSchema(),
+    foregroundSttMode: z.enum(['compose', 'auto-send']),
+    backgroundWakeEnabled: z.boolean(),
+    wakeKeywords: z.array(z.string().trim().min(1).max(64)).min(1).max(16),
+    listenWhenLocked: z.boolean(),
+    inputDeviceId: z.string().trim().min(1).max(512),
+    outputDeviceId: z.string().trim().min(1).max(512),
+    activeVoiceId: z.string().trim().min(1).max(128).nullable(),
+    activeVoiceVersion: z.string().trim().min(1).max(64).nullable()
+  })
+  .strict()
+  .refine((value) => (value.activeVoiceId === null) === (value.activeVoiceVersion === null), {
+    message: '音色 ID 与版本必须同时设置或同时为空。'
+  });
+
 export const userPreferencesSchema = z
   .object({
     runInBackground: z.boolean(),
     startAtLogin: z.boolean(),
     theme: z.enum(['system', 'dark', 'light']),
     suppressAutomaticWakeDuringGames: z.boolean(),
-    gameDetectionRules: z.array(gameDetectionRuleSchema).max(500)
+    gameDetectionRules: z.array(gameDetectionRuleSchema).max(500),
+    speech: speechPreferencesSchema
   })
   .strict();
 
@@ -98,6 +163,36 @@ const absolutePathSchema = z.string().trim().min(1).max(32_768).refine(
   (value) => /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value),
   '模型目录必须使用绝对路径。'
 );
+
+function absoluteSpeechRootSchema(): z.ZodString {
+  return z.string().trim().min(1).max(32_768).refine(
+    (value) => /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value),
+    '语音模块目录必须使用绝对路径。'
+  );
+}
+
+export const startSpeechRecognitionRequestSchema = z.object({
+  requestId: z.string().uuid(),
+  source: z.enum(['foreground', 'background-wake'])
+}).strict();
+
+export const stopSpeechRecognitionRequestSchema = z.object({ requestId: z.string().uuid() }).strict();
+
+export const speechSynthesisSegmentRequestSchema = z.object({
+  turnId: z.string().trim().min(1).max(256),
+  sequence: z.number().int().nonnegative(),
+  text: z.string().trim().min(1).max(2_000),
+  final: z.boolean()
+}).strict();
+
+export const cancelSpeechSynthesisRequestSchema = z.object({
+  turnId: z.string().trim().min(1).max(256).optional()
+}).strict();
+
+export const activateSpeechVoiceRequestSchema = z.object({
+  voiceId: z.string().trim().regex(/^[a-z0-9][a-z0-9._-]{0,127}$/u),
+  version: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u)
+}).strict();
 
 const httpsUrlSchema = z.string().trim().url().max(2_048).refine(
   (value) => new URL(value).protocol === 'https:',
@@ -122,6 +217,10 @@ const agentProviderSettingsPatchSchema = z
   )
   .refine((value) => !(value.apiKey && value.clearApiKey), '不能同时替换和清除 API Key。');
 
+const agentAcpSubagentProviderSettingsSchema = acpSubagentProviderConfigurationSchema.extend({
+  enabled: z.boolean()
+}).strict();
+
 export const agentSettingsOperationSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('permissions.set'),
@@ -133,11 +232,16 @@ export const agentSettingsOperationSchema = z.discriminatedUnion('kind', [
     }).strict().optional()
   }).strict(),
   z.object({ kind: z.literal('routing.set'), strategy: agentRoutingStrategySchema }).strict(),
+  z.object({ kind: z.literal('assistant.replace'), assistant: assistantChatProfileSchema }).strict(),
   z.object({ kind: z.literal('modelRoots.replace'), roots: z.array(absolutePathSchema).max(8) }).strict(),
   z.object({
     kind: z.literal('provider.update'),
     providerId: agentProviderIdSchema,
     patch: agentProviderSettingsPatchSchema
+  }).strict(),
+  z.object({
+    kind: z.literal('subagentProviders.replace'),
+    providers: z.array(agentAcpSubagentProviderSettingsSchema).max(8)
   }).strict(),
   z.object({ kind: z.literal('runtimePolicy.replace'), policy: runtimePolicySnapshotSchema }).strict()
 ]);
@@ -194,8 +298,9 @@ const agentWorkspaceSettingsViewSchema = z.object({
 }).strict();
 
 export const agentSettingsViewSchema = z.object({
-  schemaVersion: z.literal(4),
+  schemaVersion: z.literal(7),
   revision: z.number().int().positive(),
+  assistant: assistantChatProfileSchema,
   routingStrategy: agentRoutingStrategySchema,
   permissionMode: z.enum(AGENT_PERMISSION_MODES),
   customPermissions: z.object({
@@ -207,6 +312,7 @@ export const agentSettingsViewSchema = z.object({
   workspaces: z.array(agentWorkspaceSettingsViewSchema).max(32),
   localModelRoots: z.array(absolutePathSchema).max(8),
   providers: z.record(agentProviderIdSchema, agentProviderSettingsViewSchema),
+  subagentProviders: z.array(agentAcpSubagentProviderSettingsSchema).max(8),
   runtimePolicy: runtimePolicySnapshotSchema
 }).strict();
 

@@ -47,7 +47,13 @@ function browserScreenshotRegistration(
   roots: ReadonlyMap<string, WorkspaceBinding>
 ): TrustedAgentToolRegistrationV1 {
   return registration({
+    implementationModuleUrl: import.meta.url,
     toolName: 'browser.screenshot',
+    model: {
+      description: 'Capture the current browser viewport as a PNG inside the approved Workspace.',
+      guidance: ['Use only when a visual snapshot is needed; accessibility inspection is preferable for semantic reading.']
+    },
+    presentation: { kind: 'browser', label: '截取浏览器画面', resultVisibility: 'protected' },
     capabilityIds: ['browser.use', 'workspace.write'],
     requiredWorkspaceAccess: 'write',
     sideEffect: 'write',
@@ -80,7 +86,13 @@ function browserDownloadRegistration(
   roots: ReadonlyMap<string, WorkspaceBinding>
 ): TrustedAgentToolRegistrationV1 {
   return registration({
+    implementationModuleUrl: import.meta.url,
     toolName: 'browser.download',
+    model: {
+      description: 'Download one HTTPS resource from the browser service into an approved Workspace path.',
+      guidance: ['Use the exact HTTPS URL and a Workspace-relative destination path.']
+    },
+    presentation: { kind: 'browser', label: '下载浏览器资源', resultVisibility: 'protected' },
     capabilityIds: ['browser.use', 'workspace.write'],
     requiredWorkspaceAccess: 'write',
     sideEffect: 'write',
@@ -111,7 +123,13 @@ function browserClickRegistration(
   host: HostCapabilityClient
 ): TrustedAgentToolRegistrationV1 {
   return registration({
+    implementationModuleUrl: import.meta.url,
     toolName: 'browser.click',
+    model: {
+      description: 'Click one visible browser element selected by CSS selector.',
+      guidance: ['Inspect the current accessibility snapshot before choosing a selector.']
+    },
+    presentation: { kind: 'browser', label: '点击网页元素', resultVisibility: 'protected' },
     capabilityIds: ['browser.use'],
     requiredWorkspaceAccess: 'read',
     sideEffect: 'external',
@@ -139,7 +157,13 @@ function browserTypeRegistration(
   host: HostCapabilityClient
 ): TrustedAgentToolRegistrationV1 {
   return registration({
+    implementationModuleUrl: import.meta.url,
     toolName: 'browser.type',
+    model: {
+      description: 'Enter text into one visible browser input selected by CSS selector.',
+      guidance: ['Set sensitive=true for secrets or other protected values.']
+    },
+    presentation: { kind: 'browser', label: '填写网页输入', resultVisibility: 'protected' },
     capabilityIds: ['browser.use'],
     requiredWorkspaceAccess: 'read',
     sideEffect: 'external',
@@ -174,7 +198,13 @@ function browserScrollRegistration(
   host: HostCapabilityClient
 ): TrustedAgentToolRegistrationV1 {
   return registration({
+    implementationModuleUrl: import.meta.url,
     toolName: 'browser.scroll',
+    model: {
+      description: 'Scroll the current browser viewport by bounded horizontal and vertical deltas.',
+      guidance: ['Use accessibility_snapshot after scrolling when semantic state must be confirmed.']
+    },
+    presentation: { kind: 'browser', label: '滚动网页', resultVisibility: 'protected' },
     capabilityIds: ['browser.use'],
     requiredWorkspaceAccess: 'read',
     sideEffect: 'read',
@@ -206,7 +236,13 @@ function browserNavigateRegistration(
   host: HostCapabilityClient
 ): TrustedAgentToolRegistrationV1 {
   return registration({
+    implementationModuleUrl: import.meta.url,
     toolName: 'browser.navigate',
+    model: {
+      description: 'Navigate the browser to one credential-free HTTPS URL.',
+      guidance: ['Only HTTPS URLs without embedded credentials are accepted.']
+    },
+    presentation: { kind: 'browser', label: '打开网页', resultVisibility: 'protected' },
     capabilityIds: ['browser.use'],
     requiredWorkspaceAccess: 'read',
     sideEffect: 'read',
@@ -235,7 +271,13 @@ function browserAccessibilitySnapshotRegistration(
   host: HostCapabilityClient
 ): TrustedAgentToolRegistrationV1 {
   return registration({
+    implementationModuleUrl: import.meta.url,
     toolName: 'browser.accessibility_snapshot',
+    model: {
+      description: 'Read a bounded accessibility snapshot of the current browser page.',
+      guidance: ['Use this before click or type to discover current visible controls.']
+    },
+    presentation: { kind: 'browser', label: '检查网页结构', resultVisibility: 'protected' },
     capabilityIds: ['browser.use'],
     requiredWorkspaceAccess: 'read',
     sideEffect: 'read',
@@ -263,7 +305,13 @@ function browserWaitRegistration(
   host: HostCapabilityClient
 ): TrustedAgentToolRegistrationV1 {
   return registration({
+    implementationModuleUrl: import.meta.url,
     toolName: 'browser.wait',
+    model: {
+      description: 'Wait for a bounded interval while the current browser page continues processing.',
+      guidance: ['Use only for short asynchronous page transitions, then inspect page state.']
+    },
+    presentation: { kind: 'browser', label: '等待网页更新', resultVisibility: 'protected' },
     capabilityIds: ['browser.use'],
     requiredWorkspaceAccess: 'read',
     sideEffect: 'read',

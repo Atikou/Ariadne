@@ -6,6 +6,7 @@ import {
   FIRST_PARTY_AGENT_TOOL_NAMES,
   type RuntimeBootstrap
 } from '@ariadne/protocol/host';
+import { COMPUTER_READ_SCOPE_ID } from '@ariadne/protocol/public';
 import {
   createDefaultRuntimePolicySnapshot,
   type RuntimePolicySnapshot
@@ -27,6 +28,69 @@ afterEach(() => {
 });
 
 describe('first-party Agent Tool Catalog', () => {
+  it('pins bounded model semantics and protected public-static presentation for every Tool', async () => {
+    const catalog = await compileCapabilityCatalog([]);
+
+    expect(catalog.revision).toBe(FIRST_PARTY_AGENT_TOOL_CATALOG_REVISION);
+    expect(catalog.entries).toHaveLength(FIRST_PARTY_AGENT_TOOL_NAMES.length);
+    for (const entry of catalog.entries) {
+      expect(entry.document.documentVersion).toBe(2);
+      expect(entry.document.model.description.trim()).toBe(entry.document.model.description);
+      expect(entry.document.model.description.length).toBeGreaterThan(0);
+      expect(entry.document.model.guidance.length).toBeLessThanOrEqual(8);
+      expect(entry.document.presentation.label.length).toBeGreaterThan(0);
+      expect(entry.document.presentation.resultVisibility).toBe('protected');
+    }
+  });
+
+  it('exposes full-computer operations as an immutable read-only tool family', async () => {
+    const request = vi.fn(async (operation: { kind: string; path: string }) => ({
+      operation: operation.kind,
+      path: operation.path
+    }));
+    const catalog = await compileCapabilityCatalog([], { request });
+    const byName = (name: string) => catalog.entries.find(
+      (entry) => entry.document.toolName === name
+    );
+
+    for (const name of [
+      'computer.list_directory',
+      'computer.open_path',
+      'computer.read_text_file'
+    ]) {
+      expect(byName(name)?.document).toMatchObject({
+        capabilityIds: ['computer.read'],
+        requiredWorkspaceAccess: 'read',
+        permission: { approval: 'never' }
+      });
+    }
+    expect(byName('computer.list_directory')?.document.sideEffect).toBe('read');
+    expect(byName('computer.read_text_file')?.document.sideEffect).toBe('read');
+    expect(byName('computer.open_path')?.document.sideEffect).toBe('external');
+
+    await expect(byName('computer.read_text_file')?.executable.execute({
+      path: 'C:\\Users\\Public\\notes.txt'
+    }, {
+      runId: 'run-computer-read',
+      effectId: 'effect-computer-read',
+      toolCallId: 'call-computer-read',
+      idempotencyKey: 'idempotency-computer-read',
+      capabilityIds: ['computer.read'],
+      scope: [COMPUTER_READ_SCOPE_ID],
+      signal: new AbortController().signal
+    })).resolves.toEqual({
+      status: 'succeeded',
+      result: {
+        operation: 'computer.read_text_file',
+        path: 'C:\\Users\\Public\\notes.txt'
+      }
+    });
+    expect(request).toHaveBeenCalledWith({
+      kind: 'computer.read_text_file',
+      path: 'C:\\Users\\Public\\notes.txt'
+    }, 30_000);
+  });
+
   it('executes workspace commands only through the injected process sandbox', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-command-workspace-'));
     temporaryRoots.push(root);
@@ -102,6 +166,225 @@ describe('first-party Agent Tool Catalog', () => {
       .toBe(realpathSync.native(root));
   });
 
+  it('requires an observed opaque version before replacing a workspace file', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-file-workspace-'));
+    temporaryRoots.push(root);
+    writeFileSync(path.join(root, 'note.txt'), 'before', 'utf8');
+    const catalog = await compileCapabilityCatalog([{
+      workspaceId: 'workspace-file',
+      label: 'File workspace',
+      rootPath: root,
+      access: 'write'
+    }]);
+    const read = catalog.entries.find(
+      (entry) => entry.document.toolName === 'workspace.read_file'
+    );
+    const write = catalog.entries.find(
+      (entry) => entry.document.toolName === 'workspace.write_file'
+    );
+    expect(read?.document.toolVersion).toBe('2.0.0');
+    expect(write?.document.toolVersion).toBe('2.0.0');
+    expect(write?.executable.normalizeAndValidate({
+      path: 'note.txt',
+      content: 'blind'
+    })).toEqual({ status: 'rejected' });
+    expect(write?.executable.normalizeAndValidate({
+      path: 'note.txt',
+      content: 'missing-version',
+      mode: 'replace_if_version'
+    })).toEqual({ status: 'rejected' });
+
+    const context = {
+      runId: 'run-file',
+      effectId: 'effect-file',
+      toolCallId: 'call-file',
+      idempotencyKey: 'idempotency-file',
+      capabilityIds: ['workspace.read', 'workspace.write'],
+      scope: ['workspace-file'],
+      signal: new AbortController().signal
+    };
+    const observed = await read?.executable.execute({ path: 'note.txt' }, context);
+    expect(observed).toMatchObject({
+      status: 'succeeded',
+      result: {
+        path: 'note.txt',
+        content: 'before',
+        byteLength: 6,
+        version: expect.stringMatching(/^workspace-file-v1:[a-f0-9]{64}$/u)
+      }
+    });
+    if (
+      observed?.status !== 'succeeded'
+      || typeof observed.result !== 'object'
+      || observed.result === null
+      || Array.isArray(observed.result)
+      || typeof observed.result.version !== 'string'
+    ) throw new Error('workspace_file_observation_missing');
+    const observedVersion = observed.result.version;
+
+    writeFileSync(path.join(root, 'note.txt'), 'external', 'utf8');
+    await expect(write?.executable.execute({
+      path: 'note.txt',
+      content: 'agent',
+      mode: 'replace_if_version',
+      expectedVersion: observedVersion
+    }, context)).resolves.toMatchObject({
+      status: 'failed',
+      errorCode: 'workspace_file_stale_version'
+    });
+    expect(readFileSync(path.join(root, 'note.txt'), 'utf8')).toBe('external');
+
+    await expect(write?.executable.execute({
+      path: 'created.txt',
+      content: 'created',
+      mode: 'create_if_absent'
+    }, context)).resolves.toMatchObject({
+      status: 'succeeded',
+      result: {
+        path: 'created.txt',
+        operation: 'created',
+        byteLength: 7,
+        version: expect.stringMatching(/^workspace-file-v1:[a-f0-9]{64}$/u)
+      }
+    });
+    expect(readFileSync(path.join(root, 'created.txt'), 'utf8')).toBe('created');
+  });
+
+  it('searches and edits workspace text through one versioned file authority', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-structured-file-workspace-'));
+    temporaryRoots.push(root);
+    const target = path.join(root, 'note.txt');
+    writeFileSync(target, 'alpha 😀 beta\r\nneedle here\r\n', 'utf8');
+    const catalog = await compileCapabilityCatalog([{
+      workspaceId: 'workspace-structured-file',
+      label: 'Structured file workspace',
+      rootPath: root,
+      access: 'write'
+    }]);
+    const byName = (name: string) => catalog.entries.find(
+      (entry) => entry.document.toolName === name
+    );
+    const read = byName('workspace.read_file');
+    const edit = byName('workspace.apply_text_edits');
+    const search = byName('workspace.search_text');
+    const glob = byName('workspace.glob');
+    const context = {
+      runId: 'run-structured-file',
+      effectId: 'effect-structured-file',
+      toolCallId: 'call-structured-file',
+      idempotencyKey: 'idempotency-structured-file',
+      capabilityIds: ['workspace.read', 'workspace.write'],
+      scope: ['workspace-structured-file'],
+      signal: new AbortController().signal
+    };
+
+    expect(edit?.document).toMatchObject({
+      toolVersion: '1.0.0',
+      capabilityIds: ['workspace.write'],
+      sideEffect: 'write',
+      permission: { approval: 'required' }
+    });
+    expect(search?.document).toMatchObject({
+      capabilityIds: ['workspace.read'],
+      sideEffect: 'read',
+      permission: { approval: 'never' }
+    });
+    expect(glob?.document).toMatchObject({
+      capabilityIds: ['workspace.read'],
+      sideEffect: 'read',
+      permission: { approval: 'never' }
+    });
+    expect(edit?.executable.normalizeAndValidate({
+      path: 'note.txt',
+      expectedVersion: 'workspace-file-v1:' + 'a'.repeat(64),
+      edits: [{
+        start: { line: 0, column: 1 },
+        end: { line: 1, column: 1 },
+        text: ''
+      }]
+    })).toEqual({ status: 'rejected' });
+    expect(glob?.executable.normalizeAndValidate({
+      pattern: '**/*.txt',
+      unexpected: true
+    })).toEqual({ status: 'rejected' });
+
+    const observed = await read?.executable.execute({ path: 'note.txt' }, context);
+    if (
+      observed?.status !== 'succeeded'
+      || typeof observed.result !== 'object'
+      || observed.result === null
+      || Array.isArray(observed.result)
+      || typeof observed.result.version !== 'string'
+    ) throw new Error('workspace_structured_file_observation_missing');
+    const observedVersion = observed.result.version;
+
+    await expect(edit?.executable.execute({
+      path: 'note.txt',
+      expectedVersion: observedVersion,
+      edits: [{
+        start: { line: 1, column: 7 },
+        end: { line: 1, column: 8 },
+        text: '星'
+      }, {
+        start: { line: 2, column: 1 },
+        end: { line: 2, column: 1 },
+        text: 'found '
+      }]
+    }, context)).resolves.toMatchObject({
+      status: 'succeeded',
+      result: {
+        path: 'note.txt',
+        operation: 'edited',
+        appliedEdits: 2,
+        previousVersion: observedVersion,
+        version: expect.stringMatching(/^workspace-file-v1:[a-f0-9]{64}$/u)
+      }
+    });
+    expect(readFileSync(target, 'utf8')).toBe('alpha 星 beta\r\nfound needle here\r\n');
+
+    const searched = await search?.executable.execute({
+      query: 'needle',
+      includeGlob: '**/*.txt'
+    }, context);
+    expect(searched).toMatchObject({
+      status: 'succeeded',
+      result: {
+        matches: [{
+          path: 'note.txt',
+          line: 2,
+          column: 7,
+          preview: 'found needle here',
+          version: expect.stringMatching(/^workspace-file-v1:[a-f0-9]{64}$/u)
+        }],
+        scannedFiles: 1,
+        truncated: false
+      }
+    });
+    await expect(glob?.executable.execute({ pattern: '**/*.txt' }, context))
+      .resolves.toMatchObject({
+        status: 'succeeded',
+        result: {
+          matches: [{ path: 'note.txt', kind: 'file' }],
+          truncated: false
+        }
+      });
+
+    writeFileSync(target, 'external', 'utf8');
+    await expect(edit?.executable.execute({
+      path: 'note.txt',
+      expectedVersion: observedVersion,
+      edits: [{
+        start: { line: 1, column: 1 },
+        end: { line: 1, column: 1 },
+        text: 'agent '
+      }]
+    }, context)).resolves.toMatchObject({
+      status: 'failed',
+      errorCode: 'workspace_file_stale_version'
+    });
+    expect(readFileSync(target, 'utf8')).toBe('external');
+  });
+
   it('keeps browser read tools in the same immutable production catalog', async () => {
     const request = vi.fn(async () => ({
       url: 'https://example.com/',
@@ -118,11 +401,11 @@ describe('first-party Agent Tool Catalog', () => {
       ?.document.lifecycleSemantics).toBe('bounded_invocation');
     expect(catalog.entries.find((entry) => entry.document.toolName === 'workspace.process_start')
       ?.document.lifecycleSemantics).toBe('resource_create');
-    expect(catalog.entries.find((entry) => entry.document.toolName === 'workspace.process_read')
+    expect(catalog.entries.find((entry) => entry.document.toolName === 'workspace.job_output')
       ?.document.lifecycleSemantics).toBe('resource_observe');
-    expect(catalog.entries.find((entry) => entry.document.toolName === 'workspace.process_write')
+    expect(catalog.entries.find((entry) => entry.document.toolName === 'workspace.job_write')
       ?.document.lifecycleSemantics).toBe('resource_mutate');
-    expect(catalog.entries.find((entry) => entry.document.toolName === 'workspace.process_stop')
+    expect(catalog.entries.find((entry) => entry.document.toolName === 'workspace.job_kill')
       ?.document.lifecycleSemantics).toBe('resource_close');
 
     const navigate = catalog.entries.find(
@@ -357,6 +640,6 @@ async function compileCapabilityCatalog(
   if (catalog === undefined) throw new Error('test_capability_catalog_missing');
   return catalog;
 }
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';

@@ -12,7 +12,19 @@ describe('TypedEventBus', () => {
       startAtLogin: false,
       theme: 'dark' as const,
       suppressAutomaticWakeDuringGames: true,
-      gameDetectionRules: []
+      gameDetectionRules: [],
+      speech: {
+        enabled: false,
+        moduleRoot: 'E:\\AI\\AriadneSpeech',
+        foregroundSttMode: 'compose' as const,
+        backgroundWakeEnabled: false,
+        wakeKeywords: ['Ariadne'],
+        listenWhenLocked: false,
+        inputDeviceId: 'default',
+        outputDeviceId: 'default',
+        activeVoiceId: null,
+        activeVoiceVersion: null
+      }
     };
 
     bus.emit('preferences:changed', preferences);

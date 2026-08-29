@@ -7,12 +7,21 @@ import type { RuntimeCapabilityDefinitionSnapshot } from '../../ingress/RuntimeC
 import type { ShutdownContext } from '../../ingress/ShutdownContext.js';
 import type { FirstPartyProcessSandboxFactory, WorkspaceBinding } from '../first-party-tools/FirstPartyAgentToolSupport.js';
 
+export interface RuntimeCapabilityServiceScope {
+  /** Resolve one required service declared by this Provider. */
+  required<T>(serviceId: string): T;
+  /** Resolve one optional service declared by this Provider. */
+  optional<T>(serviceId: string): T | undefined;
+}
+
 export interface RuntimeCapabilityStartContext {
   readonly bootstrap: RuntimeBootstrap;
   readonly hostCapabilities: HostCapabilityClient;
   readonly workspaceBindings: ReadonlyMap<string, WorkspaceBinding>;
   readonly authorizedMcpServers: readonly RuntimePolicySnapshot['mcp']['servers'][number][];
   readonly processSandboxFactory?: FirstPartyProcessSandboxFactory;
+  /** Provider-scoped dependencies; undeclared reads fail closed. */
+  readonly services: RuntimeCapabilityServiceScope;
 }
 
 export interface RuntimeCapabilityHandle {
@@ -29,21 +38,33 @@ export interface RuntimeCapabilityProvider {
   start(context: RuntimeCapabilityStartContext): RuntimeCapabilityHandle | Promise<RuntimeCapabilityHandle>;
 }
 
+export interface RuntimeCapabilityProviderDefinition {
+  readonly id: string;
+  readonly dependsOn?: readonly string[];
+  readonly consumes?: readonly RuntimeCapabilityDefinitionSnapshot['consumes'][number][];
+  readonly provides?: readonly RuntimeCapabilityDefinitionSnapshot['provides'][number][];
+  readonly publicCapabilities?: readonly RuntimeCapability[];
+  readonly start: RuntimeCapabilityProvider['start'];
+}
+
 export function defineRuntimeCapabilityProvider(
-  id: string,
-  requires: readonly string[],
-  provides: readonly string[],
-  publicCapabilities: readonly RuntimeCapability[],
-  start: RuntimeCapabilityProvider['start']
+  input: RuntimeCapabilityProviderDefinition
 ): RuntimeCapabilityProvider {
   return Object.freeze({
     definition: Object.freeze({
-      id,
+      id: input.id,
       contractVersion: '1.0',
-      requires: Object.freeze([...requires]),
-      provides: Object.freeze([...provides]),
-      publicCapabilities: Object.freeze([...publicCapabilities])
+      dependsOn: Object.freeze([...(input.dependsOn ?? [])]),
+      consumes: Object.freeze((input.consumes ?? []).map((dependency) => Object.freeze({
+        serviceId: dependency.serviceId,
+        optional: dependency.optional
+      }))),
+      provides: Object.freeze((input.provides ?? []).map((provision) => Object.freeze({
+        serviceId: provision.serviceId,
+        optional: provision.optional
+      }))),
+      publicCapabilities: Object.freeze([...(input.publicCapabilities ?? [])])
     }),
-    start
+    start: input.start
   });
 }

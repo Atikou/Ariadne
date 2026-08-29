@@ -17,7 +17,7 @@ import {
 } from "../agent/AgentRuntimeServices.js";
 import { resolveAgentRunOutcome } from "../agent/AgentRunOutcome.js";
 
-import type { NotificationQueue } from "../background/NotificationQueue.js";
+import type { NotificationQueue } from '../notifications/NotificationQueue.js';
 
 import type { ContextManager } from "../context/ContextManager.js";
 

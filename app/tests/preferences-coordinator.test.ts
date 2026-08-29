@@ -7,7 +7,19 @@ const initialPreferences: UserPreferences = {
   startAtLogin: false,
   theme: 'system',
   suppressAutomaticWakeDuringGames: true,
-  gameDetectionRules: []
+  gameDetectionRules: [],
+  speech: {
+    enabled: false,
+    moduleRoot: 'E:\\AI\\AriadneSpeech',
+    foregroundSttMode: 'compose',
+    backgroundWakeEnabled: false,
+    wakeKeywords: ['Ariadne'],
+    listenWhenLocked: false,
+    inputDeviceId: 'default',
+    outputDeviceId: 'default',
+    activeVoiceId: null,
+    activeVoiceVersion: null
+  }
 };
 
 describe('PreferencesCoordinator', () => {

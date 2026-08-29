@@ -45,7 +45,9 @@ describe('AgentRunBinding v4 execution profile', () => {
         kind: 'parent_delegation',
         parentRunId: parent.budget.runId,
         delegationId: 'delegation-plan-child',
-        objectiveDigest: `sha256:${'d'.repeat(64)}`
+        objectiveDigest: `sha256:${'d'.repeat(64)}`,
+        mode: 'one_shot',
+        providerId: 'ariadne.in_process'
       },
       workspace: { ...parent.workspace },
       model: { ...parent.model },

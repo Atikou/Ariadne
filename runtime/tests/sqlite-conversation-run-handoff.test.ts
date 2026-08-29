@@ -314,16 +314,14 @@ describe('SqliteConversationRunHandoffUnitOfWork', () => {
     expect(reopened).toBeDefined();
   });
 
-  it('upgrades a populated v1 store to v2 without losing its handoff', async () => {
+  it('upgrades a populated v1 store through v2 to v3 without losing its handoff', async () => {
     const root = tempRoot();
     const unit = track(new SqliteConversationRunHandoffUnitOfWork(root));
     await acceptAuthoritatively(unit);
     await closeUnit(unit);
     units.delete(unit);
     const legacy = new DatabaseSync(resolveConversationDatabasePath(root));
-    legacy.prepare('UPDATE schema_migrations SET version=1, name=?')
-      .run('conversation_authority_v1_agent_result_projection');
-    legacy.exec('PRAGMA user_version = 1;');
+    downgradeSessionLifecycleSchemaToV1(legacy);
     legacy.close();
 
     const reopened = track(new SqliteConversationRunHandoffUnitOfWork(root));
@@ -335,7 +333,16 @@ describe('SqliteConversationRunHandoffUnitOfWork', () => {
     });
     const verify = new DatabaseSync(resolveConversationDatabasePath(root), { readOnly: true });
     try {
-      expect(verify.prepare('PRAGMA user_version;').get()).toEqual({ user_version: 2 });
+      expect(verify.prepare('PRAGMA user_version;').get()).toEqual({
+        user_version: CONVERSATION_DB_SCHEMA_VERSION
+      });
+      expect(verify.prepare(
+        `SELECT version, title, status FROM conversation_session_versions
+         WHERE session_id='session-saga-1' ORDER BY version`
+      ).all()).toEqual([
+        { version: 1, title: 'Conversation', status: 'active' },
+        { version: 2, title: 'Conversation', status: 'active' }
+      ]);
     } finally {
       verify.close();
     }
@@ -633,6 +640,48 @@ function createRawDatabase(root: string, action: (database: DatabaseSync) => voi
   mkdirSync(path.dirname(databasePath), { recursive: true });
   const database = new DatabaseSync(databasePath);
   try { action(database); } finally { database.close(); }
+}
+
+function downgradeSessionLifecycleSchemaToV1(database: DatabaseSync): void {
+  database.exec('PRAGMA foreign_keys = OFF;');
+  database.exec('PRAGMA legacy_alter_table = ON;');
+  database.exec('BEGIN IMMEDIATE;');
+  try {
+    database.exec('DROP TRIGGER conversation_session_versions_no_update;');
+    database.exec('DROP TRIGGER conversation_session_versions_no_delete;');
+    database.exec('DROP INDEX idx_conversation_session_versions_workspace;');
+    database.exec('DROP TABLE conversation_session_versions;');
+    database.exec('ALTER TABLE conversation_sessions RENAME TO __v3_conversation_sessions;');
+    database.exec(`
+      CREATE TABLE conversation_sessions (
+        session_id TEXT PRIMARY KEY CHECK(length(session_id) BETWEEN 1 AND 256),
+        workspace_id TEXT NOT NULL CHECK(length(workspace_id) BETWEEN 1 AND 256),
+        version INTEGER NOT NULL CHECK(version > 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(session_id, workspace_id),
+        CHECK(updated_at >= created_at)
+      );
+      INSERT INTO conversation_sessions(
+        session_id, workspace_id, version, created_at, updated_at
+      )
+      SELECT session_id, workspace_id, version, created_at, updated_at
+      FROM __v3_conversation_sessions;
+      DROP TABLE __v3_conversation_sessions;
+      CREATE INDEX idx_conversation_sessions_workspace
+        ON conversation_sessions(workspace_id, updated_at DESC);
+    `);
+    database.prepare('UPDATE schema_migrations SET version=1, name=?')
+      .run('conversation_authority_v1_agent_result_projection');
+    database.exec('PRAGMA user_version = 1;');
+    database.exec('COMMIT;');
+  } catch (error) {
+    if (database.isTransaction) database.exec('ROLLBACK;');
+    throw error;
+  } finally {
+    database.exec('PRAGMA legacy_alter_table = OFF;');
+    database.exec('PRAGMA foreign_keys = ON;');
+  }
 }
 
 function closeConversationDatabaseForTest(

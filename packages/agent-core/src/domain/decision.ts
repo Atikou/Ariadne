@@ -37,6 +37,12 @@ export interface PlanDecision extends AgentDecisionBase {
   readonly planHash: string;
 }
 
+export interface UserQuestionDecision extends AgentDecisionBase {
+  readonly kind: 'user_question';
+  readonly questionRef: string;
+  readonly questionDigest: string;
+}
+
 export type RecoveryAction =
   | 'retry'
   | 'mark_succeeded'
@@ -53,6 +59,7 @@ export interface RecoveryDecision extends AgentDecisionBase {
 export type AgentDecision =
   | PermissionDecision
   | PlanDecision
+  | UserQuestionDecision
   | RecoveryDecision;
 
 interface DecisionResolutionBase {
@@ -82,9 +89,18 @@ export interface RecoveryDecisionResolution extends DecisionResolutionBase {
   readonly outcome: RecoveryAction;
 }
 
+export interface UserQuestionDecisionResolution extends DecisionResolutionBase {
+  readonly kind: 'user_question';
+  readonly questionRef: string;
+  readonly questionDigest: string;
+  readonly answerInputId: string;
+  readonly answerDigest: string;
+}
+
 export type AgentDecisionResolution =
   | PermissionDecisionResolution
   | PlanDecisionResolution
+  | UserQuestionDecisionResolution
   | RecoveryDecisionResolution;
 
 export type PermissionDecisionDraft = Omit<
@@ -123,6 +139,12 @@ export function assertValidDecision(decision: AgentDecision): void {
     assertCanonicalPublicId(decision.planId, 'decision.planId');
     assertPositiveInteger(decision.planVersion, 'decision.planVersion');
     assertSha256Digest(decision.planHash, 'decision.planHash');
+    return;
+  }
+
+  if (decision.kind === 'user_question') {
+    assertCanonicalPublicId(decision.questionRef, 'decision.questionRef');
+    assertSha256Digest(decision.questionDigest, 'decision.questionDigest');
     return;
   }
 

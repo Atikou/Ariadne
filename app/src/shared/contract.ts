@@ -1,3 +1,10 @@
+import type { LiveWorkOutputChunk, LiveWorkSnapshot } from '@ariadne/live-work';
+import type {
+  AcpSubagentProviderConfiguration,
+  AssistantChatProfile
+} from '@ariadne/protocol/settings';
+export { createDefaultAssistantChatProfile } from '@ariadne/protocol/settings';
+
 export type JsonPrimitive = boolean | number | string | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
 export interface JsonObject {
@@ -6,6 +13,9 @@ export interface JsonObject {
 
 export const SYSTEM_CAPABILITIES = [
   'auto-launch',
+  'speech.stt',
+  'speech.tts',
+  'speech.voice-pack',
   'wake.shortcut',
   'wake.voice',
   'wake.system',
@@ -58,7 +68,95 @@ export interface UserPreferences {
   theme: ThemePreference;
   suppressAutomaticWakeDuringGames: boolean;
   gameDetectionRules: GameDetectionRule[];
+  speech: SpeechPreferences;
 }
+
+export type ForegroundSttMode = 'compose' | 'auto-send';
+
+export interface SpeechPreferences {
+  enabled: boolean;
+  moduleRoot: string;
+  foregroundSttMode: ForegroundSttMode;
+  backgroundWakeEnabled: boolean;
+  wakeKeywords: string[];
+  listenWhenLocked: boolean;
+  inputDeviceId: string;
+  outputDeviceId: string;
+  activeVoiceId: string | null;
+  activeVoiceVersion: string | null;
+}
+
+export type SpeechAvailability = 'available' | 'degraded' | 'disabled' | 'unavailable';
+export type SpeechActivity = 'idle' | 'waking' | 'listening' | 'transcribing' | 'speaking' | 'error';
+
+export interface SpeechDevice {
+  id: string;
+  label: string;
+  isDefault: boolean;
+}
+
+export interface SpeechVoiceSummary {
+  voiceId: string;
+  version: string;
+  displayName: string;
+  languages: string[];
+  sampleRate: number;
+  active: boolean;
+}
+
+export interface SpeechStatus {
+  protocolVersion: 1;
+  availability: SpeechAvailability;
+  activity: SpeechActivity;
+  detail: string;
+  moduleRoot: string;
+  capabilities: Array<'stt' | 'tts' | 'kws' | 'voice-pack'>;
+  inputDevices: SpeechDevice[];
+  outputDevices: SpeechDevice[];
+  voices: SpeechVoiceSummary[];
+}
+
+export interface StartSpeechRecognitionRequest {
+  requestId: string;
+  source: 'foreground' | 'background-wake';
+}
+
+export interface StopSpeechRecognitionRequest {
+  requestId: string;
+}
+
+export interface SpeechSynthesisSegmentRequest {
+  turnId: string;
+  sequence: number;
+  text: string;
+  final: boolean;
+}
+
+export interface CancelSpeechSynthesisRequest {
+  turnId?: string | undefined;
+}
+
+export interface ActivateSpeechVoiceRequest {
+  voiceId: string;
+  version: string;
+}
+
+export interface VoicePackInstallResult {
+  installed: boolean;
+  voice: SpeechVoiceSummary | null;
+  detail: string;
+}
+
+export type SpeechEvent =
+  | { kind: 'status'; status: SpeechStatus }
+  | { kind: 'wake'; keyword: string; observedAt: string }
+  | { kind: 'transcript.partial'; requestId: string; text: string }
+  | { kind: 'transcript.final'; requestId: string; text: string; source: 'foreground' | 'background-wake' }
+  | { kind: 'tts.started'; turnId: string }
+  | { kind: 'tts.segment-completed'; turnId: string; sequence: number }
+  | { kind: 'tts.completed'; turnId: string }
+  | { kind: 'tts.cancelled'; turnId: string | null }
+  | { kind: 'error'; operation: string; message: string; retryable: boolean };
 
 export const AGENT_PROVIDER_IDS = ['openai', 'deepseek', 'kimi', 'anthropic'] as const;
 export type AgentProviderId = (typeof AGENT_PROVIDER_IDS)[number];
@@ -69,10 +167,12 @@ export interface AgentProviderDefinition {
   label: string;
   runtimeModelId: string;
   protocol: AgentProviderProtocol;
+  usageReporting: 'none' | 'openai-stream-options' | 'anthropic-events';
   apiKeyEnvironmentVariable: string;
   apiKeyLabel: string;
   defaultBaseUrl: string;
   defaultModel: string;
+  supportsVision: boolean;
   defaultContextWindowTokens: number;
   defaultMaxOutputTokens: number;
   defaultInference: ModelInferenceProfile;
@@ -88,10 +188,12 @@ export const AGENT_PROVIDER_CATALOG = {
     label: 'OpenAI',
     runtimeModelId: 'cloud-openai',
     protocol: 'openai-compatible',
+    usageReporting: 'openai-stream-options',
     apiKeyEnvironmentVariable: 'OPENAI_API_KEY',
     apiKeyLabel: 'OpenAI API Key',
     defaultBaseUrl: 'https://api.openai.com/v1',
     defaultModel: 'gpt-4o-mini',
+    supportsVision: true,
     defaultContextWindowTokens: 128_000,
     defaultMaxOutputTokens: 16_384,
     defaultInference: {}
@@ -101,10 +203,12 @@ export const AGENT_PROVIDER_CATALOG = {
     label: 'DeepSeek',
     runtimeModelId: 'cloud-deepseek',
     protocol: 'openai-compatible',
+    usageReporting: 'openai-stream-options',
     apiKeyEnvironmentVariable: 'DEEPSEEK_API_KEY',
     apiKeyLabel: 'DeepSeek API Key',
     defaultBaseUrl: 'https://api.deepseek.com',
     defaultModel: 'deepseek-v4-flash',
+    supportsVision: false,
     defaultContextWindowTokens: 128_000,
     defaultMaxOutputTokens: 8_192,
     defaultInference: {
@@ -121,10 +225,12 @@ export const AGENT_PROVIDER_CATALOG = {
     label: 'Kimi',
     runtimeModelId: 'cloud-kimi',
     protocol: 'openai-compatible',
+    usageReporting: 'openai-stream-options',
     apiKeyEnvironmentVariable: 'MOONSHOT_API_KEY',
     apiKeyLabel: 'Kimi API Key',
     defaultBaseUrl: 'https://api.moonshot.ai/v1',
     defaultModel: 'kimi-k3',
+    supportsVision: false,
     defaultContextWindowTokens: 256_000,
     defaultMaxOutputTokens: 32_768,
     defaultInference: {
@@ -141,10 +247,12 @@ export const AGENT_PROVIDER_CATALOG = {
     label: 'Anthropic',
     runtimeModelId: 'cloud-anthropic',
     protocol: 'anthropic-messages',
+    usageReporting: 'anthropic-events',
     apiKeyEnvironmentVariable: 'ANTHROPIC_API_KEY',
     apiKeyLabel: 'Anthropic API Key',
     defaultBaseUrl: 'https://api.anthropic.com',
     defaultModel: 'claude-sonnet-4-6',
+    supportsVision: true,
     defaultContextWindowTokens: 200_000,
     defaultMaxOutputTokens: 16_384,
     defaultInference: {}
@@ -178,9 +286,15 @@ export interface AgentProviderSettingsView {
   apiKeyStatus: ApiKeyStatus;
 }
 
+export interface AgentAcpSubagentProviderSettingsView
+extends AcpSubagentProviderConfiguration {
+  enabled: boolean;
+}
+
 export interface AgentSettingsView {
-  schemaVersion: 4;
+  schemaVersion: 7;
   revision: number;
+  assistant: AssistantChatProfile;
   routingStrategy: AgentRoutingStrategy;
   permissionMode: AgentPermissionMode;
   customPermissions: AgentCustomPermissions;
@@ -188,6 +302,7 @@ export interface AgentSettingsView {
   workspaces: AgentWorkspaceSettingsView[];
   localModelRoots: string[];
   providers: Record<AgentProviderId, AgentProviderSettingsView>;
+  subagentProviders: AgentAcpSubagentProviderSettingsView[];
   runtimePolicy: RuntimePolicySnapshot;
 }
 
@@ -226,11 +341,16 @@ export type AgentSettingsOperation =
       customPermissions?: AgentCustomPermissions | undefined;
     }
   | { kind: 'routing.set'; strategy: AgentRoutingStrategy }
+  | { kind: 'assistant.replace'; assistant: AssistantChatProfile }
   | { kind: 'modelRoots.replace'; roots: string[] }
   | {
       kind: 'provider.update';
       providerId: AgentProviderId;
       patch: AgentProviderSettingsPatch;
+    }
+  | {
+      kind: 'subagentProviders.replace';
+      providers: AgentAcpSubagentProviderSettingsView[];
     }
   | { kind: 'runtimePolicy.replace'; policy: RuntimePolicySnapshot };
 
@@ -274,6 +394,26 @@ export interface RuntimeDesktopRequestOptions {
   commandId?: string | undefined;
 }
 
+export type AgentInputDeliveryCommand = Extract<
+  RuntimeCommand,
+  { readonly kind: 'agent.inbox.enqueue.v3' }
+>;
+
+export interface AgentInputDeliveryOutboxRecord {
+  commandId: string;
+  command: AgentInputDeliveryCommand;
+  createdAt: string;
+}
+
+export interface AgentInputDeliveryOutboxStageRequest {
+  commandId: string;
+  command: AgentInputDeliveryCommand;
+}
+
+export interface AgentInputDeliveryOutboxSettleRequest {
+  commandId: string;
+}
+
 export type WakeSource = 'user' | 'shortcut' | 'voice' | 'system';
 
 export interface ShowWindowRequest {
@@ -308,6 +448,7 @@ export interface TerminalSession {
   workspaceId: string;
   shell: TerminalShell;
   cwd: string;
+  work: LiveWorkSnapshot;
 }
 
 export interface WriteTerminalRequest {
@@ -325,15 +466,15 @@ export interface CloseTerminalRequest {
   sessionId: string;
 }
 
-export interface TerminalDataEvent {
+export interface TerminalOutputEvent {
   sessionId: string;
-  data: string;
+  work: LiveWorkSnapshot;
+  chunk: LiveWorkOutputChunk;
 }
 
 export interface TerminalExitEvent {
   sessionId: string;
-  exitCode: number;
-  signal?: number;
+  work: LiveWorkSnapshot;
 }
 
 export interface WorkspaceDirectoryRequest {
@@ -397,6 +538,22 @@ export interface AriadneApi {
     ): Promise<Result<RuntimeResult>>;
     onEvent(listener: (event: RuntimeEventEnvelope) => void): () => void;
   };
+  agentInputDeliveryOutbox?: {
+    list(): Promise<AgentInputDeliveryOutboxRecord[]>;
+    stage(request: AgentInputDeliveryOutboxStageRequest): Promise<AgentInputDeliveryOutboxRecord>;
+    settle(request: AgentInputDeliveryOutboxSettleRequest): Promise<void>;
+  };
+  speech: {
+    getStatus(): Promise<SpeechStatus>;
+    startRecognition(request: StartSpeechRecognitionRequest): Promise<void>;
+    stopRecognition(request: StopSpeechRecognitionRequest): Promise<void>;
+    cancelRecognition(): Promise<void>;
+    synthesize(request: SpeechSynthesisSegmentRequest): Promise<void>;
+    cancelSynthesis(request?: CancelSpeechSynthesisRequest): Promise<void>;
+    importVoicePack(): Promise<VoicePackInstallResult | null>;
+    activateVoice(request: ActivateSpeechVoiceRequest): Promise<SpeechVoiceSummary>;
+    onEvent(listener: (event: SpeechEvent) => void): () => void;
+  };
   system: {
     getCapabilityStatuses(): Promise<CapabilityStatus[]>;
     getGameActivity(): Promise<GameActivitySnapshot>;
@@ -408,7 +565,7 @@ export interface AriadneApi {
     write(request: WriteTerminalRequest): void;
     resize(request: ResizeTerminalRequest): void;
     close(request: CloseTerminalRequest): void;
-    onData(listener: (event: TerminalDataEvent) => void): () => void;
+    onOutput(listener: (event: TerminalOutputEvent) => void): () => void;
     onExit(listener: (event: TerminalExitEvent) => void): () => void;
   };
   workspace: {

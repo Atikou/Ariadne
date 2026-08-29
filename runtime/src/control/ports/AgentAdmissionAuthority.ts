@@ -81,6 +81,7 @@ export interface AgentAdmissionAuthorityQueryV2 {
   readonly objectiveMessageVersion: number;
   readonly objectiveDigest: string;
   readonly runId: string;
+  readonly requiresVision?: true;
   readonly execution: ConversationMessageExecutionV3;
 }
 
@@ -230,7 +231,8 @@ function assertBundleShape(input: AgentAdmissionAuthorityBundleV2): void {
     'authorityBundle.subject.executionProfile'
   );
   if (
-    input.subject.executionProfile.mode !== 'agent'
+    input.subject.executionProfile.mode !== 'chat'
+    && input.subject.executionProfile.mode !== 'agent'
     && input.subject.executionProfile.mode !== 'plan'
   ) {
     throw invariant('authorityBundle.subject.executionProfile.mode is invalid.');

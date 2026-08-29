@@ -11,6 +11,7 @@ import type {
   AgentLifecycleHookDeliverySink,
   AgentLifecycleHookEvent
 } from '../control/ports/AgentLifecycleObservability.js';
+import type { AgentLifecycleHooks } from '../control/ports/AgentLifecycleHooks.js';
 
 type HookDefinition = RuntimePolicySnapshot['hooks']['definitions'][number];
 
@@ -29,7 +30,7 @@ export class ConfiguredAgentLifecycleHookRejection extends Error {
  * run.admission.pre can attenuate immutable authority. Post events are
  * observer-only and receive no prompt, Tool input/output, paths, or secrets.
  */
-export class ConfiguredAgentLifecycleHooks {
+export class ConfiguredAgentLifecycleHooks implements AgentLifecycleHooks {
   private readonly hooks: readonly HookDefinition[];
 
   public constructor(

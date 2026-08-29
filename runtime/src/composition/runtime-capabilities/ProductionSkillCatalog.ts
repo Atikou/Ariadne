@@ -1,276 +1,322 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
-import path from 'node:path';
 
-import type { AgentToolJsonValue } from '@ariadne/agent-core';
 import type { RuntimeBootstrap } from '@ariadne/protocol/host';
 
 import type { TrustedAgentToolRegistrationV1 } from '../../adapters/tool/TrustedAgentToolCatalogCompiler.js';
+import type { WorkspaceBinding } from '../first-party-tools/FirstPartyAgentToolSupport.js';
 import {
-  failed,
-  hasUnknownKeys,
-  isRecord,
-  objectSchema,
-  registration,
-  requiredStringProperty,
-  succeeded,
-  type WorkspaceBinding
-} from '../first-party-tools/FirstPartyAgentToolSupport.js';
+  assertProductionSkillCandidate,
+  assertProductionSkillDefinition,
+  assertProductionSkillResourceDescriptor,
+  createProductionSkillCatalogSnapshot,
+  normalizeSkillProviderObservation,
+  renderProductionSkillCatalog,
+  retainedSkillKey,
+  validateSkillResourcePath,
+  validateAndSortSkillProviders,
+  waitForSkillProvider
+} from './ProductionSkillCatalogSupport.js';
+import { createProductionSkillToolRegistrations } from './ProductionSkillLoadTool.js';
+import { createProductionLocalSkillProviders } from './ProductionLocalSkillProviders.js';
+import type {
+  ProductionSkillCandidate,
+  ProductionSkillCatalog,
+  ProductionSkillCatalogSnapshot,
+  ProductionSkillDefinition,
+  ProductionSkillProvider,
+  ProductionSkillProviderObservation,
+  ProductionSkillResource
+} from './ProductionSkillContracts.js';
 
-const MAX_SKILL_BYTES = 128 * 1024;
+export type {
+  ProductionSkillCandidate,
+  ProductionSkillCatalog,
+  ProductionSkillCatalogSnapshot,
+  ProductionSkillDefinition,
+  ProductionSkillDescriptor,
+  ProductionSkillInvocationPolicy,
+  ProductionSkillLayer,
+  ProductionSkillLookup,
+  ProductionSkillProvider,
+  ProductionSkillProviderObservation,
+  ProductionSkillResource,
+  ProductionSkillResourceDescriptor
+} from './ProductionSkillContracts.js';
 
-export type ProductionSkillLayer = 'built_in' | 'user' | 'workspace';
+const MAX_RETAINED_SKILL_REVISIONS = 1_024;
 
-export interface ProductionSkillDescriptor {
-  readonly name: string;
-  readonly description: string;
-  readonly revision: string;
-  readonly layer: ProductionSkillLayer;
+interface IndexedSkill {
+  readonly candidate: ProductionSkillCandidate;
+  readonly provider: ProductionSkillProvider;
 }
 
-interface PinnedSkill extends ProductionSkillDescriptor {
-  readonly filePath: string;
+interface WorkspaceCatalogState {
+  readonly snapshot: ProductionSkillCatalogSnapshot;
 }
 
-/** Bootstrap-frozen Skill metadata. Bodies are read only by the skill.load Tool. */
-export interface ProductionSkillCatalog {
-  readonly available: boolean;
-  renderAdmissionCatalog(workspaceId: string): string;
-  createToolRegistrations(): readonly TrustedAgentToolRegistrationV1[];
-  descriptors(workspaceId: string): readonly ProductionSkillDescriptor[];
+export interface ProductionSkillCatalogOptions {
+  /** Replaces local providers in tests or an explicitly audited composition. */
+  readonly providers?: readonly ProductionSkillProvider[];
 }
 
+/** Static Manifest providers with cancellable, per-Workspace observations. */
 export function createProductionSkillCatalog(
   bootstrap: RuntimeBootstrap,
-  workspaces: ReadonlyMap<string, WorkspaceBinding>
+  workspaces: ReadonlyMap<string, WorkspaceBinding>,
+  options: ProductionSkillCatalogOptions = {}
 ): ProductionSkillCatalog {
-  const enabled = new Set(bootstrap.runtimePolicy.skills.enabled);
-  const catalogs = new Map<string, ReadonlyMap<string, PinnedSkill>>();
-  const missing = new Map<string, readonly string[]>();
-  for (const [workspaceId, workspace] of workspaces) {
-    const discovered = discoverSkills({
-      builtIn: path.join(bootstrap.installRoot, 'skills'),
-      user: bootstrap.runtimePolicy.skills.userDirectory,
-      workspace: workspace.rootPath
-    });
-    const selected = new Map<string, PinnedSkill>();
-    for (const name of [...enabled].sort(compareCodeUnits)) {
-      const skill = discovered.get(name);
-      if (skill === undefined) continue;
-      selected.set(name, skill);
-    }
-    const missingNames = [...enabled].filter((name) => !selected.has(name));
-    if (missingNames.length > 0) missing.set(workspaceId, Object.freeze(missingNames));
-    catalogs.set(workspaceId, selected);
-  }
-
-  const catalog: ProductionSkillCatalog = Object.freeze({
-    available: missing.size === 0,
-    descriptors: (workspaceId: string) => Object.freeze(
-      [...requireCompleteWorkspaceCatalog(catalogs, missing, workspaceId).values()].map(publicDescriptor)
-    ),
-    renderAdmissionCatalog: (workspaceId: string) => renderCatalog(
-      [...requireCompleteWorkspaceCatalog(catalogs, missing, workspaceId).values()]
-    ),
-    createToolRegistrations: () => Object.freeze([
-      skillLoadRegistration(catalogs, workspaces)
-    ])
+  const providers = options.providers ?? createProductionLocalSkillProviders({
+    installRoot: bootstrap.installRoot,
+    ...(bootstrap.runtimePolicy.skills.userDirectory === undefined
+      ? {}
+      : { userDirectory: bootstrap.runtimePolicy.skills.userDirectory })
   });
-  return catalog;
+  return new ProductionSkillCatalogService(
+    bootstrap.runtimePolicy.skills.enabled,
+    workspaces,
+    providers
+  );
 }
 
-function requireCompleteWorkspaceCatalog(
-  catalogs: ReadonlyMap<string, ReadonlyMap<string, PinnedSkill>>,
-  missing: ReadonlyMap<string, readonly string[]>,
-  workspaceId: string
-): ReadonlyMap<string, PinnedSkill> {
-  const unavailable = missing.get(workspaceId);
-  if (unavailable !== undefined) {
-    throw new Error(`skill_not_found:${workspaceId}:${unavailable.join(',')}`);
+class ProductionSkillCatalogService implements ProductionSkillCatalog {
+  private readonly enabled: readonly string[];
+  private readonly providers: readonly ProductionSkillProvider[];
+  private readonly lastGood = new Map<string, WorkspaceCatalogState>();
+  private readonly retained = new Map<string, Map<string, IndexedSkill>>();
+  private readonly lifetime = new AbortController();
+  private closePromise: Promise<void> | null = null;
+
+  public constructor(
+    enabled: readonly string[],
+    private readonly workspaces: ReadonlyMap<string, WorkspaceBinding>,
+    providers: readonly ProductionSkillProvider[]
+  ) {
+    this.enabled = Object.freeze([...new Set(enabled)].sort(compareCodeUnits));
+    this.providers = validateAndSortSkillProviders(providers);
   }
-  return requireWorkspaceCatalog(catalogs, workspaceId);
-}
 
-function discoverSkills(roots: {
-  readonly builtIn?: string;
-  readonly user?: string;
-  readonly workspace: string;
-}): ReadonlyMap<string, PinnedSkill> {
-  const byName = new Map<string, PinnedSkill>();
-  for (const [layer, root] of [
-    ['built_in', roots.builtIn],
-    ['user', roots.user],
-    ['workspace', path.join(roots.workspace, '.ariadne', 'skills')]
-  ] as const) {
-    if (root === undefined || !existsSync(root)) continue;
-    const canonicalRoot = realpathSync(root);
-    for (const name of readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && /^[a-z][a-z0-9_-]*$/u.test(entry.name))
-      .map((entry) => entry.name)
-      .sort(compareCodeUnits)) {
-      const candidate = path.join(root, name, 'SKILL.md');
-      if (!existsSync(candidate)) continue;
-      const filePath = realpathSync(candidate);
-      if (!isWithin(canonicalRoot, filePath)) throw new Error(`skill_path_outside_root:${name}`);
-      const body = readBoundedSkill(filePath);
-      const metadata = parseMetadata(body, name);
-      if (metadata.name !== name) throw new Error(`skill_name_mismatch:${name}`);
-      byName.set(name, Object.freeze({
-        name,
-        description: metadata.description,
-        revision: digest(body),
-        layer,
-        filePath
-      }));
+  public async snapshot(
+    workspaceId: string,
+    signal: AbortSignal
+  ): Promise<ProductionSkillCatalogSnapshot> {
+    const workspace = this.workspaces.get(workspaceId);
+    if (workspace === undefined) throw new Error('skill_workspace_unknown');
+    const operationSignal = AbortSignal.any([signal, this.lifetime.signal]);
+    operationSignal.throwIfAborted();
+    if (this.enabled.length === 0) {
+      return createProductionSkillCatalogSnapshot(workspaceId, true, 'fresh', [], []);
     }
-  }
-  return byName;
-}
 
-function skillLoadRegistration(
-  catalogs: ReadonlyMap<string, ReadonlyMap<string, PinnedSkill>>,
-  workspaces: ReadonlyMap<string, WorkspaceBinding>
-): TrustedAgentToolRegistrationV1 {
-  return registration({
-    toolName: 'skill.load',
-    capabilityIds: ['skills.read'],
-    requiredWorkspaceAccess: 'read',
-    sideEffect: 'read',
-    approval: 'never',
-    resourceSemantics: 'workspace_resource_id',
-    inputSchema: objectSchema({
-      name: { type: 'string', description: 'Exact Skill name from the admission catalog.' },
-      revision: { type: 'string', description: 'Exact sha256 revision from the admission catalog.' }
-    }, ['name', 'revision']),
-    outputSchema: { type: 'object' },
-    validate: validateLoadInput,
-    execute: async (input, context) => {
-      try {
-        if (context.scope.length !== 1 || !workspaces.has(context.scope[0]!)) {
-          throw new Error('skill_workspace_scope_invalid');
-        }
-        const workspaceId = context.scope[0]!;
-        const skill = requireWorkspaceCatalog(catalogs, workspaceId).get(
-          requiredStringProperty(input, 'name')
-        );
-        if (skill === undefined) throw new Error('skill_not_pinned');
-        const revision = requiredStringProperty(input, 'revision');
-        if (revision !== skill.revision) throw new Error('skill_revision_not_pinned');
-        if (!existsSync(skill.filePath) || realpathSync(skill.filePath) !== skill.filePath) {
-          throw new Error('skill_source_unavailable');
-        }
-        const body = readBoundedSkill(skill.filePath);
-        if (digest(body) !== revision) throw new Error('skill_source_drifted');
-        return succeeded({
-          ...publicDescriptor(skill),
-          body
+    const observed = await this.collect(workspaceId, workspace.rootPath, operationSignal);
+    operationSignal.throwIfAborted();
+    const missing = this.enabled.filter((name) => !observed.entries.has(name));
+    if (observed.complete) {
+      const snapshot = createProductionSkillCatalogSnapshot(
+        workspaceId,
+        true,
+        'fresh',
+        [...observed.entries.values()].map((entry) => entry.candidate),
+        missing
+      );
+      if (missing.length > 0) {
+        this.lastGood.delete(workspaceId);
+      } else {
+        this.retain(workspaceId, observed.entries);
+        this.lastGood.set(workspaceId, Object.freeze({
+          snapshot
+        }));
+      }
+      return snapshot;
+    }
+
+    const previous = this.lastGood.get(workspaceId);
+    return previous === undefined
+      ? createProductionSkillCatalogSnapshot(
+          workspaceId,
+          false,
+          'fresh',
+          [...observed.entries.values()].map((entry) => entry.candidate),
+          missing
+        )
+      : Object.freeze({
+          ...previous.snapshot,
+          complete: false,
+          source: 'last_good' as const
         });
+  }
+
+  public async renderAdmissionCatalog(
+    workspaceId: string,
+    signal: AbortSignal
+  ): Promise<string> {
+    const snapshot = await this.snapshot(workspaceId, signal);
+    signal.throwIfAborted();
+    if (!snapshot.complete && snapshot.source !== 'last_good') {
+      throw new Error(`skill_catalog_incomplete:${workspaceId}`);
+    }
+    if (snapshot.missing.length > 0) {
+      throw new Error(`skill_not_found:${workspaceId}:${snapshot.missing.join(',')}`);
+    }
+    return renderProductionSkillCatalog(snapshot);
+  }
+
+  public createToolRegistrations(): readonly TrustedAgentToolRegistrationV1[] {
+    return createProductionSkillToolRegistrations({
+      workspaces: this.workspaces,
+      load: (workspaceId, name, revision, signal) => this.load(
+        workspaceId,
+        name,
+        revision,
+        signal
+      ),
+      readResource: (workspaceId, name, revision, relativePath, signal) => this.readResource(
+        workspaceId,
+        name,
+        revision,
+        relativePath,
+        signal
+      )
+    });
+  }
+
+  public close(): Promise<void> {
+    this.closePromise ??= this.closeOwned();
+    return this.closePromise;
+  }
+
+  private async closeOwned(): Promise<void> {
+    if (!this.lifetime.signal.aborted) {
+      this.lifetime.abort(new Error('skill_catalog_closed'));
+    }
+    const results = await Promise.allSettled(this.providers.map(
+      async (provider) => provider.close?.()
+    ));
+    this.lastGood.clear();
+    this.retained.clear();
+    const failures = results
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => result.reason);
+    if (failures.length > 0) throw new AggregateError(failures, 'skill_provider_close_failed');
+  }
+
+  private async collect(
+    workspaceId: string,
+    workspaceRoot: string,
+    signal: AbortSignal
+  ): Promise<{ readonly complete: boolean; readonly entries: ReadonlyMap<string, IndexedSkill> }> {
+    const entries = new Map<string, IndexedSkill>();
+    let complete = true;
+    for (const provider of this.providers) {
+      signal.throwIfAborted();
+      let output: readonly ProductionSkillCandidate[] | ProductionSkillProviderObservation;
+      try {
+        output = await waitForSkillProvider(
+          provider.list({ workspaceId, workspaceRoot, signal }),
+          signal
+        );
       } catch (error) {
-        return failed('skill_load_failed', error);
+        if (signal.aborted) signal.throwIfAborted();
+        complete = false;
+        continue;
+      }
+      const observation = normalizeSkillProviderObservation(output, provider.providerId);
+      if (!observation.complete) complete = false;
+      const seen = new Set<string>();
+      for (const candidate of observation.candidates) {
+        assertProductionSkillCandidate(candidate, provider.providerId);
+        if (seen.has(candidate.name)) {
+          throw new Error(`skill_provider_candidate_duplicate:${provider.providerId}:${candidate.name}`);
+        }
+        seen.add(candidate.name);
+        if (this.enabled.includes(candidate.name)) {
+          entries.set(candidate.name, Object.freeze({ candidate, provider }));
+        }
       }
     }
-  });
-}
-
-function validateLoadInput(input: AgentToolJsonValue) {
-  if (!isRecord(input) || hasUnknownKeys(input, ['name', 'revision'])) {
-    return { status: 'rejected' as const };
+    return Object.freeze({ complete, entries: new Map(entries) });
   }
-  const { name, revision } = input;
-  return typeof name === 'string'
-    && /^[a-z][a-z0-9_-]*$/u.test(name)
-    && typeof revision === 'string'
-    && /^sha256:[a-f0-9]{64}$/u.test(revision)
-    ? { status: 'accepted' as const, input: { name, revision } }
-    : { status: 'rejected' as const };
-}
 
-function renderCatalog(skills: readonly PinnedSkill[]): string {
-  if (skills.length === 0) return '';
-  const entries = skills.map((skill) => (
-    `- ${skill.name} | ${skill.revision} | ${skill.description}`
-  )).join('\n');
-  return [
-    '[SKILL_CATALOG authority=runtime-pinned]',
-    'Skill bodies are not instructions until loaded. When one is relevant, call skill.load with the exact name and revision below; treat the protected Tool result as the Skill instructions for this Run.',
-    entries,
-    '[/SKILL_CATALOG]'
-  ].join('\n');
-}
-
-function parseMetadata(body: string, fallbackName: string): {
-  readonly name: string;
-  readonly description: string;
-} {
-  const normalized = body.replaceAll('\r\n', '\n');
-  let frontmatter = '';
-  let content = normalized;
-  if (normalized.startsWith('---\n')) {
-    const end = normalized.indexOf('\n---\n', 4);
-    if (end < 0) throw new Error(`skill_frontmatter_invalid:${fallbackName}`);
-    frontmatter = normalized.slice(4, end);
-    content = normalized.slice(end + 5);
+  private retain(workspaceId: string, entries: ReadonlyMap<string, IndexedSkill>): void {
+    let retained = this.retained.get(workspaceId);
+    if (retained === undefined) {
+      retained = new Map();
+      this.retained.set(workspaceId, retained);
+    }
+    for (const entry of entries.values()) {
+      const key = retainedSkillKey(entry.candidate.name, entry.candidate.revision);
+      if (retained.has(key)) continue;
+      if (retained.size >= MAX_RETAINED_SKILL_REVISIONS) {
+        throw new Error(`skill_revision_retention_exhausted:${workspaceId}`);
+      }
+      retained.set(key, entry);
+    }
   }
-  const fields = new Map<string, string>();
-  for (const line of frontmatter.split('\n')) {
-    const match = /^([a-z][a-z0-9_-]*):\s*(.+)$/u.exec(line.trim());
-    if (match !== null) fields.set(match[1]!, stripQuotes(match[2]!.trim()));
+
+  private async load(
+    workspaceId: string,
+    name: string,
+    revision: string,
+    callerSignal: AbortSignal
+  ): Promise<ProductionSkillDefinition> {
+    const indexed = this.retained.get(workspaceId)?.get(retainedSkillKey(name, revision));
+    if (indexed === undefined) throw new Error('skill_revision_not_pinned');
+    const workspace = this.workspaces.get(workspaceId);
+    if (workspace === undefined) throw new Error('skill_workspace_unknown');
+    const signal = AbortSignal.any([callerSignal, this.lifetime.signal]);
+    const definition = await waitForSkillProvider(indexed.provider.get(
+      indexed.candidate,
+      { workspaceId, workspaceRoot: workspace.rootPath, signal }
+    ), signal);
+    signal.throwIfAborted();
+    if (definition === undefined) throw new Error('skill_source_unavailable');
+    assertProductionSkillDefinition(definition, indexed.candidate);
+    if (!definition.invocation.modelInvocable) throw new Error('skill_model_invocation_disabled');
+    return definition;
   }
-  const name = fields.get('name') ?? fallbackName;
-  const description = fields.get('description') ?? firstDescription(content) ?? `Instructions for ${name}.`;
-  if (!/^[a-z][a-z0-9_-]*$/u.test(name)) throw new Error(`skill_metadata_invalid:${fallbackName}`);
-  if (description.length === 0 || description.length > 512 || /[\r\n]/u.test(description)) {
-    throw new Error(`skill_description_invalid:${fallbackName}`);
+
+  private async readResource(
+    workspaceId: string,
+    name: string,
+    revision: string,
+    relativePath: string,
+    callerSignal: AbortSignal
+  ): Promise<ProductionSkillResource> {
+    validateSkillResourcePath(relativePath);
+    const definition = await this.load(workspaceId, name, revision, callerSignal);
+    const descriptor = definition.resources.find((entry) => entry.relativePath === relativePath);
+    if (descriptor === undefined) throw new Error('skill_resource_not_found');
+    const indexed = this.retained.get(workspaceId)?.get(retainedSkillKey(name, revision));
+    if (indexed === undefined) throw new Error('skill_revision_not_pinned');
+    if (indexed.provider.readResource === undefined) throw new Error('skill_resource_unavailable');
+    const workspace = this.workspaces.get(workspaceId);
+    if (workspace === undefined) throw new Error('skill_workspace_unknown');
+    const signal = AbortSignal.any([callerSignal, this.lifetime.signal]);
+    const resource = await waitForSkillProvider(indexed.provider.readResource(
+      indexed.candidate,
+      relativePath,
+      { workspaceId, workspaceRoot: workspace.rootPath, signal }
+    ), signal);
+    signal.throwIfAborted();
+    if (resource === undefined) throw new Error('skill_resource_unavailable');
+    assertProductionSkillResourceDescriptor(resource);
+    if (
+      resource.relativePath !== descriptor.relativePath
+      || resource.mediaType !== descriptor.mediaType
+      || resource.byteLength !== descriptor.byteLength
+      || resource.revision !== descriptor.revision
+      || !(resource.bytes instanceof Uint8Array)
+      || resource.bytes.byteLength !== descriptor.byteLength
+      || digestBytes(resource.bytes) !== descriptor.revision
+    ) throw new Error('skill_resource_drifted');
+    return Object.freeze({
+      ...descriptor,
+      bytes: new Uint8Array(resource.bytes)
+    });
   }
-  return { name, description };
 }
 
-function firstDescription(body: string): string | undefined {
-  return body.split(/\r?\n/u)
-    .map((line) => line.trim())
-    .find((line) => line.length > 0 && line !== '---' && !line.startsWith('#'))
-    ?.slice(0, 512);
-}
-
-function stripQuotes(value: string): string {
-  return value.length >= 2
-    && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
-    ? value.slice(1, -1)
-    : value;
-}
-
-function readBoundedSkill(filePath: string): string {
-  const content = readFileSync(filePath);
-  if (content.byteLength > MAX_SKILL_BYTES) throw new Error(`skill_file_too_large:${filePath}`);
-  if (content.includes(0)) throw new Error(`skill_file_binary:${filePath}`);
-  return content.toString('utf8');
-}
-
-function requireWorkspaceCatalog(
-  catalogs: ReadonlyMap<string, ReadonlyMap<string, PinnedSkill>>,
-  workspaceId: string
-): ReadonlyMap<string, PinnedSkill> {
-  const catalog = catalogs.get(workspaceId);
-  if (catalog === undefined) throw new Error('skill_workspace_unknown');
-  return catalog;
-}
-
-function publicDescriptor(skill: PinnedSkill): ProductionSkillDescriptor {
-  return Object.freeze({
-    name: skill.name,
-    description: skill.description,
-    revision: skill.revision,
-    layer: skill.layer
-  });
-}
-
-function digest(value: string): `sha256:${string}` {
-  return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`;
-}
-
-function isWithin(root: string, target: string): boolean {
-  const relative = path.relative(root, target);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+function digestBytes(value: Uint8Array): `sha256:${string}` {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
 function compareCodeUnits(left: string, right: string): number {

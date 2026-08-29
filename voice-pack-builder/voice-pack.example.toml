@@ -1,0 +1,28 @@
+[voice]
+id = "zh-cn-custom-medium"
+version = "1.0.0"
+display_name = "自定义普通话"
+languages = ["zh-CN"]
+sample_rate = 22050
+speaker_id = 0
+license_name = "Private local voice - redistribution prohibited"
+redistribution_allowed = false
+
+[paths]
+dataset = "/mnt/e/AI/AriadneSpeech/datasets/zh-cn-custom"
+piper_repo = "/mnt/e/AI/AriadneSpeech/builder/piper1-gpl"
+base_checkpoint = "/mnt/e/AI/AriadneSpeech/checkpoints/zh_CN-medium.ckpt"
+checkpoint_dir = "/mnt/e/AI/AriadneSpeech/checkpoints/zh-cn-custom"
+cache_dir = "/mnt/e/AI/AriadneSpeech/builder/cache/zh-cn-custom"
+voice_config = "/mnt/e/AI/AriadneSpeech/checkpoints/zh-cn-custom/config.json"
+export_dir = "/mnt/e/AI/AriadneSpeech/builder/exports/zh-cn-custom"
+pack_dir = "/mnt/e/AI/AriadneSpeech/builder/packs"
+espeak_data_dir = "/mnt/e/AI/AriadneSpeech/builder/piper1-gpl/src/piper/espeak-ng-data"
+sample_wav = "/mnt/e/AI/AriadneSpeech/builder/exports/zh-cn-custom/sample.wav"
+model_card = "/mnt/e/AI/AriadneSpeech/datasets/zh-cn-custom/MODEL_CARD.md"
+
+[training]
+espeak_voice = "cmn"
+batch_size = 4
+gradient_accumulation = 4
+num_workers = 2

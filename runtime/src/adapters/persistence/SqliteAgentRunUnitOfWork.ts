@@ -3690,6 +3690,13 @@ function committedDirectiveReferences(
           directiveDigest: attempt.state.directiveDigest,
           contentDigest: directive.contentDigest
         });
+      } else if (directive.kind === 'ask_user') {
+        references.push({
+          artifactId: directive.questionRef,
+          kind: 'user_question',
+          directiveDigest: attempt.state.directiveDigest,
+          contentDigest: directive.questionDigest
+        });
       } else if (directive.kind === 'checkpoint') {
         references.push({
           artifactId: directive.reasonRef,
@@ -3816,6 +3823,12 @@ async function collectControlRecoveryIssues(
           kind: 'response_content',
           contentDigest: directive.contentDigest
         };
+      } else if (directive.kind === 'ask_user') {
+        expected = {
+          artifactId: directive.questionRef,
+          kind: 'user_question',
+          contentDigest: directive.questionDigest
+        };
       } else if (directive.kind === 'checkpoint') {
         expected = {
           artifactId: directive.reasonRef,
@@ -3921,7 +3934,7 @@ async function loadActiveRuns(
      FROM agent_v3_runs
      WHERE state_status IN (
        'queued', 'running', 'waiting', 'recovering',
-       'waiting_children', 'cancelling'
+       'waiting_children', 'waiting_input', 'cancelling'
      )
        ${cursorClause}
      ORDER BY created_at, run_id
@@ -4602,12 +4615,12 @@ function assertActiveRunMetadataConsistent(database: DatabaseSync): void {
      WHERE (
        state_status IN (
          'queued', 'running', 'waiting', 'recovering',
-         'waiting_children', 'cancelling'
+         'waiting_children', 'waiting_input', 'cancelling'
        )
        OR json_extract(aggregate_json, '$.state.status')
           IN (
             'queued', 'running', 'waiting', 'recovering',
-            'waiting_children', 'cancelling'
+            'waiting_children', 'waiting_input', 'cancelling'
           )
      )
        AND (
@@ -4688,6 +4701,7 @@ function assertDirectivePayloadLookup(
     || reference.artifactId.trim() !== reference.artifactId
     || ![
       'response_content',
+      'user_question',
       'checkpoint_reason',
       'completion_output',
       'failure_message'

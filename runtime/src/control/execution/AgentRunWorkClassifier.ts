@@ -32,6 +32,14 @@ interface AgentSettledInboxWorkIdentity {
   readonly inputIds: readonly string[];
 }
 
+interface AgentInterruptedInferenceWorkIdentity {
+  readonly boundaryKind: 'interrupted_inference';
+  readonly sourceTurnId: string;
+  readonly sourceAttemptId: string;
+  readonly recoveryDecisionId: string;
+  readonly inputIds: readonly string[];
+}
+
 type AgentContinuationBoundaryWorkIdentity =
   | AgentSettledEffectBatchWorkIdentity
   | AgentSettledInboxWorkIdentity;
@@ -54,7 +62,8 @@ export type AgentRunWorkClassification =
       readonly kind: 'continue_inbox';
       readonly sourceTurnId: string;
       readonly sourceAttemptId: string;
-      readonly sourceDirectiveDigest: string;
+      readonly sourceDirectiveDigest?: string;
+      readonly recoveryDecisionId?: string;
       readonly inputIds: readonly string[];
     })
   | (AgentRunWorkIdentity & {
@@ -98,7 +107,8 @@ export type AgentRunWorkClassification =
       readonly inputDigest: string;
       readonly sourceTurnId: string;
       readonly sourceAttemptId: string;
-      readonly sourceDirectiveDigest: string;
+      readonly sourceDirectiveDigest?: string;
+      readonly recoveryDecisionId?: string;
     })
   | (AgentRunWorkIdentity & {
       readonly kind: 'dispatch_delegated_initial';
@@ -116,7 +126,8 @@ export type AgentRunWorkClassification =
       readonly inputDigest: string;
       readonly sourceTurnId: string;
       readonly sourceAttemptId: string;
-      readonly sourceDirectiveDigest: string;
+      readonly sourceDirectiveDigest?: string;
+      readonly recoveryDecisionId?: string;
     })
   | (AgentRunWorkIdentity & {
       readonly kind: 'recovery_uncertain_delegated_inference';
@@ -141,9 +152,11 @@ export type AgentRunWorkClassification =
       readonly kind: 'wait';
       readonly reason:
         | 'waiting_plan_approval'
+        | 'waiting_user_question'
         | 'recovering_uncertain_effect'
         | 'recovering_uncertain_inference'
         | 'waiting_children'
+        | 'waiting_continuation_input'
         | 'cancelling';
       readonly subjectIds: readonly string[];
     })
@@ -219,6 +232,17 @@ export function classifyAgentRunWork(run: AgentRun): AgentRunWorkClassification 
           ]
         };
       }
+      if (run.state.reason === 'user_question') {
+        return {
+          ...identity,
+          kind: 'wait',
+          reason: 'waiting_user_question',
+          subjectIds: [
+            run.state.decision.decisionId,
+            run.state.decision.questionRef
+          ]
+        };
+      }
       return {
         ...identity,
         kind: 'wait_permission',
@@ -248,6 +272,53 @@ export function classifyAgentRunWork(run: AgentRun): AgentRunWorkClassification 
         reason: 'waiting_children',
         subjectIds: [...run.state.requiredChildRunIds]
       };
+    case 'waiting_input': {
+      const inputIds = claimableResponseBoundaryInputs(run);
+      if (inputIds.length === 0) {
+        return {
+          ...identity,
+          kind: 'wait',
+          reason: 'waiting_continuation_input',
+          subjectIds: ['responseTurnId' in run.state
+            ? run.state.responseTurnId
+            : run.state.interruptedAttemptId]
+        };
+      }
+      const latest = run.turns.at(-1);
+      const attempt = latest?.attempts.at(-1);
+      if ('recoveryDecisionId' in run.state) {
+        if (
+          latest === undefined
+          || attempt?.state.status !== 'uncertain'
+          || latest.turnId !== run.state.interruptedTurnId
+          || attempt.attemptId !== run.state.interruptedAttemptId
+          || attempt.state.recovery.decisionId !== run.state.recoveryDecisionId
+        ) return healthFault(identity, 'running_without_owned_work', null, null);
+        return {
+          ...identity,
+          kind: 'continue_inbox',
+          sourceTurnId: latest.turnId,
+          sourceAttemptId: attempt.attemptId,
+          recoveryDecisionId: run.state.recoveryDecisionId,
+          inputIds
+        };
+      }
+      if (
+        latest === undefined
+        || attempt?.state.status !== 'succeeded'
+        || attempt.state.directive.kind !== 'respond'
+      ) {
+        return healthFault(identity, 'running_without_owned_work', null, null);
+      }
+      return {
+        ...identity,
+        kind: 'continue_inbox',
+        sourceTurnId: latest.turnId,
+        sourceAttemptId: attempt.attemptId,
+        sourceDirectiveDigest: attempt.state.directiveDigest,
+        inputIds
+      };
+    }
     case 'cancelling':
       return {
         ...identity,
@@ -300,7 +371,11 @@ function classifyRunningRun(
       childRunIds: [directive.childRunId]
     };
   }
-  if (directive.kind === 'respond' || directive.kind === 'complete') {
+  if (
+    directive.kind === 'respond'
+    || directive.kind === 'complete'
+    || directive.kind === 'ask_user'
+  ) {
     const inputIds = claimableResponseBoundaryInputs(run);
     if (inputIds.length > 0) {
       const boundary = {
@@ -527,6 +602,9 @@ function classifyIntendedInference(
       objectiveDigest: cause.objectiveDigest
     };
   }
+  const sourceBoundary = cause.kind === 'interrupted_inference'
+    ? { recoveryDecisionId: cause.recoveryDecisionId }
+    : { sourceDirectiveDigest: cause.sourceDirectiveDigest };
   return {
     ...identity,
     kind: 'dispatch_follow_up',
@@ -535,7 +613,7 @@ function classifyIntendedInference(
     inputDigest: turn.intention.inputDigest,
     sourceTurnId: cause.sourceTurnId,
     sourceAttemptId: cause.sourceAttemptId,
-    sourceDirectiveDigest: cause.sourceDirectiveDigest
+    ...sourceBoundary
   };
 }
 
@@ -567,6 +645,9 @@ function classifyStartedInference(
       objectiveDigest: cause.objectiveDigest
     };
   }
+  const sourceBoundary = cause.kind === 'interrupted_inference'
+    ? { recoveryDecisionId: cause.recoveryDecisionId }
+    : { sourceDirectiveDigest: cause.sourceDirectiveDigest };
   return {
     ...identity,
     kind: 'recovery_uncertain_inference',
@@ -575,7 +656,7 @@ function classifyStartedInference(
     inputDigest: turn.intention.inputDigest,
     sourceTurnId: cause.sourceTurnId,
     sourceAttemptId: cause.sourceAttemptId,
-    sourceDirectiveDigest: cause.sourceDirectiveDigest
+    ...sourceBoundary
   };
 }
 

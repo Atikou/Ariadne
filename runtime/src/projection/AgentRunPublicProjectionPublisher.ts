@@ -29,13 +29,16 @@ import {
   type PublicRunProjectionV3
 } from '@ariadne/protocol/public';
 import type {
+  AgentPublicToolPresentationMetadata,
   AgentRunInteractionProjectionMessage,
   AgentRunInteractionProjectionResolver,
   AgentRunTerminalResultProjectionSink,
-  AgentRunVersionReader
+  AgentRunVersionReader,
+  AgentToolPresentationResolver
 } from './AgentRunProjectionPorts.js';
 import type { PublicProjectionCommitSink } from './PublicProjectionPorts.js';
 import { assertValidProjectionCommitV3 } from './PublicProjectionContractV3.js';
+import { parseProtectedAgentUserQuestion } from '../conversation/ProtectedAgentUserQuestion.js';
 
 const DEFAULT_CLAIM_LEASE_MS = 30_000;
 const DEFAULT_CLAIM_LIMIT = 1_000;
@@ -46,12 +49,19 @@ export interface AgentRunPublicProjectionPublisherOptions {
   readonly claimIdFactory?: () => string;
   readonly terminalResultSink?: AgentRunTerminalResultProjectionSink;
   readonly interactionResolver?: AgentRunInteractionProjectionResolver;
+  readonly toolPresentationResolver?: AgentToolPresentationResolver;
 }
 
 export interface AgentRunPublicProjectionPublishResult {
   readonly claimedMessages: number;
   readonly projectedVersions: number;
   readonly acknowledgedMessages: number;
+}
+
+export interface AgentRunToolPresentationProjection {
+  readonly effectId: string;
+  readonly kind: AgentPublicToolPresentationMetadata['kind'];
+  readonly label: string;
 }
 
 interface ClaimedRunVersion {
@@ -95,6 +105,7 @@ export class AgentRunPublicProjectionPublisher {
   private readonly claimIdFactory: () => string;
   private readonly terminalResultSink?: AgentRunTerminalResultProjectionSink;
   private readonly interactionResolver?: AgentRunInteractionProjectionResolver;
+  private readonly toolPresentationResolver?: AgentToolPresentationResolver;
   private activePublish: Promise<AgentRunPublicProjectionPublishResult> | null = null;
 
   public constructor(
@@ -109,6 +120,7 @@ export class AgentRunPublicProjectionPublisher {
       ?? (() => `agent-run-public-projection:${randomUUID()}`);
     this.terminalResultSink = options.terminalResultSink;
     this.interactionResolver = options.interactionResolver;
+    this.toolPresentationResolver = options.toolPresentationResolver;
     assertOptions(this.claimLeaseMs, this.claimLimit);
   }
 
@@ -151,7 +163,16 @@ export class AgentRunPublicProjectionPublisher {
         immutable.run,
         this.interactionResolver
       );
-      const commit = publicCommit(immutable.run, decision, interactions);
+      const toolPresentations = resolveToolPresentations(
+        immutable.run,
+        this.toolPresentationResolver
+      );
+      const commit = publicCommit(
+        immutable.run,
+        decision,
+        interactions,
+        toolPresentations
+      );
 
       if (isTerminalRun(immutable.run) && this.terminalResultSink !== undefined) {
         const terminalEvent = terminalEventForRun(immutable.events, immutable.run);
@@ -182,7 +203,8 @@ export class AgentRunPublicProjectionPublisher {
 function publicCommit(
   run: AgentRun,
   decision: PublicDecisionProjectionV3 | null,
-  interactions: readonly AgentRunInteractionProjectionMessage[]
+  interactions: readonly AgentRunInteractionProjectionMessage[],
+  toolPresentations: readonly AgentRunToolPresentationProjection[]
 ): ProjectionCommitV3 {
   const changes: ProjectionCommitV3['changes'] = [
     {
@@ -191,7 +213,7 @@ function publicCommit(
       aggregateId: run.runId,
       aggregateVersion: run.version,
       projectedAt: run.updatedAt,
-      dto: projectAgentRunV3(run, interactions)
+      dto: projectAgentRunV3(run, interactions, toolPresentations)
     },
     ...(decision === null
       ? []
@@ -252,9 +274,16 @@ export function agentRunProjectionSourceId(runId: string): string {
 
 export function projectAgentRunV3(
   run: AgentRun,
-  interactions: readonly AgentRunInteractionProjectionMessage[] = []
+  interactions: readonly AgentRunInteractionProjectionMessage[] = [],
+  toolPresentations: readonly AgentRunToolPresentationProjection[] = []
 ): PublicRunProjectionV3 {
   assertValidAgentRun(run);
+  const presentationByEffectId = new Map(
+    toolPresentations.map((entry) => [entry.effectId, entry] as const)
+  );
+  if (presentationByEffectId.size !== toolPresentations.length) {
+    throw new Error('agent_run_projection_tool_presentation_duplicate');
+  }
   return publicRunProjectionV3Schema.parse({
     runId: run.runId,
     sessionId: run.binding.sessionId,
@@ -262,7 +291,9 @@ export function projectAgentRunV3(
       ? { sourceMessageId: run.binding.objectiveRef.messageId }
       : {
           parentRunId: run.binding.objectiveRef.parentRunId,
-          delegationId: run.binding.objectiveRef.delegationId
+          delegationId: run.binding.objectiveRef.delegationId,
+          subagentMode: run.binding.objectiveRef.mode,
+          subagentProviderId: run.binding.objectiveRef.providerId
         }),
     version: run.version,
     title: run.binding.objectiveRef.kind === 'parent_delegation'
@@ -273,6 +304,7 @@ export function projectAgentRunV3(
     toolActivities: run.effects.map((effect) => {
       const state = effect.state;
       const occurredAt = effectTimestamp(state);
+      const presentation = presentationByEffectId.get(effect.effectId);
       return {
         activityId: effect.effectId,
         callId: stablePublicIdentity('tool-call', [
@@ -281,6 +313,9 @@ export function projectAgentRunV3(
           effect.effectId
         ]),
         toolName: effect.tool.toolName,
+        ...(presentation === undefined
+          ? {}
+          : { presentation: { kind: presentation.kind, label: presentation.label } }),
         status: state.status === 'succeeded'
           ? 'completed' as const
           : state.status === 'failed' || state.status === 'uncertain' || state.status === 'cancelled'
@@ -303,6 +338,7 @@ export function projectAgentRunV3(
       version: input.version,
       delivery: input.delivery,
       content: redactPublicProjectionTextV3(input.content),
+      ...(input.source === undefined ? {} : { source: { ...input.source } }),
       state: input.state,
       queuedAt: input.queuedAt,
       updatedAt: input.updatedAt,
@@ -339,6 +375,23 @@ async function resolveInteractionMessages(
     throw new Error('agent_run_interaction_projection_resolver_unavailable');
   }
   return resolver.resolveInteractionMessages(run);
+}
+
+function resolveToolPresentations(
+  run: AgentRun,
+  resolver: AgentToolPresentationResolver | undefined
+): readonly AgentRunToolPresentationProjection[] {
+  if (resolver === undefined) return [];
+  return Object.freeze(run.effects.flatMap((effect) => {
+    const presentation = resolver.resolveToolPresentation(effect.tool);
+    return presentation === null
+      ? []
+      : [Object.freeze({
+          effectId: effect.effectId,
+          kind: presentation.kind,
+          label: presentation.label
+        })];
+  }));
 }
 
 function effectTimestamp(effect: AgentRun['effects'][number]['state']): string {
@@ -473,9 +526,23 @@ async function projectDecisionForVersion(
   }
 
   if (active !== null) {
-    throw new Error(
-      `agent_run_projection_decision_event_missing:${run.runId}:${String(run.version)}`
-    );
+    if (run.version <= 1) {
+      throw new Error(
+        `agent_run_projection_decision_event_missing:${run.runId}:${String(run.version)}`
+      );
+    }
+    const previous = await loadPreviousRun(run, runVersions);
+    const previousActive = getActiveDecision(previous);
+    if (previousActive === null || !isDeepStrictEqual(previousActive, active)) {
+      throw new Error(
+        `agent_run_projection_decision_persistence_drift:${run.runId}:${String(run.version)}`
+      );
+    }
+    // An inbox-only (or otherwise decision-neutral) mutation may advance the
+    // Run while its pending Decision remains authoritative. The Decision was
+    // projected by the version that requested it; emitting version 1 again
+    // from a different public event would violate Projection monotonicity.
+    return null;
   }
 
   if (isTerminalRun(run) && run.version > 1) {
@@ -662,6 +729,18 @@ function assertResolutionMatchesDecision(
     return;
   }
 
+  if (decision.kind === 'user_question' && resolution.kind === 'user_question') {
+    if (
+      resolution.questionRef !== decision.questionRef
+      || resolution.questionDigest !== decision.questionDigest
+      || !/^sha256:[0-9a-f]{64}$/u.test(resolution.answerDigest)
+      || resolution.answerInputId.length === 0
+    ) {
+      throw new Error('agent_run_projection_decision_resolution_drift');
+    }
+    return;
+  }
+
   throw new Error('agent_run_projection_decision_resolution_drift');
 }
 
@@ -736,6 +815,50 @@ async function publicDecisionPresentation(
     };
   }
 
+  if (decision.kind === 'user_question') {
+    if (runVersions.loadDirectivePayload === undefined) {
+      throw new Error('agent_run_projection_user_question_reader_unavailable');
+    }
+    const attempt = run.turns
+      .flatMap((turn) => turn.attempts)
+      .find((candidate) => (
+        candidate.state.status === 'succeeded'
+        && candidate.state.directive.kind === 'ask_user'
+        && candidate.state.directive.decisionId === decision.decisionId
+        && candidate.state.directive.questionRef === decision.questionRef
+        && candidate.state.directive.questionDigest === decision.questionDigest
+      ));
+    if (attempt?.state.status !== 'succeeded' || attempt.state.directive.kind !== 'ask_user') {
+      throw new Error('agent_run_projection_user_question_attempt_missing');
+    }
+    const payload = await runVersions.loadDirectivePayload({
+      runId: run.runId,
+      artifactId: decision.questionRef,
+      kind: 'user_question',
+      directiveDigest: attempt.state.directiveDigest,
+      contentDigest: decision.questionDigest
+    });
+    const question = parseProtectedAgentUserQuestion(payload);
+    return {
+      contractVersion: '1.0',
+      kind: 'user_question',
+      headline: 'Agent needs your input',
+      question: redactPublicProjectionTextV3(question.prompt),
+      ...(question.options === undefined
+        ? {}
+        : {
+            options: question.options.map((option) => ({
+              optionId: option.optionId,
+              label: redactPublicProjectionTextV3(option.label),
+              ...(option.description === undefined
+                ? {}
+                : { description: redactPublicProjectionTextV3(option.description) })
+            }))
+          }),
+      allowsFreeText: true
+    };
+  }
+
   return {
     contractVersion: '1.0',
     kind: 'recovery',
@@ -777,6 +900,7 @@ function publicRunStatus(
         : 'waiting_decision';
     case 'recovering': return 'interrupted';
     case 'waiting_children': return 'waiting_children';
+    case 'waiting_input': return 'paused';
     case 'cancelling': return 'cancelling';
     case 'completed': return 'completed';
     case 'failed': return 'failed';
@@ -791,9 +915,12 @@ function publicRunLabel(run: AgentRun): string {
     case 'waiting':
       return run.state.reason === 'tool_permission'
         ? 'Waiting for permission'
-        : 'Waiting for decision';
+        : run.state.reason === 'user_question'
+          ? 'Waiting for your answer'
+          : 'Waiting for decision';
     case 'recovering': return 'Recovery required';
     case 'waiting_children': return 'Waiting for child runs';
+    case 'waiting_input': return 'Waiting for continuation input';
     case 'cancelling': return 'Cancelling child runs';
     case 'completed': return 'Completed';
     case 'failed': return 'Failed';

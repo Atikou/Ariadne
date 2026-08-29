@@ -1,5 +1,6 @@
 import { assertValidAgentRun, type AgentRun } from '../domain/agent-run.js';
 import { AgentRunInvariantError } from '../domain/errors.js';
+import type { AgentInboxInput } from '../domain/inbox.js';
 import type { AgentTurnCause } from '../domain/turn.js';
 import type { RegisterAgentTurnCommand } from './commands.js';
 import {
@@ -22,7 +23,15 @@ import type { AgentTurnInputModelData } from './agent-engine.js';
 export interface PlanAgentInboxContinuationRequest {
   readonly run: AgentRun;
   readonly sourceTurnInput: AgentTurnInputSnapshotV1;
-  readonly assistantContent: string;
+  readonly boundary:
+    | {
+        readonly kind: 'settled_response';
+        readonly assistantContent: string;
+      }
+    | {
+        readonly kind: 'interrupted_inference';
+        readonly interruptionNotice: string;
+      };
   readonly inputIds: readonly string[];
 }
 
@@ -39,9 +48,7 @@ export class DefaultAgentInboxContinuationPlanner {
     assertValidAgentRun(request.run);
     const run = request.run;
     if (
-      run.state.status !== 'running'
-      || request.assistantContent.length === 0
-      || request.assistantContent.length > 1_048_576
+      (run.state.status !== 'running' && run.state.status !== 'waiting_input')
       || request.inputIds.length === 0
     ) throw invalid('Agent inbox continuation request is not at a response boundary.');
     if (
@@ -51,12 +58,30 @@ export class DefaultAgentInboxContinuationPlanner {
 
     const sourceTurn = run.turns.at(-1);
     const sourceAttempt = sourceTurn?.attempts.at(-1);
-    if (
-      sourceTurn === undefined
-      || sourceAttempt?.state.status !== 'succeeded'
-      || (sourceAttempt.state.directive.kind !== 'respond'
-        && sourceAttempt.state.directive.kind !== 'complete')
-    ) throw invalid('Agent inbox continuation requires the latest succeeded response.');
+    if (sourceTurn === undefined || sourceAttempt === undefined) {
+      throw invalid('Agent inbox continuation requires a source inference boundary.');
+    }
+    if (request.boundary.kind === 'settled_response') {
+      if (
+        request.boundary.assistantContent.length === 0
+        || request.boundary.assistantContent.length > 1_048_576
+        || sourceAttempt.state.status !== 'succeeded'
+        || (sourceAttempt.state.directive.kind !== 'respond'
+          && sourceAttempt.state.directive.kind !== 'complete'
+          && sourceAttempt.state.directive.kind !== 'ask_user')
+      ) throw invalid('Agent inbox continuation requires the latest succeeded response.');
+    } else if (
+      request.boundary.interruptionNotice.length === 0
+      || request.boundary.interruptionNotice.length > 1_048_576
+      || run.state.status !== 'waiting_input'
+      || !('recoveryDecisionId' in run.state)
+      || run.state.interruptedTurnId !== sourceTurn.turnId
+      || run.state.interruptedAttemptId !== sourceAttempt.attemptId
+      || sourceAttempt.state.status !== 'uncertain'
+      || sourceAttempt.state.recovery.decisionId !== run.state.recoveryDecisionId
+    ) {
+      throw invalid('Agent inbox continuation requires the exact interrupted inference.');
+    }
     await assertAgentTurnInputSnapshotMatchesTurn(
       run,
       sourceTurn.turnId,
@@ -74,20 +99,41 @@ export class DefaultAgentInboxContinuationPlanner {
       || inputs.some((input, index) => input.inputId !== request.inputIds[index])
     ) throw invalid('Agent inbox inputs differ from the exact response-boundary claim.');
 
-    const cause: Extract<AgentTurnCause, { readonly kind: 'inbox_inputs' }> = {
-      kind: 'inbox_inputs',
-      sourceTurnId: sourceTurn.turnId,
-      sourceAttemptId: sourceAttempt.attemptId,
-      sourceDirectiveDigest: sourceAttempt.state.directiveDigest,
-      inputIds: [...request.inputIds]
-    };
+    const cause: Extract<
+      AgentTurnCause,
+      { readonly kind: 'inbox_inputs' | 'interrupted_inference' }
+    > = request.boundary.kind === 'settled_response'
+      ? {
+          kind: 'inbox_inputs',
+          sourceTurnId: sourceTurn.turnId,
+          sourceAttemptId: sourceAttempt.attemptId,
+          sourceDirectiveDigest: requireSettledDirectiveDigest(sourceAttempt),
+          inputIds: [...request.inputIds]
+        }
+      : {
+          kind: 'interrupted_inference',
+          sourceTurnId: sourceTurn.turnId,
+          sourceAttemptId: sourceAttempt.attemptId,
+          recoveryDecisionId: requireInterruptedRecoveryDecisionId(run),
+          inputIds: [...request.inputIds]
+        };
     const modelData = canonicalModelData({
       messages: [
         ...request.sourceTurnInput.messages,
-        { kind: 'text', role: 'assistant', content: request.assistantContent },
+        request.boundary.kind === 'settled_response'
+          ? {
+              kind: 'text' as const,
+              role: 'assistant' as const,
+              content: request.boundary.assistantContent
+            }
+          : {
+              kind: 'text' as const,
+              role: 'system' as const,
+              content: request.boundary.interruptionNotice
+            },
         ...inputs.map((input) => ({
           kind: 'text' as const,
-          role: 'user' as const,
+          role: inboxRole(input),
           content: input.content
         }))
       ],
@@ -99,7 +145,9 @@ export class DefaultAgentInboxContinuationPlanner {
       run.runId,
       sourceTurn.turnId,
       sourceAttempt.attemptId,
-      sourceAttempt.state.directiveDigest,
+      cause.kind === 'inbox_inputs'
+        ? cause.sourceDirectiveDigest
+        : cause.recoveryDecisionId,
       ...inputs.flatMap((input) => [input.inputId, input.contentDigest])
     ] as const;
     const commandId = await deriveStableAgentId('inbox-continuation', ...identity);
@@ -141,10 +189,14 @@ export class DefaultAgentInboxContinuationPlanner {
         format: 'ariadne.agent-checkpoint',
         schemaVersion: 1,
         engineContinuation: {
-          phase: 'inbox_inputs_ready',
+          phase: cause.kind === 'inbox_inputs'
+            ? 'inbox_inputs_ready'
+            : 'interrupted_inference_inputs_ready',
           sourceTurnId: sourceTurn.turnId,
           sourceAttemptId: sourceAttempt.attemptId,
-          sourceDirectiveDigest: sourceAttempt.state.directiveDigest,
+          ...(cause.kind === 'inbox_inputs'
+            ? { sourceDirectiveDigest: cause.sourceDirectiveDigest }
+            : { recoveryDecisionId: cause.recoveryDecisionId }),
           inputIds: [...cause.inputIds],
           continuationTurnId: turnId,
           continuationAttemptId: attemptId
@@ -171,6 +223,26 @@ export class DefaultAgentInboxContinuationPlanner {
 
 function canonicalModelData(input: AgentTurnInputModelData): AgentTurnInputModelData {
   return JSON.parse(canonicalizeAgentTurnInput(input)) as AgentTurnInputModelData;
+}
+
+function requireSettledDirectiveDigest(
+  attempt: AgentRun['turns'][number]['attempts'][number]
+): string {
+  if (attempt.state.status !== 'succeeded') {
+    throw invalid('Settled response Directive digest is unavailable.');
+  }
+  return attempt.state.directiveDigest;
+}
+
+function requireInterruptedRecoveryDecisionId(run: AgentRun): string {
+  if (run.state.status !== 'waiting_input' || !('recoveryDecisionId' in run.state)) {
+    throw invalid('Interrupted inference recovery identity is unavailable.');
+  }
+  return run.state.recoveryDecisionId;
+}
+
+function inboxRole(input: AgentInboxInput): 'user' | 'system' {
+  return input.source?.kind === 'live_work' ? 'system' : 'user';
 }
 
 function invalid(message: string): AgentRunInvariantError {

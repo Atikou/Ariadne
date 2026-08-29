@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-26",
+  "generatedAt": "2026-08-29",
   "statusValues": [
     "verified",
     "partial",
@@ -9,7 +9,7 @@
   ],
   "currentGate": {
     "status": "verified",
-    "reason": "deterministic_electron_agent_smoke_passed",
+    "reason": "deterministic_electron_agent_stream_and_recovery_smoke_passed",
     "source": "artifacts/electron-runtime-smoke/electron-runtime-smoke.json"
   },
   "rows": [
@@ -18,7 +18,8 @@
       "source": [
         "packages/protocol/src/common.ts",
         "packages/protocol/src/public.ts",
-        "packages/protocol/src/public/projection-v3.ts"
+        "packages/protocol/src/public/projection-v3.ts",
+        "packages/protocol/src/public/inference-stream-v3.ts"
       ],
       "unit": "verified",
       "integration": "verified",
@@ -45,6 +46,7 @@
       "module": "conversation-authority-and-handoff",
       "source": [
         "runtime/src/adapters/persistence/SqliteConversationRunHandoffUnitOfWork.ts",
+        "runtime/src/composition/ConversationSessionPublicCommandHandler.ts",
         "runtime/src/composition/ConversationAgentHandoffCoordinator.ts",
         "runtime/src/projection/ConversationPublicProjectionPublisher.ts"
       ],
@@ -53,7 +55,7 @@
       "realModel": "not_applicable",
       "realWindow": "verified",
       "realMachine": "not_accepted",
-      "notes": "Session and Message authority, handoff persistence and v3 projection are covered; cross-version migration on a clean machine is pending."
+      "notes": "Versioned Session title/archive/restore, exact immutable Session-version replay, Message authority, handoff persistence and v3 projection are covered. The real Electron window renames, archives, restores and reselects the Session through public commands; clean-machine cross-version migration remains pending."
     },
     {
       "module": "agent-control-domain-and-persistence",
@@ -67,7 +69,7 @@
       "realModel": "not_accepted",
       "realWindow": "verified",
       "realMachine": "not_accepted",
-      "notes": "Run, Turn, Attempt, Decision, Effect and recovery invariants have automated coverage. The real Electron smoke executes Agent Runs through the production public path, including cancel and three Runtime hard-kill recovery boundaries. Live external models and clean-machine acceptance remain pending."
+      "notes": "Run, Turn, Attempt, Decision, Effect and recovery invariants have automated coverage. The real Electron smoke executes Agent Runs through the production public path, including cancel and five Runtime hard-kill recovery boundaries: committed inbox before response, user-question waiting, inference started, effect started and projection pending. Live external models and clean-machine acceptance remain pending."
     },
     {
       "module": "production-agent-execution-pipeline",
@@ -81,14 +83,39 @@
       "realModel": "not_accepted",
       "realWindow": "verified",
       "realMachine": "not_accepted",
-      "notes": "A process-external deterministic HTTPS OpenAI-compatible Provider fixture drives the production inference adapter in a real Electron window. Direct response, Tool continuation, cancel and restart recovery are accepted; a live external Provider is not."
+      "notes": "A process-external deterministic HTTPS OpenAI-compatible SSE Provider fixture drives the production inference adapter in a real Electron window. Attempt-scoped stream, direct response, Tool continuation, cancel and restart recovery are accepted; a live external Provider is not."
+    },
+    {
+      "module": "llm-content-blocks-and-attachments",
+      "source": [
+        "runtime/src/adapters/model/ExactAgentInferenceContentAssembler.ts",
+        "runtime/src/adapters/model/ExactAgentProviderStreamDecoder.ts",
+        "runtime/src/adapters/model/ProductionAgentEngineAdapter.ts",
+        "runtime/src/adapters/attachment/LocalConversationAttachmentStore.ts",
+        "runtime/src/control/conversation/ProductionConversationAttachmentReader.ts",
+        "packages/protocol/src/public/attachments-v3.ts"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_accepted",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
+      "notes": "Exact text/reasoning/tool_call response blocks, strict native Tool assembly/execution, normalized finish, sanitized replay evidence and disjoint cache usage are covered and committed with the exact Attempt. Image attachments use one Conversation-owned content-addressed store, safe Public Projection metadata, exact Message-owner reread and OpenAI/Anthropic native request blocks; the real Electron window covers selection, persistence, visual request and attachment rendering. Reusable adapter-private replay state, reference-aware attachment garbage collection and a live visual Provider remain pending."
     },
     {
       "module": "first-party-tools-permissions-and-sandbox",
       "source": [
         "runtime/src/composition/ProductionRuntimeCapabilityManifest.ts",
+        "runtime/src/composition/first-party-tools/FirstPartyToolArtifactAuthority.ts",
+        "runtime/src/composition/first-party-tools/WorkspaceFileAgentTools.ts",
+        "runtime/src/composition/first-party-tools/WorkspaceSearchAgentTools.ts",
+        "runtime/src/adapters/filesystem/LocalWorkspaceFileService.ts",
+        "runtime/src/adapters/filesystem/LocalWorkspaceSearchService.ts",
         "runtime/src/adapters/tool/ImmutableAgentToolCatalog.ts",
         "runtime/src/control/run/AgentDecisionAuthorityService.ts",
+        "runtime/src/control/execution/AgentRetiredToolCatalogTerminalizationCoordinator.ts",
+        "runtime/src/control/execution/AgentChildTerminalObservationCoordinator.ts",
+        "runtime/config/first-party-tool-artifacts.json",
         "runtime/src/sandbox"
       ],
       "unit": "verified",
@@ -96,7 +123,7 @@
       "realModel": "not_accepted",
       "realWindow": "verified",
       "realMachine": "not_accepted",
-      "notes": "The real window executes pinned workspace read/write tools and proves allow-before-effect, one allowed write and deny-without-effect. Signed-helper behavior and other Decision families remain pending."
+      "notes": "The real window executes pinned workspace read/write v2 tools and proves allow-before-effect, opaque read versions, one atomic create-if-absent and deny-without-effect. Runtime integration covers exact replace-if-version, external stale edits, deletion, concurrent same-version replacement, cancellation and cleanup. Catalog revision 17 pins build-generated exact JavaScript module-closure bytes for ten production Tool roots and 33 Tools. V2 Tool contracts additionally pin bounded model descriptions/guidance and public-static presentation kind/label; the exact inference request and Renderer activity consume the same pin while Public Projection excludes result visibility, inputs and results. Bounded literal search/glob plus Unicode-aware, non-overlapping apply_text_edits remain under the same opaque-version file authority; service and Tool integration tests cover containment, symlink exclusion, byte/file/result bounds, stable search versions, overlap rejection and stale external edits. Runtime and packaging reverify every file and tamper tests fail closed. Missing historical Catalog pins durably retire per Run before fresh I/O in Child-before-Parent order. Historical executable bundles remain intentionally absent, so an old Run is retired rather than resumed. Protected-result-driven read/search/diff/terminal detail intents, signed-helper behavior, move/delete and other Decision families remain pending."
     },
     {
       "module": "model-catalog-and-inference-gateway",
@@ -113,10 +140,31 @@
       "notes": "The real window configures the deterministic HTTPS Provider through Settings, executes inference and continuation, and proves request abort on cancel and Runtime death. Remote/live and local models remain unaccepted."
     },
     {
+      "module": "live-work-process-and-terminal",
+      "source": [
+        "packages/live-work",
+        "packages/agent-core/src/domain/inbox.ts",
+        "runtime/src/control/ports/AgentLiveWork.ts",
+        "runtime/src/control/resources/AgentLiveWorkService.ts",
+        "runtime/src/control/resources/AgentProcessLiveWorkProducer.ts",
+        "runtime/src/control/execution/AgentLiveWorkCompletionInboxBridge.ts",
+        "runtime/src/control/execution/AgentLiveWorkCompletionLifecycle.ts",
+        "runtime/src/composition/first-party-tools/LiveWorkAgentTools.ts",
+        "app/src/main/services/terminal-service.ts"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_applicable",
+      "realWindow": "partial",
+      "realMachine": "not_accepted",
+      "notes": "Runtime pipe process, sandbox-hosted Agent PTY and Electron Main PTY producers share exact-owner lifecycle, UTF-8 cursor, bounded output, exclusive input, resize/signal/wait, completion and shutdown semantics. Agent completion is durably committed as system-originated unified inbox input before scheduler/projection wake; successful delivery suppresses duplicate job_list notification, and shutdown closes live work then drains/unbinds the sink before Store freeze. SQLite reopen proves protected running process_start and terminal_start results converge idempotently to interrupted before schedulers start. Real Host pipe and node-pty integrations are accepted. Formal Windows Sandbox PTY/signal acceptance, Main PTY hard-restart recovery and a real-window Agent terminal scenario remain pending."
+    },
+    {
       "module": "public-projection-and-renderer-cache",
       "source": [
         "runtime/src/adapters/persistence/SqlitePublicProjectionStore.ts",
         "runtime/src/projection",
+        "runtime/src/projection/InferenceStreamPublicProjectionPublisher.ts",
         "app/src/renderer/src/core/runtime/projection"
       ],
       "unit": "verified",
@@ -124,7 +172,7 @@
       "realModel": "not_applicable",
       "realWindow": "verified",
       "realMachine": "not_accepted",
-      "notes": "Snapshot, commit replay, Conversation and Model projection are covered in the real Electron smoke. Diagnostics publishing is a separate unaccepted capability."
+      "notes": "Snapshot, commit replay, Conversation, Model and bounded inference-stream projection are covered in the real Electron smoke. Wake events are non-authoritative latency hints; while a Run is active, Renderer also tails the same durable commit stream and stops polling at terminal state, so a lost wake cannot strand Decision or Run UI. Durable redacted diagnostics are integrated; protected raw Directive tokens remain outside Public Projection."
     },
     {
       "module": "browser-and-mcp-tools",
@@ -145,8 +193,11 @@
       "source": [
         "runtime/src/adapters/instructions/ProductionInstructionRegistry.ts",
         "runtime/src/composition/ConfiguredAgentLifecycleHooks.ts",
+        "runtime/src/composition/ProductionAgentLifecycleHookService.ts",
         "runtime/src/composition/ProductionAgentLifecycleBridge.ts",
         "runtime/src/composition/runtime-capabilities/ProductionSkillCatalog.ts",
+        "runtime/src/composition/runtime-capabilities/ProductionLocalSkillPackage.ts",
+        "runtime/src/composition/runtime-capabilities/ProductionSkillLoadTool.ts",
         "runtime/src/adapters/observability/PublicAgentObservability.ts",
         "runtime/src/adapters/observability/ProductionTelemetryService.ts"
       ],
@@ -155,7 +206,7 @@
       "realModel": "not_accepted",
       "realWindow": "not_accepted",
       "realMachine": "not_accepted",
-      "notes": "Skill metadata/revision admission, exact skill.load, typed lifecycle Hooks, durable redacted diagnostics, and optional allowlisted OTLP are connected. Real-model Skill selection and a live OTLP collector remain acceptance work."
+      "notes": "Scoped Skill metadata/package-revision admission, independent model/user invocation policy, exact skill.load and bounded skill.resource.read, Manifest-owned static trusted Hook Provider binding/reverse-close, durable redacted diagnostics, and optional allowlisted OTLP are connected. Human-facing Skill command discovery, real-model Skill selection and a live OTLP collector remain acceptance work; external dynamic Hook package discovery is intentionally not exposed."
     },
     {
       "module": "runtime-capability-manifest",
@@ -164,6 +215,9 @@
         "runtime/src/composition/ProductionRuntimeCapabilityManifest.ts",
         "runtime/src/composition/runtime-capabilities/RuntimeCapabilityProvider.ts",
         "runtime/src/composition/runtime-capabilities/ProductionRuntimeCapabilityProviders.ts",
+        "runtime/src/composition/runtime-capabilities/RuntimeCapabilityDefinitionGraph.ts",
+        "runtime/src/composition/runtime-capabilities/RuntimeCapabilityServiceResolver.ts",
+        "runtime/src/composition/runtime-capabilities/AgentControlRuntimeServicesProvider.ts",
         "runtime/src/composition/runtime-capabilities/RuntimeCapabilityManifestCompiler.ts",
         "runtime/src/composition/ComposedRuntimeIngress.ts",
         "runtime/src/application/RuntimeKernelApplication.ts"
@@ -173,12 +227,15 @@
       "realModel": "not_applicable",
       "realWindow": "verified",
       "realMachine": "not_accepted",
-      "notes": "One bootstrap-frozen Provider graph now drives Runtime status and the trusted first-party Tool Catalog. Automated tests cover ownership, dependency validation, missing-provider non-advertisement, diagnostics and rollback; Electron smoke verifies the shared production bootstrap path. Dynamic loading and hot reload are intentionally unsupported."
+      "notes": "One bootstrap-frozen Provider graph drives Runtime status, the trusted first-party Tool Catalog, declared-only service injection and reverse shutdown. Automated tests cover ownership, combined Provider/service ordering, required and optional dependencies, undeclared access, missing required output, typed Agent Control service-bundle composition, missing-provider non-advertisement, diagnostics and rollback; Electron smoke verifies the shared bootstrap path. Dynamic loading and hot reload are intentionally unsupported."
     },
     {
       "module": "context-lifecycle-memory-and-embedding",
       "source": [
         "runtime/src/adapters/model/V3LongContextLifecycle.ts",
+        "runtime/src/adapters/model/DeterministicSemanticContextCompactor.ts",
+        "runtime/src/control/resources/ProtectedAgentEffectResultReader.ts",
+        "runtime/src/composition/first-party-tools/ProtectedResultAgentTools.ts",
         "runtime/src/composition/ProductionAgentRunAdmissionSnapshotReader.ts",
         "runtime/src/context",
         "runtime/config/embedding-models.json"
@@ -188,28 +245,50 @@
       "realModel": "not_accepted",
       "realWindow": "not_accepted",
       "realMachine": "not_accepted",
-      "notes": "Conversation history, deterministic pressure compaction, Tool-result pruning, exact configured capacity and bounded overflow recovery are connected to v3 admission/inference with unit and production-pipeline integration evidence. Spill, exact Provider tokenizers, Memory/Embedding consumers, live models and real-window long-context scenarios remain unaccepted."
+      "notes": "Conversation history, deterministic causal semantic compaction, owner-scoped recoverable Tool-result spill over the existing protected Effect payload authority, request-envelope-bound Provider usage anchors, exact configured capacity and bounded overflow recovery are connected to v3 admission/inference with unit and production-pipeline integration evidence. The compacted prefix becomes a normal user-role checkpoint containing bounded prior user intents, assistant outcomes, image references and Tool input/result evidence; exact source/summary digests and counts survive SQLite reopen, full Tool payloads are not copied, and recovery is dispatched only when its request is actually smaller. Providers without complete usage still use the conservative estimator; per-model local tokenizers, Memory/Embedding consumers, live models and real-window long-context scenarios remain unaccepted."
     },
     {
-      "module": "subagent-one-shot-child-run",
+      "module": "subagent-child-run-and-acp-provider",
       "source": [
         "packages/agent-core/src/application/agent-subagent-delegation-service.ts",
         "packages/agent-core/src/application/agent-child-results-continuation-planner.ts",
         "runtime/src/control/execution/AgentDelegatedInferenceDispatchController.ts",
         "runtime/src/control/execution/AgentChildResultsContinuationController.ts",
-        "runtime/src/composition/AgentTerminalResultCoordinator.ts"
+        "runtime/src/composition/AgentTerminalResultCoordinator.ts",
+        "runtime/src/composition/AgentSubagentInterruptPublicCommandHandler.ts",
+        "runtime/src/adapters/subagent/AcpSubagentAgentEngine.ts"
       ],
       "unit": "verified",
       "integration": "verified",
       "realModel": "not_accepted",
       "realWindow": "not_accepted",
       "realMachine": "not_accepted",
-      "notes": "The strict model Directive, atomic Parent/Delegation/Budget/Child commit, ordinary child scheduling, durable terminal observation, protected child-results continuation and Parent/Child public projection are connected and covered by the production-pipeline integration test. External or continuable providers, child-specific public control, live models and a real Electron SubAgent scenario remain unaccepted."
+      "notes": "Strict delegation, atomic Parent/Delegation/Budget/Child commit, one-shot and continuable ordinary scheduling, direct-parent send/interrupt, durable terminal observation, protected child-results continuation and Parent/Child public projection are connected. A real fresh-process ACP one-shot fixture covers initialize/session/prompt, parent-context/tool isolation, default permission rejection, frozen-authority-gated allow and bounded process-tree disposal. Batch children, external continuable/reconnect, Codex/Claude, structured reports, live commercial agents and a real Electron SubAgent scenario remain unaccepted."
     },
     {
-      "module": "background-and-scheduler",
+      "module": "agent-initiated-user-question",
       "source": [
-        "runtime/src/background",
+        "packages/agent-core/src/domain/directive.ts",
+        "packages/agent-core/src/domain/decision.ts",
+        "packages/agent-core/src/domain/inbox.ts",
+        "packages/agent-core/src/application/transition-agent-run.ts",
+        "runtime/src/control/run/AgentDecisionAuthorityService.ts",
+        "runtime/src/control/execution/AgentInboxContinuationController.ts",
+        "runtime/src/projection/AgentRunPublicProjectionPublisher.ts",
+        "runtime/src/composition/DefaultAgentControlRuntimeFactory.ts",
+        "app/src/main/smoke/electron-smoke.ts",
+        "app/src/renderer/src/app/ApprovalCenter.tsx"
+      ],
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_accepted",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
+      "notes": "Agent ask_user is a first-class Directive and durable Decision, not a Renderer callback or legacy Tool route. Protected question/options, exact ref/digest, waiting state, opaque public answer action, atomic answer receipt plus next_step inbox enqueue, scheduler continuation, protected transcript reconstruction and SQLite v6-to-v7 migration have direct tests. A process-external deterministic HTTPS Provider drives a real Electron card selection through Public Projection, exact Decision resolution, claimed answer inbox input and same-Run terminal continuation. The same real-window gate now kills Runtime while the Run is waiting for the user, restarts it, recovers the exact Decision, claims the answer and completes the same Run. A live commercial Provider, a real-window free-text answer scenario and cancellation semantics for a waiting question remain unaccepted."
+    },
+    {
+      "module": "legacy-scheduler",
+      "source": [
         "runtime/src/scheduler"
       ],
       "unit": "verified",
@@ -217,26 +296,31 @@
       "realModel": "not_accepted",
       "realWindow": "not_accepted",
       "realMachine": "not_accepted",
-      "notes": "Source and isolated tests exist. v3 public commands, projection, Renderer consumers and restart semantics are not a product capability."
+      "notes": "The former BackgroundTaskManager, background_shell_start Tool, output matcher, background_completed trigger and second process registry were deleted. The remaining legacy Scheduler supports cron/interval/file/git triggers in isolation, but has no v3 public commands, projection, Renderer consumer or restart acceptance."
     },
     {
       "module": "diagnostics-telemetry-and-provider-resilience",
       "source": [
-        "runtime/src/telemetry",
+        "runtime/src/adapters/model/ProductionExactAgentModelInferenceGateway.ts",
+        "runtime/src/adapters/model/ProviderResilienceCoordinator.ts",
         "runtime/src/model/ProviderResilience.ts",
+        "runtime/src/adapters/observability/ProductionTelemetryService.ts",
         "runtime/src/adapters/persistence/SqlitePublicProjectionStore.ts"
       ],
       "unit": "verified",
-      "integration": "partial",
+      "integration": "verified",
       "realModel": "not_accepted",
       "realWindow": "not_accepted",
       "realMachine": "not_accepted",
-      "notes": "Schemas and isolated components exist. The v3 inference gateway does not consume the full resilience policy and there is no production Diagnostics publisher or complete telemetry lifecycle."
+      "notes": "Durable redacted lifecycle diagnostics and optional allowlisted telemetry are connected. The frozen Provider resilience policy is consumed by the exact v3 transport through one shared coordinator: deterministic tests cover bounded Retry-After, 429/5xx/timeout classification, request/token rate limits, concurrency, per exact route circuit state, sanitized telemetry and the no-retry boundary after text, reasoning or native Tool-call output. Live Provider acceptance remains pending."
     },
     {
       "module": "electron-agent-recovery-smoke",
       "source": [
         "app/src/main/smoke/electron-smoke.ts",
+        "app/src/main/persistence/agent-input-delivery-outbox.ts",
+        "app/src/renderer/src/core/runtime/agent-input-delivery.ts",
+        "app/src/renderer/src/core/runtime/runtime-store.ts",
         "scripts/electron-smoke.ps1",
         "scripts/electron-smoke-provider.mjs",
         "scripts/electron-smoke-boundary-watcher.mjs"
@@ -246,7 +330,7 @@
       "realModel": "not_accepted",
       "realWindow": "verified",
       "realMachine": "not_accepted",
-      "notes": "Real Electron Agent gate covers direct terminal output, read continuation, write allow/deny, in-flight cancel, and hard kills at inference-started, effect-started and projection-pending. Exact trace is 11 Provider requests, 9 responses and 2 aborts, with no duplicate file effect."
+      "notes": "Real Electron Agent gate observes one live reasoning chunk and two retained chunks before a single authoritative terminal message, then covers image attachment selection/persistence/visual request/rendering, inbox continuation, stable command receipt and same-ID reconciliation, versioned read and atomic create-if-absent, write allow/deny, in-flight cancel, and five hard kills at committed-inbox-before-response, user-question waiting, inference-started, effect-started and projection-pending. Exact trace is 18 Provider requests, 16 responses and 2 aborts, with one projected inbox input and no duplicate file effect. A Main-only safeStorage-encrypted sender outbox is then recovered across Renderer reload and a second complete desktop-process launch with the same isolated userData; the receipt keeps the same commandId/inputId in reconcile, remains absent from Public Projection without automatic replay, and is removed only by explicit settlement."
     },
     {
       "module": "architecture-and-runtime-independence",

@@ -2,11 +2,13 @@ import {
   assertValidAgentRunBinding,
   cloneAgentAvailableTool,
   cloneAgentRunBinding,
-  type AgentRunBinding
+  type AgentCapabilityGrant,
+  type AgentRunBinding,
+  type AgentSubagentProviderBinding
 } from '@ariadne/agent-core';
 
 import {
-  digestConversationMessageContent,
+  digestConversationMessagePayload,
   assertValidConversationMessageHead,
   assertValidConversationMessageVersion,
   assertValidConversationSession,
@@ -25,6 +27,10 @@ import {
 import type {
   ConversationAuthorityUnitOfWork
 } from '../control/ports/ConversationAuthorityPersistence.js';
+import type {
+  AgentInstructionAssemblyRequest,
+  AgentInstructionAssemblyService
+} from '../control/ports/AgentInstructionAssembly.js';
 import {
   deriveAgentAdmissionRunId,
   type AgentRunAdmissionSnapshot,
@@ -32,6 +38,7 @@ import {
   type AgentRunRequestedHandoffMessage
 } from '../control/run/AgentRunAdmissionController.js';
 import type { ConversationMessageExecutionV3 } from '@ariadne/protocol/public';
+import { renderAgentInstructionSnapshot } from './instructions/ProductionAgentInstructionAssembly.js';
 
 interface ExactConversationObjective {
   readonly sessionId: string;
@@ -42,10 +49,6 @@ interface ExactConversationObjective {
   readonly content: string;
   readonly execution: ConversationMessageExecutionV3;
   readonly history: readonly ConversationMessageVersion[];
-}
-
-export interface AgentAdmissionInstructionSource {
-  resolve(workspaceId: string): string;
 }
 
 export interface AgentAdmissionHookPolicy {
@@ -83,8 +86,9 @@ implements AgentRunAdmissionSnapshotReader {
     private readonly conversation: ConversationAuthorityUnitOfWork,
     private readonly authorities: AgentAdmissionAuthorityBundleProvider,
     private readonly catalogs: AgentAdmissionToolCatalogProvider,
-    private readonly instructions?: AgentAdmissionInstructionSource,
-    private readonly hooks?: AgentAdmissionHookPolicy
+    private readonly instructions: AgentInstructionAssemblyService,
+    private readonly hooks?: AgentAdmissionHookPolicy,
+    private readonly subagentProviders?: readonly AgentSubagentProviderBinding[]
   ) {}
 
   public async readAdmissionSnapshot(
@@ -104,6 +108,9 @@ implements AgentRunAdmissionSnapshotReader {
       objectiveMessageVersion: objective.messageVersion,
       objectiveDigest: objective.objectiveDigest,
       runId,
+      ...(objective.history.some((message) => (message.payload.attachments?.length ?? 0) > 0)
+        ? { requiresVision: true as const }
+        : {}),
       execution: structuredClone(objective.execution)
     });
 
@@ -127,9 +134,11 @@ implements AgentRunAdmissionSnapshotReader {
       );
     }
 
-    let binding = bindingFromAuthority(bundle);
+    const admittedBinding = bindingFromAuthority(bundle, this.subagentProviders);
+    let binding = admittedBinding;
     try {
       binding = await this.hooks?.applyAdmission(binding, request.occurredAt) ?? binding;
+      assertAdmissionBindingAttenuation(admittedBinding, binding);
     } catch (cause) {
       throw error(
         'AGENT_ADMISSION_HOOK_REJECTED',
@@ -175,33 +184,53 @@ implements AgentRunAdmissionSnapshotReader {
       );
     }
 
-    let instructionText = '';
+    let instructionMessages: readonly string[];
     try {
-      instructionText = this.instructions?.resolve(objective.workspaceId) ?? '';
+      const instructionRequest = Object.freeze<AgentInstructionAssemblyRequest>({
+        runId,
+        sessionId: objective.sessionId,
+        workspaceId: objective.workspaceId,
+        executionMode: objective.execution.mode
+      });
+      const instructionSnapshot = await this.instructions.assemble(instructionRequest, signal);
+      signal.throwIfAborted();
+      instructionMessages = renderAgentInstructionSnapshot(
+        instructionSnapshot,
+        instructionRequest
+      );
     } catch (cause) {
+      if (signal.aborted) signal.throwIfAborted();
       throw error(
         'AGENT_ADMISSION_INSTRUCTIONS_INVALID',
         'Configured Workspace or Skill instructions could not be resolved safely.',
         cause
       );
     }
-    const contextMessages = objective.history.map((message) => ({
-      kind: 'text' as const,
-      role: message.role,
-      content: message.payload.content
-    }));
-    const systemMessages = [
-      ...(instructionText.length === 0 ? [] : [{
+    const contextMessages = objective.history.flatMap((message) => [
+      ...(message.payload.content.length === 0
+        ? []
+        : [{
+            kind: 'text' as const,
+            role: message.role,
+            content: message.payload.content
+          }]),
+      ...(message.payload.attachments ?? []).map((attachment) => ({
+        kind: 'image' as const,
+        role: 'user' as const,
+        owner: {
+          sessionId: message.sessionId,
+          workspaceId: message.workspaceId,
+          messageId: message.messageId,
+          messageVersion: message.version
+        },
+        attachment: { ...attachment }
+      }))
+    ]);
+    const systemMessages = instructionMessages.map((content) => ({
         kind: 'text' as const,
         role: 'system' as const,
-        content: instructionText
-      }]),
-      ...(objective.execution.mode === 'plan' ? [{
-        kind: 'text' as const,
-        role: 'system' as const,
-        content: 'Plan mode is read-only. Inspect with read-only tools when needed, then respond with a concrete implementation plan. Do not request or invoke write or shell tools.'
-      }] : [])
-    ];
+        content
+      }));
     if (systemMessages.length + contextMessages.length > 2_047) {
       throw error(
         'AGENT_ADMISSION_CONTEXT_INVALID',
@@ -262,7 +291,7 @@ implements AgentRunAdmissionSnapshotReader {
           cause
         );
       }
-      const actualDigest = await digestConversationMessageContent(message.payload.content);
+      const actualDigest = await digestConversationMessagePayload(message.payload);
       signal.throwIfAborted();
       if (
         session.sessionId !== request.sessionId
@@ -351,12 +380,121 @@ function assertExactBundleSubject(
   }
 }
 
+/**
+ * Hooks may reject an admission or reduce authority, but cannot replace any
+ * identity/version snapshot or add grants. This protects the boundary even
+ * when AgentAdmissionHookPolicy has a non-built-in implementation.
+ */
+function assertAdmissionBindingAttenuation(
+  admitted: AgentRunBinding,
+  candidate: AgentRunBinding
+): void {
+  assertValidAgentRunBinding(admitted);
+  assertValidAgentRunBinding(candidate);
+  const unchanged = (left: unknown, right: unknown, label: string): void => {
+    if (JSON.stringify(left) !== JSON.stringify(right)) {
+      throw new Error(`agent_admission_hook_replaced_${label}`);
+    }
+  };
+  const subset = (
+    child: readonly string[],
+    parent: readonly string[],
+    label: string
+  ): void => {
+    const allowed = new Set(parent);
+    if (child.some((value) => !allowed.has(value))) {
+      throw new Error(`agent_admission_hook_expanded_${label}`);
+    }
+  };
+
+  if (candidate.bindingVersion !== admitted.bindingVersion) {
+    throw new Error('agent_admission_hook_replaced_binding_version');
+  }
+  if (admitted.bindingVersion === 4 && candidate.bindingVersion === 4) {
+    unchanged(candidate.executionProfile, admitted.executionProfile, 'execution_profile');
+  }
+  unchanged(candidate.sessionId, admitted.sessionId, 'session');
+  unchanged(candidate.objectiveRef, admitted.objectiveRef, 'objective');
+  unchanged(candidate.model, admitted.model, 'model');
+
+  unchanged(candidate.workspace.workspaceId, admitted.workspace.workspaceId, 'workspace');
+  unchanged(candidate.workspace.revision, admitted.workspace.revision, 'workspace_revision');
+  unchanged(candidate.workspace.grantDigest, admitted.workspace.grantDigest, 'workspace_grant');
+  if (admitted.workspace.access === 'read' && candidate.workspace.access !== 'read') {
+    throw new Error('agent_admission_hook_expanded_workspace_access');
+  }
+  subset(candidate.workspace.scopeIds, admitted.workspace.scopeIds, 'workspace_scopes');
+
+  unchanged(candidate.policy.policyId, admitted.policy.policyId, 'policy');
+  unchanged(candidate.policy.revision, admitted.policy.revision, 'policy_revision');
+  if (
+    admitted.policy.permissionMode === 'ask'
+    && candidate.policy.permissionMode !== 'ask'
+  ) {
+    throw new Error('agent_admission_hook_expanded_permission_mode');
+  }
+  assertCapabilityAttenuation(admitted.capabilities, candidate.capabilities, subset);
+
+  unchanged(candidate.toolCatalog.catalogId, admitted.toolCatalog.catalogId, 'tool_catalog');
+  unchanged(candidate.toolCatalog.revision, admitted.toolCatalog.revision, 'tool_catalog_revision');
+  unchanged(candidate.toolCatalog.digest, admitted.toolCatalog.digest, 'tool_catalog_digest');
+  subset(
+    candidate.toolCatalog.allowedToolNames,
+    admitted.toolCatalog.allowedToolNames,
+    'tool_catalog'
+  );
+
+  unchanged(candidate.budget.grantId, admitted.budget.grantId, 'budget_grant');
+  unchanged(candidate.budget.runId, admitted.budget.runId, 'budget_run');
+  unchanged(candidate.budget.source, admitted.budget.source, 'budget_source');
+  if (Date.parse(candidate.budget.deadlineAt) > Date.parse(admitted.budget.deadlineAt)) {
+    throw new Error('agent_admission_hook_expanded_budget_deadline');
+  }
+  for (const key of Object.keys(admitted.budget.vector) as Array<
+    keyof typeof admitted.budget.vector
+  >) {
+    if (candidate.budget.vector[key] > admitted.budget.vector[key]) {
+      throw new Error(`agent_admission_hook_expanded_budget_${key}`);
+    }
+  }
+}
+
+function assertCapabilityAttenuation(
+  admitted: readonly AgentCapabilityGrant[],
+  candidate: readonly AgentCapabilityGrant[],
+  assertSubset: (
+    child: readonly string[],
+    parent: readonly string[],
+    label: string
+  ) => void
+): void {
+  const byId = new Map(admitted.map((grant) => [grant.capabilityId, grant]));
+  for (const grant of candidate) {
+    const parent = byId.get(grant.capabilityId);
+    if (parent === undefined) {
+      throw new Error('agent_admission_hook_expanded_capabilities');
+    }
+    assertSubset(grant.scopeIds, parent.scopeIds, `capability_${grant.capabilityId}`);
+  }
+}
+
 function bindingFromAuthority(
-  bundle: AgentAdmissionAuthorityBundle
+  bundle: AgentAdmissionAuthorityBundle,
+  subagentProviders: readonly AgentSubagentProviderBinding[] | undefined
 ): AgentRunBinding {
   return {
     bindingVersion: 4,
-    executionProfile: { ...bundle.subject.executionProfile },
+    executionProfile: {
+      ...bundle.subject.executionProfile,
+      ...(subagentProviders === undefined
+        ? {}
+        : {
+            subagentProviders: subagentProviders.map((provider) => ({
+              ...provider,
+              supportedModes: [...provider.supportedModes]
+            }))
+          })
+    },
     sessionId: bundle.subject.sessionId,
     objectiveRef: {
       kind: 'conversation_message',

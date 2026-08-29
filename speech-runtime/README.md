@@ -95,6 +95,15 @@ Speech Sidecar 只允许持有可丢弃的运行时状态：音频缓冲、设�
 
 ## 当前状态
 
-目前仅建立目录与架构契约，尚未加入 npm workspace、生产构建或安装包，也未选择最终引擎。
-实现顺序应当是：先定义版本化协议与 `UnavailableSpeechAdapter`，再做独立 Sidecar 原型，
-最后通过“安装模块”和“完全删除模块”两条端到端路径验收。
+已实现版本 1 的长度前缀标准输入输出协议、Electron Main `SpeechGateway`、缺失模块降级、
+sherpa-onnx Node Sidecar、Streaming Zipformer/VAD/KWS 适配器、分句 TTS、语音包事务和 E 盘安装脚本。
+本目录仍不属于根 npm workspace。模型权重必须在许可证审计后独立安装；仓库与核心构建不下载模型。
+
+本地安装：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\speech-runtime\scripts\install-runtime.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\speech-runtime\scripts\install-model-assets.ps1 -AcceptModelLicenses
+```
+
+安装完成但未放置模型时，Sidecar 能完成握手并报告 `unavailable/degraded`，Ariadne 其他能力保持正常。

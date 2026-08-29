@@ -1,5 +1,6 @@
 param(
-  [string]$OutputRoot = ""
+  [string]$OutputRoot = "",
+  [switch]$KeepData
 )
 
 $ErrorActionPreference = "Stop"
@@ -106,8 +107,11 @@ $appRoot = Join-Path $projectRoot "app"
 $electronPath = Join-Path $projectRoot "node_modules\electron\dist\electron.exe"
 $artifactRoot = if ($OutputRoot) { $OutputRoot } else { Join-Path $projectRoot "artifacts\electron-runtime-smoke" }
 $resultPath = Join-Path $artifactRoot "electron-runtime-smoke.json"
+$desktopRecoveryResultPath = Join-Path $artifactRoot "desktop-restart-delivery.json"
 $stdoutPath = Join-Path $artifactRoot "electron-runtime-smoke.stdout.log"
 $stderrPath = Join-Path $artifactRoot "electron-runtime-smoke.stderr.log"
+$desktopRecoveryStdoutPath = Join-Path $artifactRoot "electron-desktop-recovery.stdout.log"
+$desktopRecoveryStderrPath = Join-Path $artifactRoot "electron-desktop-recovery.stderr.log"
 $smokeDataRoot = Join-Path ([IO.Path]::GetTempPath()) ("AriadneSmoke-" + [guid]::NewGuid().ToString("N"))
 $workspaceRoot = Join-Path $smokeDataRoot "workspace"
 $workspaceIdentity = [IO.Path]::GetFullPath($workspaceRoot).ToLowerInvariant()
@@ -132,22 +136,35 @@ $boundaryScript = Join-Path $PSScriptRoot "electron-smoke-boundary-watcher.mjs"
 $runtimeEntryPath = Join-Path $projectRoot "runtime\dist\entry\runtime-process.js"
 $agentDatabasePath = Join-Path $smokeDataRoot "runtime\data\agent-control\agent-control.db"
 $projectionDatabasePath = Join-Path $smokeDataRoot "runtime\data\public-projection\projection.db"
+$inboxBoundaryPath = Join-Path $smokeDataRoot "inbox-delivery-boundary.marker"
+$questionBoundaryPath = Join-Path $smokeDataRoot "question-waiting-boundary.marker"
 $effectBoundaryPath = Join-Path $smokeDataRoot "effect-started-boundary.marker"
 $projectionBoundaryPath = Join-Path $smokeDataRoot "projection-pending-boundary.marker"
 $runtimeKillAckRoot = Join-Path $workspaceRoot "runtime-kills"
 $runtimeKillAckNames = @(
+  "inbox-killed.json",
+  "question-killed.json",
   "inference-killed.json",
   "effect-killed.json",
   "projection-killed.json"
 )
-$runtimeKillScenarios = @("crash_inference", "crash_effect", "crash_projection")
+$runtimeKillScenarios = @(
+  "inbox_delivery",
+  "crash_question",
+  "crash_inference",
+  "crash_effect",
+  "crash_projection"
+)
 $providerPassphrase = "ariadne-electron-smoke"
 $providerModel = "ariadne-smoke-model"
 $nodePath = (Get-Command node -ErrorAction Stop).Source
 $providerProcess = $null
 $boundaryProcess = $null
+$process = $null
+$desktopRecoveryProcess = $null
 $environmentNames = @(
   "ARIADNE_SMOKE_TEST",
+  "ARIADNE_SMOKE_DESKTOP_DELIVERY_VERIFY",
   "ARIADNE_SMOKE_TEST_OUTPUT",
   "ARIADNE_SMOKE_USER_DATA",
   "ARIADNE_SMOKE_PROVIDER_BASE_URL",
@@ -176,6 +193,13 @@ if (-not (Test-Path -LiteralPath $electronPath -PathType Leaf)) {
 
 New-Item -ItemType Directory -Path $smokeDataRoot | Out-Null
 New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
+if ($KeepData) {
+  [IO.File]::WriteAllText(
+    (Join-Path $artifactRoot "smoke-data-root.txt"),
+    $smokeDataRoot,
+    [Text.UTF8Encoding]::new($false)
+  )
+}
 New-Item -ItemType Directory -Path (Join-Path $workspaceRoot "fixtures") -Force | Out-Null
 New-Item -ItemType Directory -Path $runtimeKillAckRoot -Force | Out-Null
 [IO.File]::WriteAllText(
@@ -184,9 +208,10 @@ New-Item -ItemType Directory -Path $runtimeKillAckRoot -Force | Out-Null
   [Text.UTF8Encoding]::new($false)
 )
 try {
-  Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $resultPath, $desktopRecoveryResultPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $stdoutPath, $stderrPath, $providerStdoutPath, $providerStderrPath, `
-    $boundaryStdoutPath, $boundaryStderrPath -Force -ErrorAction SilentlyContinue
+    $boundaryStdoutPath, $boundaryStderrPath, $desktopRecoveryStdoutPath, `
+    $desktopRecoveryStderrPath -Force -ErrorAction SilentlyContinue
   New-SmokeProviderCertificate -PfxPath $providerPfxPath `
     -CertificatePath $providerCertificatePath -Passphrase $providerPassphrase
   $providerProcess = Start-Process -FilePath $nodePath -PassThru -WindowStyle Hidden `
@@ -197,7 +222,8 @@ try {
       "--ready", $providerReadyPath,
       "--pfx", $providerPfxPath,
       "--passphrase", $providerPassphrase,
-      "--workspace-id", $workspaceId
+      "--workspace-id", $workspaceId,
+      "--agent-db", $agentDatabasePath
     ) -RedirectStandardOutput $providerStdoutPath -RedirectStandardError $providerStderrPath
   $providerDeadline = [DateTime]::UtcNow.AddSeconds(15)
   while (-not (Test-Path -LiteralPath $providerReadyPath -PathType Leaf)) {
@@ -224,7 +250,19 @@ try {
   $env:ARIADNE_RUNTIME_NODE_EXECUTABLE = $nodePath
   $env:NODE_EXTRA_CA_CERTS = $providerCertificatePath
   $env:OPENAI_API_KEY = "ariadne-electron-smoke-key"
+  Remove-Item Env:ARIADNE_SMOKE_DESKTOP_DELIVERY_VERIFY -ErrorAction SilentlyContinue
   Remove-Item Env:DEEPSEEK_API_KEY, Env:MOONSHOT_API_KEY, Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
+  $boundaryProcess = Start-Process -FilePath $nodePath -PassThru -WindowStyle Hidden `
+    -ArgumentList @(
+      $boundaryScript,
+      "--agent-db", $agentDatabasePath,
+      "--projection-db", $projectionDatabasePath,
+      "--provider-state", $providerStatePath,
+      "--inbox-marker", $inboxBoundaryPath,
+      "--question-marker", $questionBoundaryPath,
+      "--effect-marker", $effectBoundaryPath,
+      "--projection-marker", $projectionBoundaryPath
+    ) -RedirectStandardOutput $boundaryStdoutPath -RedirectStandardError $boundaryStderrPath
   $process = Start-Process -FilePath $electronPath -ArgumentList $appRoot -PassThru -WindowStyle Hidden `
     -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
   # Keep the native process handle alive so Windows PowerShell can read the
@@ -232,7 +270,7 @@ try {
   [void]$process.Handle
   $runtimeKillPhase = 0
   while (-not $process.HasExited) {
-    if ($runtimeKillPhase -lt 3 -and (Test-Path -LiteralPath $providerStatePath -PathType Leaf)) {
+    if ($runtimeKillPhase -lt 5 -and (Test-Path -LiteralPath $providerStatePath -PathType Leaf)) {
       $providerSnapshot = $null
       try {
         $providerSnapshot = Get-Content -Raw -Encoding UTF8 -LiteralPath $providerStatePath | ConvertFrom-Json
@@ -243,21 +281,13 @@ try {
       }
       if ($null -ne $providerSnapshot) {
         $shouldKill = switch ($runtimeKillPhase) {
-          0 { $providerSnapshot.scenarios.crash_inference.requests -ge 1 }
-          1 { Test-Path -LiteralPath $effectBoundaryPath -PathType Leaf }
-          2 { Test-Path -LiteralPath $projectionBoundaryPath -PathType Leaf }
+          0 { Test-Path -LiteralPath $inboxBoundaryPath -PathType Leaf }
+          1 { Test-Path -LiteralPath $questionBoundaryPath -PathType Leaf }
+          2 { $providerSnapshot.scenarios.crash_inference.requests -ge 1 }
+          3 { Test-Path -LiteralPath $effectBoundaryPath -PathType Leaf }
+          4 { Test-Path -LiteralPath $projectionBoundaryPath -PathType Leaf }
         }
         if ($shouldKill) {
-          if ($runtimeKillPhase -eq 0 -and $null -eq $boundaryProcess) {
-            $boundaryProcess = Start-Process -FilePath $nodePath -PassThru -WindowStyle Hidden `
-              -ArgumentList @(
-                $boundaryScript,
-                "--agent-db", $agentDatabasePath,
-                "--projection-db", $projectionDatabasePath,
-                "--effect-marker", $effectBoundaryPath,
-                "--projection-marker", $projectionBoundaryPath
-              ) -RedirectStandardOutput $boundaryStdoutPath -RedirectStandardError $boundaryStderrPath
-          }
           $runtime = Find-SmokeRuntimeProcess -ElectronProcessId $process.Id `
             -RuntimeEntryPath $runtimeEntryPath
           if ($null -ne $runtime) {
@@ -288,8 +318,8 @@ try {
   }
   [void]$process.WaitForExit()
   $process.Refresh()
-  if ($runtimeKillPhase -ne 3) {
-    throw "Electron smoke completed only $runtimeKillPhase of 3 Runtime boundary kills."
+  if ($runtimeKillPhase -ne 5) {
+    throw "Electron smoke completed only $runtimeKillPhase of 5 Runtime boundary kills."
   }
   if ($process.ExitCode -ne 0) {
     throw "Electron smoke test failed with exit code $($process.ExitCode)."
@@ -301,9 +331,44 @@ try {
   if ($result.passed -ne $true) {
     throw "Electron smoke result did not pass."
   }
+  $env:ARIADNE_SMOKE_DESKTOP_DELIVERY_VERIFY = "1"
+  $desktopRecoveryProcess = Start-Process -FilePath $electronPath -ArgumentList $appRoot `
+    -PassThru -WindowStyle Hidden -RedirectStandardOutput $desktopRecoveryStdoutPath `
+    -RedirectStandardError $desktopRecoveryStderrPath
+  [void]$desktopRecoveryProcess.Handle
+  $desktopRecoveryDeadline = [DateTime]::UtcNow.AddSeconds(60)
+  while (-not $desktopRecoveryProcess.HasExited) {
+    if ([DateTime]::UtcNow -ge $desktopRecoveryDeadline) {
+      Stop-Process -Id $desktopRecoveryProcess.Id -Force -ErrorAction SilentlyContinue
+      throw "Electron desktop-restart delivery verification timed out."
+    }
+    Start-Sleep -Milliseconds 50
+    $desktopRecoveryProcess.Refresh()
+  }
+  [void]$desktopRecoveryProcess.WaitForExit()
+  $desktopRecoveryProcess.Refresh()
+  if ($desktopRecoveryProcess.ExitCode -ne 0) {
+    throw "Electron desktop-restart delivery verification failed with exit code $($desktopRecoveryProcess.ExitCode)."
+  }
+  if (-not (Test-Path -LiteralPath $desktopRecoveryResultPath -PathType Leaf)) {
+    throw "Electron desktop-restart delivery verification did not create a result file."
+  }
+  $desktopRecoveryResult = Get-Content -Raw -Encoding UTF8 `
+    -LiteralPath $desktopRecoveryResultPath | ConvertFrom-Json
+  if ($desktopRecoveryResult.passed -ne $true) {
+    throw "Electron desktop-restart delivery result did not pass."
+  }
   Write-Output "Electron smoke test passed: $artifactRoot"
 }
 finally {
+  if ($null -ne $desktopRecoveryProcess -and -not $desktopRecoveryProcess.HasExited) {
+    Stop-Process -Id $desktopRecoveryProcess.Id -Force -ErrorAction SilentlyContinue
+    [void]$desktopRecoveryProcess.WaitForExit(5000)
+  }
+  if ($null -ne $process -and -not $process.HasExited) {
+    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    [void]$process.WaitForExit(5000)
+  }
   if ($null -ne $boundaryProcess -and -not $boundaryProcess.HasExited) {
     Stop-Process -Id $boundaryProcess.Id -Force -ErrorAction SilentlyContinue
     [void]$boundaryProcess.WaitForExit(5000)
@@ -315,7 +380,7 @@ finally {
   foreach ($name in $environmentNames) {
     [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], "Process")
   }
-  if (Test-Path -LiteralPath $smokeDataRoot) {
+  if (-not $KeepData -and (Test-Path -LiteralPath $smokeDataRoot)) {
     $resolvedSmokeData = (Resolve-Path -LiteralPath $smokeDataRoot).Path
     $resolvedTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
     if (-not $resolvedSmokeData.StartsWith($resolvedTemp, [StringComparison]::OrdinalIgnoreCase)) {

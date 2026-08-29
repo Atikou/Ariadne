@@ -5,7 +5,9 @@ import {
   AgentRunCommandService,
   AgentRunVersionConflictError,
   assertValidAgentRun,
+  deriveStableAgentId,
   getActiveDecision,
+  sha256AgentControlData,
   type AgentJsonValue,
   type AgentDecision,
   type AgentDecisionResolution,
@@ -141,10 +143,16 @@ export class AgentDecisionAuthorityService {
     assertValidAgentRun(run);
     const decision = await requireAuthorizedActiveDecision(run, request.command);
     const occurredAt = authoritativeCommandTime(this.now, run.updatedAt);
+    const answerInput = await answerInputForAction(
+      decision,
+      request.command,
+      request.commandId
+    );
     const resolution = resolutionForChoice(
       decision,
       request.command.action.choice,
-      occurredAt
+      occurredAt,
+      answerInput
     );
     const artifacts = await decisionResolutionArtifacts(
       this.store,
@@ -161,7 +169,8 @@ export class AgentDecisionAuthorityService {
       runId: run.runId,
       expectedVersion: run.version,
       occurredAt,
-      resolution
+      resolution,
+      ...(answerInput === undefined ? {} : { answerInput })
     }, artifacts);
     request.signal.throwIfAborted();
     assertExactResolutionResult(
@@ -206,10 +215,12 @@ export class AgentDecisionAuthorityService {
       commandId,
       mutation.run
     );
+    const answerInput = await answerInputForAction(decision, command, commandId);
     const expectedResolution = resolutionForChoice(
       decision,
       command.action.choice,
-      resolutionEvent.occurredAt
+      resolutionEvent.occurredAt,
+      answerInput
     );
     if (
       resolutionEvent.payload.decisionId !== decision.decisionId
@@ -290,7 +301,7 @@ async function loadExactActiveCheckpoint(
         !item.ready
         || item.phase !== 'resumable'
         || item.checkpoint.runId !== snapshot.runId
-        || item.checkpoint.runVersion !== snapshot.version
+        || item.checkpoint.runVersion > snapshot.version
         || item.checkpoint.checkpointVersion !== snapshot.state.checkpointVersion
       ) {
         throw authorityError(
@@ -301,7 +312,7 @@ async function loadExactActiveCheckpoint(
       const checkpoint = await store.loadCheckpoint(item.checkpoint);
       if (
         checkpoint.runId !== snapshot.runId
-        || checkpoint.runVersion !== snapshot.version
+        || checkpoint.runVersion !== item.checkpoint.runVersion
         || checkpoint.checkpointVersion !== snapshot.state.checkpointVersion
         || checkpoint.createdAt !== item.checkpoint.createdAt
       ) {
@@ -416,7 +427,8 @@ function actionTokenMatchesConstantTime(
 function resolutionForChoice(
   decision: AgentDecision,
   choice: ResolvePublicAgentDecisionCommand['action']['choice'],
-  resolvedAt: string
+  resolvedAt: string,
+  answerInput: AnswerInput | undefined
 ): AgentDecisionResolution {
   if (decision.kind === 'permission') {
     if (choice !== 'allow_once' && choice !== 'allow_run' && choice !== 'deny') {
@@ -451,6 +463,24 @@ function resolutionForChoice(
       planVersion: decision.planVersion,
       planHash: decision.planHash,
       outcome: choice
+    };
+  }
+  if (decision.kind === 'user_question') {
+    if (choice !== 'answer' || answerInput === undefined) {
+      throw authorityError(
+        'AGENT_DECISION_AUTHORITY_CHOICE_INVALID',
+        'The active user question requires one bounded answer.'
+      );
+    }
+    return {
+      kind: 'user_question',
+      decisionId: decision.decisionId,
+      checkpoint: decision.checkpoint,
+      resolvedAt,
+      questionRef: decision.questionRef,
+      questionDigest: decision.questionDigest,
+      answerInputId: answerInput.inputId,
+      answerDigest: answerInput.contentDigest
     };
   }
   if (
@@ -538,6 +568,19 @@ function assertExactResolutionResult(
   ) {
     throw receiptInvalid('The resulting Run does not exactly resolve the authorized Decision.');
   }
+  if (decision.kind === 'user_question' && resolution.kind === 'user_question') {
+    const answer = run.inbox.find((input) => input.inputId === resolution.answerInputId);
+    if (
+      answer === undefined
+      || answer.state !== 'queued'
+      || answer.contentDigest !== resolution.answerDigest
+      || answer.source?.kind !== 'user_question_answer'
+      || answer.source.decisionId !== decision.decisionId
+      || answer.source.questionDigest !== decision.questionDigest
+    ) {
+      throw receiptInvalid('The user-question receipt has no exact durable inbox answer.');
+    }
+  }
 }
 
 function publicResult(
@@ -573,8 +616,47 @@ function publicCommandFingerprint(command: ResolvePublicAgentDecisionCommand): s
     command.decisionId,
     command.action.contractVersion,
     command.action.actionToken,
-    command.action.choice
+    command.action.choice,
+    command.action.answer ?? null
   ]);
+}
+
+type AnswerInput = NonNullable<
+  import('@ariadne/agent-core').ResolveAgentDecisionCommand['answerInput']
+>;
+
+async function answerInputForAction(
+  decision: AgentDecision,
+  command: ResolvePublicAgentDecisionCommand,
+  commandId: string
+): Promise<AnswerInput | undefined> {
+  if (decision.kind !== 'user_question') {
+    if (command.action.answer !== undefined || command.action.choice === 'answer') {
+      throw authorityError(
+        'AGENT_DECISION_AUTHORITY_CHOICE_INVALID',
+        'Only an active user question accepts an answer body.'
+      );
+    }
+    return undefined;
+  }
+  if (command.action.choice !== 'answer' || command.action.answer === undefined) {
+    throw authorityError(
+      'AGENT_DECISION_AUTHORITY_CHOICE_INVALID',
+      'The active user question requires one answer body.'
+    );
+  }
+  const inputId = await deriveStableAgentId(
+    'user-question-answer',
+    commandId,
+    decision.runId,
+    decision.decisionId
+  );
+  return {
+    inputId,
+    messageId: inputId,
+    content: command.action.answer,
+    contentDigest: await sha256AgentControlData(command.action.answer)
+  };
 }
 
 function receiptInvalid(message: string): AgentDecisionAuthorityError {

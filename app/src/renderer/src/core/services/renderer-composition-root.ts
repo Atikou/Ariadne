@@ -26,7 +26,7 @@ export class RendererCompositionRoot {
   start(): Promise<void> {
     if (this.disposed) throw new Error('renderer_composition_root_disposed');
     this.started = true;
-    return this.services.runtime.initialize();
+    return this.services.runtime.initialize().then(() => this.services.speech.initialize());
   }
 
   installWindowLifecycle(target: Window): void {
@@ -38,7 +38,10 @@ export class RendererCompositionRoot {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    if (this.started) this.services.runtime.dispose();
+    if (this.started) {
+      this.services.speech.dispose();
+      this.services.runtime.dispose();
+    }
   }
 }
 

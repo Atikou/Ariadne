@@ -68,7 +68,6 @@ export function assessToolRisk(options: AssessToolRiskOptions): StructuredToolRi
 
   if (
     toolName === "shell_run" ||
-    toolName === "background_shell_start" ||
     preview?.kind === "shell_run"
   ) {
     const command =

@@ -14,7 +14,7 @@ import { createShutdownContext } from '../src/ingress/ShutdownContext.js';
 import { HostProcessSandbox } from '../src/sandbox/HostProcessSandbox.js';
 
 describe('persistent process Tool integration', () => {
-  it('continues one real process through start, write, read and stop Effects', async () => {
+  it('continues one real process through producer and shared job control Effects', async () => {
     const bootstrap = createBootstrap();
     const manifest = await compileProductionRuntimeCapabilityManifest({
       bootstrap,
@@ -48,11 +48,21 @@ describe('persistent process Tool integration', () => {
         idempotencyKey: 'idempotency-process-start'
       });
       expect(started.status).toBe('succeeded');
-      const resourceId = resultRecord(started).resourceId;
-      expect(typeof resourceId).toBe('string');
+      const jobId = resultRecord(started).jobId;
+      expect(typeof jobId).toBe('string');
 
-      await waitForOutput(async () => await tool('workspace.process_read').executable.execute({
-        resourceId
+      await expect(tool('workspace.job_list').executable.execute({}, {
+        ...baseContext,
+        effectId: 'effect-job-list',
+        toolCallId: 'call-job-list',
+        idempotencyKey: 'idempotency-job-list'
+      })).resolves.toMatchObject({
+        status: 'succeeded',
+        result: { jobs: [expect.objectContaining({ jobId, kind: 'process', status: 'running' })] }
+      });
+
+      await waitForOutput(async () => await tool('workspace.job_output').executable.execute({
+        jobId
       }, {
         ...baseContext,
         effectId: 'effect-process-read-ready',
@@ -60,8 +70,8 @@ describe('persistent process Tool integration', () => {
         idempotencyKey: 'idempotency-process-read-ready'
       }), 'READY');
 
-      await expect(tool('workspace.process_write').executable.execute({
-        resourceId,
+      await expect(tool('workspace.job_write').executable.execute({
+        jobId,
         text: 'hello'
       }, {
         ...baseContext,
@@ -70,8 +80,8 @@ describe('persistent process Tool integration', () => {
         idempotencyKey: 'idempotency-process-write'
       })).resolves.toMatchObject({ status: 'succeeded' });
 
-      const echoed = await waitForOutput(async () => await tool('workspace.process_read')
-        .executable.execute({ resourceId }, {
+      const echoed = await waitForOutput(async () => await tool('workspace.job_output')
+        .executable.execute({ jobId }, {
           ...baseContext,
           effectId: 'effect-process-read-echo',
           toolCallId: 'call-process-read-echo',
@@ -79,12 +89,22 @@ describe('persistent process Tool integration', () => {
         }), 'ECHO:hello');
       expect(echoed).toContain('READY');
 
-      await expect(tool('workspace.process_stop').executable.execute({ resourceId }, {
+      await expect(tool('workspace.job_kill').executable.execute({ jobId }, {
         ...baseContext,
         effectId: 'effect-process-stop',
         toolCallId: 'call-process-stop',
         idempotencyKey: 'idempotency-process-stop'
-      })).resolves.toMatchObject({ status: 'succeeded', result: { status: 'stopped' } });
+      })).resolves.toMatchObject({ status: 'succeeded', result: { status: 'killed' } });
+
+      await expect(tool('workspace.job_wait').executable.execute({ jobId, timeoutMs: 100 }, {
+        ...baseContext,
+        effectId: 'effect-job-wait',
+        toolCallId: 'call-job-wait',
+        idempotencyKey: 'idempotency-job-wait'
+      })).resolves.toMatchObject({
+        status: 'succeeded',
+        result: { completed: true, job: { jobId, status: 'killed' } }
+      });
     } finally {
       const shutdown = createShutdownContext(Date.now() + 5_000);
       try {
@@ -94,13 +114,128 @@ describe('persistent process Tool integration', () => {
       }
     }
   }, 10_000);
+
+  it.skipIf(process.platform !== 'win32')(
+    'hosts a real PTY inside the sandbox and controls it through generic job Effects',
+    async () => {
+      const bootstrap = createBootstrap();
+      const manifest = await compileProductionRuntimeCapabilityManifest({
+        bootstrap,
+        processSandboxFactory: () => new HostProcessSandbox() as unknown as AgentProcessSandbox
+      });
+      const catalog = manifest.agentToolCatalogSnapshots[0]!;
+      const tool = (name: string) => catalog.entries.find(
+        (entry) => entry.document.toolName === name
+      )!;
+      const baseContext = {
+        runId: 'run-persistent-terminal',
+        capabilityIds: ['workspace.shell'],
+        scope: ['workspace-process'],
+        signal: new AbortController().signal
+      };
+      const script = [
+        "const readline=require('node:readline')",
+        "const rl=readline.createInterface({input:process.stdin})",
+        "process.on('SIGINT',()=>console.log('INTERRUPTED'))",
+        "console.log('TERMINAL_READY')",
+        "rl.on('line',(line)=>console.log('TERMINAL_ECHO:'+line))"
+      ].join(';');
+
+      try {
+        const started = await tool('workspace.terminal_start').executable.execute({
+          command: process.execPath,
+          args: ['-e', script],
+          columns: 100,
+          rows: 24
+        }, {
+          ...baseContext,
+          effectId: 'effect-terminal-start',
+          toolCallId: 'call-terminal-start',
+          idempotencyKey: 'idempotency-terminal-start'
+        });
+        expect(started).toMatchObject({
+          status: 'succeeded',
+          result: {
+            kind: 'terminal',
+            status: 'running',
+            capabilities: { input: true, resize: true, signal: true }
+          }
+        });
+        const jobId = resultRecord(started).jobId;
+
+        await waitForOutput(async () => await tool('workspace.job_output').executable.execute({
+          jobId
+        }, {
+          ...baseContext,
+          effectId: 'effect-terminal-ready',
+          toolCallId: 'call-terminal-ready',
+          idempotencyKey: 'idempotency-terminal-ready'
+        }), 'TERMINAL_READY');
+
+        await expect(tool('workspace.job_resize').executable.execute({
+          jobId,
+          columns: 132,
+          rows: 40
+        }, {
+          ...baseContext,
+          effectId: 'effect-terminal-resize',
+          toolCallId: 'call-terminal-resize',
+          idempotencyKey: 'idempotency-terminal-resize'
+        })).resolves.toMatchObject({ status: 'succeeded' });
+
+        await expect(tool('workspace.job_write').executable.execute({
+          jobId,
+          text: 'hello-terminal'
+        }, {
+          ...baseContext,
+          effectId: 'effect-terminal-write',
+          toolCallId: 'call-terminal-write',
+          idempotencyKey: 'idempotency-terminal-write'
+        })).resolves.toMatchObject({ status: 'succeeded' });
+
+        await waitForOutput(async () => await tool('workspace.job_output').executable.execute({
+          jobId
+        }, {
+          ...baseContext,
+          effectId: 'effect-terminal-echo',
+          toolCallId: 'call-terminal-echo',
+          idempotencyKey: 'idempotency-terminal-echo'
+        }), 'TERMINAL_ECHO:hello-terminal');
+
+        await expect(tool('workspace.job_signal').executable.execute({
+          jobId,
+          signal: 'interrupt'
+        }, {
+          ...baseContext,
+          effectId: 'effect-terminal-interrupt',
+          toolCallId: 'call-terminal-interrupt',
+          idempotencyKey: 'idempotency-terminal-interrupt'
+        })).resolves.toMatchObject({ status: 'succeeded' });
+
+        await expect(tool('workspace.job_kill').executable.execute({ jobId }, {
+          ...baseContext,
+          effectId: 'effect-terminal-kill',
+          toolCallId: 'call-terminal-kill',
+          idempotencyKey: 'idempotency-terminal-kill'
+        })).resolves.toMatchObject({ status: 'succeeded', result: { status: 'killed' } });
+      } finally {
+        const shutdown = createShutdownContext(Date.now() + 5_000);
+        try {
+          await manifest.close(shutdown);
+        } finally {
+          shutdown.dispose();
+        }
+      }
+    },
+    20_000
+  );
 });
 
 async function waitForOutput(
   read: () => Promise<unknown>,
   expected: string
 ): Promise<string> {
-  const deadline = Date.now() + 3_000;
+  const deadline = Date.now() + 8_000;
   do {
     const outcome = await read();
     const result = resultRecord(outcome);

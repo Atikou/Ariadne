@@ -1,10 +1,18 @@
-import { CircleX, Clock3, RotateCw, ShieldCheck, Square, Wrench } from 'lucide-react';
+import { useState } from 'react';
+import { CircleX, Clock3, RotateCw, Send, ShieldCheck, Square, Wrench } from 'lucide-react';
 import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
 import { formatRunStatus } from '@renderer/core/runtime/runtime-labels';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import { StatusPill } from '@renderer/shared/ui/StatusPill';
 
 export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
+  const [subagentDrafts, setSubagentDrafts] = useState<Record<string, string>>({});
+  const [sendingSubagentId, setSendingSubagentId] = useState<string | null>(null);
+  const [interruptingSubagentId, setInterruptingSubagentId] = useState<string | null>(null);
+  const [subagentSendError, setSubagentSendError] = useState<{
+    runId: string;
+    message: string;
+  } | null>(null);
   const runtime = useRuntimeSnapshot(services.runtime);
   const agentRuns = runtime.runs;
   const run = agentRuns.find((candidate) => candidate.parentRunId === undefined && [
@@ -37,7 +45,54 @@ export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): Rea
     <div className="agent-goal"><span>当前目标</span><p>{run?.title ?? '当前没有正在运行的 Agent 任务。'}</p></div>
     <div className="agent-progress"><div><span>当前步骤</span><strong>{run?.userFacingLabel ?? runtime.status.detail ?? '等待任务'}</strong></div><span>{progress}%</span><div className="progress-track"><i style={{ width: `${progress}%` }} /></div></div>
     <div className="status-section"><h2>最近活动</h2><ol>{runActivities.slice(-5).map((activity) => <li className={activity.status === 'completed' ? 'is-done' : activity.status === 'running' ? 'is-current' : ''} key={activity.activityId}>{activity.title}</li>)}{runActivities.length === 0 && <li>暂无活动记录。</li>}</ol></div>
-    {subagents.length > 0 && <div className="status-section"><h2>SubAgent</h2><ol>{subagents.map((subagent) => <li className={subagent.status === 'completed' ? 'is-done' : ['running', 'queued'].includes(subagent.status) ? 'is-current' : ''} key={subagent.runId}>{subagent.title} · {formatRunStatus(subagent.status)}</li>)}</ol></div>}
+    {subagents.length > 0 && <div className="status-section"><h2>SubAgent</h2><ol>{subagents.map((subagent) => <li className={subagent.status === 'completed' ? 'is-done' : ['running', 'queued'].includes(subagent.status) ? 'is-current' : ''} key={subagent.runId}>
+      <span>{subagent.title} · {formatRunStatus(subagent.status)}{subagent.subagentMode === 'continuable' ? ' · 可继续' : ''}{subagent.subagentProviderId === undefined ? '' : ` · ${subagent.subagentProviderId}`}</span>
+      {run && subagent.subagentMode === 'continuable' && subagent.status === 'running' && <div className="agent-controls">
+        <button type="button" disabled={interruptingSubagentId !== null} onClick={() => {
+          setSubagentSendError(null);
+          setInterruptingSubagentId(subagent.runId);
+          void services.runtime.interruptSubagent(run, subagent).catch((error: unknown) => {
+            setSubagentSendError({
+              runId: subagent.runId,
+              message: error instanceof Error ? error.message : 'SubAgent 中断失败'
+            });
+          }).finally(() => setInterruptingSubagentId(null));
+        }}>
+          <Square size={12} /> {interruptingSubagentId === subagent.runId ? '中断中' : '中断本轮'}
+        </button>
+        {subagentSendError?.runId === subagent.runId && <p role="alert">{subagentSendError.message}</p>}
+      </div>}
+      {run && subagent.subagentMode === 'continuable' && subagent.status === 'paused' && <form className="subagent-follow-up" onSubmit={(event) => {
+        event.preventDefault();
+        const content = (subagentDrafts[subagent.runId] ?? '').trim();
+        if (content.length === 0 || sendingSubagentId !== null) return;
+        setSubagentSendError(null);
+        setSendingSubagentId(subagent.runId);
+        void services.runtime.sendSubagentInput(run, subagent, content).then(() => {
+          setSubagentDrafts((current) => ({ ...current, [subagent.runId]: '' }));
+        }).catch((error: unknown) => {
+          setSubagentSendError({
+            runId: subagent.runId,
+            message: error instanceof Error ? error.message : 'SubAgent 后续输入发送失败'
+          });
+        }).finally(() => setSendingSubagentId(null));
+      }}>
+        <textarea
+          aria-label={`继续 ${subagent.title}`}
+          value={subagentDrafts[subagent.runId] ?? ''}
+          onChange={(event) => setSubagentDrafts((current) => ({
+            ...current,
+            [subagent.runId]: event.target.value
+          }))}
+          placeholder="向这个 SubAgent 发送后续要求"
+          rows={2}
+        />
+        <button type="submit" disabled={sendingSubagentId !== null || (subagentDrafts[subagent.runId] ?? '').trim().length === 0}>
+          <Send size={12} /> {sendingSubagentId === subagent.runId ? '发送中' : '继续'}
+        </button>
+        {subagentSendError?.runId === subagent.runId && <p role="alert">{subagentSendError.message}</p>}
+      </form>}
+    </li>)}</ol></div>}
     <div className="status-section"><h2>执行概况</h2><div className="context-grid"><span><Wrench size={13} /> {runActivities.filter((activity) => activity.activityType === 'tool').length} 次工具调用</span><span><ShieldCheck size={13} /> {runtime.permissions.filter((request) => request.status === 'pending').length} 项待确认</span><span><Clock3 size={13} /> {run?.startedAt ? new Date(run.startedAt).toLocaleTimeString() : '—'}</span></div></div>
     {run?.status === 'waiting_budget' && <div className="status-section">
       <h2>执行预算</h2>

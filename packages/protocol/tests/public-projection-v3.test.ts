@@ -9,8 +9,11 @@ import {
   projectionCommitV3Schema,
   publicDecisionActionTokenV1,
   publicDecisionProjectionV3Schema,
+  publicAgentInboxInputV3Schema,
+  publicMessageProjectionV3Schema,
   publicProjectionCanonicalTimestampSchema,
   publicProjectionReadBatchV3Schema,
+  publicRunProjectionV3Schema,
   publicProjectionSnapshotV3Schema,
   redactPublicProjectionTextV3,
   runtimeCommandSchema,
@@ -21,6 +24,112 @@ import {
 const TIME = '2032-01-01T00:00:00.000Z';
 
 describe('public projection contract v3', () => {
+  it('accepts only bounded public-static Tool presentation metadata', () => {
+    const run = {
+      runId: 'run-tool-presentation',
+      sessionId: 'session-tool-presentation',
+      sourceMessageId: 'message-tool-presentation',
+      version: 2,
+      title: 'Agent run',
+      status: 'running',
+      label: 'Running Tool',
+      toolActivities: [{
+        activityId: 'effect-tool-presentation',
+        callId: 'call-tool-presentation',
+        toolName: 'workspace.write_file',
+        presentation: {
+          kind: 'file_change',
+          label: '写入工作区文件'
+        },
+        status: 'running',
+        occurredAt: TIME,
+        startedAt: TIME
+      }],
+      inbox: [],
+      interactionMessages: [],
+      updatedAt: TIME,
+      startedAt: TIME
+    } as const;
+
+    expect(publicRunProjectionV3Schema.parse(run).toolActivities[0]?.presentation)
+      .toEqual({ kind: 'file_change', label: '写入工作区文件' });
+    expect(publicRunProjectionV3Schema.safeParse({
+      ...run,
+      toolActivities: [{
+        ...run.toolActivities[0],
+        presentation: {
+          ...run.toolActivities[0].presentation,
+          resultVisibility: 'protected'
+        }
+      }]
+    }).success).toBe(false);
+  });
+
+  it('binds every projected Child Run to one visible execution provider', () => {
+    const child = {
+      runId: 'run-child-provider',
+      sessionId: 'session-provider',
+      parentRunId: 'run-parent-provider',
+      delegationId: 'delegation-provider',
+      subagentMode: 'continuable',
+      subagentProviderId: 'external.codex',
+      version: 3,
+      title: 'SubAgent task',
+      status: 'paused',
+      label: 'Waiting for continuation input',
+      toolActivities: [],
+      inbox: [],
+      interactionMessages: [],
+      updatedAt: TIME
+    } as const;
+    expect(publicRunProjectionV3Schema.parse(child).subagentProviderId)
+      .toBe('external.codex');
+    const { subagentProviderId: _providerId, ...missingProvider } = child;
+    expect(publicRunProjectionV3Schema.safeParse(missingProvider).success).toBe(false);
+  });
+
+  it('distinguishes system live-work completion from editable user inbox input', () => {
+    expect(publicAgentInboxInputV3Schema.parse({
+      inputId: 'input-live-work',
+      messageId: 'message-live-work',
+      version: 1,
+      delivery: 'next_step',
+      content: 'Background job completed.',
+      source: {
+        kind: 'live_work',
+        jobId: 'job-live-work',
+        workKind: 'process',
+        status: 'completed'
+      },
+      state: 'queued',
+      queuedAt: TIME,
+      updatedAt: TIME
+    }).source).toEqual({
+      kind: 'live_work',
+      jobId: 'job-live-work',
+      workKind: 'process',
+      status: 'completed'
+    });
+    expect(publicAgentInboxInputV3Schema.parse({
+      inputId: 'input-user-question-answer',
+      messageId: 'message-user-question-answer',
+      version: 1,
+      delivery: 'next_step',
+      content: 'local: Local only',
+      source: {
+        kind: 'user_question_answer',
+        decisionId: 'decision-user-question',
+        questionDigest: `sha256:${'a'.repeat(64)}`
+      },
+      state: 'queued',
+      queuedAt: TIME,
+      updatedAt: TIME
+    }).source).toMatchObject({
+      kind: 'user_question_answer',
+      decisionId: 'decision-user-question'
+    });
+  });
+
   it('redacts private substrings before intentionally public text is committed', () => {
     const redacted = redactPublicProjectionTextV3(
       'inspect C:\\private\\repo and /srv/private; api_key=topsecretvalue'
@@ -99,6 +208,36 @@ describe('public projection contract v3', () => {
       workspaceId: 'workspace-v3'
     })).toMatchObject({ kind: 'conversation.session.create.v3' });
     expect(runtimeCommandSchema.parse({
+      kind: 'conversation.session.rename.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      sessionId: 'session-v3',
+      workspaceId: 'workspace-v3',
+      expectedSessionVersion: 1,
+      title: 'Durable title'
+    })).toMatchObject({ kind: 'conversation.session.rename.v3' });
+    expect(runtimeCommandSchema.parse({
+      kind: 'conversation.session.archive.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      sessionId: 'session-v3',
+      workspaceId: 'workspace-v3',
+      expectedSessionVersion: 2
+    })).toMatchObject({ kind: 'conversation.session.archive.v3' });
+    expect(runtimeCommandSchema.parse({
+      kind: 'conversation.session.restore.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      sessionId: 'session-v3',
+      workspaceId: 'workspace-v3',
+      expectedSessionVersion: 3
+    })).toMatchObject({ kind: 'conversation.session.restore.v3' });
+    expect(runtimeCommandSchema.safeParse({
+      kind: 'conversation.session.rename.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      sessionId: 'session-v3',
+      workspaceId: 'workspace-v3',
+      expectedSessionVersion: 1,
+      title: '   '
+    }).success).toBe(false);
+    expect(runtimeCommandSchema.parse({
       kind: 'conversation.message.accept.v3',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       sessionId: 'session-v3',
@@ -115,6 +254,29 @@ describe('public projection contract v3', () => {
       messageId: 'message-v3',
       content: 'hello'
     }).success).toBe(false);
+    expect(runtimeCommandSchema.parse({
+      kind: 'conversation.message.accept.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      sessionId: 'session-v3',
+      workspaceId: 'workspace-v3',
+      expectedSessionVersion: 1,
+      messageId: 'message-image-v3',
+      content: '',
+      attachments: [{
+        mediaType: 'image/png',
+        data: 'aGVsbG8=',
+        name: 'screen.png'
+      }]
+    })).toMatchObject({ kind: 'conversation.message.accept.v3', content: '' });
+    expect(runtimeCommandSchema.safeParse({
+      kind: 'conversation.message.accept.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      sessionId: 'session-v3',
+      workspaceId: 'workspace-v3',
+      expectedSessionVersion: 1,
+      messageId: 'message-empty-v3',
+      content: '   '
+    }).success).toBe(false);
     expect(runtimeCommandSchema.safeParse({
       kind: 'conversation.session.create.v3',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
@@ -130,6 +292,98 @@ describe('public projection contract v3', () => {
       messageVersion: 1,
       sagaId: 'saga-v3'
     })).toMatchObject({ kind: 'conversation.message.accepted.v3' });
+    expect(runtimeResultSchema.parse({
+      kind: 'conversation.session.updated.v3',
+      sessionId: 'session-v3',
+      version: 2
+    })).toMatchObject({ kind: 'conversation.session.updated.v3' });
+  });
+
+  it('projects only safe image metadata and permits an image-only user Message', () => {
+    const attachment = {
+      attachmentId: `sha256:${'b'.repeat(64)}`,
+      mediaType: 'image/webp' as const,
+      bytes: 1_024,
+      width: 800,
+      height: 600,
+      name: 'diagram.webp'
+    };
+    expect(publicMessageProjectionV3Schema.parse({
+      messageId: 'message-image-projection',
+      sessionId: 'session-image-projection',
+      version: 1,
+      role: 'user',
+      content: '',
+      attachments: [attachment],
+      status: 'completed',
+      createdAt: TIME,
+      updatedAt: TIME
+    }).attachments).toEqual([attachment]);
+    expect(publicMessageProjectionV3Schema.safeParse({
+      messageId: 'message-image-assistant',
+      sessionId: 'session-image-projection',
+      version: 1,
+      role: 'assistant',
+      content: 'answer',
+      attachments: [attachment],
+      status: 'completed',
+      createdAt: TIME,
+      updatedAt: TIME
+    }).success).toBe(false);
+  });
+
+  it('defines strict direct-parent continuable SubAgent send receipts', () => {
+    const command = {
+      kind: 'agent.subagent.send.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      parentRunId: 'run-parent',
+      childRunId: 'run-child',
+      sessionId: 'session-subagent',
+      inputId: 'input-follow-up',
+      content: 'Continue with the bounded follow-up.'
+    } as const;
+    expect(runtimeCommandSchema.parse(command)).toEqual(command);
+    expect(runtimeCommandSchema.safeParse({
+      ...command,
+      delivery: 'next_step'
+    }).success).toBe(false);
+    expect(runtimeResultSchema.parse({
+      kind: 'agent.subagent.input.sent.v3',
+      parentRunId: command.parentRunId,
+      childRunId: command.childRunId,
+      childRunVersion: 5,
+      inputId: command.inputId,
+      inputVersion: 1
+    })).toMatchObject({
+      kind: 'agent.subagent.input.sent.v3',
+      childRunVersion: 5
+    });
+
+    const interrupt = {
+      kind: 'agent.subagent.interrupt.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      parentRunId: command.parentRunId,
+      childRunId: command.childRunId,
+      sessionId: command.sessionId,
+      expectedChildVersion: 5,
+      occurredAt: '2026-08-28T00:00:00.000Z',
+      reason: 'user_requested'
+    } as const;
+    expect(runtimeCommandSchema.parse(interrupt)).toEqual(interrupt);
+    expect(runtimeCommandSchema.safeParse({
+      ...interrupt,
+      keepInbox: true
+    }).success).toBe(false);
+    expect(runtimeResultSchema.parse({
+      kind: 'agent.subagent.interrupted.v3',
+      parentRunId: command.parentRunId,
+      childRunId: command.childRunId,
+      childRunVersion: 7,
+      previousStatus: 'active'
+    })).toMatchObject({
+      kind: 'agent.subagent.interrupted.v3',
+      previousStatus: 'active'
+    });
   });
 
   it('defines a strict opaque Decision resolution command and result', () => {
@@ -175,6 +429,29 @@ describe('public projection contract v3', () => {
       decisionId: command.decisionId,
       runVersion: 4,
       replayed: true
+    }).success).toBe(false);
+
+    const answerCommand = {
+      ...command,
+      decisionId: 'decision-user-question',
+      action: {
+        ...command.action,
+        choice: 'answer' as const,
+        answer: 'local: Local only'
+      }
+    };
+    expect(runtimeCommandSchema.parse(answerCommand)).toEqual(answerCommand);
+    expect(runtimeCommandSchema.safeParse({
+      ...answerCommand,
+      action: { ...answerCommand.action, answer: '   ' }
+    }).success).toBe(false);
+    expect(runtimeCommandSchema.safeParse({
+      ...answerCommand,
+      action: { ...answerCommand.action, answer: undefined }
+    }).success).toBe(false);
+    expect(runtimeCommandSchema.safeParse({
+      ...command,
+      action: { ...command.action, answer: 'must not accompany a plan choice' }
     }).success).toBe(false);
   });
 
@@ -311,6 +588,44 @@ describe('public projection contract v3', () => {
       ...pending,
       sessionId: undefined
     }).success).toBe(false);
+
+    const userQuestion = {
+      ...pending,
+      decisionId: 'decision-user-question',
+      kind: 'user_question' as const,
+      presentation: {
+        contractVersion: '1.0' as const,
+        kind: 'user_question' as const,
+        headline: 'Agent needs your input',
+        question: 'Which deployment target should be used?',
+        options: [
+          { optionId: 'local', label: 'Local only' },
+          {
+            optionId: 'remote',
+            label: 'Remote host',
+            description: 'Requires network access.'
+          }
+        ],
+        allowsFreeText: true as const
+      },
+      action: {
+        contractVersion: '1.0' as const,
+        actionToken: pending.action.actionToken,
+        choices: ['answer'] as const
+      }
+    };
+    expect(publicDecisionProjectionV3Schema.parse(userQuestion)).toEqual(userQuestion);
+    expect(publicDecisionProjectionV3Schema.safeParse({
+      ...userQuestion,
+      presentation: {
+        ...userQuestion.presentation,
+        options: [userQuestion.presentation.options[0]]
+      }
+    }).success).toBe(false);
+    expect(publicDecisionProjectionV3Schema.safeParse({
+      ...userQuestion,
+      action: { ...userQuestion.action, choices: ['approve'] }
+    }).success).toBe(false);
     expect(publicDecisionProjectionV3Schema.safeParse({
       ...pending,
       permissionItems: [{ path: 'C:\\private\\secret.txt' }]
@@ -387,6 +702,7 @@ describe('public projection contract v3', () => {
       decisions: [],
       models: [],
       diagnostics: [],
+      inferenceStreams: [],
       tombstones: []
     }).streamId).toBe('stream-1');
     expect(publicProjectionReadBatchV3Schema.parse({
@@ -549,6 +865,7 @@ function sessionSnapshot(title: string) {
     decisions: [],
     models: [],
     diagnostics: [],
+    inferenceStreams: [],
     tombstones: []
   };
 }

@@ -4,6 +4,7 @@
   "private": true,
   "description": "Production dependency tree for the standalone Ariadne Runtime process",
   "dependencies": {
+    "@ariadne/live-work": "file:../../packages/live-work",
     "@ariadne/runtime": "file:../../runtime"
   }
 }

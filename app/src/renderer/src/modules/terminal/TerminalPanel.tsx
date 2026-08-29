@@ -196,14 +196,14 @@ function TerminalSessionView({ workspaceId, shell, active, services, onMetadata 
     const inputSubscription = terminal.onData((data) => {
       services.terminal.write({ sessionId, data });
     });
-    const removeDataListener = services.terminal.onData((event) => {
-      if (event.sessionId === sessionId) terminal.write(event.data);
+    const removeOutputListener = services.terminal.onOutput((event) => {
+      if (event.sessionId === sessionId) terminal.write(event.chunk.text);
     });
     const removeExitListener = services.terminal.onExit((event) => {
       if (event.sessionId !== sessionId || disposed) return;
       sessionReadyRef.current = false;
       terminal.options.disableStdin = true;
-      terminal.writeln(`\r\n\x1b[90m[进程已退出，代码 ${event.exitCode}]\x1b[0m`);
+      terminal.writeln(`\r\n\x1b[90m[进程已退出，状态 ${event.work.status}，代码 ${event.work.exitCode ?? '未知'}]\x1b[0m`);
       onMetadata(shell, { status: 'exited', cwd: '' });
     });
 
@@ -250,7 +250,7 @@ function TerminalSessionView({ workspaceId, shell, active, services, onMetadata 
       sessionReadyRef.current = false;
       themeObserver.disconnect();
       resizeObserver.disconnect();
-      removeDataListener();
+      removeOutputListener();
       removeExitListener();
       inputSubscription.dispose();
       services.terminal.close({ sessionId });

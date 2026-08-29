@@ -1,9 +1,13 @@
 import type { RuntimeCapabilityManifest } from '../ingress/RuntimeCapabilityManifest.js';
+import type { AgentControlRuntimeServices } from '../ingress/AgentControlLifecycle.js';
 import {
   createProductionRuntimeCapabilityStartContext,
   type ProductionRuntimeCapabilityManifestInput
 } from './runtime-capabilities/ProductionRuntimeCapabilityContext.js';
-import { productionRuntimeCapabilityProviders } from './runtime-capabilities/ProductionRuntimeCapabilityProviders.js';
+import {
+  AGENT_CONTROL_RUNTIME_SERVICES_ID,
+  productionRuntimeCapabilityProviders
+} from './runtime-capabilities/ProductionRuntimeCapabilityProviders.js';
 import { compileRuntimeCapabilityManifest } from './runtime-capabilities/RuntimeCapabilityManifestCompiler.js';
 
 export type { ProductionRuntimeCapabilityManifestInput };
@@ -24,4 +28,17 @@ export function compileProductionRuntimeCapabilityManifest(
     createProductionRuntimeCapabilityStartContext(input),
     productionRuntimeCapabilityProviders()
   );
+}
+
+/** Resolve the one terminal service bundle consumed by Agent Control composition. */
+export function resolveAgentControlRuntimeServices(
+  manifest: RuntimeCapabilityManifest
+): AgentControlRuntimeServices {
+  const services = manifest.service<AgentControlRuntimeServices>(
+    AGENT_CONTROL_RUNTIME_SERVICES_ID
+  );
+  if (services === undefined) {
+    throw new Error('agent_control_runtime_services_unavailable');
+  }
+  return services;
 }

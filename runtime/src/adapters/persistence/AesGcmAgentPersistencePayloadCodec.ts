@@ -265,7 +265,7 @@ function createAdditionalAuthenticatedData(
     directiveDigest: context.directiveDigest ?? null
   };
   // Existing protected kinds retain their exact historical AAD bytes. Only
-  // the new schema-v5 Turn input kind appends its Turn identity.
+  // The protected Turn input payload kind appends its Turn identity.
   if (
     context.kind === 'turn_input'
     && (

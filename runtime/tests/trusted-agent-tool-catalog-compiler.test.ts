@@ -13,7 +13,7 @@ import {
   type TrustedAgentToolRegistrationV1
 } from '../src/adapters/tool/TrustedAgentToolCatalogCompiler.js';
 import type {
-  AgentToolContractDocumentV1,
+  AgentToolContractDocumentV2,
   AgentToolExecutableImplementationV1
 } from '../src/control/ports/AgentToolExecution.js';
 
@@ -41,8 +41,21 @@ describe('compileTrustedAgentToolCatalog', () => {
     expect(left.entries.every((entry) => entry.tool.digest === left.catalogDigest)).toBe(true);
   });
 
-  it('changes contractDigest for schema, permission, normalizer, and execute authority', () => {
+  it('changes contractDigest for model semantics, presentation, schema, permission, and implementation authority', () => {
     const baseline = contractDigest(registration());
+    const model = contractDigest(registration({
+      model: {
+        description: 'Write one approved Workspace file with exact content.',
+        guidance: ['Use only paths inside the approved Workspace scope.']
+      }
+    }));
+    const presentation = contractDigest(registration({
+      presentation: {
+        kind: 'file_change',
+        label: '修改工作区文件',
+        resultVisibility: 'protected'
+      }
+    }));
     const schema = contractDigest(registration({
       inputSchema: {
         type: 'object',
@@ -66,7 +79,41 @@ describe('compileTrustedAgentToolCatalog', () => {
       lifecycleSemantics: 'resource_create'
     }));
 
-    expect(new Set([baseline, schema, permission, normalizer, execute, lifecycle]).size).toBe(6);
+    expect(new Set([
+      baseline,
+      model,
+      presentation,
+      schema,
+      permission,
+      normalizer,
+      execute,
+      lifecycle
+    ]).size).toBe(8);
+  });
+
+  it('rejects unbounded model text and any attempt to publish Tool results', () => {
+    expect(() => compile([registration({
+      model: { description: 'x'.repeat(2_049), guidance: [] }
+    })])).toThrow('model.description');
+    expect(() => compile([registration({
+      model: {
+        description: 'Write one approved Workspace file.',
+        guidance: Array.from({ length: 9 }, (_, index) => `guidance-${index}`)
+      }
+    })])).toThrow('model.guidance');
+    expect(() => compile([registration({
+      model: {
+        description: 'Write one approved Workspace file.',
+        guidance: ['Do not allow\nframing controls.']
+      }
+    })])).toThrow('model.guidance[0]');
+    expect(() => compile([registration({
+      presentation: {
+        kind: 'file_change',
+        label: '写入工作区文件',
+        resultVisibility: 'public' as 'protected'
+      }
+    })])).toThrow('resultVisibility');
   });
 
   it('changes catalogDigest when a Tool or capability contract changes', () => {
@@ -162,7 +209,7 @@ describe('compileTrustedAgentToolCatalog', () => {
   });
 });
 
-interface RegistrationOptions extends Partial<AgentToolContractDocumentV1> {
+interface RegistrationOptions extends Partial<AgentToolContractDocumentV2> {
   readonly artifactOverrides?: Partial<AgentToolExecutableImplementationV1['artifacts']>;
 }
 
@@ -173,11 +220,20 @@ function registration(options: RegistrationOptions = {}): TrustedAgentToolRegist
     artifactOverrides: _artifactOverrides,
     ...documentOverrides
   } = options;
-  const document: AgentToolContractDocumentV1 = {
-    documentVersion: 1,
+  const document: AgentToolContractDocumentV2 = {
+    documentVersion: 2,
     toolName: 'workspace.write',
     toolVersion: '3.0.0',
     providerId: 'ariadne.builtin',
+    model: {
+      description: 'Write one approved Workspace file.',
+      guidance: ['Use the exact Workspace-relative path.']
+    },
+    presentation: {
+      kind: 'file_change',
+      label: '写入工作区文件',
+      resultVisibility: 'protected'
+    },
     inputSchema: {
       type: 'object',
       required: ['path'],

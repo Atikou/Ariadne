@@ -2,6 +2,23 @@ import type { AgentRun } from '../domain/agent-run.js';
 import type { AgentDirective } from '../domain/directive.js';
 import type { AgentAvailableTool } from '../domain/tool.js';
 import type { AgentJsonValue } from '../domain/json-value.js';
+import type {
+  AgentInferenceResponseEnvelopeV1,
+  AgentInferenceUsageAnchorV1
+} from '../domain/turn.js';
+
+export interface AgentImageAttachmentReference {
+  readonly attachmentId: string;
+  readonly mediaType: 'image/png' | 'image/jpeg' | 'image/webp';
+  readonly bytes: number;
+  readonly width: number;
+  readonly height: number;
+  readonly name?: string;
+  readonly originalDimensions?: {
+    readonly width: number;
+    readonly height: number;
+  };
+}
 
 export type AgentTurnInputMessage =
   | {
@@ -15,6 +32,17 @@ export type AgentTurnInputMessage =
       readonly toolCallId: string;
       readonly status: 'succeeded' | 'failed' | 'cancelled';
       readonly result: AgentJsonValue;
+    }
+  | {
+      readonly kind: 'image';
+      readonly role: 'user';
+      readonly owner: {
+        readonly sessionId: string;
+        readonly workspaceId: string;
+        readonly messageId: string;
+        readonly messageVersion: number;
+      };
+      readonly attachment: AgentImageAttachmentReference;
     };
 
 export interface AgentTurnInput {
@@ -37,6 +65,14 @@ export interface AgentTurnInputModelData {
 export interface PreparedAgentDecision {
   readonly modelContext: AgentJsonValue;
   decide(signal: AbortSignal): Promise<AgentDirective>;
+  /** Available only after a successful `decide`; detached and validated at commit. */
+  readonly readUsageAnchor?: () => AgentInferenceUsageAnchorV1 | null;
+  /** Sanitized exact-response evidence available only after successful `decide`. */
+  readonly readResponseEnvelope?: () => AgentInferenceResponseEnvelopeV1 | null;
+  /** Non-authoritative presentation stream settled only after Agent Control commits. */
+  readonly streamLifecycle?: {
+    settle(status: 'committed' | 'interrupted'): Promise<void>;
+  };
 }
 
 /**

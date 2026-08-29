@@ -14,7 +14,8 @@ import {
   type TrustedAgentToolCatalogSnapshot
 } from '../src/adapters/tool/TrustedAgentToolCatalogCompiler.js';
 import type {
-  AgentToolContractDocumentV1,
+  AgentProtectedEffectResultReader,
+  AgentToolContractDocumentV2,
   AgentToolExecutableImplementationV1
 } from '../src/control/ports/AgentToolExecution.js';
 
@@ -128,6 +129,60 @@ describe('ImmutableAgentToolCatalogRegistry', () => {
     );
   });
 
+  it('resolves public-static presentation only through the complete pinned identity', () => {
+    const snapshot = catalogSnapshot();
+    const registry = new ImmutableAgentToolCatalogRegistry([snapshot]);
+    const tool = exactTool(snapshot);
+
+    expect(registry.resolveToolPresentation(tool)).toEqual({
+      kind: 'file_read',
+      label: '读取工作区文件'
+    });
+    expect(registry.resolveToolPresentation({
+      ...tool,
+      revision: tool.revision + 1
+    })).toBeNull();
+  });
+
+  it('injects the protected Effect result service only at Tool execution time', async () => {
+    const reader: AgentProtectedEffectResultReader = {
+      read: vi.fn(async () => ({
+        effectId: 'effect-source',
+        toolCallId: 'tool-call-source',
+        status: 'succeeded',
+        digest: `sha256:${'a'.repeat(64)}`,
+        cursor: 0,
+        nextCursor: 2,
+        totalBytes: 2,
+        content: '{}',
+        complete: true
+      }))
+    };
+    const execute = vi.fn(async () => ({
+      status: 'succeeded' as const,
+      result: { content: 'ok' }
+    }));
+    const snapshot = catalogSnapshot(toolExecutable({ execute }));
+    const registry = new ImmutableAgentToolCatalogRegistry(
+      [snapshot],
+      undefined,
+      { protectedEffectResults: reader }
+    );
+    const signal = new AbortController().signal;
+
+    await registry.execute(executionRequest(exactTool(snapshot)), signal);
+
+    expect(execute).toHaveBeenCalledWith(
+      { path: 'src/readme.md' },
+      expect.objectContaining({
+        runId: 'run-registry',
+        effectId: 'effect-registry',
+        protectedEffectResults: reader,
+        signal
+      })
+    );
+  });
+
   it('rejects every complete Tool identity drift without validating or executing', async () => {
     const validatePrepared = vi.fn((input: AgentToolJsonValue) => ({
       status: 'accepted' as const,
@@ -227,12 +282,21 @@ function catalogSnapshot(
 
 function toolDocument(
   artifacts: AgentToolExecutableImplementationV1['artifacts']
-): AgentToolContractDocumentV1 {
+): AgentToolContractDocumentV2 {
   return {
-    documentVersion: 1,
+    documentVersion: 2,
     toolName: 'workspace.read',
     toolVersion: '1.0.0',
     providerId: 'ariadne.workspace',
+    model: {
+      description: 'Read one approved Workspace file.',
+      guidance: ['Use the exact Workspace-relative path.']
+    },
+    presentation: {
+      kind: 'file_read',
+      label: '读取工作区文件',
+      resultVisibility: 'protected'
+    },
     inputSchema: { type: 'object' },
     outputSchema: { type: 'object' },
     capabilityIds: ['workspace.read'],

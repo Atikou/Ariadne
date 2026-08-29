@@ -27,6 +27,7 @@ describe('Runtime workspace access ceiling', () => {
     const workspaceRoot = temporaryRoot('ariadne-access-workspace-');
     const app = createRuntimeContext(bootstrap(dataRoot, workspaceRoot, 'read'));
     expect(app.config.security?.permissions?.allowed).toEqual(['read', 'write', 'shell', 'network', 'dangerous']);
+    expect(app.registry.get('background_shell_start')).toBeUndefined();
     await app.shutdown();
   });
 

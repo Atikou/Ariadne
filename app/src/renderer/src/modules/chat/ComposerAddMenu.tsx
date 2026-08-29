@@ -10,6 +10,7 @@ import {
 import { createPortal } from 'react-dom';
 import {
   Check,
+  ImagePlus,
   Lightbulb,
   Plus,
 } from 'lucide-react';
@@ -30,18 +31,22 @@ interface AddMenuLayout {
   maxHeight: number;
 }
 
-const addItems: readonly AddMenuItem[] = [
-  { id: 'plan', label: '计划模式', description: '开启计划模式', icon: <Lightbulb size={18} /> }
-];
-
 export function ComposerAddMenu({
   planModeAvailable,
   planModeEnabled,
-  onPlanModeChange
+  planModeDisabledReason,
+  imageAttachmentsAvailable,
+  imageAttachmentsDisabledReason,
+  onPlanModeChange,
+  onAddImages
 }: {
   planModeAvailable: boolean;
   planModeEnabled: boolean;
+  planModeDisabledReason?: string;
+  imageAttachmentsAvailable: boolean;
+  imageAttachmentsDisabledReason?: string;
   onPlanModeChange(enabled: boolean): void;
+  onAddImages(): void;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const [layout, setLayout] = useState<AddMenuLayout | null>(null);
@@ -129,19 +134,32 @@ export function ComposerAddMenu({
         >
           <ComposerAddMenuSection
             title="添加"
-            items={addItems.map((item) => item.id === 'plan'
-              ? {
-                  ...item,
-                  active: planModeEnabled,
-                  disabled: !planModeAvailable,
-                  ...(!planModeAvailable
-                    ? { description: '当前 Runtime 版本不支持计划模式，请完整重启 Ariadne' }
-                    : {})
-                }
-              : item)}
+            items={[
+              {
+                id: 'image',
+                label: '添加图片',
+                description: imageAttachmentsAvailable
+                  ? 'PNG、JPEG 或 WebP，合计不超过 2 MB'
+                  : imageAttachmentsDisabledReason ?? '当前没有可用的视觉模型',
+                icon: <ImagePlus size={18} />,
+                disabled: !imageAttachmentsAvailable
+              },
+              {
+                id: 'plan',
+                label: '计划模式',
+                description: planModeAvailable
+                  ? '开启计划模式'
+                  : planModeDisabledReason ?? '当前 Runtime 版本不支持计划模式，请完整重启 Ariadne',
+                icon: <Lightbulb size={18} />,
+                active: planModeEnabled,
+                disabled: !planModeAvailable
+              }
+            ]}
             onSelect={(item) => {
-              if (item.id !== 'plan' || item.disabled) return;
-              onPlanModeChange(!planModeEnabled);
+              if (item.disabled) return;
+              if (item.id === 'image') onAddImages();
+              else if (item.id === 'plan') onPlanModeChange(!planModeEnabled);
+              else return;
               setOpen(false);
               window.requestAnimationFrame(() => triggerRef.current?.focus());
             }}

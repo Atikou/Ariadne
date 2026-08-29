@@ -4,6 +4,7 @@ import type { AppEventMap } from '../events/app-events';
 import type { TypedEventBus } from '../events/typed-event-bus';
 import type { RuntimeStore } from '../runtime/runtime-store';
 import type { ConversationNavigationService } from '../conversations/conversation-navigation-service';
+import type { SpeechCoordinator } from '../speech/speech-coordinator';
 
 export type ModuleId = string & { readonly __moduleId: unique symbol };
 export type ModuleIcon =
@@ -45,6 +46,7 @@ export interface ModuleServices {
   conversationNavigation: ConversationNavigationService;
   events: TypedEventBus<AppEventMap>;
   runtime: RuntimeStore;
+  speech: SpeechCoordinator;
   preferences: AriadneApi['preferences'];
   system: AriadneApi['system'];
   terminal: AriadneApi['terminal'];

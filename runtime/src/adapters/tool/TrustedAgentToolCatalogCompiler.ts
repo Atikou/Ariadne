@@ -14,7 +14,7 @@ import {
 import type {
   AgentToolCatalogSnapshot,
   AgentToolCatalogSnapshotEntry,
-  AgentToolContractDocumentV1,
+  AgentToolContractDocumentV2,
   AgentToolExecutableImplementationV1
 } from '../../control/ports/AgentToolExecution.js';
 
@@ -31,7 +31,7 @@ export interface TrustedAgentToolCatalogCompilationInput {
 }
 
 export interface TrustedAgentToolRegistrationV1 {
-  readonly document: AgentToolContractDocumentV1;
+  readonly document: AgentToolContractDocumentV2;
   readonly executable: AgentToolExecutableImplementationV1;
 }
 
@@ -125,7 +125,7 @@ export function assertTrustedAgentToolCatalogSnapshot(
 }
 
 interface PreparedRegistration {
-  readonly document: AgentToolContractDocumentV1;
+  readonly document: AgentToolContractDocumentV2;
   readonly contractDigest: string;
   readonly executable: TrustedAgentToolCatalogSnapshotEntry['executable'];
 }
@@ -144,7 +144,7 @@ function prepareRegistration(
   return {
     document,
     contractDigest: digestCanonical(
-      'ariadne-agent-tool-contract-v1',
+      'ariadne-agent-tool-contract-v2',
       document as unknown as AgentToolJsonValue
     ),
     executable
@@ -152,9 +152,9 @@ function prepareRegistration(
 }
 
 function cloneAndValidateDocument(
-  input: AgentToolContractDocumentV1,
+  input: AgentToolContractDocumentV2,
   field: string
-): AgentToolContractDocumentV1 {
+): AgentToolContractDocumentV2 {
   const canonical = cloneCanonicalAgentToolInput(input, field);
   assertRecord(canonical, field);
   assertExactKeys(canonical, [
@@ -162,6 +162,8 @@ function cloneAndValidateDocument(
     'toolName',
     'toolVersion',
     'providerId',
+    'model',
+    'presentation',
     'inputSchema',
     'outputSchema',
     'capabilityIds',
@@ -176,12 +178,45 @@ function cloneAndValidateDocument(
     'timeoutMs',
     'implementationArtifacts'
   ], field);
-  if (canonical.documentVersion !== 1) {
-    throw new AgentRunInvariantError(`${field}.documentVersion must be 1.`);
+  if (canonical.documentVersion !== 2) {
+    throw new AgentRunInvariantError(`${field}.documentVersion must be 2.`);
   }
   assertCanonicalPublicId(asString(canonical.toolName), `${field}.toolName`);
   assertCanonicalPublicId(asString(canonical.toolVersion), `${field}.toolVersion`);
   assertCanonicalPublicId(asString(canonical.providerId), `${field}.providerId`);
+  assertRecord(canonical.model, `${field}.model`);
+  assertExactKeys(canonical.model, ['description', 'guidance'], `${field}.model`);
+  assertBoundedText(canonical.model.description, 2_048, `${field}.model.description`);
+  assertDenseArray(canonical.model.guidance, `${field}.model.guidance`);
+  if (canonical.model.guidance.length > 8) {
+    throw new AgentRunInvariantError(`${field}.model.guidance exceeds 8 entries.`);
+  }
+  canonical.model.guidance.forEach((entry, index) => {
+    assertBoundedText(entry, 512, `${field}.model.guidance[${String(index)}]`);
+  });
+  assertRecord(canonical.presentation, `${field}.presentation`);
+  assertExactKeys(
+    canonical.presentation,
+    ['kind', 'label', 'resultVisibility'],
+    `${field}.presentation`
+  );
+  assertOneOf(canonical.presentation.kind, [
+    'generic',
+    'file_read',
+    'file_search',
+    'file_change',
+    'command',
+    'terminal',
+    'browser',
+    'skill',
+    'external'
+  ], `${field}.presentation.kind`);
+  assertBoundedText(canonical.presentation.label, 128, `${field}.presentation.label`);
+  if (canonical.presentation.resultVisibility !== 'protected') {
+    throw new AgentRunInvariantError(
+      `${field}.presentation.resultVisibility must be protected.`
+    );
+  }
   assertCanonicalSortedPublicIds(canonical.capabilityIds, `${field}.capabilityIds`);
   if (canonical.capabilityIds.length > 100) {
     throw new AgentRunInvariantError(`${field}.capabilityIds exceeds 100 entries.`);
@@ -266,12 +301,12 @@ function cloneAndValidateDocument(
       `${field}.implementationArtifacts.${name}`
     );
   }
-  return deepFreezeJson(canonical) as unknown as AgentToolContractDocumentV1;
+  return deepFreezeJson(canonical) as unknown as AgentToolContractDocumentV2;
 }
 
 function snapshotAndVerifyExecutable(
   input: AgentToolExecutableImplementationV1,
-  document: AgentToolContractDocumentV1,
+  document: AgentToolContractDocumentV2,
   field: string
 ): TrustedAgentToolCatalogSnapshotEntry['executable'] {
   assertExactDataObject(input, [
@@ -435,6 +470,22 @@ function assertRecord(
 
 function asString(value: AgentToolJsonValue | undefined): string {
   return typeof value === 'string' ? value : '';
+}
+
+function assertBoundedText(
+  value: AgentToolJsonValue | undefined,
+  maximum: number,
+  field: string
+): asserts value is string {
+  if (
+    typeof value !== 'string'
+    || value.trim() !== value
+    || value.length < 1
+    || value.length > maximum
+    || /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    throw new AgentRunInvariantError(`${field} must be bounded canonical text.`);
+  }
 }
 
 function assertOneOf<T extends string>(

@@ -32,7 +32,7 @@ describe('StateRepository', () => {
     expect(second.getLayout()?.layout).toEqual({
       panels: { 'files.explorer': { component: 'files.explorer' } }
     });
-    expect(JSON.parse(await readFile(file, 'utf8')).schemaVersion).toBe(1);
+    expect(JSON.parse(await readFile(file, 'utf8')).schemaVersion).toBe(2);
   });
 
   it('keeps memory committed to disk state and recovers after a failed write', async () => {

@@ -4,7 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createDefaultRuntimePolicySnapshot } from '@ariadne/protocol/settings';
+import { PERSONAL_ASSISTANT_WORKSPACE_ID } from '@ariadne/protocol/public';
+import {
+  createDefaultAssistantChatProfile,
+  createDefaultRuntimePolicySnapshot
+} from '@ariadne/protocol/settings';
 
 import { RuntimeSupervisor, type RuntimeSupervisorOptions } from '../src/main/runtime/runtime-supervisor';
 
@@ -17,23 +21,25 @@ afterEach(async () => {
 });
 
 describe('RuntimeSupervisor', () => {
-  it('keeps Runtime stopped when no workspace is configured', async () => {
+  it('starts Runtime with the App-owned personal-assistant session root', async () => {
     const options = createSupervisorOptions(
       path.resolve(process.cwd(), 'tests', 'fixtures', 'runtime-fixture.cjs'),
       process.env,
       []
     );
-    options.workspaces = [];
+    options.workspaces = [{
+      workspaceId: PERSONAL_ASSISTANT_WORKSPACE_ID,
+      label: '个人助手',
+      rootPath: options.dataRoot,
+      access: 'read'
+    }];
     const supervisor = new RuntimeSupervisor(options);
     supervisors.push(supervisor);
 
     expect(supervisor.getStatus().availability).toBe('stopped');
-    await expect(supervisor.start()).rejects.toMatchObject({
-      code: 'runtime_workspace_missing',
-      retryable: false
-    });
-    expect(supervisor.getStatus().availability).toBe('stopped');
-  });
+    await expect(supervisor.start()).resolves.toMatchObject({ type: 'ready' });
+    expect(supervisor.getStatus().availability).toBe('ready');
+  }, 15_000);
 
   it('owns the real Runtime child and exposes only public command results', async () => {
     const supervisor = createSupervisor(
@@ -494,6 +500,7 @@ function createSupervisorOptions(
     modelRoots: [path.join(dataRoot, 'models')],
     modelProviders: [],
     routingStrategy: 'local-first',
+    assistantProfile: createDefaultAssistantChatProfile(),
     agentPermissions: {
       approvalPolicy: 'request',
       proposalApproval: 'manual',

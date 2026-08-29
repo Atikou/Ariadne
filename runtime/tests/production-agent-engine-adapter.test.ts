@@ -3,11 +3,15 @@ import {
   assertValidAgentRun,
   type AgentAvailableTool,
   type AgentCommittedDirective,
+  type AgentEffectExecutionInputReader,
   type AgentJsonValue,
   type AgentPinnedToolIdentity,
   type AgentRun,
   type AgentTurnInput
 } from '@ariadne/agent-core';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -19,13 +23,58 @@ import type {
   ExactAgentModelInferenceRuntime,
   ExactAgentModelInferenceResult
 } from '../src/control/ports/AgentModelInference.js';
+import { SqlitePublicProjectionStore } from '../src/adapters/persistence/SqlitePublicProjectionStore.js';
+import { InferenceStreamPublicProjectionPublisher } from '../src/projection/InferenceStreamPublicProjectionPublisher.js';
 
 const PROTOCOL = 'ariadne.agent-directive.v3';
-const EFFECT_RESULTS_PROTOCOL = 'ariadne.agent-effect-results.v3';
 
 describe('ProductionAgentEngineAdapter', () => {
+  it('binds normalized chunks to the exact open attempt and exposes post-commit settlement', async () => {
+    const fixture = createFixture();
+    const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-engine-stream-'));
+    const store = new SqlitePublicProjectionStore(root);
+    try {
+      const inference = vi.fn(async (request: DispatchExactAgentModelInferenceRequest) => {
+        request.chunkObserver?.observe({ sequence: 1, channel: 'reasoning', text: 'why' });
+        request.chunkObserver?.observe({ sequence: 2, channel: 'token', text: 'directive' });
+        return inferenceResponse({
+          protocol: PROTOCOL,
+          directive: { kind: 'respond', content: 'completed from stream' }
+        });
+      });
+      const adapter = new ProductionAgentEngineAdapter(
+        exactInferenceGateway(inference),
+        exactContracts(fixture.available),
+        new InferenceStreamPublicProjectionPublisher(
+          store,
+          () => new Date('2030-01-01T00:00:00.000Z')
+        )
+      );
+      const signal = new AbortController().signal;
+      const prepared = await adapter.prepare(fixture.input, signal);
+      await prepared.decide(signal);
+      await prepared.streamLifecycle?.settle('committed');
+
+      expect((await store.snapshot()).inferenceStreams).toMatchObject([{
+        runId: fixture.input.run.runId,
+        turnId: 'turn-engine-v3-0',
+        attemptId: 'attempt-engine-v3-0',
+        status: 'committed',
+        finalSequence: 2,
+        chunks: [
+          { sequence: 1, channel: 'reasoning', text: 'why' },
+          { sequence: 2, channel: 'token', text: 'completed from stream' }
+        ]
+      }]);
+    } finally {
+      await store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('uses one exact-bound transport-only client and returns a strict response Directive', async () => {
     const fixture = createFixture();
+    const input = withSubagentProviders(fixture.input);
     const inference = vi.fn(async () => inferenceResponse({
       protocol: PROTOCOL,
       directive: { kind: 'respond', content: 'completed from v3' }
@@ -35,7 +84,7 @@ describe('ProductionAgentEngineAdapter', () => {
     const adapter = new ProductionAgentEngineAdapter(gateway, contracts);
     const controller = new AbortController();
 
-    await expect(decide(adapter, fixture.input, controller.signal)).resolves.toEqual({
+    await expect(decide(adapter, input, controller.signal)).resolves.toEqual({
       kind: 'respond',
       content: 'completed from v3'
     });
@@ -43,24 +92,173 @@ describe('ProductionAgentEngineAdapter', () => {
     expect(gateway.inferExact).toHaveBeenCalledTimes(1);
     expect(contracts.readInferenceToolContracts).toHaveBeenCalledTimes(1);
     const request = inference.mock.calls[0]![0];
-    expect(request.binding).toEqual(fixture.input.run.binding.model);
+    expect(request.binding).toEqual(input.run.binding.model);
     expect(request.signal).toBe(controller.signal);
-    expect(request).not.toHaveProperty('tools');
+    expect(request.tools).toHaveLength(1);
+    expect(request.tools[0]).toMatchObject({
+      providerToolName: expect.stringMatching(/^ariadne_[a-f0-9]{32}$/u),
+      description: [
+        'Read one approved Workspace file.',
+        'Usage guidance:',
+        '- Use the exact Workspace-relative path.'
+      ].join('\n'),
+      inputSchema: {
+        type: 'object',
+        required: ['input', 'scope']
+      }
+    });
     expect(request.messages.slice(1)).toEqual([{
       role: 'user',
-      content: 'Write the result under src.'
+      content: [{ type: 'text', text: 'Write the result under src.' }]
     }]);
-    expect(JSON.parse(request.messages[0]!.content)).toMatchObject({
+    expect(JSON.parse(textBlockContent(request.messages[0]!))).toMatchObject({
       protocol: PROTOCOL,
-      tools: [{
-        toolName: fixture.tool.toolName,
-        toolVersion: fixture.tool.toolVersion,
-        capabilityIds: ['workspace.write'],
-        scopeSemantics: 'all_requested_workspace_scopes_must_be_granted',
-        lifecycleSemantics: 'bounded_invocation',
-        allowedScopes: ['src'],
-        inputSchema: { type: 'object' }
-      }]
+      subagentProviders: [{
+        providerId: 'external.codex',
+        displayName: 'External Codex worker',
+        configurationDigest: `sha256:${'f'.repeat(64)}`,
+        transport: 'external_process',
+        supportedModes: ['one_shot'],
+        supportsStructuredReport: true,
+        inheritsParentContext: false,
+        usesParentTools: false
+      }],
+      nativeToolCount: 1
+    });
+  });
+
+  it('parses a strict user question and advertises a schema-valid two-option example', async () => {
+    const fixture = createFixture();
+    const inference = vi.fn(async () => inferenceResponse({
+      protocol: PROTOCOL,
+      directive: {
+        kind: 'ask_user',
+        question: {
+          prompt: 'Which deployment target should be used?',
+          options: [
+            { optionId: 'local', label: 'Local only' },
+            {
+              optionId: 'remote',
+              label: 'Remote host',
+              description: 'Requires network access.'
+            }
+          ]
+        }
+      }
+    }));
+    const adapter = new ProductionAgentEngineAdapter(
+      exactInferenceGateway(inference),
+      exactContracts(fixture.available)
+    );
+    const signal = new AbortController().signal;
+
+    await expect(decide(adapter, fixture.input, signal)).resolves.toEqual({
+      kind: 'ask_user',
+      question: {
+        prompt: 'Which deployment target should be used?',
+        options: [
+          { optionId: 'local', label: 'Local only' },
+          {
+            optionId: 'remote',
+            label: 'Remote host',
+            description: 'Requires network access.'
+          }
+        ]
+      }
+    });
+    const systemPrompt = JSON.parse(textBlockContent(
+      inference.mock.calls[0]![0].messages[0]!
+    )) as {
+      directiveShapes: { ask_user: { question: { options: unknown[] } } };
+    };
+    expect(systemPrompt.directiveShapes.ask_user.question.options).toHaveLength(2);
+  });
+
+  it('captures exact Provider usage and applies its conservative correction on the next Turn', async () => {
+    const first = createFixture();
+    const firstInference = vi.fn(async () => ({
+      ...inferenceResponse({
+        protocol: PROTOCOL,
+        directive: { kind: 'respond', content: 'measured response' }
+      }),
+      usage: {
+        inputTokens: 10_000,
+        outputTokens: 24,
+        cacheReadInputTokens: 2_000,
+        cacheWriteInputTokens: 400
+      }
+    }));
+    const firstAdapter = new ProductionAgentEngineAdapter(
+      exactInferenceGateway(firstInference),
+      exactContracts(first.available)
+    );
+    const signal = new AbortController().signal;
+    const firstPrepared = await firstAdapter.prepare(first.input, signal);
+
+    await firstPrepared.decide(signal);
+    const anchor = firstPrepared.readUsageAnchor?.();
+    const responseEnvelope = firstPrepared.readResponseEnvelope?.();
+
+    expect(anchor).toMatchObject({
+      anchorVersion: 1,
+      providerId: first.input.run.binding.model.providerId,
+      modelId: first.input.run.binding.model.modelId,
+      settingsRevision: first.input.run.binding.model.settingsRevision,
+      inputTokens: 10_000,
+      outputTokens: 24,
+      cacheReadInputTokens: 2_000,
+      cacheWriteInputTokens: 400,
+      requestEnvelopeDigest: `sha256:${'9'.repeat(64)}`
+    });
+    expect(anchor?.requestHeaderDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+    expect(anchor?.estimatedInputTokens).toBeGreaterThan(0);
+    expect(responseEnvelope).toMatchObject({
+      envelopeVersion: 1,
+      providerId: first.input.run.binding.model.providerId,
+      modelId: first.input.run.binding.model.modelId,
+      settingsRevision: first.input.run.binding.model.settingsRevision,
+      adapter: 'openai-compatible',
+      finishReason: 'stop',
+      requestEnvelopeDigest: `sha256:${'9'.repeat(64)}`,
+      contentBlocksDigest: `sha256:${'8'.repeat(64)}`,
+      contentBlockTypes: ['text']
+    });
+
+    const next = createInboxContinuationFixture();
+    const sourceTurn = next.input.run.turns[0]!;
+    const sourceAttempt = sourceTurn.attempts[0]!;
+    if (sourceAttempt.state.status !== 'succeeded' || anchor === null || anchor === undefined) {
+      throw new Error('usage_anchor_fixture_invalid');
+    }
+    const run: AgentRun = {
+      ...next.input.run,
+      turns: [{
+        ...sourceTurn,
+        attempts: [{
+          ...sourceAttempt,
+          state: { ...sourceAttempt.state, usageAnchor: anchor }
+        }]
+      }, next.input.run.turns[1]!]
+    };
+    assertValidAgentRun(run);
+    const nextAdapter = new ProductionAgentEngineAdapter(
+      exactInferenceGateway(async () => inferenceResponse({
+        protocol: PROTOCOL,
+        directive: { kind: 'respond', content: 'next response' }
+      })),
+      exactContracts(next.available)
+    );
+
+    const nextPrepared = await nextAdapter.prepare({ ...next.input, run }, signal);
+
+    expect(nextPrepared.modelContext).toMatchObject({
+      tokenMeter: {
+        baseline: 'provider_usage',
+        anchorAttemptId: sourceAttempt.attemptId,
+        anchorRequestEnvelopeDigest: anchor.requestEnvelopeDigest,
+        anchorProviderContextInputTokens: 12_400,
+        correctionTokens: 12_400 - anchor.estimatedInputTokens
+      }
     });
   });
 
@@ -102,11 +300,13 @@ describe('ProductionAgentEngineAdapter', () => {
       content: 'compacted safely'
     });
     const sent = inference.mock.calls[0]![0].messages;
-    expect(sent.some((message) => message.content.includes('ariadne.context-compaction.v1')))
+    expect(sent.some((message) => message.content.some((block) => (
+      block.type === 'text' && block.text.includes('ariadne.semantic-context-compaction.v1')
+    ))))
       .toBe(true);
     expect(sent.at(-1)).toEqual({
       role: 'user',
-      content: 'LATEST_OBJECTIVE_MUST_SURVIVE'
+      content: [{ type: 'text', text: 'LATEST_OBJECTIVE_MUST_SURVIVE' }]
     });
   });
 
@@ -119,11 +319,25 @@ describe('ProductionAgentEngineAdapter', () => {
         directive: { kind: 'respond', content: 'recovered from overflow' }
       }));
     const adapter = new ProductionAgentEngineAdapter(
-      exactInferenceGateway(inference),
+      exactInferenceGateway(inference, {
+        contextWindowTokens: 8_192,
+        maxOutputTokens: 1_024
+      }),
       exactContracts(fixture.available)
     );
     const signal = new AbortController().signal;
-    const prepared = await adapter.prepare(fixture.input, signal);
+    const overflowInput: AgentTurnInput = {
+      ...fixture.input,
+      messages: [
+        ...Array.from({ length: 40 }, (_, index) => ({
+          kind: 'text' as const,
+          role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
+          content: `overflow history ${String(index)} ${'x'.repeat(500)}`
+        })),
+        { kind: 'text', role: 'user', content: 'LATEST_OVERFLOW_OBJECTIVE' }
+      ]
+    };
+    const prepared = await adapter.prepare(overflowInput, signal);
 
     expect(prepared.modelContext).toMatchObject({ overflowRecoveryPrepared: true });
     await expect(prepared.decide(signal)).resolves.toEqual({
@@ -131,8 +345,11 @@ describe('ProductionAgentEngineAdapter', () => {
       content: 'recovered from overflow'
     });
     expect(inference).toHaveBeenCalledTimes(2);
-    expect(inference.mock.calls[0]![0].messages)
-      .not.toEqual(inference.mock.calls[1]![0].messages);
+    const primaryMessages = inference.mock.calls[0]![0].messages;
+    const recoveryMessages = inference.mock.calls[1]![0].messages;
+    expect(primaryMessages).not.toEqual(recoveryMessages);
+    expect(JSON.stringify(recoveryMessages).length)
+      .toBeLessThan(JSON.stringify(primaryMessages).length);
   });
 
   it('prunes one oversized latest Tool result without separating its committed Directive', async () => {
@@ -148,7 +365,9 @@ describe('ProductionAgentEngineAdapter', () => {
         contextWindowTokens: 32_768,
         maxOutputTokens: 4_096
       }),
-      exactContracts(fixture.available)
+      exactContracts(fixture.available),
+      undefined,
+      exactEffectInputs(fixture)
     );
     const signal = new AbortController().signal;
     const prepared = await adapter.prepare(fixture.input, signal);
@@ -159,8 +378,56 @@ describe('ProductionAgentEngineAdapter', () => {
     });
     await prepared.decide(signal);
     const sent = inference.mock.calls[0]![0].messages;
-    expect(sent.at(-2)?.content).toContain('ariadne.agent-directive.v3');
-    expect(sent.at(-1)?.content).toContain('ariadne.tool-result-pruning.v1');
+    expect(sent.at(-2)?.content).toEqual([
+      expect.objectContaining({ type: 'tool_call' })
+    ]);
+    expect(sent.at(-1)?.content[0]).toMatchObject({
+      type: 'tool_result',
+      effectId: 'effect-0-0',
+      output: {
+        protocol: 'ariadne.tool-result-spill.v1',
+        retrievable: true,
+        locator: {
+          toolName: 'workspace.effect_result_read',
+          input: { effectId: 'effect-0-0', cursor: 0 }
+        }
+      }
+    });
+  });
+
+  it('never publishes a spill locator for cancelled Effects without result payloads', async () => {
+    const fixture = createContinuationFixture([[
+      { status: 'cancelled', result: { reason: 'z'.repeat(100_000) } }
+    ]]);
+    const inference = vi.fn(async () => inferenceResponse({
+      protocol: PROTOCOL,
+      directive: { kind: 'respond', content: 'observed cancellation evidence' }
+    }));
+    const adapter = new ProductionAgentEngineAdapter(
+      exactInferenceGateway(inference, {
+        contextWindowTokens: 32_768,
+        maxOutputTokens: 4_096
+      }),
+      exactContracts(fixture.available),
+      undefined,
+      exactEffectInputs(fixture)
+    );
+    const signal = new AbortController().signal;
+    const prepared = await adapter.prepare(fixture.input, signal);
+
+    await prepared.decide(signal);
+
+    const spill = inference.mock.calls[0]![0].messages.at(-1)!.content[0];
+    expect(spill).toMatchObject({
+      type: 'tool_result',
+      output: {
+        effectId: 'effect-0-0',
+        status: 'cancelled',
+        retrievable: false
+      }
+    });
+    if (spill?.type !== 'tool_result') throw new Error('spill_fixture_invalid');
+    expect(spill.output).not.toHaveProperty('locator');
   });
 
   it('exposes only bounded plan directives and parses plan content without model-owned IDs', async () => {
@@ -193,7 +460,7 @@ describe('ProductionAgentEngineAdapter', () => {
       plan: { summary: 'Build the effect from layered canvas stars.' }
     });
 
-    const prompt = JSON.parse(inference.mock.calls[0]![0].messages[0]!.content);
+    const prompt = JSON.parse(textBlockContent(inference.mock.calls[0]![0].messages[0]!));
     expect(prompt.executionMode).toBe('plan');
     expect(prompt.directiveShapes).toHaveProperty('propose_plan');
     expect(prompt.directiveShapes).not.toHaveProperty('respond');
@@ -201,7 +468,7 @@ describe('ProductionAgentEngineAdapter', () => {
     expect(prompt.directiveShapes).not.toHaveProperty('request_decision');
   });
 
-  it('renders every cumulative causal Effect batch as exact canonical text-only v3 history', async () => {
+  it('renders every cumulative causal Effect batch as native typed Tool history', async () => {
     const fixture = createContinuationFixture([
       [{ status: 'succeeded', result: { z: 2, a: 'first' } }],
       [
@@ -215,7 +482,9 @@ describe('ProductionAgentEngineAdapter', () => {
     }));
     const adapter = new ProductionAgentEngineAdapter(
       exactInferenceGateway(inference),
-      exactContracts(fixture.available)
+      exactContracts(fixture.available),
+      undefined,
+      exactEffectInputs(fixture)
     );
 
     await expect(decide(adapter,
@@ -224,40 +493,71 @@ describe('ProductionAgentEngineAdapter', () => {
     )).resolves.toEqual({ kind: 'respond', content: 'continued exactly' });
 
     const request = inference.mock.calls[0]![0];
-    expect(request).not.toHaveProperty('tools');
-    expect(request.messages.slice(1)).toEqual([
-      { role: 'user', content: 'Write the result under src.' },
-      ...fixture.batches.flatMap((batch) => [
-        {
-          role: 'assistant' as const,
-          content: canonicalTestJson({
-            protocol: PROTOCOL,
-            directive: batch.directive
-          })
-        },
-        {
-          role: 'user' as const,
-          content: canonicalTestJson({
-            protocol: EFFECT_RESULTS_PROTOCOL,
-            sourceDirectiveDigest: batch.sourceDirectiveDigest,
-            results: batch.messages.map((message) => ({
-              effectId: message.effectId,
-              toolCallId: message.toolCallId,
-              status: message.status,
-              result: message.result
-            }))
-          })
-        }
-      ])
-    ]);
+    expect(request.tools).toHaveLength(1);
+    expect(request.messages[1]).toEqual(textRequestMessage('user', 'Write the result under src.'));
+    const exchanges = request.messages.slice(2);
+    expect(exchanges).toHaveLength(fixture.batches.length * 2);
+    fixture.batches.forEach((batch, batchIndex) => {
+      const calls = exchanges[batchIndex * 2]!;
+      const results = exchanges[batchIndex * 2 + 1]!;
+      expect(calls.role).toBe('assistant');
+      expect(results.role).toBe('user');
+      expect(calls.content).toHaveLength(batch.directive.invocations.length);
+      expect(results.content).toHaveLength(batch.messages.length);
+      calls.content.forEach((block, index) => {
+        expect(block).toMatchObject({
+          type: 'tool_call',
+          providerToolName: request.tools[0]!.providerToolName,
+          input: {
+            input: { path: `src/${batch.directive.invocations[index]!.effectId}.txt` },
+            scope: ['src']
+          }
+        });
+        expect(results.content[index]).toMatchObject({
+          type: 'tool_result',
+          effectId: batch.messages[index]!.effectId,
+          status: batch.messages[index]!.status,
+          output: batch.messages[index]!.result,
+          toolCallId: block.type === 'tool_call' ? block.toolCallId : undefined
+        });
+      });
+    });
     expect(request.messages.every((message) => (
       message.role === 'system'
       || message.role === 'user'
       || message.role === 'assistant'
     ))).toBe(true);
-    for (const message of request.messages.slice(2)) {
-      expect(message.content).toBe(canonicalTestJson(JSON.parse(message.content)));
-    }
+  });
+
+  it('fails before Provider I/O when protected Tool input no longer matches the committed digest', async () => {
+    const fixture = createContinuationFixture([[
+      { status: 'succeeded', result: { content: 'result' } }
+    ]]);
+    const inference = vi.fn(async () => inferenceResponse({
+      protocol: PROTOCOL,
+      directive: { kind: 'respond', content: 'must not be used' }
+    }));
+    const adapter = new ProductionAgentEngineAdapter(
+      exactInferenceGateway(inference),
+      exactContracts(fixture.available),
+      undefined,
+      {
+        loadEffectExecutionInput: async (runId, effectId) => ({
+          runId,
+          effectId,
+          inputDigest: digestFor(15),
+          input: { path: 'wrong.ts' }
+        })
+      }
+    );
+
+    await expect(adapter.prepare(
+      fixture.input,
+      new AbortController().signal
+    )).rejects.toMatchObject({
+      providerErrorCode: 'agent_model_binding_unavailable'
+    });
+    expect(inference).not.toHaveBeenCalled();
   });
 
   it('renders a same-Run inbox continuation as exact assistant and user history', async () => {
@@ -276,9 +576,9 @@ describe('ProductionAgentEngineAdapter', () => {
       new AbortController().signal
     )).resolves.toEqual({ kind: 'respond', content: 'continued after steering' });
     expect(inference.mock.calls[0]![0].messages.slice(1)).toEqual([
-      { role: 'user', content: 'Write the result under src.' },
-      { role: 'assistant', content: 'First response.' },
-      { role: 'user', content: 'Apply this additional constraint.' }
+      textRequestMessage('user', 'Write the result under src.'),
+      textRequestMessage('assistant', 'First response.'),
+      textRequestMessage('user', 'Apply this additional constraint.')
     ]);
   });
 
@@ -467,16 +767,20 @@ describe('ProductionAgentEngineAdapter', () => {
 
   it('maps a model Tool request back to the exact pinned identity and authoritative capabilities', async () => {
     const fixture = createFixture();
-    const inference = vi.fn(async () => inferenceResponse({
-      protocol: PROTOCOL,
-      directive: {
-        kind: 'invoke_tools',
-        invocations: [{
-          toolCallId: 'call-v3-1',
-          toolName: fixture.tool.toolName,
-          input: { path: 'src/result.ts' },
-          scope: ['src']
-        }]
+    const inference = vi.fn(async (request: DispatchExactAgentModelInferenceRequest) => ({
+      status: 'completed' as const,
+      contentBlocks: [{
+        type: 'tool_call' as const,
+        toolCallId: `native-${'1'.repeat(64)}`,
+        providerToolName: request.tools[0]!.providerToolName,
+        input: { input: { path: 'src/result.ts' }, scope: ['src'] }
+      }],
+      replay: {
+        envelopeVersion: 1 as const,
+        adapter: 'openai-compatible' as const,
+        finishReason: 'tool_calls' as const,
+        requestEnvelopeDigest: `sha256:${'9'.repeat(64)}`,
+        contentBlocksDigest: `sha256:${'8'.repeat(64)}`
       }
     }));
     const adapter = new ProductionAgentEngineAdapter(
@@ -490,14 +794,14 @@ describe('ProductionAgentEngineAdapter', () => {
     )).resolves.toEqual({
       kind: 'invoke_tools',
       invocations: [{
-        toolCallId: 'call-v3-1',
+        toolCallId: `native-${'1'.repeat(64)}`,
         tool: fixture.tool,
         input: { path: 'src/result.ts' },
         capabilityIds: ['workspace.write'],
         scope: ['src']
       }]
     });
-    expect(inference.mock.calls[0]![0]).not.toHaveProperty('tools');
+    expect(inference.mock.calls[0]![0].tools).toHaveLength(1);
   });
 
   it.each([
@@ -512,7 +816,18 @@ describe('ProductionAgentEngineAdapter', () => {
           protocol: PROTOCOL,
           directive: { kind: 'respond', content: 'text' }
         }),
-        nativeToolCallCount: 1
+        contentBlocks: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            protocol: PROTOCOL,
+            directive: { kind: 'respond', content: 'text' }
+          })
+        }, {
+          type: 'tool_call' as const,
+          toolCallId: `native-${'2'.repeat(64)}`,
+          providerToolName: 'not-advertised',
+          input: {}
+        }]
       }
     },
     {
@@ -568,8 +883,12 @@ describe('ProductionAgentEngineAdapter', () => {
     }));
     const contracts: AgentInferenceToolContractReader = {
       readInferenceToolContracts: vi.fn(async () => [{
-        descriptorVersion: 1,
+        descriptorVersion: 2,
         tool: { ...fixture.tool, contractDigest: `sha256:${'f'.repeat(64)}` },
+        model: {
+          description: 'Read one approved Workspace file.',
+          guidance: ['Use the exact Workspace-relative path.']
+        },
         inputSchema: { type: 'object' },
         scopeSemantics: 'all_requested_workspace_scopes_must_be_granted',
         lifecycleSemantics: 'bounded_invocation'
@@ -581,6 +900,40 @@ describe('ProductionAgentEngineAdapter', () => {
     );
 
     await expect(decide(adapter,
+      fixture.input,
+      new AbortController().signal
+    )).rejects.toMatchObject({
+      providerErrorCode: 'agent_tool_contract_unavailable'
+    });
+    expect(inference).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed model semantics before the Provider boundary', async () => {
+    const fixture = createFixture();
+    const inference = vi.fn(async () => inferenceResponse({
+      protocol: PROTOCOL,
+      directive: { kind: 'respond', content: 'must not be used' }
+    }));
+    const contracts = {
+      readInferenceToolContracts: vi.fn(async () => [{
+        descriptorVersion: 2,
+        tool: fixture.tool,
+        model: {
+          description: ' untrusted surrounding whitespace ',
+          guidance: []
+        },
+        inputSchema: { type: 'object' },
+        scopeSemantics: 'all_requested_workspace_scopes_must_be_granted',
+        lifecycleSemantics: 'bounded_invocation'
+      }])
+    } as unknown as AgentInferenceToolContractReader;
+    const adapter = new ProductionAgentEngineAdapter(
+      exactInferenceGateway(inference),
+      contracts
+    );
+
+    await expect(decide(
+      adapter,
       fixture.input,
       new AbortController().signal
     )).rejects.toMatchObject({
@@ -895,6 +1248,38 @@ function createFixture(): {
   };
 }
 
+function withSubagentProviders(input: AgentTurnInput): AgentTurnInput {
+  const subagentProviders = [{
+    providerId: 'external.codex',
+    displayName: 'External Codex worker',
+    configurationDigest: `sha256:${'f'.repeat(64)}`,
+    transport: 'external_process' as const,
+    supportedModes: ['one_shot'] as const,
+    supportsStructuredReport: true,
+    inheritsParentContext: false,
+    usesParentTools: false
+  }];
+  const binding = {
+    ...input.run.binding,
+    bindingVersion: 4 as const,
+    executionProfile: { mode: 'agent' as const, subagentProviders }
+  };
+  const run: AgentRun = {
+    ...input.run,
+    binding,
+    turns: input.run.turns.map((turn) => ({
+      ...turn,
+      intention: {
+        ...turn.intention,
+        bindingVersion: 4 as const,
+        executionProfile: binding.executionProfile
+      }
+    }))
+  };
+  assertValidAgentRun(run);
+  return { ...input, run };
+}
+
 function createPlanFixture(): ReturnType<typeof createFixture> {
   const fixture = createFixture();
   const binding = {
@@ -1065,8 +1450,12 @@ function exactContracts(
 } {
   return {
     readInferenceToolContracts: vi.fn(async () => [{
-      descriptorVersion: 1 as const,
+      descriptorVersion: 2 as const,
       tool: available.tool,
+      model: {
+        description: 'Read one approved Workspace file.',
+        guidance: ['Use the exact Workspace-relative path.']
+      },
       inputSchema: {
         type: 'object',
         properties: { path: { type: 'string' } },
@@ -1079,11 +1468,54 @@ function exactContracts(
   };
 }
 
+function exactEffectInputs(
+  fixture: ContinuationFixture
+): AgentEffectExecutionInputReader {
+  const invocations = fixture.batches.flatMap((batch) => batch.directive.invocations);
+  return {
+    loadEffectExecutionInput: async (runId, effectId) => {
+      const invocation = invocations.find((candidate) => candidate.effectId === effectId);
+      if (runId !== fixture.input.run.runId || invocation === undefined) {
+        throw new Error('effect_input_fixture_missing');
+      }
+      return {
+        runId,
+        effectId,
+        inputDigest: invocation.inputDigest,
+        input: { path: `src/${effectId}.txt` }
+      };
+    }
+  };
+}
+
+function textRequestMessage(
+  role: 'system' | 'user' | 'assistant',
+  text: string
+): DispatchExactAgentModelInferenceRequest['messages'][number] {
+  return { role, content: [{ type: 'text', text }] };
+}
+
+function textBlockContent(
+  message: DispatchExactAgentModelInferenceRequest['messages'][number]
+): string {
+  if (
+    message.content.length !== 1
+    || message.content[0]?.type !== 'text'
+  ) throw new Error('text_request_message_expected');
+  return message.content[0].text;
+}
+
 function inferenceResponse(content: unknown): ExactAgentModelInferenceResult {
   return {
     status: 'completed',
-    content: JSON.stringify(content),
-    nativeToolCallCount: 0
+    contentBlocks: [{ type: 'text', text: JSON.stringify(content) }],
+    replay: {
+      envelopeVersion: 1,
+      adapter: 'openai-compatible',
+      finishReason: 'stop',
+      requestEnvelopeDigest: `sha256:${'9'.repeat(64)}`,
+      contentBlocksDigest: `sha256:${'8'.repeat(64)}`
+    }
   };
 }
 

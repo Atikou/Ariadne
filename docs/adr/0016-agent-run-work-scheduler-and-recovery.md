@@ -52,8 +52,10 @@ already implements the exact `AgentEffectExecutor` dispatch port. Name-only,
 latest-revision, legacy Registry, or default Tool fallback is prohibited.
 
 Before follow-up inference, startup verifies the protected Turn input, exact
-Tool Catalog, and exact model binding. Old active Runs whose referenced
-authorities cannot be restored block startup rather than being rebound.
+Tool Catalog, and exact model binding. Per ADR-0027, an otherwise valid active
+Run whose exact Tool Catalog is no longer shipped is durably retired without
+rebinding; missing model/SubAgent authority and authority drift still block
+startup.
 
 ### Recovery of started work
 
@@ -103,8 +105,8 @@ No external I/O continues after its owning scheduler has joined.
 
 - Timer cadence and process memory do not determine whether work exists.
 - Started external work always becomes explicit recovery, never blind replay.
-- Safe production startup now depends on restoring exact historical Tool and
-  model authorities.
+- Safe production startup restores exact current Tool/model authority and
+  durably retires valid Runs pinned to a no-longer-shipped Tool Catalog.
 - Effect execution may remain pending across a clean shutdown and resume from
   the authorized state at the next startup.
 
@@ -126,8 +128,9 @@ No external I/O continues after its owning scheduler has joined.
 - `AgentRunWorkScheduler` performs full-page startup scans, exact authority
   preflight, startup-only started-work recovery, optimistic-conflict rescans,
   dirty-wake fixed points, health latching, and deadline-bounded shutdown.
-- `ProductionAgentRunWorkAuthorityVerifier` rejects unavailable historical
-  model or Tool authorities before Provider or Tool I/O.
+- `ProductionAgentRunWorkAuthorityVerifier` distinguishes an intentionally
+  retired exact Tool Catalog from unavailable model/SubAgent authority or
+  binding drift. Only the first case enters ADR-0027 migration.
 - `AgentStartedWorkRecoveryCoordinator` records stable uncertain Effect or
   inference recovery facts without repeating external I/O.
 - Initial inference settlement and Decision resolution wake the same scheduler;

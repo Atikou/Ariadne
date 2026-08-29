@@ -10,7 +10,7 @@ import type { ToolPermission } from "../core/permissions.js";
 import type { RunBudget } from "../agent/RunPolicyPrimitives.js";
 import type { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { TraceLogger } from "../trace/TraceLogger.js";
-import type { NotificationQueue } from "../background/NotificationQueue.js";
+import type { NotificationQueue } from '../notifications/NotificationQueue.js';
 import { toModelSelection } from "./modelSelection.js";
 import { enqueueSubAgentCompletionNotification } from "./notifyCompletion.js";
 import { runLightweightTextTask, runSingleShotReview } from "./singleShot.js";

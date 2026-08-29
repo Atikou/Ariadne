@@ -19,6 +19,9 @@ import {
   SqliteAgentRunUnitOfWork
 } from '../src/adapters/persistence/SqliteAgentRunUnitOfWork.js';
 import {
+  AgentRetiredToolCatalogTerminalizationCoordinator
+} from '../src/control/execution/AgentRetiredToolCatalogTerminalizationCoordinator.js';
+import {
   resolveAgentControlDatabasePath
 } from '../src/adapters/persistence/agentControlDbSchema.js';
 import { createShutdownContext } from '../src/ingress/ShutdownContext.js';
@@ -35,6 +38,82 @@ afterEach(async () => {
 });
 
 describe('ADR-0009 Plan/Budget/ordinary child Run SQLite slice', () => {
+  it('retires a delegated Child through the canonical Parent terminal observation', async () => {
+    const root = createRoot();
+    const unit = openUnit(root);
+    const commands = new AgentRunCommandService(unit);
+    const control = new AgentPlanBudgetChildRunService(unit);
+    const retirement = new AgentRetiredToolCatalogTerminalizationCoordinator(unit);
+    await startRunningRoot(commands, 'run-retired-parent');
+    const objective: AgentControlJsonValue = { task: 'retired child' };
+    await control.delegateChildren({
+      kind: 'control.children.delegate',
+      commandId: 'command-delegate-retired-child',
+      runId: 'run-retired-parent',
+      expectedVersion: 2,
+      occurredAt: at(2),
+      children: [{
+        delegationId: 'delegation-retired-child',
+        runId: 'run-retired-child',
+        binding: await childBinding(
+          'run-retired-parent',
+          'run-retired-child',
+          'delegation-retired-child',
+          objective,
+          budget(2, 2, 2, 0, 0, 100)
+        ),
+        objective,
+        required: true
+      }]
+    });
+    await commands.execute({
+      kind: 'run.begin',
+      commandId: 'command-begin-retired-child',
+      runId: 'run-retired-child',
+      expectedVersion: 1,
+      occurredAt: at(3)
+    }, checkpoint(1, at(3), 'retired-child-running'));
+    const child = await unit.transaction((transaction) => (
+      transaction.loadRun('run-retired-child')
+    ));
+    if (child === null) throw new Error('retired_child_fixture_missing');
+
+    await expect(retirement.terminalize(
+      child,
+      new AbortController().signal
+    )).resolves.toMatchObject({
+      runId: 'run-retired-child',
+      runVersion: 3,
+      status: 'failed',
+      reason: 'tool_catalog_retired'
+    });
+    const parentAfterChild = await unit.transaction((transaction) => (
+      transaction.loadRun('run-retired-parent')
+    ));
+    expect(parentAfterChild?.state.status).toBe('running');
+    const delegation = await unit.transaction((transaction) => (
+      transaction.loadDelegationByChild?.('run-retired-child')
+    ));
+    expect(delegation?.terminal).toMatchObject({
+      childRunVersion: 3,
+      childStatus: 'failed'
+    });
+    const budgetSnapshot = await unit.transaction((transaction) => (
+      transaction.loadBudgetSnapshot?.('grant-run-retired-parent')
+    ));
+    expect(budgetSnapshot?.openReservations).toEqual([]);
+
+    if (parentAfterChild === null) throw new Error('retired_parent_fixture_missing');
+    await expect(retirement.terminalize(
+      parentAfterChild,
+      new AbortController().signal
+    )).resolves.toMatchObject({
+      runId: 'run-retired-parent',
+      status: 'failed',
+      errorCode: 'agent_tool_catalog_retired'
+    });
+  });
+
   it('commits exact Plan approval, durable Budget, parent plus N children, replay, and out-of-order terminal propagation', async () => {
     const root = createRoot();
     let unit = openUnit(root);
@@ -736,7 +815,9 @@ async function childBinding(
       kind: 'parent_delegation',
       parentRunId,
       delegationId,
-      objectiveDigest: await sha256AgentControlData(objective)
+      objectiveDigest: await sha256AgentControlData(objective),
+      providerId: 'ariadne.in_process',
+      mode: 'one_shot'
     },
     workspace: { ...parent.workspace, scopeIds: [...parent.workspace.scopeIds] },
     capabilities: parent.capabilities.map((item) => ({

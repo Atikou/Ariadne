@@ -389,14 +389,16 @@ async function replayProjectedAgentResult(
     || event.occurredAt !== receipt.committedAt
   ) throw storageCorruption('Projected Agent result receipt and event binding differs.');
 
-  const [currentSession, messageHead, messageVersion, committedHandoff] = await Promise.all([
+  const [currentSession, exactSession, messageHead, messageVersion, committedHandoff] = await Promise.all([
     transaction.loadSession(receipt.sessionId),
+    transaction.loadSessionVersion(receipt.sessionId, receipt.resultingSessionVersion),
     transaction.loadMessageHead(receipt.messageId),
     transaction.loadMessageVersion(receipt.messageId, receipt.messageVersion),
     transaction.loadCommittedCommand(receipt.handoffCommandId)
   ]);
   if (
     currentSession === null
+    || exactSession === null
     || messageHead === null
     || messageVersion === null
     || committedHandoff === null
@@ -412,6 +414,10 @@ async function replayProjectedAgentResult(
     currentSession.sessionId !== receipt.sessionId
     || currentSession.workspaceId !== receipt.workspaceId
     || currentSession.version < receipt.resultingSessionVersion
+    || exactSession.sessionId !== receipt.sessionId
+    || exactSession.workspaceId !== receipt.workspaceId
+    || exactSession.version !== receipt.resultingSessionVersion
+    || exactSession.updatedAt !== receipt.committedAt
     || messageHead.messageId !== receipt.messageId
     || messageHead.sessionId !== receipt.sessionId
     || messageHead.workspaceId !== receipt.workspaceId
@@ -437,13 +443,7 @@ async function replayProjectedAgentResult(
   ) throw storageCorruption('Projected Agent result replay artifacts differ from the command.');
 
   return {
-    session: {
-      sessionId: receipt.sessionId,
-      workspaceId: receipt.workspaceId,
-      version: receipt.resultingSessionVersion,
-      createdAt: currentSession.createdAt,
-      updatedAt: receipt.committedAt
-    },
+    session: exactSession,
     messageHead: {
       messageId: receipt.messageId,
       sessionId: receipt.sessionId,

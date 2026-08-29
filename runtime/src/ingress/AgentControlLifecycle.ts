@@ -15,7 +15,21 @@ import type { RuntimePublicEventSink } from './RuntimePublicEventSink.js';
 import type {
   ExactAgentModelInferenceRuntime
 } from '../control/ports/AgentModelInference.js';
-import type { RuntimeCapabilityManifest } from './RuntimeCapabilityManifest.js';
+import type { AgentToolCatalogSnapshot } from '../control/ports/AgentToolExecution.js';
+import type { AgentRuntimeTelemetry } from '../control/ports/AgentLifecycleObservability.js';
+import type { AgentControlLiveWorkService } from '../control/ports/AgentLiveWork.js';
+import type { AgentProcessSandbox } from '../control/ports/AgentProcessSandbox.js';
+import type { AgentInstructionAssemblyService } from '../control/ports/AgentInstructionAssembly.js';
+import type { AgentLifecycleHookService } from '../control/ports/AgentLifecycleHooks.js';
+
+/** Provider-composed services consumed by Agent Control after Store creation. */
+export interface AgentControlRuntimeServices {
+  readonly instructionAssembly: AgentInstructionAssemblyService;
+  readonly lifecycleHooks: AgentLifecycleHookService;
+  readonly telemetry?: AgentRuntimeTelemetry;
+  readonly liveWorkLifecycle?: AgentControlLiveWorkService;
+  readonly processSandboxForWorkspace?: (workspaceRoot: string) => AgentProcessSandbox;
+}
 
 export interface AgentControlRuntimeLifecycle {
   readonly schemaVersion: number;
@@ -43,6 +57,8 @@ export interface AgentControlRuntimeFactoryInput {
   readonly agentAdmissionAuthoritySource: AgentAdmissionAuthoritySource;
   /** Immutable Provider transport snapshot paired with the authority revision. */
   readonly modelProviders: RuntimeBootstrap['modelProviders'];
+  /** Frozen, enabled external SubAgent backends supplied by Main. */
+  readonly subagentProviders?: RuntimeBootstrap['subagentProviders'];
   /** Exact Workspace roots used by the first-party executable Tool Catalog. */
   readonly workspaces?: RuntimeBootstrap['workspaces'];
   /** Exact immutable extension policy snapshot supplied by Main. */
@@ -56,8 +72,10 @@ export interface AgentControlRuntimeFactoryInput {
   /** Composition-gated queue for non-authoritative Projection wake hints. */
   readonly publicEventSink: RuntimePublicEventSink;
   readonly hostCapabilities: HostCapabilityClient;
-  /** The one bootstrap-compiled capability truth shared with Runtime Kernel. */
-  readonly capabilityManifest: RuntimeCapabilityManifest;
+  /** The immutable Tool Catalog compiled from the same Provider graph as Runtime status. */
+  readonly agentToolCatalogSnapshots?: readonly AgentToolCatalogSnapshot[];
+  /** One typed bundle assembled by a service-consuming Capability Provider. */
+  readonly runtimeServices?: AgentControlRuntimeServices;
 }
 
 /**

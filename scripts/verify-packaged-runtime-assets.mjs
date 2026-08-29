@@ -18,6 +18,17 @@ const runner = path.join(resourcesRoot, 'runtime-runner', 'node.exe');
 const runnerManifest = path.join(resourcesRoot, 'runtime-runner', '.ariadne-node-runtime.json');
 const runtimeEntry = path.join(runtimeRoot, 'dist', 'entry', 'runtime-process.js');
 const headlessEntry = path.join(runtimeRoot, 'dist', 'entry', 'headless.js');
+const toolArtifactVerifier = path.join(
+  runtimeRoot,
+  'dist',
+  'cli',
+  'verify-first-party-tool-artifacts.js'
+);
+const toolArtifactManifest = path.join(
+  runtimeRoot,
+  'config',
+  'first-party-tool-artifacts.json'
+);
 const sandboxRoot = path.join(runtimeRoot, '.runtime', 'windows-sandbox');
 const sandboxHelper = path.join(sandboxRoot, 'Ariadne.WindowsSandbox.exe');
 const sandboxManifestFile = path.join(
@@ -37,6 +48,8 @@ for (const file of [
   runnerManifest,
   runtimeEntry,
   headlessEntry,
+  toolArtifactVerifier,
+  toolArtifactManifest,
   sandboxHelper,
   sandboxManifestFile,
   python,
@@ -59,6 +72,8 @@ assert(
 const nodeVersion = run(runner, ['--version']).trim();
 const expectedNodeVersion = readJson(runnerManifest).version;
 assert(nodeVersion === `v${expectedNodeVersion}`, 'Packaged Node runner version mismatch.');
+
+run(runner, [toolArtifactVerifier]);
 
 run(python, [
   '-c',

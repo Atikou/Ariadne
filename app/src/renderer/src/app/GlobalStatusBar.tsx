@@ -8,11 +8,15 @@ export function GlobalStatusBar({ services, saveStatus }: { services: ModuleServ
   const runtime = useRuntimeSnapshot(services.runtime);
   const available = runtime.status.availability === 'ready';
   const activeRun = runtime.runs.find((run) => run.parentRunId === undefined && run.origin === 'agent' && [
-    'queued', 'running', 'waiting_permission', 'waiting_plan_handoff', 'waiting_budget'
+    'queued', 'running', 'waiting_decision', 'waiting_permission', 'waiting_plan_handoff', 'waiting_budget'
   ].includes(run.status));
-  const pendingPermissions = runtime.permissions.filter((request) => request.status === 'pending').length;
+  const pendingDecisions = [
+    ...runtime.permissions,
+    ...runtime.planHandoffs,
+    ...runtime.userQuestions
+  ].filter((request) => request.status === 'pending').length;
   const readyModel = runtime.models.find((model) => model.availability === 'ready');
-  const warningCount = (runtime.lastError ? 1 : 0) + pendingPermissions;
+  const warningCount = (runtime.lastError ? 1 : 0) + pendingDecisions;
 
   return <footer className="global-status-bar"><div>
     <span className={available ? 'is-success' : 'is-danger'} data-runtime-availability={runtime.status.availability}>
@@ -20,7 +24,7 @@ export function GlobalStatusBar({ services, saveStatus }: { services: ModuleServ
     </span>
     <span><Cpu size={11} /> {readyModel?.label ?? '暂无可用模型'}</span>
     <span><Bot size={11} /> {activeRun?.userFacingLabel ?? 'Agent 空闲'}</span>
-    <span><KeyRound size={11} /> {pendingPermissions > 0 ? `${pendingPermissions} 项待确认` : '权限受控'}</span>
+    <span><KeyRound size={11} /> {pendingDecisions > 0 ? `${pendingDecisions} 项待确认` : '权限受控'}</span>
   </div><div>
     <span><Clock3 size={11} /> {new Date(runtime.status.observedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
     {warningCount > 0 && <span className="is-warning"><AlertTriangle size={11} /> {warningCount}</span>}

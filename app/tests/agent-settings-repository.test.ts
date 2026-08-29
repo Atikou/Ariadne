@@ -61,7 +61,13 @@ describe('AgentSettingsRepository', () => {
     await repository.initialize();
 
     const defaults = repository.getView();
-    expect(defaults.schemaVersion).toBe(4);
+    expect(defaults.schemaVersion).toBe(7);
+    expect(defaults.assistant).toEqual({
+      name: 'Ariadne',
+      systemPrompt: expect.any(String),
+      userPersona: ''
+    });
+    expect(defaults.subagentProviders).toEqual([]);
     expect(defaults.revision).toBe(1);
     expect(defaults.routingStrategy).toBe('cloud-first');
     expect(defaults.runtimePolicy).toMatchObject({
@@ -155,6 +161,122 @@ describe('AgentSettingsRepository', () => {
         { rootPath: openedWorkspace, access: 'read' }
       ]
     });
+  });
+
+  it('persists assistant and user personas as Runtime settings', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-assistant-'));
+    temporaryDirectories.push(directory);
+    const file = join(directory, 'settings.toml');
+    const repository = new AgentSettingsRepository(file, cipher);
+    await repository.initialize();
+    const initial = repository.getView();
+
+    const result = await expectApplied(repository.mutate({
+      expectedRevision: initial.revision,
+      operations: [{
+        kind: 'assistant.replace',
+        assistant: {
+          name: '测试助手',
+          systemPrompt: '用简洁、直接的中文回答。',
+          userPersona: '用户是初学者，解释时给出短例子。'
+        }
+      }]
+    }));
+
+    expect(result.effect).toBe('restart_required');
+    expect(result.settings.assistant).toEqual({
+      name: '测试助手',
+      systemPrompt: '用简洁、直接的中文回答。',
+      userPersona: '用户是初学者，解释时给出短例子。'
+    });
+    expect(repository.getRuntimeSettings().assistant).toEqual(result.settings.assistant);
+    const persisted = parseToml(await readFile(file, 'utf8'));
+    expect(persisted).toMatchObject({
+      assistant: { name: '测试助手', userPersona: '用户是初学者，解释时给出短例子。' }
+    });
+    expect(persisted).not.toHaveProperty('assistant.mode');
+  });
+
+  it('migrates schema 6 content mode settings into the direct-answer persona schema', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-assistant-v6-'));
+    temporaryDirectories.push(directory);
+    const file = join(directory, 'settings.toml');
+    const original = new AgentSettingsRepository(file, cipher);
+    await original.initialize();
+    const previousDocument = parseToml(await readFile(file, 'utf8'));
+    previousDocument.schemaVersion = 6;
+    previousDocument.assistant = {
+      mode: 'standard',
+      name: '旧助手',
+      systemPrompt: '保留这段助手人设。'
+    };
+    await writeFile(file, stringifyToml(previousDocument));
+
+    const upgraded = new AgentSettingsRepository(file, cipher);
+    await upgraded.initialize();
+
+    expect(upgraded.getView()).toMatchObject({
+      schemaVersion: 7,
+      revision: 2,
+      assistant: {
+        name: '旧助手',
+        systemPrompt: '保留这段助手人设。',
+        userPersona: ''
+      }
+    });
+    const persisted = parseToml(await readFile(file, 'utf8'));
+    expect(persisted).not.toHaveProperty('assistant.mode');
+    expect((await readdir(directory)).some((name) => name.startsWith('settings.toml.invalid-'))).toBe(false);
+  });
+
+  it('persists frozen ACP SubAgent configuration without serializing credentials', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-acp-'));
+    temporaryDirectories.push(directory);
+    const file = join(directory, 'settings.toml');
+    const repository = new AgentSettingsRepository(file, cipher);
+    await repository.initialize();
+
+    const initial = repository.getView();
+    await expectApplied(repository.mutate({
+      expectedRevision: initial.revision,
+      operations: [{
+        kind: 'subagentProviders.replace',
+        providers: [{
+          kind: 'acp_stdio',
+          providerId: 'external.acp',
+          displayName: 'External ACP',
+          enabled: true,
+          command: join(directory, 'acp-agent.exe'),
+          args: ['serve'],
+          permissionPolicy: 'reject',
+          networkAccess: 'offline',
+          timeoutMs: 60_000,
+          disposeGraceMs: 2_000
+        }]
+      }]
+    }));
+
+    expect(repository.getRuntimeSettings().subagentProviders).toEqual([{
+      kind: 'acp_stdio',
+      providerId: 'external.acp',
+      displayName: 'External ACP',
+      enabled: true,
+      command: join(directory, 'acp-agent.exe'),
+      args: ['serve'],
+      permissionPolicy: 'reject',
+      networkAccess: 'offline',
+      timeoutMs: 60_000,
+      disposeGraceMs: 2_000
+    }]);
+    const serialized = await readFile(file, 'utf8');
+    expect(serialized).toContain('providerId = "external.acp"');
+    expect(serialized).not.toMatch(/apiKey|credential|secret/i);
+
+    const reopened = new AgentSettingsRepository(file, cipher);
+    await reopened.initialize();
+    expect(reopened.getView().subagentProviders).toEqual(
+      repository.getView().subagentProviders
+    );
   });
 
   it('supports an explicit clear action without treating an empty field as a replacement', async () => {
@@ -273,7 +395,7 @@ describe('AgentSettingsRepository', () => {
     await repository.initialize();
     const migrated = repository.getView();
     expect(migrated.routingStrategy).toBe('local-first');
-    expect(migrated.schemaVersion).toBe(4);
+    expect(migrated.schemaVersion).toBe(7);
     expect(migrated.revision).toBe(2);
     expect(migrated.runtimePolicy.embedding).toEqual({ provider: 'lexical' });
     expect(migrated.workspaceAccess).toBe('write');
@@ -314,7 +436,7 @@ describe('AgentSettingsRepository', () => {
     await repository.initialize();
 
     expect(repository.getView()).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 7,
       revision: 2,
       routingStrategy: 'local-first',
       workspaces: [],
@@ -323,6 +445,28 @@ describe('AgentSettingsRepository', () => {
     expect(repository.getRuntimeSettings().providers.openai.apiKey).toBe('legacy-secret');
     expect((await readdir(directory)).some((name) => name.startsWith('agent-settings.json.migrated-'))).toBe(true);
     await expect(readFile(legacyFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('upgrades schema 5 settings with the default assistant profile', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ariadne-agent-settings-schema-5-'));
+    temporaryDirectories.push(directory);
+    const file = join(directory, 'settings.toml');
+    const original = new AgentSettingsRepository(file, cipher);
+    await original.initialize();
+    const previousDocument = parseToml(await readFile(file, 'utf8'));
+    previousDocument.schemaVersion = 5;
+    delete previousDocument.assistant;
+    await writeFile(file, stringifyToml(previousDocument));
+
+    const upgraded = new AgentSettingsRepository(file, cipher);
+    await upgraded.initialize();
+
+    expect(upgraded.getView()).toMatchObject({
+      schemaVersion: 7,
+      revision: 2,
+      assistant: { name: 'Ariadne', userPersona: '' }
+    });
+    expect((await readdir(directory)).some((name) => name.startsWith('settings.toml.invalid-'))).toBe(false);
   });
 
   it('upgrades schema 2 settings without losing encrypted credentials', async () => {
@@ -349,12 +493,12 @@ describe('AgentSettingsRepository', () => {
     const upgraded = new AgentSettingsRepository(file, cipher);
     await upgraded.initialize();
     expect(upgraded.getView()).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 7,
       revision: 2,
       providers: { openai: { apiKeyStatus: 'configured' } }
     });
     expect(upgraded.getRuntimeSettings().providers.openai.apiKey).toBe('schema-two-secret');
-    expect(parseToml(await readFile(file, 'utf8'))).toMatchObject({ schemaVersion: 4, revision: 2 });
+    expect(parseToml(await readFile(file, 'utf8'))).toMatchObject({ schemaVersion: 7, revision: 2 });
     expect((await readdir(directory)).some((name) => name.startsWith('settings.toml.invalid-'))).toBe(false);
   });
 

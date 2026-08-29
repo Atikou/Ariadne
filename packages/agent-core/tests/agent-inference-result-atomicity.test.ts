@@ -37,6 +37,26 @@ const PROVIDER_KEY = 'provider-atomic-result';
 const DEFAULT_TOOLS = [testAvailableTool('workspace.write')];
 
 describe('atomic inference result application', () => {
+  it('settles presentation streaming only after the inference result is durable', async () => {
+    const setup = await admittedSetup({
+      runId: 'run-inference-stream-settlement',
+      permissionMode: 'trusted'
+    });
+    const settle = vi.fn(async () => {
+      expect(setup.unit.loadRun(setup.runId)?.turns[0]?.attempts[0]?.state.status)
+        .toBe('succeeded');
+    });
+    const dispatcher = createDispatcher(setup, {
+      decide: vi.fn(async () => ({ kind: 'respond', content: 'Committed.' })),
+      streamLifecycle: { settle }
+    });
+
+    await dispatcher.dispatch(dispatchRequest('dispatch-stream-settlement', setup.runId));
+
+    expect(settle).toHaveBeenCalledOnce();
+    expect(settle).toHaveBeenCalledWith('committed');
+  });
+
   it('atomically commits a model delegation with one executable ordinary child Run', async () => {
     const setup = await admittedSetup({
       runId: 'run-model-subagent-delegation',
@@ -49,7 +69,8 @@ describe('atomic inference result application', () => {
           kind: 'delegate_subagent' as const,
           subagent: {
             description: 'Inspect the bounded subsystem',
-            prompt: 'Inspect the subsystem and return one concise evidence-backed result.'
+            prompt: 'Inspect the subsystem and return one concise evidence-backed result.',
+            mode: 'one_shot'
           }
         }))
       },
@@ -81,7 +102,9 @@ describe('atomic inference result application', () => {
           kind: 'parent_delegation',
           parentRunId: setup.runId,
           delegationId: directive.delegationId,
-          objectiveDigest: directive.objectiveDigest
+          objectiveDigest: directive.objectiveDigest,
+          mode: 'one_shot',
+          providerId: 'ariadne.in_process'
         },
         budget: { source: { kind: 'parent_allocation', parentRunId: setup.runId } }
       },
@@ -1203,6 +1226,9 @@ function createDispatcher(
   engine: {
     prepare?(input: AgentTurnInput, signal: AbortSignal): Promise<void>;
     decide(input: AgentTurnInput, signal: AbortSignal): Promise<AgentDirective>;
+    streamLifecycle?: {
+      settle(status: 'committed' | 'interrupted'): Promise<void>;
+    };
   },
   unitOfWork: AgentRunUnitOfWork = setup.unit,
   toolAdmissionPolicy: AgentToolAdmissionPolicy = ALLOW_TOOL_ADMISSION_POLICY,
@@ -1230,7 +1256,10 @@ function createDispatcher(
         signal.throwIfAborted();
         return {
           modelContext: [],
-          decide: (decisionSignal: AbortSignal) => engine.decide(input, decisionSignal)
+          decide: (decisionSignal: AbortSignal) => engine.decide(input, decisionSignal),
+          ...(engine.streamLifecycle === undefined
+            ? {}
+            : { streamLifecycle: engine.streamLifecycle })
         };
       }
     },

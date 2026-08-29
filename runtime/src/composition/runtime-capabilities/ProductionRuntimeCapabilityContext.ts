@@ -28,9 +28,19 @@ export function createProductionRuntimeCapabilityStartContext(
     hostCapabilities,
     workspaceBindings: workspaceBindings(input.bootstrap.workspaces),
     authorizedMcpServers: Object.freeze(authorizedMcpServers(input.bootstrap)),
+    services: UNAVAILABLE_SERVICE_SCOPE,
     ...(processSandboxFactory === undefined ? {} : { processSandboxFactory })
   });
 }
+
+const UNAVAILABLE_SERVICE_SCOPE = Object.freeze({
+  required: <T>(_serviceId: string): T => {
+    throw new Error('runtime_capability_service_scope_unbound');
+  },
+  optional: <T>(_serviceId: string): T | undefined => {
+    throw new Error('runtime_capability_service_scope_unbound');
+  }
+});
 
 function createProcessSandboxFactory(
   input: ProductionRuntimeCapabilityManifestInput

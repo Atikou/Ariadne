@@ -1,12 +1,18 @@
+import { createHash } from 'node:crypto';
+
+import { cloneCanonicalAgentToolInput } from '@ariadne/agent-core';
 import type {
   AgentModelSelectionPreference,
   DispatchExactAgentModelInferenceRequest,
   ExactAgentModelContextCapacity,
   ExactAgentModelInferenceRuntime,
-  ExactAgentModelInferenceResult
+  ExactAgentModelInferenceResult,
+  ExactAgentModelInferenceContentBlock,
+  ExactAgentModelInferenceMessage
 } from '../control/ports/AgentModelInference.js';
 import type { RuntimeBootstrap } from '@ariadne/protocol/host';
 import type { LocalModelService } from '../model/local/LocalModelService.js';
+import type { ChatMessage } from '../model/types.js';
 
 export const LOCAL_AGENT_MODEL_PROVIDER_ID = 'ariadne.local' as const;
 
@@ -99,17 +105,114 @@ implements ExactAgentModelInferenceRuntime {
       (candidate) => candidate.name === request.binding.modelId
     );
     if (client === undefined) return { status: 'binding_unavailable' };
-    const response = await client.chat({
-      messages: request.messages.map((message) => ({ ...message })),
+    if (request.messages.some((message) => (
+      message.content.some((block) => block.type === 'image')
+    ))) return { status: 'binding_unavailable' };
+    const exactRequest = {
+      messages: toLocalModelMessages(request.messages),
+      tools: request.tools.map((tool) => ({
+        name: tool.providerToolName,
+        description: tool.description,
+        parameters: structuredClone(tool.inputSchema) as Record<string, unknown>
+      })),
       ...(request.binding.inference === undefined
         ? {}
-        : { inference: structuredClone(request.binding.inference) }),
-      signal: request.signal
-    });
+        : { inference: structuredClone(request.binding.inference) })
+    };
+    const response = await client.chat({ ...exactRequest, signal: request.signal });
+    const toolNames = new Set(request.tools.map((tool) => tool.providerToolName));
+    const toolCallIds = new Set<string>();
+    const contentBlocks: ExactAgentModelInferenceContentBlock[] = [];
+    if (response.reasoningContent !== undefined && response.reasoningContent.length > 0) {
+      contentBlocks.push(Object.freeze({
+        type: 'reasoning',
+        text: response.reasoningContent
+      }));
+    }
+    if (response.content.length > 0) {
+      contentBlocks.push(Object.freeze({ type: 'text', text: response.content }));
+    }
+    for (const [index, call] of response.toolCalls.entries()) {
+      if (!toolNames.has(call.name)) throw new Error('agent_local_model_tool_name_invalid');
+      const toolCallId = digestText(`${String(index)}\u0000${call.id}`).slice(7);
+      const normalizedId = `native-${toolCallId}`;
+      if (toolCallIds.has(normalizedId)) throw new Error('agent_local_model_tool_id_duplicate');
+      toolCallIds.add(normalizedId);
+      contentBlocks.push(Object.freeze({
+        type: 'tool_call',
+        toolCallId: normalizedId,
+        providerToolName: call.name,
+        input: cloneCanonicalAgentToolInput(call.arguments, 'localModel.toolCall.input')
+      }));
+    }
+    const requestEnvelopeDigest = digestText(JSON.stringify(exactRequest));
     return {
       status: 'completed',
-      content: response.content,
-      nativeToolCallCount: response.toolCalls.length
+      contentBlocks: Object.freeze(contentBlocks),
+      replay: Object.freeze({
+        envelopeVersion: 1,
+        adapter: 'embedded-local',
+        finishReason: response.toolCalls.length > 0 ? 'tool_calls' : 'stop',
+        requestEnvelopeDigest,
+        contentBlocksDigest: digestText(JSON.stringify(contentBlocks))
+      }),
+      ...(response.usage?.inputTokens === undefined
+        || response.usage.outputTokens === undefined
+        ? {}
+        : {
+            usage: {
+              inputTokens: response.usage.inputTokens,
+              outputTokens: response.usage.outputTokens
+            }
+          })
     };
   }
+}
+
+function toLocalModelMessages(
+  messages: readonly ExactAgentModelInferenceMessage[]
+): ChatMessage[] {
+  const result: ChatMessage[] = [];
+  for (const message of messages) {
+    const text = message.content
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text)
+      .join('');
+    const toolCalls = message.content.filter((block) => block.type === 'tool_call');
+    const toolResults = message.content.filter((block) => block.type === 'tool_result');
+    if (toolResults.length > 0) {
+      if (message.role !== 'user' || text.length > 0 || toolCalls.length > 0) {
+        throw new Error('agent_local_model_history_invalid');
+      }
+      for (const block of toolResults) {
+        result.push({
+          role: 'tool',
+          toolCallId: block.toolCallId,
+          content: JSON.stringify({ status: block.status, output: block.output })
+        });
+      }
+      continue;
+    }
+    if (message.role === 'system' && toolCalls.length > 0) {
+      throw new Error('agent_local_model_history_invalid');
+    }
+    result.push({
+      role: message.role,
+      content: text,
+      ...(toolCalls.length === 0
+        ? {}
+        : {
+            toolCalls: toolCalls.map((block) => ({
+              id: block.toolCallId,
+              name: block.providerToolName,
+              arguments: structuredClone(block.input)
+            }))
+          })
+    });
+  }
+  return result;
+}
+
+function digestText(value: string): string {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }

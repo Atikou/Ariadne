@@ -1,5 +1,5 @@
-import { readMergeCount } from "../background/NotificationQueue.js";
-import type { AgentNotification } from "../background/types.js";
+import { readMergeCount } from '../notifications/NotificationQueue.js';
+import type { AgentNotification } from '../notifications/types.js';
 
 /** 将安全点消费的通知格式化为可回灌给模型的系统运行态消息。 */
 export function renderNotifications(notes: AgentNotification[]): string {

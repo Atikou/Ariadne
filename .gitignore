@@ -1,12 +1,16 @@
 node_modules/
 out/
 dist/
+Models/
 runtime/.runtime/
 packaging/runtime/node_modules/
 app/.runtime-package/
 runtime/native/**/bin/
 runtime/native/**/obj/
 coverage/
+artifacts/
+__pycache__/
+*.py[cod]
 *.log
 *.tsbuildinfo
 .DS_Store
@@ -17,10 +21,3 @@ Thumbs.db
 smoke-*.log
 diagnostic-*.log
 restore-stderr.log
-artifacts/ariadne-smoke.png
-artifacts/ariadne-loaded.png
-artifacts/ariadne-ui-dark.png
-artifacts/electron-runtime-smoke/
-artifacts/electron-runtime-smoke-final/
-artifacts/deepseek-agent-plan-smoke.json
-artifacts/ariadne-live-*.png

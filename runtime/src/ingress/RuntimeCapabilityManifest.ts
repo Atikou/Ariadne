@@ -6,9 +6,23 @@ import type { ShutdownContext } from './ShutdownContext.js';
 export interface RuntimeCapabilityDefinitionSnapshot {
   readonly id: string;
   readonly contractVersion: string;
-  readonly requires: readonly string[];
-  readonly provides: readonly string[];
+  /** Provider-only ordering constraints that do not masquerade as services. */
+  readonly dependsOn: readonly string[];
+  /** Services this Provider is authorized to consume during start. */
+  readonly consumes: readonly RuntimeCapabilityServiceDependencySnapshot[];
+  /** Actual service instances this Provider may publish. */
+  readonly provides: readonly RuntimeCapabilityServiceProvisionSnapshot[];
   readonly publicCapabilities: readonly RuntimeCapability[];
+}
+
+export interface RuntimeCapabilityServiceDependencySnapshot {
+  readonly serviceId: string;
+  readonly optional: boolean;
+}
+
+export interface RuntimeCapabilityServiceProvisionSnapshot {
+  readonly serviceId: string;
+  readonly optional: boolean;
 }
 
 export interface RuntimeCapabilityProviderSnapshot {

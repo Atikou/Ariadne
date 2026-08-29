@@ -10,6 +10,7 @@ import type {
   ExactAgentModelInferenceRuntime
 } from '../control/ports/AgentModelInference.js';
 import type { RuntimeCapabilityManifest } from './RuntimeCapabilityManifest.js';
+import type { AgentRuntimeTelemetry } from '../control/ports/AgentLifecycleObservability.js';
 
 export interface RuntimeApplicationCommandResult {
   readonly outcome: RuntimeResponse['outcome'];
@@ -38,6 +39,7 @@ export interface RuntimeApplicationFactoryInput {
   readonly hostCapabilities?: HostCapabilityClient;
   readonly emitEvent: (event: RuntimeEventEnvelope) => void;
   readonly runtimeVersion: string;
+  readonly providerTelemetry?: Pick<AgentRuntimeTelemetry, 'recordProviderCall'>;
 }
 
 export interface RuntimeApplicationFactory {

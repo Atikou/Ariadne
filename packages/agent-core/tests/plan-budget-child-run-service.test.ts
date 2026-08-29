@@ -148,7 +148,9 @@ function childBinding(objectiveDigest: string): AgentRunBinding {
       kind: 'parent_delegation',
       parentRunId: 'run-1',
       delegationId: 'delegation-control',
-      objectiveDigest
+      objectiveDigest,
+      mode: 'one_shot',
+      providerId: 'ariadne.in_process'
     },
     budget: {
       grantId: 'grant-run-child-control',

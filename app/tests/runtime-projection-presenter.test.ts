@@ -1,9 +1,16 @@
-import type { PublicDecisionProjectionV3 } from '@ariadne/protocol/public';
+import type {
+  PublicDecisionProjectionV3,
+  PublicInferenceStreamProjectionV3,
+  PublicRunProjectionV3
+} from '@ariadne/protocol/public';
 import { describe, expect, it } from 'vitest';
 
 import {
+  presentInferenceStreamMessage,
   presentPermissionDecision,
-  presentPlanDecision
+  presentPlanDecision,
+  presentRunActivities,
+  presentUserQuestionDecision
 } from '../src/renderer/src/core/runtime/runtime-projection-presenter';
 
 const REQUESTED_AT = '2032-01-01T00:00:00.000Z';
@@ -14,6 +21,83 @@ const ACTION: NonNullable<PublicDecisionProjectionV3['action']> = {
 };
 
 describe('runtime projection Decision presenter', () => {
+  it('uses contract-pinned Tool labels and kinds without inventing result detail', () => {
+    const run: PublicRunProjectionV3 = {
+      runId: 'run-tool-presentation',
+      sessionId: 'session-tool-presentation',
+      sourceMessageId: 'message-tool-presentation',
+      version: 2,
+      title: 'Agent run',
+      status: 'running',
+      label: '正在处理',
+      toolActivities: [{
+        activityId: 'effect-tool-presentation',
+        callId: 'tool-call-public',
+        toolName: 'workspace.write_file',
+        presentation: {
+          kind: 'file_change',
+          label: '写入工作区文件'
+        },
+        status: 'completed',
+        occurredAt: REQUESTED_AT,
+        completedAt: REQUESTED_AT
+      }],
+      inbox: [],
+      interactionMessages: [],
+      updatedAt: REQUESTED_AT,
+      startedAt: REQUESTED_AT
+    };
+
+    expect(presentRunActivities(run)).toEqual([expect.objectContaining({
+      toolName: 'workspace.write_file',
+      title: '写入工作区文件',
+      presentationKind: 'file_change',
+      detailAvailable: false,
+      changedFileCount: 0
+    })]);
+  });
+
+  it('presents only an open exact-attempt stream and keeps reasoning separate', () => {
+    const stream: PublicInferenceStreamProjectionV3 = {
+      inferenceStreamId: 'stream-run-a-turn-a-attempt-a',
+      runId: 'run-a',
+      turnId: 'turn-a',
+      attemptId: 'attempt-a',
+      version: 2,
+      status: 'streaming',
+      retainedFromSequence: 1,
+      finalSequence: 2,
+      chunks: [{
+        sequence: 1,
+        channel: 'reasoning',
+        text: '分析中',
+        observedAt: REQUESTED_AT
+      }, {
+        sequence: 2,
+        channel: 'token',
+        text: '可公开的回答',
+        observedAt: REQUESTED_AT
+      }],
+      updatedAt: REQUESTED_AT
+    };
+    const run = {
+      runId: 'run-a',
+      sessionId: 'session-a'
+    } as PublicRunProjectionV3;
+
+    expect(presentInferenceStreamMessage(stream, run)).toMatchObject({
+      messageId: stream.inferenceStreamId,
+      sessionId: 'session-a',
+      runId: 'run-a',
+      role: 'assistant',
+      content: '可公开的回答',
+      status: 'streaming',
+      reasoning: { content: '分析中', status: 'streaming', source: 'provider' }
+    });
+    expect(presentInferenceStreamMessage({ ...stream, status: 'committed' }, run)).toBeNull();
+    expect(presentInferenceStreamMessage(stream, undefined)).toBeNull();
+  });
+
   it('presents the exact public Tool, capabilities, and resource scopes without the action token', () => {
     const decision: PublicDecisionProjectionV3 = {
       decisionId: 'decision-permission',
@@ -141,5 +225,55 @@ describe('runtime projection Decision presenter', () => {
 
     expect(presentPermissionDecision(terminal)?.actionAvailable).toBe(false);
     expect(presentPermissionDecision(wrongChoices)?.actionAvailable).toBe(false);
+  });
+
+  it('presents a bounded user question and enables only the exact answer action', () => {
+    const decision: PublicDecisionProjectionV3 = {
+      decisionId: 'decision-user-question',
+      runId: 'run-user-question',
+      sessionId: 'session-user-question',
+      version: 1,
+      kind: 'user_question',
+      status: 'pending',
+      presentation: {
+        contractVersion: '1.0',
+        kind: 'user_question',
+        headline: 'Agent needs your input',
+        question: 'Which deployment target should be used?',
+        options: [
+          { optionId: 'local', label: 'Local only' },
+          {
+            optionId: 'remote',
+            label: 'Remote host',
+            description: 'Requires network access.'
+          }
+        ],
+        allowsFreeText: true
+      },
+      requestedAt: REQUESTED_AT,
+      action: {
+        contractVersion: '1.0',
+        actionToken: ACTION.actionToken,
+        choices: ['answer']
+      }
+    };
+
+    expect(presentUserQuestionDecision(decision)).toMatchObject({
+      decisionId: decision.decisionId,
+      prompt: 'Which deployment target should be used?',
+      options: [
+        { optionId: 'local', label: 'Local only' },
+        {
+          optionId: 'remote',
+          label: 'Remote host',
+          description: 'Requires network access.'
+        }
+      ],
+      actionAvailable: true
+    });
+    expect(presentUserQuestionDecision({
+      ...decision,
+      action: { ...decision.action!, choices: ['approve'] }
+    })?.actionAvailable).toBe(false);
   });
 });

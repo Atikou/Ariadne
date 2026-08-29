@@ -1,14 +1,22 @@
 import { createHash } from 'node:crypto';
 
-import type { AgentJsonValue } from '@ariadne/agent-core';
+import type {
+  AgentInferenceUsageAnchorV1,
+  AgentJsonValue
+} from '@ariadne/agent-core';
 
 import type {
   ExactAgentModelContextCapacity,
-  ExactAgentModelInferenceMessage
+  ExactAgentModelInferenceMessage,
+  ExactAgentModelInferenceRequestContentBlock
 } from '../../control/ports/AgentModelInference.js';
+import {
+  compactSemanticContext,
+  SEMANTIC_COMPACTION_PROTOCOL,
+  type SemanticContextCompactionProjection
+} from './DeterministicSemanticContextCompactor.js';
 
-const COMPACTION_PROTOCOL = 'ariadne.context-compaction.v1';
-const TOOL_RESULT_PRUNING_PROTOCOL = 'ariadne.tool-result-pruning.v1';
+const TOOL_RESULT_SPILL_PROTOCOL = 'ariadne.tool-result-spill.v1';
 const PRESSURE_RATIO = 0.8;
 const RECOVERY_RATIO = 0.55;
 const RETAINED_TAIL_RATIO = 0.16;
@@ -23,6 +31,9 @@ export interface V3LongContextPlan {
   readonly modelContext: AgentJsonValue;
   readonly primaryMessages: readonly ExactAgentModelInferenceMessage[];
   readonly overflowRecoveryMessages: readonly ExactAgentModelInferenceMessage[] | null;
+  readonly requestHeaderDigest: string;
+  readonly primaryHeuristicTokens: number;
+  readonly overflowRecoveryHeuristicTokens: number | null;
 }
 
 interface CompactionResult {
@@ -31,6 +42,13 @@ interface CompactionResult {
   readonly omittedMessages: number;
   readonly prunedToolResults: number;
   readonly estimatedTokens: number;
+  readonly heuristicTokens: number;
+  readonly semanticCompaction: SemanticContextCompactionProjection | null;
+}
+
+export interface V3LongContextUsageBaseline {
+  readonly attemptId: string;
+  readonly anchor: AgentInferenceUsageAnchorV1;
 }
 
 /**
@@ -43,14 +61,27 @@ export function planV3LongContext(input: {
   readonly pinnedMessages: readonly ExactAgentModelInferenceMessage[];
   readonly groups: readonly V3ModelContextGroup[];
   readonly capacity: ExactAgentModelContextCapacity;
+  readonly requestHeaderDigest: string;
+  /** Frozen Provider request fields outside messages, such as native Tool schemas. */
+  readonly fixedOverheadTokens?: number;
+  readonly usageBaseline?: V3LongContextUsageBaseline;
 }): V3LongContextPlan {
   assertCapacity(input.capacity);
+  if (!/^sha256:[a-f0-9]{64}$/u.test(input.requestHeaderDigest)) {
+    throw new Error('agent_model_context_request_header_invalid');
+  }
   if (input.pinnedMessages.length === 0 || input.groups.length === 0) {
     throw new Error('agent_model_context_source_invalid');
   }
+  const fixedOverheadTokens = input.fixedOverheadTokens ?? 0;
+  if (!Number.isSafeInteger(fixedOverheadTokens) || fixedOverheadTokens < 0) {
+    throw new Error('agent_model_context_fixed_overhead_invalid');
+  }
   const full = [...input.pinnedMessages, ...input.groups.flatMap((group) => group.messages)];
   const sourceDigest = digestMessages(full);
-  const fullTokens = estimateMessagesTokens(full);
+  const correctionTokens = usageCorrection(input.requestHeaderDigest, input.usageBaseline);
+  const fullHeuristicTokens = estimateMessagesTokens(full) + fixedOverheadTokens;
+  const fullTokens = meteredTokens(full, correctionTokens, fixedOverheadTokens);
   const pressureLimit = Math.min(
     Math.floor(input.capacity.contextWindowTokens * PRESSURE_RATIO),
     input.capacity.contextWindowTokens - input.capacity.maxOutputTokens
@@ -69,9 +100,19 @@ export function planV3LongContext(input: {
         omittedGroups: 0,
         omittedMessages: 0,
         prunedToolResults: 0,
-        estimatedTokens: fullTokens
+        estimatedTokens: fullTokens,
+        heuristicTokens: fullHeuristicTokens,
+        semanticCompaction: null
       }
-    : compact(input.pinnedMessages, input.groups, pressureLimit, input.capacity, 384);
+    : compact(
+        input.pinnedMessages,
+        input.groups,
+        pressureLimit,
+        input.capacity,
+        4_096,
+        correctionTokens,
+        fixedOverheadTokens
+      );
   let recovery: CompactionResult | null = null;
   try {
     recovery = compact(
@@ -79,7 +120,9 @@ export function planV3LongContext(input: {
       input.groups,
       recoveryLimit,
       input.capacity,
-      0
+      1_024,
+      correctionTokens,
+      fixedOverheadTokens
     );
   } catch {
     // A valid primary projection remains usable. Provider overflow will become
@@ -93,6 +136,11 @@ export function planV3LongContext(input: {
     primaryMessages: primary.messages,
     overflowRecoveryMessages: hasDistinctRecovery && recovery !== null
       ? recovery.messages
+      : null,
+    requestHeaderDigest: input.requestHeaderDigest,
+    primaryHeuristicTokens: primary.heuristicTokens,
+    overflowRecoveryHeuristicTokens: hasDistinctRecovery && recovery !== null
+      ? recovery.heuristicTokens
       : null,
     modelContext: {
       format: 'ariadne.model-context',
@@ -108,9 +156,38 @@ export function planV3LongContext(input: {
       pressureThresholdTokens: pressureLimit,
       sourceEstimatedTokens: fullTokens,
       primaryEstimatedTokens: primary.estimatedTokens,
+      fixedOverheadTokens,
+      tokenMeter: input.usageBaseline === undefined
+        ? {
+            protocol: 'ariadne.token-meter.v1',
+            baseline: 'estimated',
+            requestHeaderDigest: input.requestHeaderDigest,
+            correctionTokens: 0
+          }
+        : {
+            protocol: 'ariadne.token-meter.v1',
+            baseline: 'provider_usage',
+            requestHeaderDigest: input.requestHeaderDigest,
+            anchorAttemptId: input.usageBaseline.attemptId,
+            anchorRequestEnvelopeDigest: input.usageBaseline.anchor.requestEnvelopeDigest,
+            anchorEstimatedInputTokens: input.usageBaseline.anchor.estimatedInputTokens,
+            anchorProviderContextInputTokens: contextInputTokens(input.usageBaseline.anchor),
+            correctionTokens
+          },
       omittedGroups: primary.omittedGroups,
       omittedMessages: primary.omittedMessages,
       prunedToolResults: primary.prunedToolResults,
+      semanticCompaction: primary.semanticCompaction === null
+        ? null
+        : {
+            protocol: SEMANTIC_COMPACTION_PROTOCOL,
+            sourceDigest: primary.semanticCompaction.sourceDigest,
+            summaryDigest: primary.semanticCompaction.summaryDigest,
+            sourceItems: primary.semanticCompaction.sourceItems,
+            selectedItems: primary.semanticCompaction.selectedItems,
+            omittedItems: primary.semanticCompaction.omittedItems,
+            summaryCharacters: primary.semanticCompaction.summaryCharacters
+          },
       overflowRecoveryPrepared: hasDistinctRecovery
     }
   };
@@ -121,9 +198,11 @@ function compact(
   groups: readonly V3ModelContextGroup[],
   limit: number,
   capacity: ExactAgentModelContextCapacity,
-  initialExcerptCharacters: 0 | 384
+  initialSummaryCharacters: 1_024 | 4_096,
+  correctionTokens: number,
+  fixedOverheadTokens: number
 ): CompactionResult {
-  const pinnedTokens = estimateMessagesTokens(pinned);
+  const pinnedTokens = meteredTokens(pinned, correctionTokens, fixedOverheadTokens);
   if (pinnedTokens >= limit) throw new Error('agent_model_pinned_context_exceeds_capacity');
   const tailTarget = Math.max(1, Math.floor(capacity.contextWindowTokens * RETAINED_TAIL_RATIO));
   const retained: V3ModelContextGroup[] = [];
@@ -143,14 +222,22 @@ function compact(
     (group) => group.messages
   );
   while (
-    estimateMessagesTokens([...pinned, ...retainedMessages]) >= limit
+    meteredTokens(
+      [...pinned, ...retainedMessages],
+      correctionTokens,
+      fixedOverheadTokens
+    ) >= limit
     && retained.length > 1
   ) {
     retained.shift();
     retainedStart += 1;
     retainedMessages = retained.flatMap((group) => group.messages);
   }
-  if (estimateMessagesTokens([...pinned, ...retainedMessages]) >= limit) {
+  if (meteredTokens(
+    [...pinned, ...retainedMessages],
+    correctionTokens,
+    fixedOverheadTokens
+  ) >= limit) {
     const latest = retained[0]!;
     if (latest.kind !== 'tool_exchange') {
       throw new Error('agent_model_current_objective_exceeds_context_capacity');
@@ -161,15 +248,25 @@ function compact(
   }
 
   const omitted = groups.slice(0, retainedStart);
-  let excerptCharacters: number = initialExcerptCharacters;
-  let manifest = renderCompactionManifest(omitted, excerptCharacters);
-  let messages = [...pinned, manifest, ...retainedMessages];
-  while (estimateMessagesTokens(messages) > limit && excerptCharacters > 0) {
-    excerptCharacters = excerptCharacters === 384 ? 128 : 0;
-    manifest = renderCompactionManifest(omitted, excerptCharacters);
-    messages = [...pinned, manifest, ...retainedMessages];
+  let summaryCharacters: number = initialSummaryCharacters;
+  let semanticCompaction = omitted.length === 0
+    ? null
+    : compactSemanticContext(omitted, summaryCharacters);
+  let messages = [
+    ...pinned,
+    ...(semanticCompaction === null ? [] : [semanticCompaction.message]),
+    ...retainedMessages
+  ];
+  while (
+    meteredTokens(messages, correctionTokens, fixedOverheadTokens) > limit
+    && semanticCompaction !== null
+    && summaryCharacters > 640
+  ) {
+    summaryCharacters = nextSemanticSummaryBudget(summaryCharacters);
+    semanticCompaction = compactSemanticContext(omitted, summaryCharacters);
+    messages = [...pinned, semanticCompaction.message, ...retainedMessages];
   }
-  if (estimateMessagesTokens(messages) > limit) {
+  if (meteredTokens(messages, correctionTokens, fixedOverheadTokens) > limit) {
     throw new Error('agent_model_compacted_context_exceeds_capacity');
   }
   return {
@@ -177,76 +274,137 @@ function compact(
     omittedGroups: omitted.length,
     omittedMessages: omitted.reduce((count, group) => count + group.messages.length, 0),
     prunedToolResults,
-    estimatedTokens: estimateMessagesTokens(messages)
+    estimatedTokens: meteredTokens(messages, correctionTokens, fixedOverheadTokens),
+    heuristicTokens: estimateMessagesTokens(messages) + fixedOverheadTokens,
+    semanticCompaction
   };
 }
 
-function renderCompactionManifest(
-  omitted: readonly V3ModelContextGroup[],
-  excerptCharacters: number
-): ExactAgentModelInferenceMessage {
-  const allEntries = omitted.flatMap((group, groupIndex) => group.messages.map((message) => ({
-    group: groupIndex,
-    groupKind: group.kind,
-    role: message.role,
-    characters: message.content.length,
-    digest: digestText(message.content),
-    ...(excerptCharacters === 0
-      ? {}
-      : { excerpt: boundedExcerpt(message.content, excerptCharacters) })
-  })));
-  const entries = allEntries.length <= 64
-    ? allEntries
-    : [...allEntries.slice(0, 16), ...allEntries.slice(-48)];
-  return {
-    role: 'system',
-    content: JSON.stringify({
-      protocol: COMPACTION_PROTOCOL,
-      statement: 'Earlier causal context was compacted deterministically. Digests identify the protected source messages; retained messages follow in original order.',
-      omittedGroups: omitted.length,
-      omittedMessages: allEntries.length,
-      omittedCharacters: allEntries.reduce((sum, entry) => sum + entry.characters, 0),
-      omittedDigest: digestText(JSON.stringify(allEntries.map((entry) => ({
-        group: entry.group,
-        groupKind: entry.groupKind,
-        role: entry.role,
-        characters: entry.characters,
-        digest: entry.digest
-      })))),
-      sampledMessages: entries.length,
-      entries
-    })
-  };
+function nextSemanticSummaryBudget(current: number): number {
+  if (current > 2_048) return 2_048;
+  if (current > 1_024) return 1_024;
+  if (current > 768) return 768;
+  return 640;
+}
+
+function usageCorrection(
+  requestHeaderDigest: string,
+  baseline: V3LongContextUsageBaseline | undefined
+): number {
+  if (baseline === undefined) return 0;
+  if (baseline.anchor.requestHeaderDigest !== requestHeaderDigest) {
+    throw new Error('agent_model_context_usage_anchor_header_mismatch');
+  }
+  return Math.max(0, contextInputTokens(baseline.anchor) - baseline.anchor.estimatedInputTokens);
+}
+
+function contextInputTokens(anchor: AgentInferenceUsageAnchorV1): number {
+  return anchor.inputTokens
+    + (anchor.cacheReadInputTokens ?? 0)
+    + (anchor.cacheWriteInputTokens ?? 0);
+}
+
+function meteredTokens(
+  messages: readonly ExactAgentModelInferenceMessage[],
+  correctionTokens: number,
+  fixedOverheadTokens = 0
+): number {
+  return Math.max(
+    1,
+    estimateMessagesTokens(messages) + correctionTokens + fixedOverheadTokens
+  );
 }
 
 function pruneToolExchange(
   group: V3ModelContextGroup,
   budgetTokens: number
 ): { readonly messages: readonly ExactAgentModelInferenceMessage[]; readonly prunedToolResults: number } {
+  let prunedToolResults = 0;
   const messages = group.messages.map((message, index) => {
     if (index === 0 || message.role !== 'user') return message;
+    if (message.content.some((block) => block.type !== 'tool_result')) {
+      throw new Error('agent_model_tool_exchange_invalid');
+    }
+    const resultBlocks = message.content as readonly Extract<
+      ExactAgentModelInferenceRequestContentBlock,
+      { readonly type: 'tool_result' }
+    >[];
+    const perResultBudget = Math.max(64, Math.floor(budgetTokens / resultBlocks.length));
+    const content = resultBlocks.map((block) => Object.freeze({
+      ...block,
+      output: renderToolResultSpill(block, perResultBudget)
+    }));
+    prunedToolResults += resultBlocks.length;
     return {
       role: message.role,
-      content: JSON.stringify({
-        protocol: TOOL_RESULT_PRUNING_PROTOCOL,
-        role: message.role,
-        characters: message.content.length,
-        digest: digestText(message.content),
-        excerpt: boundedExcerpt(message.content, Math.max(64, Math.floor(budgetTokens * TOKEN_BYTES / 4)))
-      })
+      content: Object.freeze(content)
     };
   });
   return {
     messages,
-    prunedToolResults: Math.max(0, messages.length - 1)
+    prunedToolResults
   };
+}
+
+function renderToolResultSpill(
+  block: Extract<
+    ExactAgentModelInferenceRequestContentBlock,
+    { readonly type: 'tool_result' }
+  >,
+  budgetTokens: number
+): AgentJsonValue {
+  const serializedOutput = JSON.stringify(block.output);
+  const excerptCharacters = Math.max(
+    32,
+    Math.min(256, Math.floor(budgetTokens * TOKEN_BYTES / 4))
+  );
+  const evidence = {
+    protocol: TOOL_RESULT_SPILL_PROTOCOL,
+    schemaVersion: 1,
+    statement: 'Full protected Tool result remains durable. Retrieve UTF-8 JSON ranges with workspace.effect_result_read using the exact effectId and cursor.',
+    effectId: block.effectId,
+    status: block.status,
+    digest: digestText(serializedOutput),
+    totalBytes: Buffer.byteLength(serializedOutput, 'utf8'),
+    excerpt: boundedExcerpt(serializedOutput, excerptCharacters)
+  };
+  return block.status === 'cancelled'
+    ? { ...evidence, retrievable: false }
+    : {
+        ...evidence,
+        retrievable: true,
+        locator: {
+          toolName: 'workspace.effect_result_read',
+          input: { effectId: block.effectId, cursor: 0 }
+        }
+      };
 }
 
 export function estimateMessagesTokens(
   messages: readonly ExactAgentModelInferenceMessage[]
 ): number {
-  const bytes = new TextEncoder().encode(JSON.stringify(messages)).byteLength;
-  return Math.max(1, Math.ceil(bytes / TOKEN_BYTES) + messages.length * 8);
+  let imageTokens = 0;
+  const metered = messages.map((message) => ({
+    role: message.role,
+    content: message.content.map((block) => {
+      if (block.type !== 'image') return block;
+      imageTokens += 85
+        + Math.ceil(block.width / 512) * Math.ceil(block.height / 512) * 170;
+      return {
+        type: block.type,
+        attachmentId: block.attachmentId,
+        mediaType: block.mediaType,
+        bytes: block.bytes,
+        width: block.width,
+        height: block.height
+      };
+    })
+  }));
+  const bytes = new TextEncoder().encode(JSON.stringify(metered)).byteLength;
+  return Math.max(
+    1,
+    Math.ceil(bytes / TOKEN_BYTES) + messages.length * 8 + imageTokens
+  );
 }
 
 function boundedExcerpt(content: string, characters: number): string {

@@ -67,7 +67,7 @@ class RuntimeKernelApplication implements RuntimeApplication {
         ? 'ready' as const
         : 'unavailable' as const,
       supportsAgent: true,
-      supportsVision: false
+      supportsVision: provider.supportsVision === true
     })));
     const modelRoots = [...new Set(input.bootstrap.modelRoots.map((root) => path.resolve(root)))];
     const primaryModelRoot = modelRoots[0] ?? path.join(input.bootstrap.installRoot, 'Models');
@@ -93,7 +93,11 @@ class RuntimeKernelApplication implements RuntimeApplication {
       new ProductionExactAgentModelInferenceGateway({
         modelProviders: input.bootstrap.modelProviders,
         agentAdmissionAuthoritySource: input.bootstrap.agentAdmissionAuthoritySource,
-        credentialEnvironment: process.env
+        credentialEnvironment: process.env,
+        resiliencePolicy: input.bootstrap.runtimePolicy.providerResilience,
+        ...(input.providerTelemetry === undefined
+          ? {}
+          : { providerTelemetry: input.providerTelemetry })
       }),
       this.localModels,
       input.bootstrap.modelProviders,

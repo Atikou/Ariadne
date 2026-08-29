@@ -113,7 +113,7 @@ drift fail closed before tool I/O.
 - Production routing must fail closed if exact Catalog, authority, executor,
   recovery or composition health checks are unavailable.
 
-## Current implementation status (2026-08-26)
+## Current implementation status (2026-08-29)
 
 The Core contract and the trusted offline Runtime catalog foundation are
 implemented:
@@ -131,6 +131,9 @@ implemented:
   implementation artifact bytes (never `Function.toString()`), sorts entries
   by `toolName`, and derives the catalog digest. Neither a contract digest nor
   a final pinned Tool identity is accepted as registration input.
+- ADR-0026 replaces the former synthetic name/version artifact bytes with a
+  build-generated, runtime-reverified closure of the actual emitted JavaScript
+  modules for every production Tool root.
 - `ImmutableAgentToolCatalog` accepts only the compiler-branded immutable
   snapshot binding document, derived pin, and captured callbacks. It has no
   direct executable-array constructor, self-reported digest, replace-by-name,
@@ -149,9 +152,9 @@ implemented:
   also gates the exact Model/Credential binding before a new Message write.
 - `ProductionAgentEffectExecutionInputReader`, the bounded checkpoint factory,
   Effect scheduler and causal Continuation use the same exact Catalog owner.
-- Real-window Tool/Decision/restart acceptance and durable historical Catalog
-  retention remain release gates; authorities must never reconstruct a
-  snapshot from persisted final digests alone.
+- Real-window Tool/Decision/restart acceptance remains a release gate. ADR-0027
+  chooses durable retirement for a no-longer-shipped Catalog; authorities never
+  reconstruct a snapshot from persisted final digests alone.
 
 ## Verification
 

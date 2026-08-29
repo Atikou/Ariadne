@@ -7,7 +7,10 @@ import type {
   AgentInferenceAttempt,
   AgentTurn
 } from '../domain/turn.js';
-import { cloneAgentRunBinding } from '../domain/run-binding.js';
+import {
+  cloneAgentExecutionProfile,
+  cloneAgentRunBinding
+} from '../domain/run-binding.js';
 import type { AdmitAgentRunCommand } from './commands.js';
 import type { AgentRunEventPayload } from './events.js';
 
@@ -46,7 +49,7 @@ export function admitAgentRun(
       cause: cloneTurnCause(command.turn.cause),
       bindingVersion: binding.bindingVersion,
       ...(binding.bindingVersion === 4
-        ? { executionProfile: { ...binding.executionProfile } }
+        ? { executionProfile: cloneAgentExecutionProfile(binding.executionProfile) }
         : {}),
       sessionId: binding.sessionId,
       objectiveRef: binding.objectiveRef,

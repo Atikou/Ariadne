@@ -40,6 +40,82 @@ afterEach(() => {
 });
 
 describe('Agent Control v3 public projection lifecycle', () => {
+  it('renames, archives, restores, replays and projects one durable Conversation Session', async () => {
+    const root = createRoot();
+    const unit = new SqliteAgentRunUnitOfWork(root);
+    const conversation = new SqliteConversationRunHandoffUnitOfWork(root);
+    const projection = new SqlitePublicProjectionStore(root);
+    const times = [at(0), at(1), at(2), at(3)].map((value) => new Date(value));
+    const control = new ComposedAgentControlRuntime(
+      unit,
+      conversation,
+      projection,
+      undefined,
+      {
+        publishIntervalMs: 60_000,
+        conversationCommandNow: () => times.shift() ?? new Date(at(3))
+      }
+    );
+    const close = closeControl(control);
+    try {
+      await control.start();
+      const create = commandEnvelope({
+        kind: 'conversation.session.create.v3',
+        contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+        sessionId: 'session-lifecycle',
+        workspaceId: 'workspace-lifecycle'
+      }, 'create-session-lifecycle');
+      await expect(control.executeOwnedCommand(create)).resolves.toMatchObject({
+        outcome: { ok: true, result: { kind: 'conversation.session.created.v3', version: 1 } }
+      });
+      const rename = commandEnvelope({
+        kind: 'conversation.session.rename.v3',
+        contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+        sessionId: 'session-lifecycle',
+        workspaceId: 'workspace-lifecycle',
+        expectedSessionVersion: 1,
+        title: 'Durable lifecycle'
+      }, 'rename-session-lifecycle');
+      await expect(control.executeOwnedCommand(rename)).resolves.toMatchObject({
+        outcome: { ok: true, result: { kind: 'conversation.session.updated.v3', version: 2 } }
+      });
+      await expect(control.executeOwnedCommand(commandEnvelope({
+        kind: 'conversation.session.archive.v3',
+        contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+        sessionId: 'session-lifecycle',
+        workspaceId: 'workspace-lifecycle',
+        expectedSessionVersion: 2
+      }, 'archive-session-lifecycle'))).resolves.toMatchObject({
+        outcome: { ok: true, result: { version: 3 } }
+      });
+      await expect.poll(() => projection.snapshot()).toMatchObject({
+        sessions: [{
+          sessionId: 'session-lifecycle',
+          version: 3,
+          title: 'Durable lifecycle',
+          status: 'archived'
+        }]
+      });
+      await expect(control.executeOwnedCommand(commandEnvelope({
+        kind: 'conversation.session.restore.v3',
+        contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+        sessionId: 'session-lifecycle',
+        workspaceId: 'workspace-lifecycle',
+        expectedSessionVersion: 3
+      }, 'restore-session-lifecycle'))).resolves.toMatchObject({
+        outcome: { ok: true, result: { version: 4 } }
+      });
+      await expect(control.executeOwnedCommand(rename)).resolves.toMatchObject({
+        outcome: { ok: true, result: { version: 2 } }
+      });
+      await expect.poll(() => projection.snapshot()).toMatchObject({
+        sessions: [{ version: 4, title: 'Durable lifecycle', status: 'active' }]
+      });
+    } finally {
+      await close();
+    }
+  });
+
   it('cancels a projected Run through the authoritative v3 command path', async () => {
     const root = createRoot();
     const unit = new SqliteAgentRunUnitOfWork(root);

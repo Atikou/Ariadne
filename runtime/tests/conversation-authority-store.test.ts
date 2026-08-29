@@ -18,7 +18,8 @@ import {
   digestConversationMessageContent,
   fingerprintConversationAuthorityCommand,
   type AcceptConversationUserMessageCommand,
-  type CreateConversationSessionCommand
+  type CreateConversationSessionCommand,
+  type MutateConversationSessionCommand
 } from '../src/conversation/ConversationAuthority.js';
 import {
   fingerprintConversationRunHandoffCommand,
@@ -74,6 +75,7 @@ describe('Conversation authority store', () => {
     try {
       expect(tableCounts(database)).toEqual({
         sessions: 1,
+        sessionVersions: 2,
         heads: 1,
         versions: 1,
         commands: 2,
@@ -102,6 +104,78 @@ describe('Conversation authority store', () => {
           AND message.content_digest=saga.objective_digest`
       ).get() as { count: number };
       expect(Number(proof.count)).toBe(1);
+    } finally {
+      database.close();
+    }
+  });
+
+  it('persists exact title and archive versions with CAS and rejects new input while archived', async () => {
+    const root = tempRoot();
+    const unit = track(new SqliteConversationRunHandoffUnitOfWork(root));
+    const authority = new ConversationAuthorityService(unit);
+    const created = await authority.createSession(createSessionCommand());
+    expect(created.session).toMatchObject({
+      version: 1,
+      title: 'Conversation',
+      status: 'active'
+    });
+
+    const renamed = await authority.mutateSession(mutateSessionCommand(
+      'rename-session-authority',
+      'rename-session-event',
+      1,
+      { kind: 'rename', title: 'Durable title' },
+      '2030-01-01T00:00:01.000Z'
+    ));
+    expect(renamed).toMatchObject({ resultingSessionVersion: 2, replayed: false });
+    await expect(authority.mutateSession(mutateSessionCommand(
+      'rename-session-authority',
+      'rename-session-event',
+      1,
+      { kind: 'rename', title: 'Durable title' },
+      '2030-01-01T00:00:01.000Z'
+    ))).resolves.toMatchObject({ resultingSessionVersion: 2, replayed: true });
+
+    await authority.mutateSession(mutateSessionCommand(
+      'archive-session-authority',
+      'archive-session-event',
+      2,
+      { kind: 'set_status', status: 'archived' },
+      '2030-01-01T00:00:02.000Z'
+    ));
+    await expect(authority.acceptUserMessage({
+      ...acceptMessageCommand(),
+      expectedSessionVersion: 3,
+      occurredAt: '2030-01-01T00:00:03.000Z'
+    })).rejects.toMatchObject({ code: 'CONVERSATION_SESSION_ARCHIVED' });
+    await expect(authority.mutateSession(mutateSessionCommand(
+      'stale-restore-session-authority',
+      'stale-restore-session-event',
+      2,
+      { kind: 'set_status', status: 'active' },
+      '2030-01-01T00:00:03.000Z'
+    ))).rejects.toMatchObject({ code: 'CONVERSATION_SESSION_VERSION_CONFLICT' });
+
+    const restored = await authority.mutateSession(mutateSessionCommand(
+      'restore-session-authority',
+      'restore-session-event',
+      3,
+      { kind: 'set_status', status: 'active' },
+      '2030-01-01T00:00:04.000Z'
+    ));
+    expect(restored.resultingSessionVersion).toBe(4);
+
+    const database = new DatabaseSync(resolveConversationDatabasePath(root), { readOnly: true });
+    try {
+      expect(database.prepare(
+        `SELECT version, title, status FROM conversation_session_versions
+         WHERE session_id=? ORDER BY version`
+      ).all('session-authority')).toEqual([
+        { version: 1, title: 'Conversation', status: 'active' },
+        { version: 2, title: 'Durable title', status: 'active' },
+        { version: 3, title: 'Durable title', status: 'archived' },
+        { version: 4, title: 'Durable title', status: 'active' }
+      ]);
     } finally {
       database.close();
     }
@@ -297,6 +371,13 @@ describe('Conversation authority store', () => {
     let authority = new ConversationAuthorityService(unit);
     await authority.createSession(createSessionCommand());
     const committed = await authority.acceptUserMessage(acceptMessageCommand());
+    await authority.mutateSession(mutateSessionCommand(
+      'rename-after-accept-authority',
+      'rename-after-accept-event',
+      2,
+      { kind: 'rename', title: 'Later title' },
+      '2030-01-01T00:00:02.000Z'
+    ));
     await closeUnit(unit);
     units.delete(unit);
 
@@ -306,6 +387,15 @@ describe('Conversation authority store', () => {
     const replay = await authority.acceptUserMessage(acceptMessageCommand());
     expect(createReplay).toMatchObject({ replayed: true, session: { version: 1 } });
     expect(replay.replayed).toBe(true);
+    expect(replay.session).toMatchObject({
+      version: 2,
+      title: 'Conversation',
+      status: 'active'
+    });
+    await expect(unit.readSession('session-authority')).resolves.toMatchObject({
+      version: 3,
+      title: 'Later title'
+    });
     expect(replay.receipt).toEqual(committed.receipt);
     expect(replay.messageVersion).toEqual(committed.messageVersion);
     expect(replay.saga).toEqual(committed.saga);
@@ -414,6 +504,7 @@ function tableCounts(database: DatabaseSync) {
   ).get() as { count: number }).count);
   return {
     sessions: count('conversation_sessions'),
+    sessionVersions: count('conversation_session_versions'),
     heads: count('conversation_message_heads'),
     versions: count('conversation_message_versions'),
     commands: count('conversation_commands'),
@@ -422,6 +513,25 @@ function tableCounts(database: DatabaseSync) {
     handoffCommands: count('conversation_handoff_commands'),
     handoffEvents: count('conversation_handoff_events'),
     handoffOutbox: count('conversation_handoff_outbox')
+  };
+}
+
+function mutateSessionCommand(
+  commandId: string,
+  eventId: string,
+  expectedSessionVersion: number,
+  mutation: MutateConversationSessionCommand['mutation'],
+  occurredAt: string
+): MutateConversationSessionCommand {
+  return {
+    kind: 'conversation.mutate_session',
+    commandId,
+    eventId,
+    sessionId: 'session-authority',
+    workspaceId: 'workspace-authority',
+    expectedSessionVersion,
+    mutation,
+    occurredAt
   };
 }
 

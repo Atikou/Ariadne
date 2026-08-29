@@ -118,7 +118,7 @@ export function projectConversationAuthorityRecordV3(
     aggregateId: event.sessionId,
     aggregateVersion: event.sessionVersion,
     projectedAt: event.occurredAt,
-    dto: projectPublicSession(event, session.createdAt)
+    dto: projectPublicSession(event, session)
   }];
   if (
     event.type === 'conversation.user_message.accepted'
@@ -171,16 +171,16 @@ export function conversationProjectionSourceId(sessionId: string): string {
 
 function projectPublicSession(
   event: ConversationProjectionRecord['event'],
-  createdAt: string
+  session: ConversationProjectionRecord['session']
 ): PublicSessionProjectionV3 {
   return publicSessionProjectionV3Schema.parse({
     sessionId: event.sessionId,
     workspaceId: event.workspaceId,
     version: event.sessionVersion,
-    title: 'Conversation',
+    title: session.title,
     pinned: false,
-    status: 'active',
-    createdAt,
+    status: session.status,
+    createdAt: session.createdAt,
     updatedAt: event.occurredAt
   });
 }
@@ -198,6 +198,16 @@ function projectPublicMessage(
     version: message.version,
     role: message.role,
     content: publicMessageContent(message.payload.content),
+    ...(message.payload.attachments === undefined
+      ? {}
+      : {
+          attachments: message.payload.attachments.map((attachment) => ({
+            ...attachment,
+            ...(attachment.name === undefined
+              ? {}
+              : { name: redactPublicProjectionTextV3(attachment.name).slice(0, 256) })
+          }))
+        }),
     status: 'completed',
     createdAt: message.createdAt,
     updatedAt: message.createdAt

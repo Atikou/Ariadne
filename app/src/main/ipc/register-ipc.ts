@@ -21,14 +21,25 @@ import {
   closeTerminalRequestSchema,
   createTerminalSessionRequestSchema,
   resizeTerminalRequestSchema,
+  agentInputDeliveryOutboxSettleRequestSchema,
+  parseAgentInputDeliveryOutboxStageRequest,
   runtimeDesktopRequestSchema,
   saveLayoutRequestSchema,
   showWindowRequestSchema,
   titleBarThemeSchema,
   userPreferencesSchema,
+  activateSpeechVoiceRequestSchema,
+  cancelSpeechSynthesisRequestSchema,
+  speechSynthesisSegmentRequestSchema,
+  startSpeechRecognitionRequestSchema,
+  stopSpeechRecognitionRequestSchema,
   workspaceDirectoryRequestSchema,
   writeTerminalRequestSchema
 } from '@shared/schemas';
+import {
+  titleBarOverlayForTheme,
+  windowBackgroundForTheme
+} from '../windows/title-bar-appearance';
 import type {
   AgentSettingsMutation,
   AgentSettingsMutationResult,
@@ -41,12 +52,15 @@ import type {
   UserPreferences
 } from '@shared/contract';
 import type { AgentSettingsRepository } from '../persistence/agent-settings-repository';
+import type { AgentInputDeliveryOutbox } from '../persistence/agent-input-delivery-outbox';
 import type { StateRepository } from '../persistence/state-repository';
 import type { SystemCapabilityCatalog } from '../services/system-capabilities';
 import type { TerminalSessionService } from '../services/terminal-service';
 import type { WorkspaceFileService } from '../services/workspace-file-service';
 import type { MainWindowController } from '../windows/main-window';
 import { RuntimeRequestError, type RuntimeSupervisor } from '../runtime/runtime-supervisor';
+import type { SpeechGateway } from '../speech/speech-gateway';
+import type { ActivateSpeechVoiceRequest, SpeechVoiceSummary } from '@shared/contract';
 
 const MAX_LAYOUT_BYTES = 2 * 1024 * 1024;
 
@@ -64,6 +78,9 @@ interface IpcDependencies {
   terminals: TerminalSessionService;
   mainWindow: MainWindowController;
   runtime: RuntimeSupervisor;
+  agentInputDeliveryOutbox: AgentInputDeliveryOutbox;
+  speech: SpeechGateway;
+  activateSpeechVoice(request: ActivateSpeechVoiceRequest): Promise<SpeechVoiceSummary>;
   workspaceFiles: WorkspaceFileService;
   testApprovalNotification(): { shown: boolean; supported: boolean };
 }
@@ -75,13 +92,13 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     dependencies.mainWindow.getPrivilegedRendererContents()
   );
   const terminalWriteListener = createValidatedTerminalListener(dependencies, writeTerminalRequestSchema, (event, request) => {
-    dependencies.terminals.write(event.sender.id, request);
+    return dependencies.terminals.write(event.sender.id, request);
   });
   const terminalResizeListener = createValidatedTerminalListener(dependencies, resizeTerminalRequestSchema, (event, request) => {
-    dependencies.terminals.resize(event.sender.id, request);
+    return dependencies.terminals.resize(event.sender.id, request);
   });
   const terminalCloseListener = createValidatedTerminalListener(dependencies, closeTerminalRequestSchema, (event, request) => {
-    dependencies.terminals.close(event.sender.id, request.sessionId);
+    return dependencies.terminals.close(event.sender.id, request.sessionId);
   });
   const removeRuntimeEvents = dependencies.runtime.onEvent((event) => {
     const parsed = runtimeEventEnvelopeSchema.parse(event);
@@ -93,6 +110,11 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     const parsed = runtimeStatusSchema.parse(status);
     for (const renderer of dependencies.mainWindow.getPrivilegedRendererContents()) {
       renderer.send(IPC_CHANNELS.runtimeStatusChanged, parsed);
+    }
+  });
+  const removeSpeechEvents = dependencies.speech.onEvent((speechEvent) => {
+    for (const renderer of dependencies.mainWindow.getPrivilegedRendererContents()) {
+      renderer.send(IPC_CHANNELS.speechEvent, speechEvent);
     }
   });
 
@@ -182,6 +204,74 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     }
   });
 
+  ipcMain.handle(IPC_CHANNELS.agentInputDeliveryOutboxList, (event) => {
+    trusted(event);
+    return dependencies.agentInputDeliveryOutbox.list();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.agentInputDeliveryOutboxStage, async (event, input: unknown) => {
+    trusted(event);
+    return dependencies.agentInputDeliveryOutbox.stage(
+      parseAgentInputDeliveryOutboxStageRequest(input)
+    );
+  });
+
+  ipcMain.handle(IPC_CHANNELS.agentInputDeliveryOutboxSettle, async (event, input: unknown) => {
+    trusted(event);
+    const request = agentInputDeliveryOutboxSettleRequestSchema.parse(input);
+    await dependencies.agentInputDeliveryOutbox.settle(request.commandId);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.speechStatus, (event) => {
+    trusted(event);
+    return dependencies.speech.getStatus();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.speechStartRecognition, async (event, input: unknown) => {
+    trusted(event);
+    await dependencies.speech.startRecognition(startSpeechRecognitionRequestSchema.parse(input));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.speechStopRecognition, async (event, input: unknown) => {
+    trusted(event);
+    await dependencies.speech.stopRecognition(stopSpeechRecognitionRequestSchema.parse(input));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.speechCancelRecognition, async (event) => {
+    trusted(event);
+    await dependencies.speech.cancelRecognition();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.speechSynthesize, async (event, input: unknown) => {
+    trusted(event);
+    await dependencies.speech.synthesize(speechSynthesisSegmentRequestSchema.parse(input));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.speechCancelSynthesis, async (event, input: unknown) => {
+    trusted(event);
+    await dependencies.speech.cancelSynthesis(cancelSpeechSynthesisRequestSchema.parse(input ?? {}));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.speechVoicePackImport, async (event) => {
+    trusted(event);
+    const window = dependencies.getWindow();
+    if (!window) throw new Error('Main window is unavailable.');
+    const selection = await dialog.showOpenDialog(window, {
+      title: '导入 Ariadne 语音包',
+      buttonLabel: '校验并安装',
+      properties: ['openFile'],
+      filters: [{ name: 'Ariadne Voice Pack', extensions: ['avp'] }]
+    });
+    const archivePath = selection.filePaths[0];
+    if (selection.canceled || !archivePath) return null;
+    return dependencies.speech.installVoicePack(archivePath);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.speechVoiceActivate, async (event, input: unknown) => {
+    trusted(event);
+    return dependencies.activateSpeechVoice(activateSpeechVoiceRequestSchema.parse(input));
+  });
+
   ipcMain.handle(IPC_CHANNELS.systemCapabilityStatuses, async (event) => {
     trusted(event);
     return dependencies.systemCapabilities.getStatuses();
@@ -234,24 +324,21 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     const theme = titleBarThemeSchema.parse(input);
     nativeTheme.themeSource = theme;
     const window = dependencies.getWindow();
-    const backgroundColor = theme === 'dark' ? '#0d0f13' : '#eceef2';
+    const backgroundColor = windowBackgroundForTheme(theme);
     window?.setBackgroundColor(backgroundColor);
-    window?.setTitleBarOverlay({
-      color: theme === 'dark' ? '#111318' : '#f4f5f7',
-      symbolColor: theme === 'dark' ? '#d9dde7' : '#252832',
-      height: 44
-    });
+    window?.setTitleBarOverlay(titleBarOverlayForTheme(theme));
     for (const child of dependencies.mainWindow.getPopoutWindows()) child.setBackgroundColor(backgroundColor);
   });
 
   return () => {
     removeRuntimeEvents();
     removeRuntimeStatuses();
+    removeSpeechEvents();
     ipcMain.removeListener(IPC_CHANNELS.terminalWrite, terminalWriteListener);
     ipcMain.removeListener(IPC_CHANNELS.terminalResize, terminalResizeListener);
     ipcMain.removeListener(IPC_CHANNELS.terminalClose, terminalCloseListener);
     for (const renderer of dependencies.mainWindow.getPrivilegedRendererContents()) {
-      dependencies.terminals.closeOwnedBy(renderer.id);
+      void dependencies.terminals.closeOwnedBy(renderer.id);
     }
     for (const channel of channels) ipcMain.removeHandler(channel);
   };
@@ -301,12 +388,14 @@ function runtimeIpcFailure(error: unknown): Result<never> {
 function createValidatedTerminalListener<T>(
   dependencies: IpcDependencies,
   schema: { parse(input: unknown): T },
-  handle: (event: IpcMainEvent, request: T) => void
+  handle: (event: IpcMainEvent, request: T) => void | Promise<void>
 ): (event: IpcMainEvent, input: unknown) => void {
   return (event, input) => {
     try {
       assertTrustedSender(event, dependencies.mainWindow.getPrivilegedRendererContents());
-      handle(event, schema.parse(input));
+      void Promise.resolve(handle(event, schema.parse(input))).catch((error) => {
+        console.error('Rejected terminal IPC request.', error);
+      });
     } catch (error) {
       console.error('Rejected terminal IPC request.', error);
     }

@@ -1,5 +1,6 @@
 import { app } from 'electron';
 import type {
+  CapabilityAvailability,
   CapabilityStatus,
   GameActivitySnapshot,
   SystemCapability,
@@ -13,6 +14,15 @@ export interface AutoLaunchService {
 
 export interface GameActivityDetector {
   getSnapshot(): Promise<GameActivitySnapshot>;
+}
+
+export interface SpeechCapabilityProvider {
+  getStatus(): {
+    availability: 'available' | 'degraded' | 'disabled' | 'unavailable';
+    capabilities: Array<'stt' | 'tts' | 'kws' | 'voice-pack'>;
+    detail: string;
+  };
+  applyPreferences(previous: UserPreferences['speech'], next: UserPreferences['speech']): Promise<void>;
 }
 
 export class ElectronAutoLaunchService implements AutoLaunchService {
@@ -46,15 +56,23 @@ export class UnavailableGameActivityDetector implements GameActivityDetector {
 export class SystemCapabilityCatalog {
   constructor(
     private readonly autoLaunch: AutoLaunchService,
-    private readonly gameActivity: GameActivityDetector
+    private readonly gameActivity: GameActivityDetector,
+    private readonly speech: SpeechCapabilityProvider
   ) {}
 
   async getStatuses(): Promise<CapabilityStatus[]> {
     const autoLaunch = await this.autoLaunch.getStatus();
+    const speech = this.speech.getStatus();
+    const speechAvailability = speech.availability === 'disabled'
+      ? 'unavailable'
+      : speech.availability;
     const statuses: Record<SystemCapability, CapabilityStatus> = {
       'auto-launch': autoLaunch,
+      'speech.stt': speechStatus('speech.stt', speechAvailability, speech.capabilities.includes('stt'), speech.detail),
+      'speech.tts': speechStatus('speech.tts', speechAvailability, speech.capabilities.includes('tts'), speech.detail),
+      'speech.voice-pack': speechStatus('speech.voice-pack', speechAvailability, speech.capabilities.includes('voice-pack'), speech.detail),
       'wake.shortcut': unavailable('wake.shortcut', 'Global shortcut registration is reserved for a later phase.'),
-      'wake.voice': unavailable('wake.voice', 'Voice wake is reserved for a later phase.'),
+      'wake.voice': speechStatus('wake.voice', speechAvailability, speech.capabilities.includes('kws'), speech.detail),
       'wake.system': unavailable('wake.system', 'System event wake adapters are reserved for a later phase.'),
       'window.attention': {
         capability: 'window.attention',
@@ -74,7 +92,21 @@ export class SystemCapabilityCatalog {
     if (previous.startAtLogin !== next.startAtLogin) {
       await this.autoLaunch.setEnabled(next.startAtLogin);
     }
+    await this.speech.applyPreferences(previous.speech, next.speech);
   }
+}
+
+function speechStatus(
+  capability: Extract<SystemCapability, 'speech.stt' | 'speech.tts' | 'speech.voice-pack' | 'wake.voice'>,
+  availability: CapabilityAvailability,
+  supported: boolean,
+  detail: string
+): CapabilityStatus {
+  return {
+    capability,
+    availability: supported ? availability : 'unavailable',
+    detail
+  };
 }
 
 function unavailable(capability: SystemCapability, detail: string): CapabilityStatus {

@@ -6,6 +6,7 @@ import {
   canonicalPublicProjectionJsonV3,
   type PublicDecisionProjectionV3,
   type PublicDiagnosticProjectionV3,
+  type PublicInferenceStreamProjectionV3,
   type PublicMessageProjectionV3,
   type PublicModelProjectionV3,
   type PublicProjectionChangeV3,
@@ -17,6 +18,10 @@ import {
 } from '@ariadne/protocol/public';
 import { DecisionStore, type DecisionProjectionChange } from './decision-store';
 import { DiagnosticsStore, type DiagnosticsProjectionChange } from './diagnostics-store';
+import {
+  InferenceStreamStore,
+  type InferenceStreamProjectionChange
+} from './inference-stream-store';
 import { MessageStore, type MessageProjectionChange } from './message-store';
 import { ModelStore, type ModelProjectionChange } from './model-store';
 import { RunStore, type RunProjectionChange } from './run-store';
@@ -44,6 +49,7 @@ export interface ProjectionCacheSnapshot {
   readonly decisions: readonly PublicDecisionProjectionV3[];
   readonly models: readonly PublicModelProjectionV3[];
   readonly diagnostics: readonly PublicDiagnosticProjectionV3[];
+  readonly inferenceStreams: readonly PublicInferenceStreamProjectionV3[];
 }
 
 export class ProjectionIntegrityError extends Error {
@@ -60,6 +66,7 @@ export class ProjectionCache {
   readonly decisions = new DecisionStore();
   readonly models = new ModelStore();
   readonly diagnostics = new DiagnosticsStore();
+  readonly inferenceStreams = new InferenceStreamStore();
 
   private readonly listeners = new Set<() => void>();
   private streamId: string | null = null;
@@ -120,6 +127,10 @@ export class ProjectionCache {
         snapshot.diagnostics,
         tombstonesFor(snapshot, 'diagnostics')
       );
+      const preparedInferenceStreams = this.inferenceStreams.prepareSnapshot(
+        snapshot.inferenceStreams,
+        tombstonesFor(snapshot, 'inference_streams')
+      );
 
       this.sessions.commitPrepared(preparedSessions);
       this.messages.commitPrepared(preparedMessages);
@@ -127,6 +138,7 @@ export class ProjectionCache {
       this.decisions.commitPrepared(preparedDecisions);
       this.models.commitPrepared(preparedModels);
       this.diagnostics.commitPrepared(preparedDiagnostics);
+      this.inferenceStreams.commitPrepared(preparedInferenceStreams);
       this.streamId = snapshot.streamId;
       this.cursor = snapshot.cursor;
       this.cursorDigest = snapshot.cursorDigest;
@@ -211,6 +223,9 @@ export class ProjectionCache {
       const preparedDiagnostics = changes.diagnostics.length === 0
         ? null
         : this.diagnostics.prepareChanges(changes.diagnostics);
+      const preparedInferenceStreams = changes.inferenceStreams.length === 0
+        ? null
+        : this.inferenceStreams.prepareChanges(changes.inferenceStreams);
 
       if (preparedSessions) this.sessions.commitPrepared(preparedSessions);
       if (preparedMessages) this.messages.commitPrepared(preparedMessages);
@@ -218,6 +233,9 @@ export class ProjectionCache {
       if (preparedDecisions) this.decisions.commitPrepared(preparedDecisions);
       if (preparedModels) this.models.commitPrepared(preparedModels);
       if (preparedDiagnostics) this.diagnostics.commitPrepared(preparedDiagnostics);
+      if (preparedInferenceStreams) {
+        this.inferenceStreams.commitPrepared(preparedInferenceStreams);
+      }
       this.eventFingerprints = nextEvents;
       for (const entry of batch.commits) {
         this.digestByCursor.set(entry.cursor, entry.cursorDigest);
@@ -239,6 +257,7 @@ export class ProjectionCache {
     this.decisions.clear();
     this.models.clear();
     this.diagnostics.clear();
+    this.inferenceStreams.clear();
     this.streamId = null;
     this.cursor = 0;
     this.cursorDigest = PUBLIC_PROJECTION_GENESIS_DIGEST;
@@ -286,7 +305,8 @@ export class ProjectionCache {
       runs: this.runs.getSnapshot(),
       decisions: this.decisions.getSnapshot(),
       models: this.models.getSnapshot(),
-      diagnostics: this.diagnostics.getSnapshot()
+      diagnostics: this.diagnostics.getSnapshot(),
+      inferenceStreams: this.inferenceStreams.getSnapshot()
     });
   }
 }
@@ -305,6 +325,7 @@ interface CollectedChanges {
   readonly decisions: DecisionProjectionChange[];
   readonly models: ModelProjectionChange[];
   readonly diagnostics: DiagnosticsProjectionChange[];
+  readonly inferenceStreams: InferenceStreamProjectionChange[];
 }
 
 function collectNewChanges(
@@ -317,7 +338,8 @@ function collectNewChanges(
     runs: [],
     decisions: [],
     models: [],
-    diagnostics: []
+    diagnostics: [],
+    inferenceStreams: []
   };
   for (const entry of batch.commits) {
     const fingerprint = canonicalPublicProjectionJsonV3(entry.commit);
@@ -341,7 +363,8 @@ function collectChange(collected: CollectedChanges, change: PublicProjectionChan
     case 'runs': collected.runs.push(change); return;
     case 'decisions': collected.decisions.push(change); return;
     case 'models': collected.models.push(change); return;
-    case 'diagnostics': collected.diagnostics.push(change);
+    case 'diagnostics': collected.diagnostics.push(change); return;
+    case 'inference_streams': collected.inferenceStreams.push(change);
   }
 }
 

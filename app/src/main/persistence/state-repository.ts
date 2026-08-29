@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { SavedLayout, UserPreferences } from '@shared/contract';
-import { persistedStateSchema, createDefaultState, type PersistedState } from './state-schema';
+import { persistedStateSchema, createDefaultState, parsePersistedState, type PersistedState } from './state-schema';
 
 export class StateRepository {
   private state: PersistedState = createDefaultState();
@@ -19,7 +19,7 @@ export class StateRepository {
     }
 
     try {
-      this.state = persistedStateSchema.parse(JSON.parse(raw));
+      this.state = parsePersistedState(JSON.parse(raw));
     } catch {
       await this.backupInvalidState();
       this.state = createDefaultState();

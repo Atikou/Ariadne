@@ -18,7 +18,8 @@ type AgentInboxCommand = Extract<
     readonly kind:
       | 'agent.inbox.enqueue.v3'
       | 'agent.inbox.replace.v3'
-      | 'agent.inbox.remove.v3';
+      | 'agent.inbox.remove.v3'
+      | 'agent.subagent.send.v3';
   }
 >;
 
@@ -57,6 +58,8 @@ export class AgentInboxPublicCommandHandler {
         return this.replace(envelope, command);
       case 'agent.inbox.remove.v3':
         return this.remove(envelope, command);
+      case 'agent.subagent.send.v3':
+        return this.sendToSubagent(envelope, command);
     }
   }
 
@@ -73,7 +76,12 @@ export class AgentInboxPublicCommandHandler {
     );
     if (replayed !== null) return completedInboxResult('enqueued', replayed);
     const run = await this.loadRun(command.runId);
-    if (run === null || run.binding.sessionId !== command.sessionId || isTerminalAgentRun(run)) {
+    if (
+      run === null
+      || run.binding.sessionId !== command.sessionId
+      || run.binding.objectiveRef.kind === 'parent_delegation'
+      || isTerminalAgentRun(run)
+    ) {
       return completedPublicError(
         envelope,
         'agent_inbox_target_unavailable',
@@ -113,6 +121,74 @@ export class AgentInboxPublicCommandHandler {
     });
   }
 
+  private async sendToSubagent(
+    envelope: RuntimeCommandEnvelope,
+    command: Extract<AgentInboxCommand, { readonly kind: 'agent.subagent.send.v3' }>
+  ): Promise<RuntimeApplicationCommandResult> {
+    envelope.signal.throwIfAborted();
+    const replayed = await this.loadCommittedMutation(
+      envelope.commandId,
+      command.childRunId,
+      command.inputId,
+      'inbox.input_enqueued'
+    );
+    if (replayed !== null) {
+      return completedSubagentSendResult(command.parentRunId, replayed);
+    }
+    const authority = await this.unitOfWork.transaction(async (transaction) => ({
+      parent: await transaction.loadRun(command.parentRunId),
+      child: await transaction.loadRun(command.childRunId)
+    }));
+    const { parent, child } = authority;
+    if (
+      parent === null
+      || child === null
+      || isTerminalAgentRun(child)
+      || parent.binding.sessionId !== command.sessionId
+      || child.binding.sessionId !== command.sessionId
+      || parent.state.status !== 'waiting_children'
+      || child.binding.objectiveRef.kind !== 'parent_delegation'
+      || child.binding.objectiveRef.parentRunId !== parent.runId
+      || child.binding.objectiveRef.mode !== 'continuable'
+    ) {
+      return completedPublicError(
+        envelope,
+        'continuable_subagent_target_unavailable',
+        'The direct continuable Child Run is not available for follow-up input.',
+        true
+      );
+    }
+    let result;
+    try {
+      result = await this.commands.execute({
+        kind: 'run.enqueue_inbox_input',
+        commandId: envelope.commandId,
+        runId: child.runId,
+        expectedVersion: child.version,
+        occurredAt: monotonicCommandTime(child.updatedAt, this.now()),
+        input: {
+          inputId: command.inputId,
+          messageId: command.inputId,
+          delivery: 'next_turn',
+          content: command.content,
+          contentDigest: await sha256AgentControlData(command.content)
+        }
+      }, { turnInputPayloads: [], effectPayloads: [] });
+    } catch (error) {
+      const failure = publicRunMutationFailure(envelope, error);
+      if (failure !== null) return failure;
+      throw error;
+    }
+    this.callbacks.wakeWorkScheduler();
+    this.callbacks.wakeProjectionDrain();
+    return completedSubagentSendResult(parent.runId, {
+      runId: result.run.runId,
+      runVersion: result.run.version,
+      inputId: command.inputId,
+      inputVersion: 1
+    });
+  }
+
   private async replace(
     envelope: RuntimeCommandEnvelope,
     command: Extract<AgentInboxCommand, { readonly kind: 'agent.inbox.replace.v3' }>
@@ -126,12 +202,12 @@ export class AgentInboxPublicCommandHandler {
     );
     if (replayed !== null) return completedInboxResult('replaced', replayed);
     const run = await this.loadRun(command.runId);
-    if (run === null) {
+    if (run === null || run.binding.objectiveRef.kind === 'parent_delegation') {
       return completedPublicError(
         envelope,
-        'agent_run_not_found',
-        'The authoritative Agent Run does not exist.',
-        false
+        'agent_inbox_target_unavailable',
+        'The target Agent Run inbox is not available through the generic command.',
+        true
       );
     }
     let result;
@@ -174,12 +250,12 @@ export class AgentInboxPublicCommandHandler {
     );
     if (replayed !== null) return completedInboxResult('removed', replayed);
     const run = await this.loadRun(command.runId);
-    if (run === null) {
+    if (run === null || run.binding.objectiveRef.kind === 'parent_delegation') {
       return completedPublicError(
         envelope,
-        'agent_run_not_found',
-        'The authoritative Agent Run does not exist.',
-        false
+        'agent_inbox_target_unavailable',
+        'The target Agent Run inbox is not available through the generic command.',
+        true
       );
     }
     let result;
@@ -282,4 +358,24 @@ function completedInboxResult(
           inputVersion: receipt.inputVersion ?? 1
         };
   return { outcome: { ok: true, result }, settlement: 'completed' };
+}
+
+function completedSubagentSendResult(
+  parentRunId: string,
+  receipt: AgentInboxMutationReceipt
+): RuntimeApplicationCommandResult {
+  return {
+    outcome: {
+      ok: true,
+      result: {
+        kind: 'agent.subagent.input.sent.v3',
+        parentRunId,
+        childRunId: receipt.runId,
+        childRunVersion: receipt.runVersion,
+        inputId: receipt.inputId,
+        inputVersion: 1
+      }
+    },
+    settlement: 'completed'
+  };
 }

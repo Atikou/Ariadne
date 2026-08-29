@@ -5,7 +5,7 @@
 
 ## Current implementation status (2026-08-26)
 
-`agent-control.db` uses schema version 5 / ledger revision 49. The active
+`agent-control.db` uses schema version 7 / ledger revision 55. The active
 `agent_v3_*` authority tables cover Run, command receipt, Event/Outbox,
 Checkpoint, protected payloads, immutable Plan/Budget, Delegation/Child Run,
 Turn input and durable execution intent. `AgentRunTransaction.commitCommand`
@@ -113,7 +113,7 @@ while a child or external I/O remains non-terminal or uncertain.
 
 - Plan approval, spend, recovery, and parent-child lifecycle become Agent
   Control facts rather than synchronized caches.
-- The multi-Run UoW, schema v5 foundation, Plan/Budget/child Run authority,
+- The multi-Run UoW, schema v7 foundation, Plan/Budget/child Run authority,
   and durable execution-intent ledger are complete. Production
   wiring must use this path and must not introduce another transaction path.
 - Non-empty schema v1-v3 databases fail closed with
@@ -151,5 +151,5 @@ exact command/version foreign-key binding.
 Default Composition owns initial Inference, delegated initial Inference,
 Effect/Child-result continuation and durable recovery scheduling. The one-shot
 ordinary Child provider has production-pipeline integration coverage. Offline
-migration, external/continuable providers and a real process/window SubAgent
+migration, external providers, running-Turn interrupt and a real process/window SubAgent
 smoke remain outside the accepted scope.

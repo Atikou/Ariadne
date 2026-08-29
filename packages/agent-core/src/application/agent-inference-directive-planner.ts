@@ -7,6 +7,7 @@ import {
   type AgentToolInvocationDirective,
   assertValidAgentDirective
 } from '../domain/directive.js';
+import { DEFAULT_AGENT_SUBAGENT_PROVIDER_ID } from '../domain/directive.js';
 import { AgentRunInvariantError } from '../domain/errors.js';
 import {
   type AgentAvailableTool,
@@ -61,11 +62,28 @@ export interface AgentSubagentDelegationPlan {
   readonly childGrantId: string;
   readonly description: string;
   readonly prompt: string;
+  readonly mode: import('../domain/directive.js').AgentSubagentMode;
+  readonly providerId: string;
   readonly objective: AgentControlJsonValue;
   readonly objectiveDigest: string;
   readonly sourceMessages: AgentTurnInputModelData['messages'];
   readonly availableTools: AgentTurnInputModelData['availableTools'];
 }
+
+export interface AgentSubagentProviderSelectionPolicy {
+  select(request: {
+    readonly requestedProviderId: string | undefined;
+    readonly mode: import('../domain/directive.js').AgentSubagentMode;
+    readonly parentRun: AgentRun;
+  }): string | null | Promise<string | null>;
+}
+
+const DEFAULT_SUBAGENT_PROVIDER_SELECTION: AgentSubagentProviderSelectionPolicy = {
+  select: ({ requestedProviderId }) => requestedProviderId === undefined
+    || requestedProviderId === DEFAULT_AGENT_SUBAGENT_PROVIDER_ID
+    ? DEFAULT_AGENT_SUBAGENT_PROVIDER_ID
+    : null
+};
 
 export interface AgentInferenceDirectivePlan {
   readonly result: Extract<
@@ -103,7 +121,9 @@ export class DefaultAgentInferenceDirectivePlanner
 implements AgentInferenceDirectivePlanner {
   public constructor(
     private readonly effectInputDigester: AgentEffectInputDigester,
-    private readonly toolAdmissionPolicy: AgentToolAdmissionPolicy
+    private readonly toolAdmissionPolicy: AgentToolAdmissionPolicy,
+    private readonly subagentProviders: AgentSubagentProviderSelectionPolicy =
+      DEFAULT_SUBAGENT_PROVIDER_SELECTION
   ) {}
 
   public async plan(
@@ -123,6 +143,7 @@ implements AgentInferenceDirectivePlanner {
       agentRunExecutionMode(request.run.binding) === 'plan'
       && request.directive.kind !== 'invoke_tools'
       && request.directive.kind !== 'propose_plan'
+      && request.directive.kind !== 'ask_user'
       && request.directive.kind !== 'checkpoint'
       && request.directive.kind !== 'fail'
     ) {
@@ -331,18 +352,34 @@ implements AgentInferenceDirectivePlanner {
     const delegationId = await deriveStableAgentId('delegation', ...identity);
     const childRunId = await deriveStableAgentId('delegated-run', ...identity);
     const childGrantId = await deriveStableAgentId('delegated-budget', ...identity);
+    const providerId = await this.subagentProviders.select({
+      requestedProviderId: source.subagent.providerId,
+      mode: source.subagent.mode,
+      parentRun: request.run
+    });
+    if (providerId === null) {
+      return deterministicFailure(
+        'AGENT_SUBAGENT_PROVIDER_UNAVAILABLE',
+        'The requested SubAgent provider does not support this delegation mode.'
+      );
+    }
+    assertCanonicalPublicId(providerId, 'subagent.providerId');
     const objective: AgentControlJsonValue = {
       format: 'ariadne.subagent-objective',
-      schemaVersion: 1,
+      schemaVersion: 3,
       description: source.subagent.description,
-      prompt: source.subagent.prompt
+      prompt: source.subagent.prompt,
+      mode: source.subagent.mode,
+      providerId
     };
     const objectiveDigest = await sha256AgentControlData(objective);
     const directive: AgentCommittedDirective = {
       kind: 'delegate_subagent',
       delegationId,
       childRunId,
-      objectiveDigest
+      objectiveDigest,
+      mode: source.subagent.mode,
+      providerId
     };
     return {
       result: {
@@ -359,14 +396,27 @@ implements AgentInferenceDirectivePlanner {
         childGrantId,
         description: source.subagent.description,
         prompt: source.subagent.prompt,
+        mode: source.subagent.mode,
+        providerId,
         objective,
         objectiveDigest,
         sourceMessages: request.messages.map((message) => message.kind === 'text'
           ? { ...message }
-          : {
-              ...message,
-              result: cloneCanonicalAgentToolInput(message.result)
-            }),
+          : message.kind === 'image'
+            ? {
+                ...message,
+                owner: { ...message.owner },
+                attachment: {
+                  ...message.attachment,
+                  ...(message.attachment.originalDimensions === undefined
+                    ? {}
+                    : { originalDimensions: { ...message.attachment.originalDimensions } })
+                }
+              }
+            : {
+                ...message,
+                result: cloneCanonicalAgentToolInput(message.result)
+              }),
         availableTools: request.availableTools.map((tool, index) => (
           cloneAgentAvailableTool(tool, `subagent.availableTools[${String(index)}]`)
         ))
@@ -444,6 +494,49 @@ implements AgentInferenceDirectivePlanner {
             payload,
             createdAt: request.occurredAt
           }]
+        };
+      }
+      case 'ask_user': {
+        const artifactId = await directiveArtifactId(request, 'user-question');
+        const decisionId = await deriveStableAgentId(
+          'user-question-decision',
+          request.resultCommandId,
+          request.run.runId,
+          request.turn.turnId,
+          request.attempt.attemptId
+        );
+        const payload: AgentControlJsonValue = {
+          format: 'ariadne.user-question',
+          schemaVersion: 1,
+          prompt: source.question.prompt,
+          ...(source.question.options === undefined
+            ? {}
+            : {
+                options: source.question.options.map((option) => ({
+                  optionId: option.optionId,
+                  label: option.label,
+                  ...(option.description === undefined
+                    ? {}
+                    : { description: option.description })
+                }))
+              })
+        };
+        const questionDigest = await sha256AgentControlData(payload);
+        return {
+          directive: {
+            kind: 'ask_user',
+            decisionId,
+            questionRef: artifactId,
+            questionDigest
+          },
+          payloads: [{
+            artifactId,
+            kind: 'user_question',
+            contentDigest: questionDigest,
+            payload,
+            recordedAt: request.occurredAt
+          }],
+          planVersions: []
         };
       }
       case 'delegate_subagent':

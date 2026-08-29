@@ -29,11 +29,12 @@ describe('Composer add menu', () => {
     );
 
     expect(menu).toContain('开启计划模式');
+    expect(menu).toContain('添加图片');
     for (const unavailableAction of [
       '文件和文件夹', '目标', 'Documents', 'PDF', 'Spreadsheets',
       'Presentations', 'Template Creator', 'Sites'
     ]) expect(menu).not.toContain(unavailableAction);
-    expect(menu).toContain("if (item.id !== 'plan' || item.disabled) return");
+    expect(menu).toContain("if (item.id === 'image') onAddImages()");
     expect(menu).toContain('onPlanModeChange(!planModeEnabled)');
     expect(menu).toContain('aria-pressed');
     expect(menu).toContain('disabled={item.disabled}');

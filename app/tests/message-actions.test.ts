@@ -35,7 +35,7 @@ describe('chat message actions', () => {
     expect(panel).toContain('const visibleText = formalAnswerVisible ? text');
     expect(panel).not.toContain('text.split(');
     expect(panel).toContain('const message = draft;');
-    expect(panel).toContain('if (!message.trim()');
+    expect(panel).toContain('message.trim().length === 0 && images.length === 0');
     expect(styles).toMatch(/\.message-content\s*\{[^}]*white-space:\s*break-spaces;/);
     expect(styles).toMatch(/\.user-message \.message-content\s*\{[^}]*width:\s*fit-content;/);
   });

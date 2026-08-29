@@ -11,15 +11,16 @@ import {
 /**
  * Independent schema and serialized-ledger format for agent-control.db.
  *
- * Schema version 5 materializes Agent v3 ledger revision 49. It adds the
- * protected per-Turn execution snapshot to the multi-Run command ledger. Every
- * older store requires an explicit offline migration; Runtime never mutates,
- * dual-writes, or reinterprets it during startup.
+ * Schema version 7 materializes Agent v3 ledger revision 55. It persists the
+ * continuable SubAgent lifecycle, durable user questions, and immutable execution-provider identity alongside the protected
+ * per-Turn execution snapshot. Every older store requires an explicit offline
+ * migration; Runtime never mutates, dual-writes, or reinterprets it during
+ * startup.
  */
-export const AGENT_CONTROL_DB_SCHEMA_VERSION = 5;
+export const AGENT_CONTROL_DB_SCHEMA_VERSION = 7;
 
-/** Domain ledger revision materialized by schema version 5. */
-export const AGENT_CONTROL_LEDGER_REVISION = 49;
+/** Domain ledger revision materialized by schema version 7. */
+export const AGENT_CONTROL_LEDGER_REVISION = 55;
 
 export const AGENT_CONTROL_METADATA_KEYS = {
   activeKeyId: 'active_key_id',
@@ -48,6 +49,16 @@ export const AGENT_CONTROL_DB_MIGRATIONS: readonly AgentControlDbMigration[] = [
     version: 5,
     name: 'agent_control_v3_protected_turn_inputs',
     up: addAgentControlSchemaV5
+  },
+  {
+    version: 6,
+    name: 'agent_control_v3_continuable_subagent_waiting_input',
+    up: addAgentControlSchemaV6
+  },
+  {
+    version: 7,
+    name: 'agent_control_v3_durable_user_question',
+    up: addAgentControlSchemaV7
   }
 ];
 interface SchemaObject {
@@ -156,9 +167,11 @@ function createSchema(database: DatabaseSync): void {
   database.exec('BEGIN IMMEDIATE');
   try {
     if (
-      AGENT_CONTROL_DB_MIGRATIONS.length !== 2
+      AGENT_CONTROL_DB_MIGRATIONS.length !== 4
       || AGENT_CONTROL_DB_MIGRATIONS[0]?.version !== 4
-      || AGENT_CONTROL_DB_MIGRATIONS[1]?.version !== AGENT_CONTROL_DB_SCHEMA_VERSION
+      || AGENT_CONTROL_DB_MIGRATIONS[1]?.version !== 5
+      || AGENT_CONTROL_DB_MIGRATIONS[2]?.version !== 6
+      || AGENT_CONTROL_DB_MIGRATIONS[3]?.version !== AGENT_CONTROL_DB_SCHEMA_VERSION
     ) {
       throw new Error('agent_control_migration_definition_invalid');
     }
@@ -196,7 +209,7 @@ function createAgentControlSchemaV4(database: DatabaseSync): void {
         version INTEGER NOT NULL CHECK(version > 0),
         state_status TEXT NOT NULL CHECK(state_status IN (
           'queued', 'running', 'waiting', 'recovering',
-          'waiting_children', 'cancelling',
+          'waiting_children', 'waiting_input', 'cancelling',
           'completed', 'failed', 'cancelled'
         )),
         aggregate_json TEXT NOT NULL CHECK(
@@ -248,7 +261,7 @@ function createAgentControlSchemaV4(database: DatabaseSync): void {
         ON agent_v3_runs(created_at, run_id)
         WHERE state_status IN (
           'queued', 'running', 'waiting', 'recovering',
-          'waiting_children', 'cancelling'
+          'waiting_children', 'waiting_input', 'cancelling'
         );
 
       CREATE TABLE agent_v3_commands (
@@ -811,6 +824,60 @@ function addAgentControlSchemaV5(database: DatabaseSync): void {
     `);
 }
 
+function addAgentControlSchemaV6(database: DatabaseSync): void {
+  database.exec(`
+      CREATE INDEX idx_agent_v3_runs_waiting_input
+        ON agent_v3_runs(updated_at, run_id)
+        WHERE state_status = 'waiting_input';
+    `);
+}
+
+export function addAgentControlSchemaV7(database: DatabaseSync): void {
+  database.exec(`
+      DROP INDEX idx_agent_v3_directive_payloads_run;
+      ALTER TABLE agent_v3_directive_payloads
+        RENAME TO agent_v3_directive_payloads_v6;
+
+      CREATE TABLE agent_v3_directive_payloads (
+        artifact_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        command_id TEXT NOT NULL,
+        run_version INTEGER NOT NULL CHECK(run_version > 0),
+        payload_kind TEXT NOT NULL CHECK(payload_kind IN (
+          'response_content', 'user_question', 'checkpoint_reason',
+          'completion_output', 'failure_message'
+        )),
+        directive_digest TEXT NOT NULL CHECK(
+          length(directive_digest) = 71
+          AND substr(directive_digest, 1, 7) = 'sha256:'
+        ),
+        content_digest TEXT NOT NULL CHECK(
+          length(content_digest) = 71
+          AND substr(content_digest, 1, 7) = 'sha256:'
+        ),
+        codec_id TEXT NOT NULL CHECK(length(codec_id) > 0),
+        payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+        recorded_at TEXT NOT NULL,
+        FOREIGN KEY(command_id, run_id, run_version)
+          REFERENCES agent_v3_command_runs(command_id, run_id, resulting_version)
+          ON DELETE RESTRICT,
+        UNIQUE(command_id, run_id, artifact_id)
+      );
+
+      INSERT INTO agent_v3_directive_payloads(
+        artifact_id, run_id, command_id, run_version, payload_kind,
+        directive_digest, content_digest, codec_id, payload_json, recorded_at
+      )
+      SELECT artifact_id, run_id, command_id, run_version, payload_kind,
+             directive_digest, content_digest, codec_id, payload_json, recorded_at
+      FROM agent_v3_directive_payloads_v6;
+
+      DROP TABLE agent_v3_directive_payloads_v6;
+      CREATE INDEX idx_agent_v3_directive_payloads_run
+        ON agent_v3_directive_payloads(run_id, run_version, artifact_id);
+    `);
+}
+
 function assertAgentControlSchema(database: DatabaseSync): void {
   const version = readUserVersion(database);
   if (version !== AGENT_CONTROL_DB_SCHEMA_VERSION) {
@@ -873,6 +940,8 @@ function createCanonicalSchemaObjects(): readonly SchemaObject[] {
   try {
     createAgentControlSchemaV4(canonical);
     addAgentControlSchemaV5(canonical);
+    addAgentControlSchemaV6(canonical);
+    addAgentControlSchemaV7(canonical);
     return listSchemaObjects(canonical);
   } finally {
     canonical.close();

@@ -8,7 +8,7 @@ import {
   type SqliteOwnerLease
 } from './SqliteOwnerLease.js';
 
-export const CONVERSATION_DB_SCHEMA_VERSION = 2;
+export const CONVERSATION_DB_SCHEMA_VERSION = 3;
 export const CONVERSATION_DB_RELATIVE_PATH = path.join(
   'data',
   'conversation',
@@ -16,7 +16,7 @@ export const CONVERSATION_DB_RELATIVE_PATH = path.join(
 );
 
 const CONVERSATION_SCHEMA_MIGRATION_NAME =
-  'conversation_authority_v2_agent_start_failure';
+  'conversation_authority_v3_session_lifecycle';
 
 interface SchemaObject {
   readonly type: string;
@@ -77,11 +77,15 @@ function initializeOrValidateConversationSchema(database: DatabaseSync): void {
       + String(CONVERSATION_DB_SCHEMA_VERSION)
     );
   }
-  if (version === 1 && CONVERSATION_DB_SCHEMA_VERSION === 2) {
+  if (version === 1) {
     migrateConversationSchemaV1ToV2(database);
-  } else if (version > 0 && version < CONVERSATION_DB_SCHEMA_VERSION) {
+  }
+  const migratedVersion = readUserVersion(database);
+  if (migratedVersion === 2) {
+    migrateConversationSchemaV2ToV3(database);
+  } else if (migratedVersion > 0 && migratedVersion < CONVERSATION_DB_SCHEMA_VERSION) {
     throw new Error(
-      `conversation_offline_migration_required:${String(version)}:`
+      `conversation_offline_migration_required:${String(migratedVersion)}:`
       + String(CONVERSATION_DB_SCHEMA_VERSION)
     );
   }
@@ -96,6 +100,85 @@ function initializeOrValidateConversationSchema(database: DatabaseSync): void {
     createConversationSchema(database);
   }
   assertConversationSchema(database);
+}
+
+function migrateConversationSchemaV2ToV3(database: DatabaseSync): void {
+  const rebuilt = [
+    'conversation_sessions',
+    'conversation_commands',
+    'conversation_events'
+  ] as const;
+  const created = ['conversation_session_versions'] as const;
+  const canonical = new DatabaseSync(':memory:');
+  let definitions: readonly SchemaObject[];
+  try {
+    createConversationSchemaObjects(canonical);
+    definitions = listSchemaObjects(canonical).filter((object) => (
+      rebuilt.includes(object.tableName as typeof rebuilt[number])
+      || created.includes(object.tableName as typeof created[number])
+    ));
+  } finally {
+    canonical.close();
+  }
+  database.exec('PRAGMA foreign_keys = OFF;');
+  database.exec('PRAGMA legacy_alter_table = ON;');
+  database.exec('BEGIN IMMEDIATE;');
+  try {
+    for (const table of rebuilt) {
+      database.exec(`ALTER TABLE ${table} RENAME TO __v2_${table};`);
+    }
+    const oldIndexes = database.prepare(
+      `SELECT name FROM sqlite_schema
+       WHERE type='index' AND tbl_name LIKE '__v2_%' AND sql IS NOT NULL`
+    ).all() as unknown as Array<{ readonly name: string }>;
+    for (const { name } of oldIndexes) database.exec(`DROP INDEX ${quoteIdentifier(name)};`);
+    for (const table of ['conversation_sessions', 'conversation_session_versions',
+      'conversation_commands', 'conversation_events'] as const) {
+      const definition = definitions.find((item) => item.type === 'table' && item.tableName === table);
+      if (definition === undefined) throw new Error(`conversation_v3_definition_missing:${table}`);
+      database.exec(`${definition.sql};`);
+    }
+    database.exec(
+      `INSERT INTO conversation_sessions(
+         session_id, workspace_id, version, created_at, updated_at, title, status
+       )
+       SELECT session_id, workspace_id, version, created_at, updated_at,
+              'Conversation', 'active'
+       FROM __v2_conversation_sessions;`
+    );
+    database.exec(
+      `INSERT INTO conversation_session_versions(
+         session_id, version, workspace_id, title, status, created_at, updated_at
+       )
+       SELECT event.session_id, event.session_version, event.workspace_id,
+              'Conversation', 'active', session.created_at, event.occurred_at
+       FROM __v2_conversation_events AS event
+       INNER JOIN __v2_conversation_sessions AS session
+         ON session.session_id=event.session_id
+       ORDER BY event.session_id, event.session_version;`
+    );
+    for (const table of ['conversation_commands', 'conversation_events'] as const) {
+      const columns = database.prepare(`PRAGMA table_info(${table});`).all() as unknown as Array<{ readonly name: string }>;
+      const names = columns.map((column) => quoteIdentifier(column.name)).join(', ');
+      database.exec(`INSERT INTO ${table}(${names}) SELECT ${names} FROM __v2_${table};`);
+    }
+    for (const table of [...rebuilt].reverse()) database.exec(`DROP TABLE __v2_${table};`);
+    for (const object of definitions.filter((item) => item.type !== 'table')) {
+      database.exec(`${object.sql};`);
+    }
+    database.prepare('DELETE FROM schema_migrations;').run();
+    database.prepare(
+      'INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)'
+    ).run(3, CONVERSATION_SCHEMA_MIGRATION_NAME, new Date().toISOString());
+    database.exec('PRAGMA user_version = 3;');
+    database.exec('COMMIT;');
+  } catch (error) {
+    if (database.isTransaction) database.exec('ROLLBACK;');
+    throw error;
+  } finally {
+    database.exec('PRAGMA legacy_alter_table = OFF;');
+    database.exec('PRAGMA foreign_keys = ON;');
+  }
 }
 
 function migrateConversationSchemaV1ToV2(database: DatabaseSync): void {
@@ -196,11 +279,44 @@ function createConversationSchemaObjects(database: DatabaseSync): void {
       version INTEGER NOT NULL CHECK(version > 0),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT 'Conversation' CHECK(
+        length(title) BETWEEN 1 AND 80 AND trim(title) = title
+      ),
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
       UNIQUE(session_id, workspace_id),
       CHECK(updated_at >= created_at)
     );
     CREATE INDEX idx_conversation_sessions_workspace
       ON conversation_sessions(workspace_id, updated_at DESC);
+
+    CREATE TABLE conversation_session_versions (
+      session_id TEXT NOT NULL CHECK(length(session_id) BETWEEN 1 AND 256),
+      version INTEGER NOT NULL CHECK(version > 0),
+      workspace_id TEXT NOT NULL CHECK(length(workspace_id) BETWEEN 1 AND 256),
+      title TEXT NOT NULL CHECK(
+        length(title) BETWEEN 1 AND 80 AND trim(title) = title
+      ),
+      status TEXT NOT NULL CHECK(status IN ('active', 'archived')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(session_id, version),
+      FOREIGN KEY(session_id, workspace_id)
+        REFERENCES conversation_sessions(session_id, workspace_id)
+        ON DELETE RESTRICT,
+      CHECK(updated_at >= created_at)
+    );
+    CREATE INDEX idx_conversation_session_versions_workspace
+      ON conversation_session_versions(workspace_id, updated_at DESC);
+    CREATE TRIGGER conversation_session_versions_no_update
+    BEFORE UPDATE ON conversation_session_versions
+    BEGIN
+      SELECT RAISE(ABORT, 'conversation_session_version_immutable');
+    END;
+    CREATE TRIGGER conversation_session_versions_no_delete
+    BEFORE DELETE ON conversation_session_versions
+    BEGIN
+      SELECT RAISE(ABORT, 'conversation_session_version_immutable');
+    END;
 
     CREATE TABLE conversation_message_heads (
       message_id TEXT PRIMARY KEY CHECK(length(message_id) BETWEEN 1 AND 256),
@@ -261,7 +377,8 @@ function createConversationSchemaObjects(database: DatabaseSync): void {
     CREATE TABLE conversation_commands (
       command_id TEXT PRIMARY KEY CHECK(length(command_id) BETWEEN 1 AND 256),
       command_kind TEXT NOT NULL CHECK(command_kind IN (
-        'conversation.create_session', 'conversation.accept_user_message',
+        'conversation.create_session', 'conversation.mutate_session',
+        'conversation.accept_user_message',
         'conversation.project_agent_result',
         'conversation.project_agent_start_failure'
       )),
@@ -327,6 +444,18 @@ function createConversationSchemaObjects(database: DatabaseSync): void {
         )
         OR
         (
+          command_kind = 'conversation.mutate_session'
+          AND expected_session_version > 0
+          AND resulting_session_version = expected_session_version + 1
+          AND message_id IS NULL AND message_version IS NULL AND saga_id IS NULL
+          AND saga_version IS NULL AND handoff_command_id IS NULL
+          AND handoff_inbox_event_id IS NULL
+          AND handoff_outbox_message_id IS NULL
+          AND run_id IS NULL AND run_version IS NULL
+          AND result_status IS NULL AND source_run_event_id IS NULL
+        )
+        OR
+        (
           command_kind = 'conversation.accept_user_message'
           AND expected_session_version > 0
           AND resulting_session_version = expected_session_version + 1
@@ -376,7 +505,8 @@ function createConversationSchemaObjects(database: DatabaseSync): void {
       workspace_id TEXT NOT NULL,
       session_version INTEGER NOT NULL CHECK(session_version > 0),
       event_kind TEXT NOT NULL CHECK(event_kind IN (
-        'conversation.session.created', 'conversation.user_message.accepted',
+        'conversation.session.created', 'conversation.session.updated',
+        'conversation.user_message.accepted',
         'conversation.agent_result.projected', 'conversation.agent_start.failed'
       )),
       event_json TEXT NOT NULL CHECK(json_valid(event_json)),

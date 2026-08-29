@@ -57,6 +57,7 @@ describe('SqlitePublicProjectionStore', () => {
       decisions: [commit.changes[3]!.dto],
       models: [commit.changes[4]!.dto],
       diagnostics: [commit.changes[5]!.dto],
+      inferenceStreams: [],
       tombstones: []
     });
 
@@ -120,6 +121,41 @@ describe('SqlitePublicProjectionStore', () => {
     }]);
     expect(await store.readPublicProjectionSourceCheckpoint('model-catalog-test'))
       .toBe(3);
+  });
+
+  it('migrates a populated v1 projection in place and preserves its cursor history', async () => {
+    const root = tempRoot();
+    let store = track(new SqlitePublicProjectionStore(root));
+    await store.append(singleSessionCommit());
+    const streamId = store.streamId;
+    await closeTracked(store);
+    mutateDatabase(root, (database) => {
+      database.prepare('DELETE FROM schema_migrations WHERE version=2').run();
+      database.exec('PRAGMA user_version = 1;');
+    });
+
+    store = track(new SqlitePublicProjectionStore(root));
+    const snapshot = await store.snapshot();
+    expect(store.streamId).toBe(streamId);
+    expect(snapshot).toMatchObject({
+      cursor: 1,
+      sessions: [{ sessionId: 'session-1', version: 1 }],
+      inferenceStreams: []
+    });
+    const database = new DatabaseSync(resolvePublicProjectionDatabasePath(root), {
+      readOnly: true
+    });
+    try {
+      expect(database.prepare('PRAGMA user_version;').get()).toEqual({ user_version: 2 });
+      expect(database.prepare(
+        'SELECT version, name FROM schema_migrations ORDER BY version'
+      ).all()).toEqual([
+        { version: 1, name: 'public_projection_v3_store_v1' },
+        { version: 2, name: 'public_projection_inference_streams_v2' }
+      ]);
+    } finally {
+      database.close();
+    }
   });
 
   it('rolls back a commit that would make the complete snapshot exceed its bound', async () => {

@@ -1,5 +1,8 @@
+import { createHash } from 'node:crypto';
+
 import {
   AgentInferenceDeterministicFailureError,
+  DEFAULT_AGENT_SUBAGENT_PROVIDER_BINDING,
   agentRunExecutionMode,
   assertValidAgentDirective,
   assertValidAgentPinnedToolIdentity,
@@ -13,46 +16,61 @@ import {
   type AgentCommittedDirective,
   type AgentDirective,
   type AgentEngine,
+  type AgentEffectExecutionInputReader,
   type AgentInferenceAttempt,
+  type AgentInferenceResponseEnvelopeV1,
+  type AgentInferenceUsageAnchorV1,
   type AgentJsonValue,
   type AgentPinnedToolIdentity,
   type AgentPlanStepImpact,
   type PreparedAgentDecision,
   type AgentRunBinding,
+  type AgentSubagentProviderBinding,
   type AgentTurn,
   type AgentToolJsonValue,
   type AgentTurnInput
 } from '@ariadne/agent-core';
+import { redactPublicProjectionTextV3 } from '@ariadne/protocol/public';
 
 import type {
+  ExactAgentModelInferenceContentBlock,
+  ExactAgentModelInferenceReplayEnvelopeV1,
   ExactAgentModelInferenceRuntime,
-  ExactAgentModelInferenceMessage
+  ExactAgentModelInferenceMessage,
+  ExactAgentModelInferenceRequestContentBlock,
+  ExactAgentModelInferenceToolContract
 } from '../../control/ports/AgentModelInference.js';
 import {
+  estimateMessagesTokens,
   planV3LongContext,
   type V3LongContextPlan,
+  type V3LongContextUsageBaseline,
   type V3ModelContextGroup
 } from './V3LongContextLifecycle.js';
 import type {
-  AgentInferenceToolContractDescriptorV1,
+  AgentInferenceToolContractDescriptorV2,
   AgentInferenceToolContractReader
 } from '../../control/ports/AgentInferenceToolContracts.js';
+import type { BoundInferenceStreamProjection } from '../../projection/InferenceStreamProjectionPorts.js';
+import type { InferenceStreamPublicProjectionPublisher } from '../../projection/InferenceStreamPublicProjectionPublisher.js';
+import type {
+  ConversationAttachmentReader,
+  OwnedConversationImageAttachment
+} from '../../control/ports/ConversationAttachmentStore.js';
 
 export type {
-  AgentInferenceToolContractDescriptorV1,
+  AgentInferenceToolContractDescriptorV2,
   AgentInferenceToolContractReader,
   ReadAgentInferenceToolContractsRequest
 } from '../../control/ports/AgentInferenceToolContracts.js';
 
 const DIRECTIVE_PROTOCOL = 'ariadne.agent-directive.v3';
-const EFFECT_RESULTS_PROTOCOL = 'ariadne.agent-effect-results.v3';
 const SUBAGENT_RESULTS_FORMAT = 'ariadne.subagent-results';
 const MODEL_BINDING_ERROR = 'agent_model_binding_unavailable';
 const TOOL_CONTRACT_ERROR = 'agent_tool_contract_unavailable';
 const MODEL_DIRECTIVE_ERROR = 'agent_model_directive_invalid';
 const MODEL_CONTEXT_ERROR = 'agent_model_context_exhausted';
 const MAX_PROTOCOL_PROMPT_BYTES = 1_048_576;
-const MAX_EFFECT_RESULTS_PROTOCOL_BYTES = 1_048_576;
 const MAX_MODEL_REQUEST_MESSAGES = 1_024;
 const MAX_MODEL_REQUEST_BYTES = 4 * 1_048_576;
 const MAX_MODEL_RESPONSE_CHARACTERS = 1_048_576;
@@ -63,10 +81,33 @@ interface PreparedToolContract {
   readonly tool: AgentPinnedToolIdentity;
   readonly capabilityIds: readonly string[];
   readonly inputSchema: AgentToolJsonValue;
-  readonly scopeSemantics: AgentInferenceToolContractDescriptorV1['scopeSemantics'];
-  readonly lifecycleSemantics: AgentInferenceToolContractDescriptorV1['lifecycleSemantics'];
+  readonly scopeSemantics: AgentInferenceToolContractDescriptorV2['scopeSemantics'];
+  readonly lifecycleSemantics: AgentInferenceToolContractDescriptorV2['lifecycleSemantics'];
   readonly allowedScopes: readonly string[];
+  readonly providerToolName: string;
+  readonly providerInputSchema: AgentToolJsonValue;
+  readonly providerDescription: string;
 }
+
+type BoundModelHistoryEntry =
+  | {
+      readonly kind: 'message';
+      readonly message: ExactAgentModelInferenceMessage;
+    }
+  | {
+      readonly kind: 'effect_exchange';
+      readonly directive: Extract<AgentCommittedDirective, { readonly kind: 'invoke_tools' }>;
+      readonly results: readonly {
+        readonly effectId: string;
+        readonly toolCallId: string;
+        readonly status: 'succeeded' | 'failed' | 'cancelled';
+        readonly result: AgentJsonValue;
+      }[];
+    }
+  | {
+      readonly kind: 'image';
+      readonly image: OwnedConversationImageAttachment;
+    };
 
 /**
  * Production v3 AgentEngine adapter.
@@ -79,7 +120,10 @@ interface PreparedToolContract {
 export class ProductionAgentEngineAdapter implements AgentEngine {
   public constructor(
     private readonly models: ExactAgentModelInferenceRuntime,
-    private readonly toolContracts: AgentInferenceToolContractReader
+    private readonly toolContracts: AgentInferenceToolContractReader,
+    private readonly inferenceStreams?: InferenceStreamPublicProjectionPublisher,
+    private readonly effectInputs?: AgentEffectExecutionInputReader,
+    private readonly attachments?: ConversationAttachmentReader
   ) {}
 
   public async prepare(
@@ -87,7 +131,7 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
     signal: AbortSignal
   ): Promise<PreparedAgentDecision> {
     validateBoundInput(input);
-    const modelHistory = prepareBoundModelHistory(input);
+    const boundHistory = prepareBoundModelHistory(input);
     signal.throwIfAborted();
 
     const descriptors = await this.toolContracts.readInferenceToolContracts({
@@ -101,9 +145,19 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
     }, signal);
     signal.throwIfAborted();
     const tools = prepareToolContracts(input, descriptors);
+    const modelHistory = coalesceUserContentMessages(await materializeBoundModelHistory(
+      input.run.runId,
+      boundHistory,
+      tools,
+      this.effectInputs,
+      this.attachments,
+      signal
+    ));
+    const providerTools = prepareProviderToolContracts(tools);
     const protocolPrompt = renderProtocolPrompt(
       tools,
-      agentRunExecutionMode(input.run.binding)
+      agentRunExecutionMode(input.run.binding),
+      modelVisibleSubagentProviders(input.run.binding)
     );
     const capacity = this.models.describeContextCapacity(input.run.binding.model);
     if (capacity === null) {
@@ -124,19 +178,35 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
     let context: V3LongContextPlan;
     try {
       const grouped = groupModelHistory(modelHistory);
+      const pinnedMessages = [
+        textMessage('system', protocolPrompt),
+        ...grouped.pinned
+      ];
+      const fixedOverheadTokens = estimateProviderToolTokens(providerTools);
+      const requestHeaderDigest = digestTokenMeterHeader(
+        input.run.binding.model,
+        pinnedMessages,
+        providerTools
+      );
+      const usageBaseline = findUsageBaseline(input, requestHeaderDigest);
       context = planV3LongContext({
-        pinnedMessages: [
-          { role: 'system', content: protocolPrompt },
-          ...grouped.pinned
-        ],
+        pinnedMessages,
         groups: grouped.groups,
-        capacity
+        capacity,
+        requestHeaderDigest,
+        fixedOverheadTokens,
+        ...(usageBaseline === undefined ? {} : { usageBaseline })
       });
-      assertPreparedModelRequest(input.run.binding.model.modelId, context.primaryMessages);
+      assertPreparedModelRequest(
+        input.run.binding.model.modelId,
+        context.primaryMessages,
+        providerTools
+      );
       if (context.overflowRecoveryMessages !== null) {
         assertPreparedModelRequest(
           input.run.binding.model.modelId,
-          context.overflowRecoveryMessages
+          context.overflowRecoveryMessages,
+          providerTools
         );
       }
     } catch {
@@ -146,14 +216,40 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
       );
     }
     signal.throwIfAborted();
+    const stream = this.inferenceStreams === undefined
+      ? undefined
+      : await this.inferenceStreams.bind(openInferenceIdentity(input));
+    let usageAnchor: AgentInferenceUsageAnchorV1 | null = null;
+    let responseEnvelope: AgentInferenceResponseEnvelopeV1 | null = null;
     return {
       modelContext: context.modelContext,
-      decide: (decisionSignal) => this.decidePrepared(
-        input.run.binding.model,
-        context,
-        tools,
-        decisionSignal
-      )
+      decide: async (decisionSignal) => {
+        const decided = await this.decidePrepared(
+          input.run.binding.model,
+          context,
+          tools,
+          providerTools,
+          decisionSignal,
+          stream
+        );
+        usageAnchor = decided.usageAnchor ?? null;
+        responseEnvelope = { ...decided.responseEnvelope };
+        return decided.directive;
+      },
+      readUsageAnchor: () => usageAnchor === null ? null : { ...usageAnchor },
+      readResponseEnvelope: () => responseEnvelope === null
+        ? null
+        : {
+            ...responseEnvelope,
+            contentBlockTypes: [...responseEnvelope.contentBlockTypes]
+          },
+      ...(stream === undefined
+        ? {}
+        : {
+          streamLifecycle: {
+            settle: (status: 'committed' | 'interrupted') => stream.terminate(status)
+          }
+        })
     };
   }
 
@@ -161,12 +257,51 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
     binding: AgentRunBinding['model'],
     context: V3LongContextPlan,
     tools: readonly PreparedToolContract[],
-    signal: AbortSignal
-  ): Promise<AgentDirective> {
+    providerTools: readonly ExactAgentModelInferenceToolContract[],
+    signal: AbortSignal,
+    stream?: BoundInferenceStreamProjection
+  ): Promise<{
+    readonly directive: AgentDirective;
+    readonly usageAnchor?: AgentInferenceUsageAnchorV1;
+    readonly responseEnvelope: AgentInferenceResponseEnvelopeV1;
+  }> {
+    let publicSequence = 0;
+    const emitPublicChunk = (
+      channel: 'token' | 'reasoning',
+      text: string
+    ): void => {
+      if (stream === undefined) return;
+      for (const part of splitPublicUtf8Text(redactPublicProjectionTextV3(text))) {
+        publicSequence += 1;
+        stream.chunkObserver.observe({ sequence: publicSequence, channel, text: part });
+      }
+    };
+    const createChunkObserver = () => {
+      if (stream === undefined) return undefined;
+      return {
+        observe: (chunk: {
+          readonly sequence: number;
+          readonly channel: 'token' | 'reasoning';
+          readonly text: string;
+        }) => {
+          // Exact Agent token chunks contain the protected JSON Directive,
+          // including possible Tool input. Only reasoning is public while the
+          // response is running; respond.content is emitted after strict parse.
+          if (chunk.channel === 'reasoning') emitPublicChunk('reasoning', chunk.text);
+        }
+      };
+    };
+    const primaryChunkObserver = createChunkObserver();
+    let requestMessages = context.primaryMessages;
+    let heuristicInputTokens = context.primaryHeuristicTokens;
     let response = await this.models.inferExact({
       binding: { ...binding },
-      messages: context.primaryMessages,
-      signal
+      messages: requestMessages,
+      tools: providerTools,
+      signal,
+      ...(primaryChunkObserver === undefined
+        ? {}
+        : { chunkObserver: primaryChunkObserver })
     });
     if (response.status === 'context_overflow') {
       if (context.overflowRecoveryMessages === null) {
@@ -176,10 +311,17 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
         );
       }
       signal.throwIfAborted();
+      requestMessages = context.overflowRecoveryMessages;
+      heuristicInputTokens = context.overflowRecoveryHeuristicTokens!;
+      const recoveryChunkObserver = createChunkObserver();
       response = await this.models.inferExact({
         binding: { ...binding },
-        messages: context.overflowRecoveryMessages,
-        signal
+        messages: requestMessages,
+        tools: providerTools,
+        signal,
+        ...(recoveryChunkObserver === undefined
+          ? {}
+          : { chunkObserver: recoveryChunkObserver })
       });
     }
     if (response.status === 'context_overflow') {
@@ -195,19 +337,72 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
         'No transport-only model client matches the exact Agent Run binding.'
       );
     }
-    if (
-      typeof response.content !== 'string'
-      || response.content.length > MAX_MODEL_RESPONSE_CHARACTERS
-      || response.nativeToolCallCount !== 0
-    ) {
+    const textContent = response.contentBlocks
+      .filter((block): block is Extract<
+        ExactAgentModelInferenceContentBlock,
+        { readonly type: 'text' }
+      > => block.type === 'text')
+      .map((block) => block.text)
+      .join('');
+    const nativeToolCalls = response.contentBlocks.filter((block): block is Extract<
+      ExactAgentModelInferenceContentBlock,
+      { readonly type: 'tool_call' }
+    > => block.type === 'tool_call');
+    if (textContent.length > MAX_MODEL_RESPONSE_CHARACTERS) {
       throw deterministicFailure(
         MODEL_DIRECTIVE_ERROR,
-        'The model response did not contain one bounded text-only v3 Directive.'
+        'The model response exceeded the bounded v3 content contract.'
       );
     }
 
     try {
-      return parseDirectiveEnvelope(response.content, tools);
+      const directive = response.replay.finishReason === 'tool_calls'
+        ? parseNativeToolCalls(textContent, nativeToolCalls, tools)
+        : parseTextDirectiveResponse(
+            response.replay.finishReason,
+            textContent,
+            nativeToolCalls,
+            tools
+          );
+      if (directive.kind === 'respond') emitPublicChunk('token', directive.content);
+      return {
+        directive,
+        responseEnvelope: {
+          envelopeVersion: 1,
+          providerId: binding.providerId,
+          modelId: binding.modelId,
+          settingsRevision: binding.settingsRevision,
+          adapter: response.replay.adapter,
+          finishReason: response.replay.finishReason,
+          requestEnvelopeDigest: response.replay.requestEnvelopeDigest,
+          contentBlocksDigest: response.replay.contentBlocksDigest,
+          contentBlockTypes: response.contentBlocks.map((block) => block.type),
+          ...(response.replay.providerResponseIdDigest === undefined
+            ? {}
+            : { providerResponseIdDigest: response.replay.providerResponseIdDigest })
+        },
+        ...(response.usage === undefined
+          ? {}
+          : {
+              usageAnchor: {
+                anchorVersion: 1,
+                providerId: binding.providerId,
+                modelId: binding.modelId,
+                settingsRevision: binding.settingsRevision,
+                requestHeaderDigest: context.requestHeaderDigest,
+                requestEnvelopeDigest: response.replay.requestEnvelopeDigest,
+                estimatedInputTokens: heuristicInputTokens,
+                inputTokens: response.usage.inputTokens,
+                outputTokens: response.usage.outputTokens,
+                ...(response.usage.cacheReadInputTokens === undefined
+                  ? {}
+                  : { cacheReadInputTokens: response.usage.cacheReadInputTokens }),
+                ...(response.usage.cacheWriteInputTokens === undefined
+                  ? {}
+                  : { cacheWriteInputTokens: response.usage.cacheWriteInputTokens })
+              }
+            })
+      };
     } catch (error) {
       if (error instanceof AgentInferenceDeterministicFailureError) throw error;
       throw deterministicFailure(
@@ -216,6 +411,40 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
       );
     }
   }
+}
+
+function splitPublicUtf8Text(value: string): readonly string[] {
+  if (value.length === 0) return [];
+  const parts: string[] = [];
+  let start = 0;
+  while (start < value.length) {
+    let end = Math.min(value.length, start + 32 * 1_024);
+    while (
+      end > start
+      && Buffer.byteLength(value.slice(start, end), 'utf8') > 32 * 1_024
+    ) end -= 1;
+    if (end === start) throw new Error('agent_public_stream_chunk_unrepresentable');
+    parts.push(value.slice(start, end));
+    start = end;
+  }
+  return parts;
+}
+
+function openInferenceIdentity(input: AgentTurnInput): {
+  readonly runId: string;
+  readonly turnId: string;
+  readonly attemptId: string;
+} {
+  const intended = input.run.turns.flatMap((turn) => turn.attempts
+    .filter((attempt) => attempt.state.status === 'intended')
+    .map((attempt) => ({ turnId: turn.turnId, attemptId: attempt.attemptId })));
+  if (intended.length !== 1) {
+    throw deterministicFailure(
+      MODEL_BINDING_ERROR,
+      'AgentEngine requires one exact intended inference attempt identity.'
+    );
+  }
+  return { runId: input.run.runId, ...intended[0]! };
 }
 
 function groupModelHistory(messages: readonly ExactAgentModelInferenceMessage[]): {
@@ -230,12 +459,12 @@ function groupModelHistory(messages: readonly ExactAgentModelInferenceMessage[])
     const next = causal[index + 1];
     if (
       current.role === 'assistant'
-      && current.content.includes(`\"protocol\":\"${DIRECTIVE_PROTOCOL}\"`)
+      && current.content.length > 0
+      && current.content.every((block) => block.type === 'tool_call')
       && next?.role === 'user'
-      && (
-        next.content.includes(`\"protocol\":\"${EFFECT_RESULTS_PROTOCOL}\"`)
-        || next.content.includes(`\"format\":\"${SUBAGENT_RESULTS_FORMAT}\"`)
-      )
+      && next.content.length > 0
+      && next.content.every((block) => block.type === 'tool_result')
+      && exactToolExchangeIdsMatch(current, next)
     ) {
       groups.push({ kind: 'tool_exchange', messages: [current, next] });
       index += 1;
@@ -244,7 +473,7 @@ function groupModelHistory(messages: readonly ExactAgentModelInferenceMessage[])
     if (
       current.role === 'user'
       && next?.role === 'assistant'
-      && !next.content.includes(`\"protocol\":\"${DIRECTIVE_PROTOCOL}\"`)
+      && next.content.every((block) => block.type !== 'tool_call')
     ) {
       groups.push({ kind: 'conversation', messages: [current, next] });
       index += 1;
@@ -256,9 +485,33 @@ function groupModelHistory(messages: readonly ExactAgentModelInferenceMessage[])
   return { pinned, groups };
 }
 
+function exactToolExchangeIdsMatch(
+  assistant: ExactAgentModelInferenceMessage,
+  result: ExactAgentModelInferenceMessage
+): boolean {
+  const callIds = assistant.content.map((block) => (
+    block.type === 'tool_call' ? block.toolCallId : null
+  ));
+  const resultIds = result.content.map((block) => (
+    block.type === 'tool_result' ? block.toolCallId : null
+  ));
+  return callIds.length === resultIds.length
+    && callIds.every((id, index) => id !== null && id === resultIds[index]);
+}
+
+function textMessage(
+  role: ExactAgentModelInferenceMessage['role'],
+  text: string
+): ExactAgentModelInferenceMessage {
+  return Object.freeze({
+    role,
+    content: Object.freeze([{ type: 'text' as const, text }])
+  });
+}
+
 function prepareBoundModelHistory(
   input: AgentTurnInput
-): readonly ExactAgentModelInferenceMessage[] {
+): readonly BoundModelHistoryEntry[] {
   const current = requireCurrentSchedulableAttempt(input);
   const turns = input.run.turns.slice(0, current.turnIndex + 1);
   const appendedCount = turns.slice(1).reduce((count, turn) => {
@@ -267,17 +520,37 @@ function prepareBoundModelHistory(
       ? cause.effectIds.length + (cause.inboxInputIds?.length ?? 0)
       : cause.kind === 'inbox_inputs'
         ? 1 + cause.inputIds.length
+        : cause.kind === 'interrupted_inference'
+          ? 1 + cause.inputIds.length
         : cause.kind === 'child_results'
           ? 2
         : Number.POSITIVE_INFINITY);
   }, 0);
   const baseCount = input.messages.length - appendedCount;
   if (!Number.isSafeInteger(baseCount) || baseCount < 1) throw invalidBoundModelHistory();
-  const history: ExactAgentModelInferenceMessage[] = [];
+  const history: BoundModelHistoryEntry[] = [];
   for (let index = 0; index < baseCount; index += 1) {
     const message = input.messages[index];
-    if (message?.kind !== 'text') throw invalidBoundModelHistory();
-    history.push({ role: message.role, content: message.content });
+    if (message?.kind === 'text') {
+      history.push({ kind: 'message', message: textMessage(message.role, message.content) });
+      continue;
+    }
+    if (message?.kind === 'image') {
+      history.push({
+        kind: 'image',
+        image: {
+          owner: { ...message.owner },
+          ref: {
+            ...message.attachment,
+            ...(message.attachment.originalDimensions === undefined
+              ? {}
+              : { originalDimensions: { ...message.attachment.originalDimensions } })
+          }
+        }
+      });
+      continue;
+    }
+    throw invalidBoundModelHistory();
   }
 
   let messageIndex = baseCount;
@@ -297,7 +570,39 @@ function prepareBoundModelHistory(
       ) throw invalidBoundModelHistory();
       for (const message of batch) {
         if (message.kind !== 'text') throw invalidBoundModelHistory();
-        history.push({ role: message.role, content: message.content });
+        history.push({
+          kind: 'message',
+          message: textMessage(message.role, message.content)
+        });
+      }
+      messageIndex += batch.length;
+      continue;
+    }
+    if (cause.kind === 'interrupted_inference') {
+      const batch = input.messages.slice(
+        messageIndex,
+        messageIndex + 1 + cause.inputIds.length
+      );
+      const sourceTurn = input.run.turns.find(
+        (candidate) => candidate.turnId === cause.sourceTurnId
+      );
+      const sourceAttempt = sourceTurn?.attempts.find(
+        (candidate) => candidate.attemptId === cause.sourceAttemptId
+      );
+      if (
+        batch.length !== 1 + cause.inputIds.length
+        || batch[0]?.kind !== 'text'
+        || batch[0].role !== 'system'
+        || sourceAttempt?.state.status !== 'uncertain'
+        || sourceAttempt.state.recovery.decisionId !== cause.recoveryDecisionId
+        || batch.slice(1).some((message) => (
+          message.kind !== 'text'
+          || (message.role !== 'user' && message.role !== 'system')
+        ))
+      ) throw invalidBoundModelHistory();
+      for (const message of batch) {
+        if (message.kind !== 'text') throw invalidBoundModelHistory();
+        history.push({ kind: 'message', message: textMessage(message.role, message.content) });
       }
       messageIndex += batch.length;
       continue;
@@ -313,8 +618,8 @@ function prepareBoundModelHistory(
       ) throw invalidBoundModelHistory();
       verifyChildResultTextBatch(input, turn, batch[0].content, batch[1].content);
       history.push(
-        { role: 'assistant', content: batch[0].content },
-        { role: 'user', content: batch[1].content }
+        { kind: 'message', message: textMessage('assistant', batch[0].content) },
+        { kind: 'message', message: textMessage('user', batch[1].content) }
       );
       messageIndex += 2;
       continue;
@@ -337,15 +642,9 @@ function prepareBoundModelHistory(
       >[]
     );
     history.push({
-      role: 'assistant',
-      content: renderCommittedToolDirective(verified.directive)
-    });
-    history.push({
-      role: 'user',
-      content: renderEffectResultBatch(
-        cause.sourceDirectiveDigest,
-        verified.results
-      )
+      kind: 'effect_exchange',
+      directive: verified.directive,
+      results: verified.results
     });
     messageIndex += batchSize;
     const inboxInputCount = cause.inboxInputIds?.length ?? 0;
@@ -361,12 +660,186 @@ function prepareBoundModelHistory(
     }
     for (const message of inboxMessages) {
       if (message.kind !== 'text') throw invalidBoundModelHistory();
-      history.push({ role: 'user', content: message.content });
+      history.push({ kind: 'message', message: textMessage('user', message.content) });
     }
     messageIndex += inboxInputCount;
   }
   if (messageIndex !== input.messages.length) throw invalidBoundModelHistory();
   return history;
+}
+
+async function materializeBoundModelHistory(
+  runId: string,
+  entries: readonly BoundModelHistoryEntry[],
+  tools: readonly PreparedToolContract[],
+  effectInputs: AgentEffectExecutionInputReader | undefined,
+  attachments: ConversationAttachmentReader | undefined,
+  signal: AbortSignal
+): Promise<readonly ExactAgentModelInferenceMessage[]> {
+  const history: ExactAgentModelInferenceMessage[] = [];
+  const requestToolCallIds = new Set<string>();
+  for (const entry of entries) {
+    if (entry.kind === 'message') {
+      history.push(entry.message);
+      continue;
+    }
+    if (entry.kind === 'image') {
+      if (attachments === undefined) {
+        throw deterministicFailure(
+          MODEL_BINDING_ERROR,
+          'Durable Conversation attachments are unavailable for exact model history.'
+        );
+      }
+      let stored;
+      try {
+        stored = await attachments.readOwnedImage(entry.image, signal);
+      } catch {
+        signal.throwIfAborted();
+        throw deterministicFailure(
+          MODEL_BINDING_ERROR,
+          'A durable Conversation attachment could not be verified.'
+        );
+      }
+      history.push(Object.freeze({
+        role: 'user',
+        content: Object.freeze([{
+          type: 'image' as const,
+          attachmentId: stored.ref.attachmentId,
+          mediaType: stored.ref.mediaType,
+          dataBase64: Buffer.from(stored.data).toString('base64'),
+          bytes: stored.ref.bytes,
+          width: stored.ref.width,
+          height: stored.ref.height
+        }])
+      }));
+      continue;
+    }
+    if (effectInputs === undefined) {
+      throw deterministicFailure(
+        MODEL_BINDING_ERROR,
+        'Protected Tool inputs are unavailable for exact model history.'
+      );
+    }
+    const calls: ExactAgentModelInferenceRequestContentBlock[] = [];
+    const results: ExactAgentModelInferenceRequestContentBlock[] = [];
+    for (let index = 0; index < entry.directive.invocations.length; index += 1) {
+      signal.throwIfAborted();
+      const invocation = entry.directive.invocations[index]!;
+      const result = entry.results[index];
+      const tool = tools.find((candidate) => (
+        sameAgentPinnedToolIdentity(candidate.tool, invocation.tool)
+      ));
+      if (
+        result === undefined
+        || result.effectId !== invocation.effectId
+        || result.toolCallId !== invocation.toolCallId
+        || tool === undefined
+        || !sameStringSequence(invocation.capabilityIds, tool.capabilityIds)
+        || (
+          tool.scopeSemantics === 'none'
+            ? invocation.scope.length !== 0
+            : invocation.scope.some((scopeId) => !tool.allowedScopes.includes(scopeId))
+        )
+      ) throw invalidBoundModelHistory();
+
+      let protectedInput: Awaited<ReturnType<
+        AgentEffectExecutionInputReader['loadEffectExecutionInput']
+      >>;
+      try {
+        protectedInput = await effectInputs.loadEffectExecutionInput(
+          runId,
+          invocation.effectId
+        );
+      } catch {
+        signal.throwIfAborted();
+        throw deterministicFailure(
+          MODEL_BINDING_ERROR,
+          'Protected Tool input could not be resolved for exact model history.'
+        );
+      }
+      signal.throwIfAborted();
+      if (
+        protectedInput.runId !== runId
+        || protectedInput.effectId !== invocation.effectId
+        || protectedInput.inputDigest !== invocation.inputDigest
+      ) {
+        throw deterministicFailure(
+          MODEL_BINDING_ERROR,
+          'Protected Tool input does not match the committed invocation.'
+        );
+      }
+      const toolCallId = historicalProviderToolCallId(
+        runId,
+        invocation.effectId,
+        invocation.toolCallId
+      );
+      if (requestToolCallIds.has(toolCallId)) throw invalidBoundModelHistory();
+      requestToolCallIds.add(toolCallId);
+      calls.push(Object.freeze({
+        type: 'tool_call',
+        toolCallId,
+        providerToolName: tool.providerToolName,
+        input: cloneCanonicalAgentToolInput({
+          input: protectedInput.input,
+          scope: [...invocation.scope]
+        }, `modelHistory.toolCalls[${String(index)}].input`)
+      }));
+      results.push(Object.freeze({
+        type: 'tool_result',
+        effectId: result.effectId,
+        toolCallId,
+        status: result.status,
+        output: cloneCanonicalAgentToolInput(
+          result.result,
+          `modelHistory.toolResults[${String(index)}].output`
+        )
+      }));
+    }
+    history.push(Object.freeze({ role: 'assistant', content: Object.freeze(calls) }));
+    history.push(Object.freeze({ role: 'user', content: Object.freeze(results) }));
+  }
+  return Object.freeze(history);
+}
+
+function coalesceUserContentMessages(
+  messages: readonly ExactAgentModelInferenceMessage[]
+): readonly ExactAgentModelInferenceMessage[] {
+  const result: ExactAgentModelInferenceMessage[] = [];
+  for (const message of messages) {
+    const previous = result.at(-1);
+    const mergeable = message.role === 'user'
+      && message.content.every((block) => block.type === 'text' || block.type === 'image')
+      && previous?.role === 'user'
+      && previous.content.every((block) => block.type === 'text' || block.type === 'image');
+    if (mergeable && previous !== undefined) {
+      result[result.length - 1] = Object.freeze({
+        role: 'user',
+        content: Object.freeze([...previous.content, ...message.content])
+      });
+    } else {
+      result.push(message);
+    }
+  }
+  return Object.freeze(result);
+}
+
+function historicalProviderToolCallId(
+  runId: string,
+  effectId: string,
+  toolCallId: string
+): string {
+  return `history_${createHash('sha256')
+    .update(canonicalJson({ runId, effectId, toolCallId }))
+    .digest('hex')
+    .slice(0, 40)}`;
+}
+
+function sameStringSequence(
+  left: readonly string[],
+  right: readonly string[]
+): boolean {
+  return left.length === right.length
+    && left.every((value, index) => value === right[index]);
 }
 
 function verifyChildResultTextBatch(
@@ -405,6 +878,7 @@ function verifyChildResultTextBatch(
     || delegated.delegationId !== cause.delegationIds[0]
     || delegated.childRunId !== cause.childRunIds[0]
     || delegated.objectiveDigest !== sourceAttempt.state.directive.objectiveDigest
+    || delegated.mode !== sourceAttempt.state.directive.mode
     || result.format !== SUBAGENT_RESULTS_FORMAT
     || result.schemaVersion !== 1
     || !Array.isArray(result.results)
@@ -551,81 +1025,10 @@ function verifyEffectResultBatch(
   };
 }
 
-function renderCommittedToolDirective(
-  directive: Extract<AgentCommittedDirective, { readonly kind: 'invoke_tools' }>
-): string {
-  const content = canonicalJson({
-    protocol: DIRECTIVE_PROTOCOL,
-    directive: {
-      kind: 'invoke_tools',
-      invocations: directive.invocations.map(renderCommittedToolInvocation)
-    }
-  });
-  assertBoundedEffectResultsProtocol(content);
-  return content;
-}
-
-function renderCommittedToolInvocation(
-  invocation: Extract<
-    AgentCommittedDirective,
-    { readonly kind: 'invoke_tools' }
-  >['invocations'][number]
-): Readonly<Record<string, AgentJsonValue>> {
-  const tool = cloneAgentPinnedToolIdentity(invocation.tool);
-  return {
-    effectId: invocation.effectId,
-    toolCallId: invocation.toolCallId,
-    tool: {
-      catalogId: tool.catalogId,
-      revision: tool.revision,
-      digest: tool.digest,
-      toolName: tool.toolName,
-      toolVersion: tool.toolVersion,
-      providerId: tool.providerId,
-      contractDigest: tool.contractDigest
-    },
-    idempotencyKey: invocation.idempotencyKey,
-    capabilityIds: [...invocation.capabilityIds],
-    scope: [...invocation.scope],
-    inputDigest: invocation.inputDigest,
-    ...(invocation.permissionDecisionId === undefined
-      ? {}
-      : { permissionDecisionId: invocation.permissionDecisionId })
-  };
-}
-
-function renderEffectResultBatch(
-  sourceDirectiveDigest: string,
-  results: readonly {
-    readonly effectId: string;
-    readonly toolCallId: string;
-    readonly status: 'succeeded' | 'failed' | 'cancelled';
-    readonly result: AgentJsonValue;
-  }[]
-): string {
-  const content = canonicalJson({
-    protocol: EFFECT_RESULTS_PROTOCOL,
-    sourceDirectiveDigest,
-    results: results.map((result) => ({
-      effectId: result.effectId,
-      toolCallId: result.toolCallId,
-      status: result.status,
-      result: result.result
-    }))
-  });
-  assertBoundedEffectResultsProtocol(content);
-  return content;
-}
-
-function assertBoundedEffectResultsProtocol(content: string): void {
-  if (new TextEncoder().encode(content).byteLength > MAX_EFFECT_RESULTS_PROTOCOL_BYTES) {
-    throw invalidBoundModelHistory();
-  }
-}
-
 function assertPreparedModelRequest(
   modelId: string,
-  messages: readonly ExactAgentModelInferenceMessage[]
+  messages: readonly ExactAgentModelInferenceMessage[],
+  tools: readonly ExactAgentModelInferenceToolContract[]
 ): void {
   // This deliberately double-counts System content, so it is an upper bound
   // for both exact OpenAI-compatible and Anthropic text transports.
@@ -634,9 +1037,12 @@ function assertPreparedModelRequest(
     max_tokens: 4_096,
     system: messages
       .filter((message) => message.role === 'system')
-      .map((message) => message.content)
+      .flatMap((message) => message.content)
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text)
       .join('\n\n'),
     messages,
+    tools,
     stream: false
   });
   if (new TextEncoder().encode(conservativeEnvelope).byteLength > MAX_MODEL_REQUEST_BYTES) {
@@ -658,6 +1064,61 @@ function canonicalJson(value: AgentJsonValue): string {
   return `{${Object.keys(record).sort().map((key) =>
     `${JSON.stringify(key)}:${canonicalJson(record[key] as AgentJsonValue)}`
   ).join(',')}}`;
+}
+
+function digestTokenMeterHeader(
+  binding: AgentRunBinding['model'],
+  pinnedMessages: readonly ExactAgentModelInferenceMessage[],
+  tools: readonly ExactAgentModelInferenceToolContract[]
+): string {
+  const encoded = canonicalJson({
+    protocol: 'ariadne.token-meter-header.v1',
+    providerId: binding.providerId,
+    modelId: binding.modelId,
+    settingsRevision: binding.settingsRevision,
+    inference: binding.inference === undefined
+      ? null
+      : {
+          reasoningMode: binding.inference.reasoningMode ?? null,
+          reasoningEffort: binding.inference.reasoningEffort ?? null
+        },
+    pinnedMessages: pinnedMessages.map((message) => ({
+      role: message.role,
+      content: message.content
+    })),
+    tools: tools.map((tool) => ({
+      providerToolName: tool.providerToolName,
+      description: tool.description,
+      inputSchema: tool.inputSchema
+    }))
+  });
+  return `sha256:${createHash('sha256').update(encoded).digest('hex')}`;
+}
+
+function findUsageBaseline(
+  input: AgentTurnInput,
+  requestHeaderDigest: string
+): V3LongContextUsageBaseline | undefined {
+  for (let turnIndex = input.run.turns.length - 1; turnIndex >= 0; turnIndex -= 1) {
+    const attempts = input.run.turns[turnIndex]!.attempts;
+    for (let attemptIndex = attempts.length - 1; attemptIndex >= 0; attemptIndex -= 1) {
+      const attempt = attempts[attemptIndex]!;
+      if (attempt.state.status !== 'succeeded') continue;
+      const anchor = attempt.state.usageAnchor;
+      if (
+        anchor === undefined
+        || anchor.providerId !== input.run.binding.model.providerId
+        || anchor.modelId !== input.run.binding.model.modelId
+        || anchor.settingsRevision !== input.run.binding.model.settingsRevision
+        || anchor.requestHeaderDigest !== requestHeaderDigest
+      ) continue;
+      return {
+        attemptId: attempt.attemptId,
+        anchor: { ...anchor }
+      };
+    }
+  }
+  return undefined;
 }
 
 function invalidBoundModelHistory(): AgentInferenceDeterministicFailureError {
@@ -684,7 +1145,7 @@ function validateBoundInput(input: AgentTurnInput): void {
 
 function prepareToolContracts(
   input: AgentTurnInput,
-  descriptors: readonly AgentInferenceToolContractDescriptorV1[]
+  descriptors: readonly AgentInferenceToolContractDescriptorV2[]
 ): readonly PreparedToolContract[] {
   if (!Array.isArray(descriptors)) {
     throw deterministicFailure(
@@ -734,17 +1195,21 @@ function prepareToolContracts(
         'A model-visible Tool contract contains an invalid input schema.'
       );
     }
+    const allowedScopes = resolveAllowedScopes(
+      input.run.binding,
+      available,
+      descriptor.scopeSemantics
+    );
     preparedByName.set(descriptor.tool.toolName, Object.freeze({
       tool: cloneAgentPinnedToolIdentity(descriptor.tool),
       capabilityIds: Object.freeze([...available.capabilityIds]),
       inputSchema,
       scopeSemantics: descriptor.scopeSemantics,
       lifecycleSemantics: descriptor.lifecycleSemantics,
-      allowedScopes: Object.freeze(resolveAllowedScopes(
-        input.run.binding,
-        available,
-        descriptor.scopeSemantics
-      ))
+      allowedScopes: Object.freeze(allowedScopes),
+      providerToolName: providerToolName(descriptor.tool),
+      providerInputSchema: providerInputSchema(inputSchema, allowedScopes),
+      providerDescription: renderProviderToolDescription(descriptor)
     }));
   }
   if (preparedByName.size !== availableByName.size) {
@@ -765,10 +1230,22 @@ function prepareToolContracts(
   }));
 }
 
+function renderProviderToolDescription(
+  descriptor: AgentInferenceToolContractDescriptorV2
+): string {
+  return descriptor.model.guidance.length === 0
+    ? descriptor.model.description
+    : [
+        descriptor.model.description,
+        'Usage guidance:',
+        ...descriptor.model.guidance.map((item) => `- ${item}`)
+      ].join('\n');
+}
+
 function resolveAllowedScopes(
   binding: AgentRunBinding,
   available: AgentAvailableTool,
-  semantics: AgentInferenceToolContractDescriptorV1['scopeSemantics']
+  semantics: AgentInferenceToolContractDescriptorV2['scopeSemantics']
 ): string[] {
   if (semantics === 'none') return [];
   const grants = new Map(binding.capabilities.map((grant) => [
@@ -791,17 +1268,9 @@ function resolveAllowedScopes(
 
 function renderProtocolPrompt(
   tools: readonly PreparedToolContract[],
-  executionMode: 'agent' | 'plan'
+  executionMode: 'chat' | 'agent' | 'plan',
+  subagentProviders: readonly AgentSubagentProviderBinding[]
 ): string {
-  const invokeTools = {
-    kind: 'invoke_tools',
-    invocations: [{
-      toolCallId: 'unique non-empty string',
-      toolName: 'one advertised toolName',
-      input: 'JSON value satisfying inputSchema',
-      scope: ['canonical sorted subset of allowedScopes']
-    }]
-  };
   const proposePlan = {
     kind: 'propose_plan',
     plan: {
@@ -818,19 +1287,39 @@ function renderProtocolPrompt(
     kind: 'delegate_subagent',
     subagent: {
       description: 'short display description',
-      prompt: 'complete self-contained delegated objective'
+      prompt: 'complete self-contained delegated objective',
+      mode: 'one_shot | continuable',
+      providerId: 'one advertised subagentProviders.providerId; omit to use the default'
+    }
+  };
+  const askUser = {
+    kind: 'ask_user',
+    question: {
+      prompt: 'one concrete question for the user',
+      options: [
+        {
+          optionId: 'stable_option_a',
+          label: 'first short option label',
+          description: 'optional consequence or tradeoff'
+        },
+        {
+          optionId: 'stable_option_b',
+          label: 'second short option label'
+        }
+      ]
     }
   };
   const prompt = JSON.stringify({
     protocol: DIRECTIVE_PROTOCOL,
     instruction:
       'Return exactly one JSON object with keys protocol and directive. '
-      + 'Do not return markdown, commentary, hidden reasoning, or native tool calls.',
+      + 'Use an advertised native function for Tool invocation; never synthesize invoke_tools JSON. '
+      + 'Otherwise do not return markdown, commentary, or hidden reasoning.',
     executionMode,
     directiveShapes: executionMode === 'plan'
       ? {
-          invoke_tools: invokeTools,
           propose_plan: proposePlan,
+          ask_user: askUser,
           checkpoint: { kind: 'checkpoint', reason: 'non-empty string' },
           fail: {
             kind: 'fail',
@@ -838,9 +1327,21 @@ function renderProtocolPrompt(
             message: 'non-empty string'
           }
         }
-      : {
+      : executionMode === 'chat'
+        ? {
+            respond: { kind: 'respond', content: 'non-empty string' },
+            ask_user: askUser,
+            checkpoint: { kind: 'checkpoint', reason: 'non-empty string' },
+            complete: { kind: 'complete', outputRef: 'optional non-empty string' },
+            fail: {
+              kind: 'fail',
+              errorCode: 'non-empty string',
+              message: 'non-empty string'
+            }
+          }
+        : {
           respond: { kind: 'respond', content: 'non-empty string' },
-          invoke_tools: invokeTools,
+          ask_user: askUser,
           delegate_subagent: delegateSubagent,
           propose_plan: proposePlan,
           checkpoint: { kind: 'checkpoint', reason: 'non-empty string' },
@@ -851,15 +1352,19 @@ function renderProtocolPrompt(
             message: 'non-empty string'
           }
         },
-    tools: tools.map((tool) => ({
-      toolName: tool.tool.toolName,
-      toolVersion: tool.tool.toolVersion,
-      capabilityIds: [...tool.capabilityIds],
-      scopeSemantics: tool.scopeSemantics,
-      lifecycleSemantics: tool.lifecycleSemantics,
-      allowedScopes: [...tool.allowedScopes],
-      inputSchema: tool.inputSchema
-    }))
+    subagentProviders: executionMode === 'agent'
+      ? subagentProviders.map((provider) => ({
+          providerId: provider.providerId,
+          displayName: provider.displayName,
+          configurationDigest: provider.configurationDigest,
+          transport: provider.transport,
+          supportedModes: [...provider.supportedModes],
+          supportsStructuredReport: provider.supportsStructuredReport,
+          inheritsParentContext: provider.inheritsParentContext,
+          usesParentTools: provider.usesParentTools
+        }))
+      : [],
+    nativeToolCount: tools.length
   });
   if (new TextEncoder().encode(prompt).byteLength > MAX_PROTOCOL_PROMPT_BYTES) {
     throw deterministicFailure(
@@ -868,6 +1373,66 @@ function renderProtocolPrompt(
     );
   }
   return prompt;
+}
+
+function parseTextDirectiveResponse(
+  finishReason: ExactAgentModelInferenceReplayEnvelopeV1['finishReason'],
+  content: string,
+  nativeToolCalls: readonly Extract<
+    ExactAgentModelInferenceContentBlock,
+    { readonly type: 'tool_call' }
+  >[],
+  tools: readonly PreparedToolContract[]
+): AgentDirective {
+  if (finishReason !== 'stop' || nativeToolCalls.length !== 0) {
+    throw new StrictDirectiveProtocolError();
+  }
+  return parseDirectiveEnvelope(content, tools);
+}
+
+function parseNativeToolCalls(
+  textContent: string,
+  calls: readonly Extract<
+    ExactAgentModelInferenceContentBlock,
+    { readonly type: 'tool_call' }
+  >[],
+  tools: readonly PreparedToolContract[]
+): AgentDirective {
+  if (textContent.trim().length !== 0 || calls.length === 0) {
+    throw new StrictDirectiveProtocolError();
+  }
+  const toolsByProviderName = new Map(
+    tools.map((tool) => [tool.providerToolName, tool] as const)
+  );
+  const toolCallIds = new Set<string>();
+  const invocations = calls.map((call) => {
+    const tool = toolsByProviderName.get(call.providerToolName);
+    if (tool === undefined || toolCallIds.has(call.toolCallId)) {
+      throw new StrictDirectiveProtocolError();
+    }
+    toolCallIds.add(call.toolCallId);
+    const envelope = exactObject(call.input, ['input', 'scope']);
+    const scope = stringArray(envelope.scope);
+    if (
+      tool.scopeSemantics === 'none'
+        ? scope.length !== 0
+        : scope.some((scopeId) => !tool.allowedScopes.includes(scopeId))
+    ) throw new StrictDirectiveProtocolError();
+    return {
+      toolCallId: call.toolCallId,
+      tool: cloneAgentPinnedToolIdentity(tool.tool),
+      input: cloneCanonicalAgentToolInput(envelope.input, 'nativeToolCall.input'),
+      capabilityIds: [...tool.capabilityIds],
+      scope
+    };
+  });
+  const directive: AgentDirective = { kind: 'invoke_tools', invocations };
+  try {
+    assertValidAgentDirective(directive);
+  } catch {
+    throw new StrictDirectiveProtocolError();
+  }
+  return directive;
 }
 
 function parseDirectiveEnvelope(
@@ -963,12 +1528,52 @@ function parseDirective(
     }
     case 'delegate_subagent': {
       const exact = exactObject(candidate, ['kind', 'subagent']);
-      const subagent = exactObject(exact.subagent, ['description', 'prompt']);
+      const subagent = exactObjectWithOptional(
+        exact.subagent,
+        ['description', 'prompt', 'mode'],
+        ['providerId']
+      );
       return {
         kind: 'delegate_subagent',
         subagent: {
           description: stringValue(subagent.description),
-          prompt: stringValue(subagent.prompt)
+          prompt: stringValue(subagent.prompt),
+          mode: subagentModeValue(subagent.mode),
+          ...(subagent.providerId === undefined
+            ? {}
+            : { providerId: stringValue(subagent.providerId) })
+        }
+      };
+    }
+    case 'ask_user': {
+      const exact = exactObject(candidate, ['kind', 'question']);
+      const question = exactObjectWithOptional(exact.question, ['prompt'], ['options']);
+      const options = question.options;
+      if (options !== undefined && !Array.isArray(options)) {
+        throw new StrictDirectiveProtocolError();
+      }
+      return {
+        kind: 'ask_user',
+        question: {
+          prompt: stringValue(question.prompt),
+          ...(options === undefined
+            ? {}
+            : {
+                options: options.map((candidateOption) => {
+                  const option = exactObjectWithOptional(
+                    candidateOption,
+                    ['optionId', 'label'],
+                    ['description']
+                  );
+                  return {
+                    optionId: stringValue(option.optionId),
+                    label: stringValue(option.label),
+                    ...(option.description === undefined
+                      ? {}
+                      : { description: stringValue(option.description) })
+                  };
+                })
+              })
         }
       };
     }
@@ -997,18 +1602,20 @@ function parseDirective(
 
 function isExactDescriptor(
   value: unknown
-): value is AgentInferenceToolContractDescriptorV1 {
+): value is AgentInferenceToolContractDescriptorV2 {
   if (!isPlainObject(value)) return false;
   const keys = Object.keys(value);
-  return keys.length === 5
+  return keys.length === 6
     && keys.every((key) => [
       'descriptorVersion',
       'tool',
+      'model',
       'inputSchema',
       'scopeSemantics',
       'lifecycleSemantics'
     ].includes(key))
-    && value.descriptorVersion === 1
+    && value.descriptorVersion === 2
+    && isExactToolModelSemantics(value.model)
     && (
       value.scopeSemantics === 'none'
       || value.scopeSemantics === 'all_requested_workspace_scopes_must_be_granted'
@@ -1021,6 +1628,30 @@ function isExactDescriptor(
       'resource_mutate',
       'resource_close'
     ].includes(value.lifecycleSemantics);
+}
+
+function isExactToolModelSemantics(value: unknown): value is {
+  readonly description: string;
+  readonly guidance: readonly string[];
+} {
+  if (!isPlainObject(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === 2
+    && keys.every((key) => key === 'description' || key === 'guidance')
+    && typeof value.description === 'string'
+    && value.description.trim() === value.description
+    && value.description.length > 0
+    && value.description.length <= 2_048
+    && !/[\u0000-\u001f\u007f]/u.test(value.description)
+    && Array.isArray(value.guidance)
+    && value.guidance.length <= 8
+    && value.guidance.every((item) => (
+      typeof item === 'string'
+      && item.trim() === item
+      && item.length > 0
+      && item.length <= 512
+      && !/[\u0000-\u001f\u007f]/u.test(item)
+    ));
 }
 
 function cloneToolCatalogBinding(
@@ -1099,6 +1730,80 @@ function planImpactValue(value: unknown): AgentPlanStepImpact {
     && value !== 'external_side_effect'
     && value !== 'mixed'
   ) throw new StrictDirectiveProtocolError();
+  return value;
+}
+
+function prepareProviderToolContracts(
+  tools: readonly PreparedToolContract[]
+): readonly ExactAgentModelInferenceToolContract[] {
+  return Object.freeze(tools.map((tool) => Object.freeze({
+    providerToolName: tool.providerToolName,
+    description: tool.providerDescription,
+    inputSchema: cloneCanonicalAgentToolInput(
+      tool.providerInputSchema,
+      `providerTool.${tool.providerToolName}.inputSchema`
+    )
+  })));
+}
+
+function providerToolName(tool: AgentPinnedToolIdentity): string {
+  const digest = createHash('sha256').update(canonicalJson({
+    catalogId: tool.catalogId,
+    revision: tool.revision,
+    digest: tool.digest,
+    toolName: tool.toolName,
+    toolVersion: tool.toolVersion,
+    providerId: tool.providerId,
+    contractDigest: tool.contractDigest
+  })).digest('hex');
+  return `ariadne_${digest.slice(0, 32)}`;
+}
+
+function providerInputSchema(
+  inputSchema: AgentToolJsonValue,
+  allowedScopes: readonly string[]
+): AgentToolJsonValue {
+  return cloneCanonicalAgentToolInput({
+    type: 'object',
+    additionalProperties: false,
+    required: ['input', 'scope'],
+    properties: {
+      input: inputSchema,
+      scope: {
+        type: 'array',
+        uniqueItems: true,
+        maxItems: allowedScopes.length,
+        items: allowedScopes.length === 0
+          ? { type: 'string' }
+          : { type: 'string', enum: [...allowedScopes] }
+      }
+    }
+  }, 'providerTool.inputSchema');
+}
+
+function estimateProviderToolTokens(
+  tools: readonly ExactAgentModelInferenceToolContract[]
+): number {
+  if (tools.length === 0) return 0;
+  return estimateMessagesTokens([
+    textMessage('system', JSON.stringify({ tools }))
+  ]);
+}
+
+function modelVisibleSubagentProviders(
+  binding: AgentRunBinding
+): readonly AgentSubagentProviderBinding[] {
+  if (
+    binding.bindingVersion === 4
+    && binding.executionProfile.subagentProviders !== undefined
+  ) return binding.executionProfile.subagentProviders;
+  return [DEFAULT_AGENT_SUBAGENT_PROVIDER_BINDING];
+}
+
+function subagentModeValue(value: unknown): 'one_shot' | 'continuable' {
+  if (value !== 'one_shot' && value !== 'continuable') {
+    throw new StrictDirectiveProtocolError();
+  }
   return value;
 }
 

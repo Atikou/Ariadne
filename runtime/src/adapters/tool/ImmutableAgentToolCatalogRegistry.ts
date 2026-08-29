@@ -14,14 +14,16 @@ import type {
   AgentAdmissionToolCatalogReferenceV1
 } from '../../control/ports/AgentAdmissionAuthority.js';
 import type {
-  AgentInferenceToolContractDescriptorV1,
+  AgentInferenceToolContractDescriptorV2,
   AgentInferenceToolContractReader,
   ReadAgentInferenceToolContractsRequest
 } from '../../control/ports/AgentInferenceToolContracts.js';
+import type { AgentToolPresentationResolver } from '../../projection/AgentRunProjectionPorts.js';
 import {
   ImmutableAgentToolCatalog,
   type AgentToolLifecycleHook
 } from './ImmutableAgentToolCatalog.js';
+import type { AgentToolExecutionServices } from '../../control/ports/AgentToolExecution.js';
 import {
   assertTrustedAgentToolCatalogSnapshot,
   type TrustedAgentToolCatalogSnapshot
@@ -42,13 +44,15 @@ implements
 AgentAdmissionToolCatalogProvider,
 AgentToolAdmissionPolicy,
 AgentInferenceToolContractReader,
+AgentToolPresentationResolver,
 AgentEffectExecutor {
   private readonly records: ReadonlyMap<string, CatalogRecord>;
   private readonly executorsByTool: ReadonlyMap<string, ImmutableAgentToolCatalog>;
 
   public constructor(
     snapshots: readonly TrustedAgentToolCatalogSnapshot[] = [],
-    lifecycleHook?: AgentToolLifecycleHook
+    lifecycleHook?: AgentToolLifecycleHook,
+    executionServices: AgentToolExecutionServices = Object.freeze({})
   ) {
     assertDenseArray(snapshots, 'toolCatalogRegistry.snapshots');
     const records = new Map<string, CatalogRecord>();
@@ -65,7 +69,7 @@ AgentEffectExecutor {
       if (records.has(key)) {
         throw invariant('Tool Catalog registry cannot contain duplicate identities.');
       }
-      const catalog = new ImmutableAgentToolCatalog(snapshot, lifecycleHook);
+      const catalog = new ImmutableAgentToolCatalog(snapshot, lifecycleHook, executionServices);
       records.set(key, Object.freeze({
         identity,
         catalog
@@ -116,7 +120,7 @@ AgentEffectExecutor {
   public readInferenceToolContracts(
     request: ReadAgentInferenceToolContractsRequest,
     signal: AbortSignal
-  ): Promise<readonly AgentInferenceToolContractDescriptorV1[]> {
+  ): Promise<readonly AgentInferenceToolContractDescriptorV2[]> {
     signal.throwIfAborted();
     const record = this.records.get(catalogKey({
       referenceVersion: 1,
@@ -130,6 +134,20 @@ AgentEffectExecutor {
       ));
     }
     return record.catalog.readInferenceToolContracts(request, signal);
+  }
+
+  public resolveToolPresentation(
+    tool: AgentPinnedToolIdentity
+  ): ReturnType<AgentToolPresentationResolver['resolveToolPresentation']> {
+    const exact = cloneAgentPinnedToolIdentity(tool, 'toolPresentation.tool');
+    const presentation = this.executorsByTool.get(toolKey(exact))
+      ?.readToolPresentation(exact);
+    return presentation === null || presentation === undefined
+      ? null
+      : Object.freeze({
+          kind: presentation.kind,
+          label: presentation.label
+        });
   }
 
   /**

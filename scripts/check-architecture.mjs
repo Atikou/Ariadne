@@ -239,8 +239,11 @@ function assertRetiredProductionChainsAbsent() {
     path.join(projectRoot, 'app', 'src', 'renderer'),
     path.join(projectRoot, 'runtime', 'src', 'entry'),
     path.join(projectRoot, 'runtime', 'src', 'composition'),
+    path.join(projectRoot, 'runtime', 'src', 'control', 'resources'),
     path.join(projectRoot, 'runtime', 'src', 'ingress'),
-    path.join(projectRoot, 'runtime', 'src', 'application', 'RuntimeKernelApplication.ts')
+    path.join(projectRoot, 'runtime', 'src', 'application', 'RuntimeKernelApplication.ts'),
+    path.join(projectRoot, 'packages', 'protocol', 'src', 'host'),
+    path.join(projectRoot, 'packages', 'protocol', 'src', 'public.ts')
   ];
   const forbidden = [
     'companion.sessions.',
@@ -256,7 +259,14 @@ function assertRetiredProductionChainsAbsent() {
     'purgeAfter',
     'purgedAt',
     'LegacyRuntimeApplication',
-    'RuntimeFacade'
+    'RuntimeFacade',
+    'AgentProcessSessionService',
+    'agent.process-sessions',
+    'workspace.process-sessions',
+    'background.tasks',
+    'workspace.process_list',
+    'workspace.process_read',
+    'workspace.process_stop'
   ];
   const violations = [];
   for (const root of roots) {
@@ -378,6 +388,7 @@ function resolveWorkspaceSpecifier(specifier) {
     ['@ariadne/protocol', path.join(projectRoot, 'packages', 'protocol', 'src')],
     ['@ariadne/contracts', path.join(projectRoot, 'packages', 'contracts', 'src')],
     ['@ariadne/agent-core', path.join(projectRoot, 'packages', 'agent-core', 'src')],
+    ['@ariadne/live-work', path.join(projectRoot, 'packages', 'live-work', 'src')],
     ['@ariadne/runtime', path.join(projectRoot, 'runtime', 'src')],
     ['@ariadne/app', path.join(projectRoot, 'app', 'src')]
   ];
@@ -508,6 +519,20 @@ function findRuleViolations(importEntries) {
       && target.package !== 'agent-core'
     ) {
       add('agent-core-isolation', 'Agent Core 不得依赖 App、Runtime 或 Contracts', entry);
+    }
+    if (
+      source.package === 'live-work'
+      && target
+      && target.package !== 'live-work'
+    ) {
+      add('live-work-isolation', 'Live Work 内核不得依赖 App、Runtime、Contracts 或 Agent Core', entry);
+    }
+    if (
+      source.package === 'live-work'
+      && !entry.specifier.startsWith('.')
+      && target?.package !== 'live-work'
+    ) {
+      add('live-work-no-external-imports', 'Live Work 内核只能依赖自身纯 TypeScript 模块', entry);
     }
     if (
       source.package === 'agent-core'
@@ -698,6 +723,9 @@ function classifyFile(file) {
       layer: first === 'application' && second === 'ports' ? 'ports' : first
     };
   }
+  if (segments[0] === 'packages' && segments[1] === 'live-work') {
+    return { package: 'live-work', layer: segments[3] ?? 'index' };
+  }
   if (segments[0] === 'runtime' && segments[1] === 'src') {
     return { package: 'runtime', layer: segments[2] ?? 'index' };
   }
@@ -729,6 +757,15 @@ function classifySpecifier(specifier) {
       layer: parts[0] === 'application' && parts[1] === 'ports'
         ? 'ports'
         : parts[0]
+    };
+  }
+  if (specifier === '@ariadne/live-work') {
+    return { package: 'live-work', layer: 'index' };
+  }
+  if (specifier.startsWith('@ariadne/live-work/')) {
+    return {
+      package: 'live-work',
+      layer: specifier.slice('@ariadne/live-work/'.length).split('/')[0]
     };
   }
   if (specifier === '@ariadne/runtime') {

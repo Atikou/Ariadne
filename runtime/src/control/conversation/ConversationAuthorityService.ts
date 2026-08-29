@@ -3,18 +3,22 @@ import {
   acceptConversationUserMessage,
   assertAcceptConversationUserMessageCommand,
   assertCreateConversationSessionCommand,
+  assertMutateConversationSessionCommand,
   assertValidConversationAuthorityEvent,
   assertValidConversationAuthorityReceipt,
   assertValidConversationMessageVersion,
   createConversationAuthorityReceipt,
   createConversationSession,
-  digestConversationMessageContent,
+  mutateConversationSession,
+  digestConversationMessagePayload,
   fingerprintConversationAuthorityCommand,
   type AcceptConversationUserMessageCommand,
   type AcceptedConversationUserMessage,
   type ConversationAuthorityCommandReceipt,
   type CreateConversationSessionCommand,
-  type CreatedConversationSession
+  type CreatedConversationSession,
+  type MutateConversationSessionCommand,
+  type MutatedConversationSession
 } from '../../conversation/ConversationAuthority.js';
 import {
   assertValidConversationRunHandoffSaga,
@@ -47,6 +51,16 @@ Omit<ConversationRunHandoffTransition, 'event'> {
     ConversationAuthorityCommandReceipt,
     { readonly kind: 'conversation.accept_user_message' }
   >;
+  readonly replayed: boolean;
+}
+
+export interface MutateConversationSessionResult {
+  readonly event: MutatedConversationSession['event'];
+  readonly receipt: Extract<
+    ConversationAuthorityCommandReceipt,
+    { readonly kind: 'conversation.mutate_session' }
+  >;
+  readonly resultingSessionVersion: number;
   readonly replayed: boolean;
 }
 
@@ -90,7 +104,11 @@ export class ConversationAuthorityService {
     input: AcceptConversationUserMessageCommand
   ): Promise<AcceptConversationUserMessageResult> {
     const command = snapshotAcceptConversationUserMessageCommand(input);
-    const contentDigest = await digestConversationMessageContent(command.content);
+    const contentDigest = await digestConversationMessagePayload({
+      content: command.content,
+      ...(command.attachments === undefined ? {} : { attachments: command.attachments }),
+      ...(command.execution === undefined ? {} : { execution: command.execution })
+    });
     const commandFingerprint = await fingerprintConversationAuthorityCommand(
       command,
       contentDigest
@@ -156,6 +174,38 @@ export class ConversationAuthorityService {
       };
     });
   }
+
+  public async mutateSession(
+    input: MutateConversationSessionCommand
+  ): Promise<MutateConversationSessionResult> {
+    const command = snapshotMutateConversationSessionCommand(input);
+    const commandFingerprint = await fingerprintConversationAuthorityCommand(command);
+    return this.unitOfWork.authorityTransaction(async (transaction) => {
+      const committed = await transaction.loadCommittedAuthorityCommand(command.commandId);
+      if (committed !== null) {
+        assertExactCommittedCommand(committed, commandFingerprint, command.kind);
+        return replayMutatedSession(committed, command);
+      }
+      const current = await transaction.loadSession(command.sessionId);
+      const mutated = mutateConversationSession(current, command);
+      const receipt = createConversationAuthorityReceipt(
+        command,
+        commandFingerprint,
+        mutated.session.version
+      ) as MutateConversationSessionResult['receipt'];
+      await transaction.commitMutatedSession({
+        receipt,
+        expectedSessionVersion: command.expectedSessionVersion,
+        ...mutated
+      });
+      return {
+        event: mutated.event,
+        receipt,
+        resultingSessionVersion: mutated.session.version,
+        replayed: false
+      };
+    });
+  }
 }
 
 function snapshotCreateConversationSessionCommand(
@@ -169,6 +219,22 @@ function snapshotCreateConversationSessionCommand(
     sessionId: input.sessionId,
     workspaceId: input.workspaceId,
     expectedVersion: input.expectedVersion,
+    occurredAt: input.occurredAt
+  };
+}
+
+function snapshotMutateConversationSessionCommand(
+  input: MutateConversationSessionCommand
+): MutateConversationSessionCommand {
+  assertMutateConversationSessionCommand(input);
+  return {
+    kind: input.kind,
+    commandId: input.commandId,
+    eventId: input.eventId,
+    sessionId: input.sessionId,
+    workspaceId: input.workspaceId,
+    expectedSessionVersion: input.expectedSessionVersion,
+    mutation: { ...input.mutation },
     occurredAt: input.occurredAt
   };
 }
@@ -187,6 +253,9 @@ function snapshotAcceptConversationUserMessageCommand(
     messageId: input.messageId,
     expectedMessageVersion: input.expectedMessageVersion,
     content: input.content,
+    ...(input.attachments === undefined
+      ? {}
+      : { attachments: input.attachments.map((attachment) => ({ ...attachment })) }),
     ...(input.execution === undefined
       ? {}
       : { execution: structuredClone(input.execution) }),
@@ -265,11 +334,42 @@ function replayCreatedSession(
       sessionId: receipt.sessionId,
       workspaceId: receipt.workspaceId,
       version: receipt.resultingSessionVersion,
+      title: 'Conversation',
+      status: 'active',
       createdAt: receipt.committedAt,
       updatedAt: receipt.committedAt
     },
     event,
     receipt,
+    replayed: true
+  };
+}
+
+function replayMutatedSession(
+  committed: CommittedConversationAuthorityCommand,
+  command: MutateConversationSessionCommand
+): MutateConversationSessionResult {
+  const { receipt, event } = committed;
+  if (
+    receipt.kind !== 'conversation.mutate_session'
+    || event.type !== 'conversation.session.updated'
+    || receipt.commandId !== command.commandId
+    || receipt.eventId !== command.eventId
+    || receipt.sessionId !== command.sessionId
+    || receipt.workspaceId !== command.workspaceId
+    || receipt.committedAt !== command.occurredAt
+    || event.eventId !== receipt.eventId
+    || event.commandId !== receipt.commandId
+    || event.sessionId !== receipt.sessionId
+    || event.workspaceId !== receipt.workspaceId
+    || event.sessionVersion !== receipt.resultingSessionVersion
+    || event.occurredAt !== receipt.committedAt
+    || JSON.stringify(event.mutation) !== JSON.stringify(command.mutation)
+  ) throw storageCorruption('Mutate Session receipt and event binding differs.');
+  return {
+    event,
+    receipt,
+    resultingSessionVersion: receipt.resultingSessionVersion,
     replayed: true
   };
 }
@@ -306,14 +406,16 @@ async function replayAcceptedUserMessage(
     || event.occurredAt !== receipt.committedAt
   ) throw storageCorruption('Accepted Message receipt and event binding differs.');
 
-  const [currentSession, messageHead, messageVersion, committedHandoff] = await Promise.all([
+  const [currentSession, exactSession, messageHead, messageVersion, committedHandoff] = await Promise.all([
     transaction.loadSession(receipt.sessionId),
+    transaction.loadSessionVersion(receipt.sessionId, receipt.resultingSessionVersion),
     transaction.loadMessageHead(receipt.messageId),
     transaction.loadMessageVersion(receipt.messageId, receipt.messageVersion),
     transaction.loadCommittedCommand(handoffCommand.commandId)
   ]);
   if (
     currentSession === null
+    || exactSession === null
     || messageHead === null
     || messageVersion === null
     || committedHandoff === null
@@ -330,6 +432,10 @@ async function replayAcceptedUserMessage(
     currentSession.sessionId !== receipt.sessionId
     || currentSession.workspaceId !== receipt.workspaceId
     || currentSession.version < receipt.resultingSessionVersion
+    || exactSession.sessionId !== receipt.sessionId
+    || exactSession.workspaceId !== receipt.workspaceId
+    || exactSession.version !== receipt.resultingSessionVersion
+    || exactSession.updatedAt !== receipt.committedAt
     || messageHead.messageId !== receipt.messageId
     || messageHead.sessionId !== receipt.sessionId
     || messageHead.workspaceId !== receipt.workspaceId
@@ -358,13 +464,7 @@ async function replayAcceptedUserMessage(
     || saga.processedSteps[0]?.inboxEventId !== receipt.eventId
     || saga.processedSteps[0]?.outboxMessageId !== handoffCommand.outboxMessageId
   ) throw storageCorruption('Accepted Message Handoff receipt binding differs.');
-  const session = {
-    sessionId: receipt.sessionId,
-    workspaceId: receipt.workspaceId,
-    version: receipt.resultingSessionVersion,
-    createdAt: currentSession.createdAt,
-    updatedAt: receipt.committedAt
-  };
+  const session = exactSession;
   return {
     session,
     messageHead: {

@@ -84,7 +84,8 @@ export class DefaultAgentChildResultsContinuationPlanner {
         kind: 'delegate_subagent',
         delegationId: directive.delegationId,
         childRunId: directive.childRunId,
-        objectiveDigest: directive.objectiveDigest
+        objectiveDigest: directive.objectiveDigest,
+        mode: directive.mode
       }
     });
     const childResultContent = canonicalizeAgentControlData({

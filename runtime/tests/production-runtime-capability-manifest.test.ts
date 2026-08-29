@@ -14,6 +14,7 @@ import {
   compileRuntimeCapabilityManifest,
   createProductionRuntimeCapabilityStartContext,
   productionRuntimeCapabilityProviders,
+  resolveAgentControlRuntimeServices,
   type RuntimeCapabilityProvider
 } from '../src/composition/ProductionRuntimeCapabilityManifest.js';
 
@@ -75,12 +76,13 @@ describe('production Runtime Capability Manifest', () => {
       'agent.plans',
       'agent.runs',
       'agent.tools',
-      'background.tasks',
       'browser.web',
       'companion.agent-plan',
       'companion.chat',
       'companion.sessions',
+      'computer.read',
       'hooks.lifecycle',
+      'live.work',
       'mcp.tools',
       'models.local',
       'models.remote',
@@ -104,9 +106,58 @@ describe('production Runtime Capability Manifest', () => {
       'resources',
       'scheduler'
     ]);
+    const runtimeServices = resolveAgentControlRuntimeServices(manifest);
+    expect(Object.isFrozen(runtimeServices)).toBe(true);
+    expect(runtimeServices.instructionAssembly).toBe(
+      manifest.service('agent.instructions.assembly')
+    );
+    expect(runtimeServices.lifecycleHooks).toBe(manifest.service('agent.hooks.lifecycle'));
+    expect(runtimeServices.liveWorkLifecycle).toBe(manifest.service('agent.live-work'));
+    expect(runtimeServices.telemetry).toBeUndefined();
+    const planInstructions = await runtimeServices.instructionAssembly.assemble({
+      runId: 'run-1',
+      sessionId: 'session-1',
+      workspaceId: 'workspace-1',
+      executionMode: 'plan'
+    }, new AbortController().signal);
+    expect(planInstructions).toMatchObject({
+      snapshotVersion: 1,
+      complete: true,
+      subject: { executionMode: 'plan', workspaceId: 'workspace-1' }
+    });
+    expect(planInstructions.blocks.at(-1)).toMatchObject({
+      contributorId: 'execution-mode.policy',
+      scope: { kind: 'mode', mode: 'plan' }
+    });
+    const chatInstructions = await runtimeServices.instructionAssembly.assemble({
+      runId: 'run-2',
+      sessionId: 'session-1',
+      workspaceId: 'workspace-1',
+      executionMode: 'chat'
+    }, new AbortController().signal);
+    expect(chatInstructions.blocks).toHaveLength(1);
+    expect(chatInstructions.blocks[0]).toMatchObject({
+      contributorId: 'execution-mode.policy',
+      scope: { kind: 'mode', mode: 'chat' }
+    });
+    expect(diagnostics.find(
+      (item) => item.definition.id === 'agent.control.runtime-services'
+    )?.definition.consumes).toEqual([
+      { serviceId: 'agent.instructions.assembly', optional: false },
+      { serviceId: 'agent.hooks.lifecycle', optional: false },
+      { serviceId: 'agent.live-work', optional: false },
+      { serviceId: 'agent.telemetry', optional: true }
+    ]);
+    expect(diagnostics.find(
+      (item) => item.definition.id === 'agent.instructions.assembly'
+    )?.definition.consumes).toEqual([
+      { serviceId: 'agent.instructions.workspace', optional: false },
+      { serviceId: 'agent.instructions.skills', optional: false },
+      { serviceId: 'agent.instructions.mode-policy', optional: false }
+    ]);
   });
 
-  it('does not advertise a configured feature after its Provider is removed', async () => {
+  it('fails closed when the required Hook Provider is removed', async () => {
     const bootstrap = createBootstrap();
     bootstrap.runtimePolicy.hooks.definitions = [{
       id: 'audit', version: '1', events: ['runtime.stop'], timeoutMs: 1_000,
@@ -117,11 +168,8 @@ describe('production Runtime Capability Manifest', () => {
       (provider) => provider.definition.id !== 'hooks.lifecycle'
     );
 
-    const manifest = await compileRuntimeCapabilityManifest(context, providers);
-
-    expect(manifest.publicCapabilities).not.toContain('hooks.lifecycle');
-    expect(manifest.diagnosticSnapshot().map((item) => item.definition.id))
-      .not.toContain('hooks.lifecycle');
+    await expect(compileRuntimeCapabilityManifest(context, providers))
+      .rejects.toThrow('runtime_capability_service_dependency_missing:agent.hooks.lifecycle');
   });
 
   it('fails closed on undeclared public output and rolls back started Providers', async () => {
@@ -144,8 +192,9 @@ describe('production Runtime Capability Manifest', () => {
       definition: {
         id: 'invalid.public-output',
         contractVersion: '1.0',
-        requires: ['workspace.tools'],
-        provides: ['invalid.public-output'],
+        dependsOn: ['workspace.tools'],
+        consumes: [],
+        provides: [],
         publicCapabilities: ['agent.proposals']
       },
       start: () => ({ publicCapabilities: ['scheduler'] })
@@ -164,16 +213,127 @@ describe('production Runtime Capability Manifest', () => {
       definition: {
         id: 'invalid.consumer',
         contractVersion: '1.0',
-        requires: ['missing.provider'],
-        provides: ['invalid.consumer'],
+        dependsOn: ['missing.provider'],
+        consumes: [],
+        provides: [],
         publicCapabilities: []
       },
       start
     };
 
     await expect(compileRuntimeCapabilityManifest(context, [invalid]))
-      .rejects.toThrow('runtime_capability_requirement_missing:missing.provider');
+      .rejects.toThrow('runtime_capability_dependency_missing:missing.provider');
     expect(start).not.toHaveBeenCalled();
+  });
+
+  it('keeps the Skill service wired while an authoritative missing catalog fails admission', async () => {
+    const bootstrap = createBootstrap();
+    bootstrap.runtimePolicy.skills.enabled = ['missing-for-manifest-test'];
+
+    const manifest = await compileProductionRuntimeCapabilityManifest({ bootstrap });
+    const runtimeServices = resolveAgentControlRuntimeServices(manifest);
+
+    expect(manifest.publicCapabilities).toContain('skills.catalog');
+    expect(manifest.service('agent.skills.catalog')).toBeDefined();
+    await expect(runtimeServices.instructionAssembly.assemble({
+      runId: 'run-missing-skill',
+      sessionId: 'session-missing-skill',
+      workspaceId: 'workspace-1',
+      executionMode: 'agent'
+    }, new AbortController().signal)).rejects.toThrow(
+      'skill_not_found:workspace-1:missing-for-manifest-test'
+    );
+  });
+
+  it('injects only declared upstream services while each Provider starts', async () => {
+    const bootstrap = createBootstrap();
+    const context = createProductionRuntimeCapabilityStartContext({ bootstrap });
+    const service = Object.freeze({ identity: 'upstream-service' });
+    const observed = vi.fn();
+    const producer: RuntimeCapabilityProvider = {
+      definition: {
+        id: 'test.service-provider',
+        contractVersion: '1.0',
+        dependsOn: [],
+        consumes: [],
+        provides: [{ serviceId: 'test.upstream', optional: false }],
+        publicCapabilities: []
+      },
+      start: () => ({
+        publicCapabilities: [],
+        services: { 'test.upstream': service }
+      })
+    };
+    const consumer: RuntimeCapabilityProvider = {
+      definition: {
+        id: 'test.service-consumer',
+        contractVersion: '1.0',
+        dependsOn: [],
+        consumes: [{ serviceId: 'test.upstream', optional: false }],
+        provides: [{ serviceId: 'test.downstream', optional: false }],
+        publicCapabilities: []
+      },
+      start: (startContext) => {
+        const resolved = startContext.services.required<typeof service>('test.upstream');
+        observed(resolved);
+        return {
+          publicCapabilities: [],
+          services: { 'test.downstream': Object.freeze({ resolved }) }
+        };
+      }
+    };
+
+    const manifest = await compileRuntimeCapabilityManifest(
+      context,
+      [...productionRuntimeCapabilityProviders(), producer, consumer]
+    );
+
+    expect(observed).toHaveBeenCalledWith(service);
+    expect(manifest.service<{ readonly resolved: typeof service }>('test.downstream'))
+      .toEqual({ resolved: service });
+  });
+
+  it('rejects undeclared service access and missing required Provider output', async () => {
+    const bootstrap = createBootstrap();
+    const context = createProductionRuntimeCapabilityStartContext({ bootstrap });
+    const undeclaredAccess: RuntimeCapabilityProvider = {
+      definition: {
+        id: 'test.undeclared-access',
+        contractVersion: '1.0',
+        dependsOn: [],
+        consumes: [],
+        provides: [],
+        publicCapabilities: []
+      },
+      start: (startContext) => {
+        startContext.services.required('agent.live-work');
+        return { publicCapabilities: [] };
+      }
+    };
+    await expect(compileRuntimeCapabilityManifest(
+      context,
+      [...productionRuntimeCapabilityProviders(), undeclaredAccess]
+    )).rejects.toThrow(
+      'runtime_capability_service_access_not_declared:test.undeclared-access:agent.live-work'
+    );
+
+    const missingOutput: RuntimeCapabilityProvider = {
+      definition: {
+        id: 'test.missing-output',
+        contractVersion: '1.0',
+        dependsOn: [],
+        consumes: [],
+        provides: [{ serviceId: 'test.required-output', optional: false }],
+        publicCapabilities: []
+      },
+      start: () => ({ publicCapabilities: [] })
+    };
+    await expect(compileRuntimeCapabilityManifest(
+      context,
+      [...productionRuntimeCapabilityProviders(), missingOutput]
+    )).rejects.toThrow(
+      'runtime_capability_required_service_not_provided:test.missing-output:test.required-output'
+    );
   });
 });
 

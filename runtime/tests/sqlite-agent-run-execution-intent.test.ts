@@ -324,7 +324,7 @@ describe('SQLite Agent execution-intent ledger', () => {
     }
 
     expect(() => new SqliteAgentRunUnitOfWork(root)).toThrow(
-      'agent_control_offline_migration_required:agent_control_schema:3:5'
+      'agent_control_offline_migration_required:agent_control_schema:3:7'
     );
     const unchanged = new DatabaseSync(databasePath, { readOnly: true });
     try {

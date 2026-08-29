@@ -4,12 +4,19 @@ import type {
   RuntimeResult,
   RuntimeStatus
 } from '@ariadne/protocol/public';
-import type { AriadneApi, Result } from '@shared/contract';
+import type {
+  AriadneApi,
+  Result,
+  RuntimeDesktopRequestOptions
+} from '@shared/contract';
 
 export interface RuntimeApiBehavior {
   getStatus(): Promise<RuntimeStatus>;
   onStatus?(listener: (status: RuntimeStatus) => void): () => void;
-  request(command: RuntimeCommand): Promise<RuntimeResult>;
+  request(
+    command: RuntimeCommand,
+    options?: RuntimeDesktopRequestOptions
+  ): Promise<RuntimeResult>;
   onEvent(listener: (event: RuntimeEventEnvelope) => void): () => void;
 }
 
@@ -17,7 +24,7 @@ export function successfulRuntimeApi(behavior: RuntimeApiBehavior): AriadneApi['
   return {
     getStatus: () => capture(() => behavior.getStatus()),
     onStatus: (listener) => behavior.onStatus?.(listener) ?? (() => undefined),
-    request: (command) => capture(() => behavior.request(command)),
+    request: (command, options) => capture(() => behavior.request(command, options)),
     onEvent: (listener) => behavior.onEvent(listener)
   };
 }

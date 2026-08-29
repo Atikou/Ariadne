@@ -51,7 +51,7 @@ the process retains the fence until exit rather than admitting another writer.
 - Offline migration must establish one writer, validate receipts and protected
   artifacts, and leave a durable audit record.
 
-Current Agent Control persistence is schema v5 / ledger revision 49. Version
+Current Agent Control persistence is schema v7 / ledger revision 55. Version
 numbers are implementation details; the no-in-place-guessing rule is the ADR.
 
 ### Recovery encryption

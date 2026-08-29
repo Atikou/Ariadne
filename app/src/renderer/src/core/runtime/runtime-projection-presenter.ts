@@ -1,12 +1,14 @@
 import type {
   AgentPlan,
   CompanionMessage,
+  ImageAttachmentRefV3,
   ConversationSession,
   ModelSummary,
   PermissionRequest,
   PlanHandoff,
   PublicDecisionProjectionV3,
   PublicDiagnosticProjectionV3,
+  PublicInferenceStreamProjectionV3,
   PublicMessageProjectionV3,
   PublicModelProjectionV3,
   PublicRunProjectionV3,
@@ -19,6 +21,7 @@ import type {
 
 export type RuntimeMessage = CompanionMessage & {
   deliveryState?: 'pending' | 'failed';
+  attachments?: readonly ImageAttachmentRefV3[];
 };
 
 export type RuntimeRun = Omit<RunSummary, 'origin' | 'status'> & {
@@ -29,6 +32,8 @@ export type RuntimeRun = Omit<RunSummary, 'origin' | 'status'> & {
   interactionMessages: RuntimeMessage[];
   parentRunId?: string;
   delegationId?: string;
+  subagentMode?: 'one_shot' | 'continuable';
+  subagentProviderId?: string;
 };
 
 export type RuntimePermissionDecision = Omit<
@@ -59,6 +64,23 @@ export type RuntimePlanDecision = Omit<
   actionAvailable: boolean;
 };
 
+export interface RuntimeUserQuestionDecision {
+  readonly decisionId: string;
+  readonly runId: string;
+  readonly sessionId: string;
+  readonly projectionVersion: number;
+  readonly status: PublicDecisionProjectionV3['status'];
+  readonly headline: string;
+  readonly prompt: string;
+  readonly options?: readonly {
+    readonly optionId: string;
+    readonly label: string;
+    readonly description?: string;
+  }[];
+  readonly actionAvailable: boolean;
+  readonly createdAt: string;
+}
+
 export function presentSession(
   session: PublicSessionProjectionV3
 ): ConversationSession {
@@ -67,6 +89,7 @@ export function presentSession(
     workspaceId: session.workspaceId,
     title: session.title,
     pinned: session.pinned,
+    status: session.status,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt
   };
@@ -74,15 +97,53 @@ export function presentSession(
 
 export function presentMessage(
   message: PublicMessageProjectionV3
-): CompanionMessage {
+): RuntimeMessage {
   return {
     messageId: message.messageId,
     sessionId: message.sessionId,
     ...(message.runId === undefined ? {} : { runId: message.runId }),
     role: message.role,
     content: message.content,
+    ...(message.attachments === undefined
+      ? {}
+      : { attachments: message.attachments.map((attachment) => ({ ...attachment })) }),
     status: message.status,
     createdAt: message.createdAt
+  };
+}
+
+export function presentInferenceStreamMessage(
+  stream: PublicInferenceStreamProjectionV3,
+  run: PublicRunProjectionV3 | undefined
+): RuntimeMessage | null {
+  if (stream.status !== 'streaming' || run?.sessionId === undefined) return null;
+  const content = stream.chunks
+    .filter((chunk) => chunk.channel === 'token')
+    .map((chunk) => chunk.text)
+    .join('');
+  const reasoningContent = stream.chunks
+    .filter((chunk) => chunk.channel === 'reasoning')
+    .map((chunk) => chunk.text)
+    .join('');
+  const startedAt = stream.chunks[0]?.observedAt ?? stream.updatedAt;
+  return {
+    messageId: stream.inferenceStreamId,
+    sessionId: run.sessionId,
+    runId: stream.runId,
+    role: 'assistant',
+    content,
+    status: 'streaming',
+    createdAt: startedAt,
+    ...(reasoningContent.length === 0
+      ? {}
+      : {
+        reasoning: {
+          content: reasoningContent,
+          status: 'streaming',
+          source: 'provider',
+          startedAt
+        }
+      })
   };
 }
 
@@ -107,6 +168,10 @@ export function presentRun(run: PublicRunProjectionV3): RuntimeRun {
     ...(run.sourceMessageId === undefined ? {} : { sourceMessageId: run.sourceMessageId }),
     ...(run.parentRunId === undefined ? {} : { parentRunId: run.parentRunId }),
     ...(run.delegationId === undefined ? {} : { delegationId: run.delegationId }),
+    ...(run.subagentMode === undefined ? {} : { subagentMode: run.subagentMode }),
+    ...(run.subagentProviderId === undefined
+      ? {}
+      : { subagentProviderId: run.subagentProviderId }),
     origin: 'projection',
     title: run.title,
     status: run.status,
@@ -133,8 +198,11 @@ export function presentRunActivities(run: PublicRunProjectionV3): RunActivity[] 
     runId: run.runId,
     toolCallId: activity.callId,
     toolName: activity.toolName,
+    ...(activity.presentation === undefined
+      ? {}
+      : { presentationKind: activity.presentation.kind }),
     status: activity.status,
-    title: activity.toolName,
+    title: activity.presentation?.label ?? activity.toolName,
     summary: activity.status === 'completed'
       ? '工具调用已完成'
       : activity.status === 'failed'
@@ -218,6 +286,37 @@ export function presentPlanDecision(
   };
 }
 
+export function presentUserQuestionDecision(
+  decision: PublicDecisionProjectionV3
+): RuntimeUserQuestionDecision | null {
+  if (
+    decision.kind !== 'user_question'
+    || decision.presentation.kind !== 'user_question'
+  ) return null;
+  return {
+    decisionId: decision.decisionId,
+    runId: decision.runId,
+    sessionId: decision.sessionId,
+    projectionVersion: decision.version,
+    status: decision.status,
+    headline: decision.presentation.headline,
+    prompt: decision.presentation.question,
+    ...(decision.presentation.options === undefined
+      ? {}
+      : {
+          options: decision.presentation.options.map((option) => ({
+            optionId: option.optionId,
+            label: option.label,
+            ...(option.description === undefined
+              ? {}
+              : { description: option.description })
+          }))
+        }),
+    actionAvailable: hasExactDecisionAction(decision, 'user_question', ['answer']),
+    createdAt: decision.requestedAt
+  };
+}
+
 function isActionablePermissionDecision(
   decision: PublicDecisionProjectionV3
 ): boolean {
@@ -236,7 +335,7 @@ function isActionablePlanDecision(
 
 function hasExactDecisionAction(
   decision: PublicDecisionProjectionV3,
-  kind: 'permission' | 'plan',
+  kind: 'permission' | 'plan' | 'user_question',
   expectedChoices: readonly string[]
 ): boolean {
   const action = decision.action;

@@ -69,6 +69,17 @@ describe('Ariadne Runtime protocol', () => {
         maxOutputTokens: 4_096,
         inference: {}
       }],
+      subagentProviders: [{
+        kind: 'acp_stdio',
+        providerId: 'external.acp',
+        displayName: 'External ACP',
+        command: 'E:\\Ariadne\\bin\\acp-agent.exe',
+        args: ['serve'],
+        permissionPolicy: 'reject',
+        networkAccess: 'offline',
+        timeoutMs: 60_000,
+        disposeGraceMs: 2_000
+      }],
       routingStrategy: 'cloud-first',
       agentAdmissionAuthoritySource: {
         sourceVersion: 1,
@@ -84,6 +95,10 @@ describe('Ariadne Runtime protocol', () => {
     });
 
     expect(bootstrap.type).toBe('bootstrap');
+    expect(bootstrap.subagentProviders?.[0]).toMatchObject({
+      providerId: 'external.acp',
+      permissionPolicy: 'reject'
+    });
     expect(JSON.stringify(bootstrap)).not.toMatch(/"(?:port|token|secret|apiKey)"\s*:/i);
   });
 

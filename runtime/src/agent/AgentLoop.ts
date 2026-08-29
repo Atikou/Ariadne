@@ -1,5 +1,5 @@
-import type { AgentNotification } from "../background/types.js";
-import type { NotificationQueue } from "../background/NotificationQueue.js";
+import type { AgentNotification } from '../notifications/types.js';
+import type { NotificationQueue } from '../notifications/NotificationQueue.js';
 import type { ContextManager } from "../context/ContextManager.js";
 import type { ModelTaskType } from "../model/taskType.js";
 import type { ChatMessage } from "../model/types.js";

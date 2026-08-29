@@ -138,6 +138,22 @@ function applySucceededDirective(
           events
         };
       }
+      if (
+        run.binding.objectiveRef.kind === 'parent_delegation'
+        && run.binding.objectiveRef.mode === 'continuable'
+      ) {
+        return {
+          state: {
+            status: 'waiting_input',
+            checkpointVersion,
+            enteredAt: occurredAt,
+            responseTurnId: origin.turnId
+          },
+          turns,
+          effects: run.effects,
+          events
+        };
+      }
       events.push({ type: 'run.completed' });
       return terminalMutation(
         {
@@ -219,6 +235,30 @@ function applySucceededDirective(
         state: {
           status: 'waiting',
           reason: 'plan_approval',
+          checkpointVersion,
+          decision
+        },
+        turns,
+        effects: run.effects,
+        events
+      };
+    }
+    case 'ask_user': {
+      const decision: AgentDecision = {
+        kind: 'user_question',
+        decisionId: directive.decisionId,
+        runId: run.runId,
+        checkpoint: { runId: run.runId, version: checkpointVersion },
+        requestedAt: occurredAt,
+        questionRef: directive.questionRef,
+        questionDigest: directive.questionDigest
+      };
+      assertValidDecision(decision);
+      events.push({ type: 'decision.requested', decision });
+      return {
+        state: {
+          status: 'waiting',
+          reason: 'user_question',
           checkpointVersion,
           decision
         },
@@ -368,6 +408,12 @@ function attemptTransition(
         at: command.occurredAt,
         directive: command.result.directive,
         directiveDigest: command.result.directiveDigest,
+        ...(command.result.usageAnchor === undefined
+          ? {}
+          : { usageAnchor: command.result.usageAnchor }),
+        ...(command.result.responseEnvelope === undefined
+          ? {}
+          : { responseEnvelope: command.result.responseEnvelope }),
         ...(command.recoveryDecisionId === undefined
           ? {}
           : { recoveryDecisionId: command.recoveryDecisionId })

@@ -7,7 +7,6 @@ interface AppShutdownDependencies {
     cancelRun(runId: string): unknown;
     waitUntilAgentRunIdle(runId: string): Promise<void>;
   };
-  backgroundTasks: { shutdown(timeoutMs?: number): Promise<void> };
   trace: {
     close(context?: ShutdownContext): Promise<void>;
     getIndexStore(): { close(): void } | undefined;
@@ -74,8 +73,6 @@ export class AppShutdownCoordinator {
     } catch {
       // Cancellation is best-effort; resource finalization must still proceed.
     }
-    context.throwIfExpired();
-    await this.dependencies.backgroundTasks.shutdown(context.remainingMs(1_500));
   }
 
   private async performShutdown(context: ShutdownContext): Promise<void> {

@@ -343,17 +343,31 @@ function createTurnInputSnapshot(
           kind: 'parent_delegation',
           parentRunId: objective.parentRunId,
           delegationId: objective.delegationId,
-          objectiveDigest: objective.objectiveDigest
+          objectiveDigest: objective.objectiveDigest,
+          mode: objective.mode,
+          providerId: objective.providerId
         },
     messages: snapshot.input.messages.map((message) => message.kind === 'text'
       ? { kind: 'text', role: message.role, content: message.content }
-      : {
-          kind: 'effect_result',
-          effectId: message.effectId,
-          toolCallId: message.toolCallId,
-          status: message.status,
-          result: cloneJsonValue(message.result)
-        }),
+      : message.kind === 'image'
+        ? {
+            kind: 'image',
+            role: message.role,
+            owner: { ...message.owner },
+            attachment: {
+              ...message.attachment,
+              ...(message.attachment.originalDimensions === undefined
+                ? {}
+                : { originalDimensions: { ...message.attachment.originalDimensions } })
+            }
+          }
+        : {
+            kind: 'effect_result',
+            effectId: message.effectId,
+            toolCallId: message.toolCallId,
+            status: message.status,
+            result: cloneJsonValue(message.result)
+          }),
     availableTools: snapshot.input.availableTools.map((available, index) => (
       cloneAgentAvailableTool(available, `admission.turnInput.availableTools[${String(index)}]`)
     ))

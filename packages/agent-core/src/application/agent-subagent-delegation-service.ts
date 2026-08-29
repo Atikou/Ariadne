@@ -6,6 +6,7 @@ import {
 import {
   assertAgentChildRunBindingSubset,
   cloneAgentRunBinding,
+  DEFAULT_AGENT_SUBAGENT_PROVIDER_BINDING,
   type AgentBudgetVector,
   type AgentRunBinding
 } from '../domain/run-binding.js';
@@ -134,19 +135,25 @@ export class AgentSubagentDelegationService {
         request.delegation.childRunId,
         request.delegation.delegationId
       );
+      const provider = selectedSubagentProvider(parent.binding, request.delegation.providerId);
       const childMessages = [
-        ...request.delegation.sourceMessages.filter((message) => (
-          message.kind === 'text' && message.role === 'system'
-        )),
+        ...(provider.inheritsParentContext
+          ? request.delegation.sourceMessages.filter((message) => (
+              message.kind === 'text' && message.role === 'system'
+            ))
+          : []),
         {
           kind: 'text' as const,
           role: 'user' as const,
           content: request.delegation.prompt
         }
       ];
+      const childAvailableTools = provider.usesParentTools
+        ? request.delegation.availableTools
+        : [];
       const childModelInput = {
         messages: childMessages,
-        availableTools: request.delegation.availableTools
+        availableTools: childAvailableTools
       };
       const childInputDigest = await digestAgentTurnInput(childModelInput);
       const childCause = {
@@ -180,10 +187,12 @@ export class AgentSubagentDelegationService {
           kind: 'parent_delegation',
           parentRunId: parent.runId,
           delegationId: request.delegation.delegationId,
-          objectiveDigest: request.delegation.objectiveDigest
+          objectiveDigest: request.delegation.objectiveDigest,
+          mode: request.delegation.mode,
+          providerId: request.delegation.providerId
         },
         messages: childMessages,
-        availableTools: request.delegation.availableTools
+        availableTools: childAvailableTools
       };
       const childArtifacts: AgentRunCommitArtifacts = {
         checkpoint: {
@@ -306,6 +315,24 @@ export class AgentSubagentDelegationService {
   }
 }
 
+function selectedSubagentProvider(
+  binding: AgentRunBinding,
+  providerId: string
+) {
+  const providers = binding.bindingVersion === 4
+    ? binding.executionProfile.subagentProviders
+    : undefined;
+  const provider = (providers ?? [DEFAULT_AGENT_SUBAGENT_PROVIDER_BINDING]).find(
+    (candidate) => candidate.providerId === providerId
+  );
+  if (provider === undefined) {
+    throw new AgentRunInvariantError(
+      'SubAgent delegation selected a Provider outside the pinned Catalog.'
+    );
+  }
+  return provider;
+}
+
 function allocateChildBudget(available: AgentBudgetVector): AgentBudgetVector {
   if (available.modelTurns < 2) {
     throw new AgentRunInvariantError(
@@ -335,7 +362,9 @@ function childBindingFromParent(
       kind: 'parent_delegation',
       parentRunId: parent.runId,
       delegationId: plan.delegationId,
-      objectiveDigest: plan.objectiveDigest
+      objectiveDigest: plan.objectiveDigest,
+      mode: plan.mode,
+      providerId: plan.providerId
     },
     budget: {
       grantId: plan.childGrantId,

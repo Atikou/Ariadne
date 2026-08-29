@@ -4,6 +4,7 @@ import {
   FIRST_PARTY_AGENT_TOOL_CATALOG_DIGEST,
   FIRST_PARTY_AGENT_TOOL_CATALOG_ID
 } from '@ariadne/protocol/host';
+import { COMPUTER_READ_SCOPE_ID } from '@ariadne/protocol/public';
 import {
   buildAgentAdmissionAuthoritySource
 } from '../src/main/runtime/agent-admission-authority-source';
@@ -12,7 +13,7 @@ const base = {
   settingsRevision: 4,
   permissionMode: 'risk-based' as const,
   allowedPermissions: ['read', 'write', 'shell', 'network'] as const,
-  workspaces: [{ workspaceId: 'workspace-1', access: 'write' as const }],
+  workspaces: [{ workspaceId: 'workspace-1', access: 'write' as const, kind: 'agent' as const }],
   modelProviders: [{ providerId: 'provider-1', enabled: true, model: 'model-1' }],
   now: new Date('2026-08-07T00:00:00.000Z')
 };
@@ -29,6 +30,7 @@ describe('Main Agent admission authority source builder', () => {
         capabilityGrant: {
           capabilities: [
             { capabilityId: 'browser.use' },
+            { capabilityId: 'computer.read' },
             { capabilityId: 'workspace.read' },
             { capabilityId: 'workspace.shell' },
             { capabilityId: 'workspace.write' }
@@ -95,10 +97,14 @@ describe('Main Agent admission authority source builder', () => {
       expect(full.manifests[0]!.toolCatalog.allowedToolNames).toEqual(
         expect.arrayContaining([
           'workspace.process_start',
-          'workspace.process_list',
-          'workspace.process_read',
-          'workspace.process_write',
-          'workspace.process_stop'
+          'workspace.job_kill',
+          'workspace.job_list',
+          'workspace.job_output',
+          'workspace.job_resize',
+          'workspace.job_signal',
+          'workspace.job_wait',
+          'workspace.job_write',
+          'workspace.terminal_start',
         ])
       );
     }
@@ -109,6 +115,10 @@ describe('Main Agent admission authority source builder', () => {
     expect(readOnly.status).toBe('enabled');
     if (readOnly.status !== 'enabled') return;
     expect(readOnly.manifests[0]!.toolCatalog.allowedToolNames).toEqual([
+      'computer.list_directory',
+      'computer.open_path',
+      'computer.read_text_file',
+      'workspace.effect_result_read',
       'workspace.list_files',
       'workspace.read_file'
     ]);
@@ -127,6 +137,10 @@ describe('Main Agent admission authority source builder', () => {
       'browser.scroll',
       'browser.type',
       'browser.wait',
+      'computer.list_directory',
+      'computer.open_path',
+      'computer.read_text_file',
+      'workspace.effect_result_read',
       'workspace.list_files',
       'workspace.read_file'
     ]);
@@ -149,8 +163,8 @@ describe('Main Agent admission authority source builder', () => {
     const source = buildAgentAdmissionAuthoritySource({
       ...base,
       workspaces: [
-        { workspaceId: 'workspace-1', access: 'read' },
-        { workspaceId: 'archived', access: 'write', archivedAt: '2026-08-01T00:00:00.000Z' }
+        { workspaceId: 'workspace-1', access: 'read', kind: 'agent' },
+        { workspaceId: 'archived', access: 'write', kind: 'agent', archivedAt: '2026-08-01T00:00:00.000Z' }
       ]
     });
     expect(source.status).toBe('enabled');
@@ -158,7 +172,30 @@ describe('Main Agent admission authority source builder', () => {
     expect(source.manifests).toHaveLength(1);
     expect(source.manifests[0]!.capabilityGrant.capabilities).toEqual([
       { capabilityId: 'browser.use', scopeIds: ['workspace-1'] },
+      { capabilityId: 'computer.read', scopeIds: [COMPUTER_READ_SCOPE_ID] },
       { capabilityId: 'workspace.read', scopeIds: ['workspace-1'] }
+    ]);
+  });
+
+  it('gives the personal assistant only full-computer read tools', () => {
+    const source = buildAgentAdmissionAuthoritySource({
+      ...base,
+      workspaces: [{
+        workspaceId: 'ariadne-personal-assistant',
+        access: 'read',
+        kind: 'assistant'
+      }]
+    });
+    expect(source.status).toBe('enabled');
+    if (source.status !== 'enabled') return;
+    expect(source.manifests[0]!.capabilityGrant.capabilities).toEqual([{
+      capabilityId: 'computer.read',
+      scopeIds: [COMPUTER_READ_SCOPE_ID]
+    }]);
+    expect(source.manifests[0]!.toolCatalog.allowedToolNames).toEqual([
+      'computer.list_directory',
+      'computer.open_path',
+      'computer.read_text_file'
     ]);
   });
 
@@ -192,8 +229,8 @@ describe('Main Agent admission authority source builder', () => {
     expect(buildAgentAdmissionAuthoritySource({
       ...base,
       workspaces: [
-        { workspaceId: 'workspace-1', access: 'write' },
-        { workspaceId: 'workspace-1', access: 'write' }
+        { workspaceId: 'workspace-1', access: 'write', kind: 'agent' },
+        { workspaceId: 'workspace-1', access: 'write', kind: 'agent' }
       ]
     })).toMatchObject({ status: 'disabled' });
   });

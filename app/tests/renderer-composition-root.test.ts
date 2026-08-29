@@ -19,6 +19,41 @@ describe('RendererCompositionRoot', () => {
         request: async () => { throw new Error('Runtime request was not expected.'); },
         onEvent: () => removeEvent
       }),
+      preferences: {
+        load: vi.fn(async () => ({
+          runInBackground: true,
+          startAtLogin: false,
+          theme: 'system' as const,
+          suppressAutomaticWakeDuringGames: true,
+          gameDetectionRules: [],
+          speech: {
+            enabled: false,
+            moduleRoot: 'E:\\AI\\AriadneSpeech',
+            foregroundSttMode: 'compose' as const,
+            backgroundWakeEnabled: false,
+            wakeKeywords: ['Ariadne'],
+            listenWhenLocked: false,
+            inputDeviceId: 'default',
+            outputDeviceId: 'default',
+            activeVoiceId: null,
+            activeVoiceVersion: null
+          }
+        }))
+      },
+      speech: {
+        getStatus: vi.fn(async () => ({
+          protocolVersion: 1 as const,
+          availability: 'disabled' as const,
+          activity: 'idle' as const,
+          detail: 'disabled',
+          moduleRoot: 'E:\\AI\\AriadneSpeech',
+          capabilities: [],
+          inputDevices: [],
+          outputDevices: [],
+          voices: []
+        })),
+        onEvent: vi.fn(() => vi.fn())
+      },
       agentSettings: {},
       workspace: {}
     } as unknown as AriadneApi;

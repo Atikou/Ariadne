@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentSettingsView, AriadneApi } from '@shared/contract';
+import { createDefaultAssistantChatProfile } from '@ariadne/protocol/settings';
 import {
   ConfiguredConversationNavigationService,
   workspaceNameFromPath
@@ -38,29 +39,42 @@ describe('ConversationNavigationService', () => {
     expect(restored.isSessionPinned('session-1', true)).toBe(false);
   });
 
-  it('owns persistent session presentation actions and publishes one revision per change', () => {
+  it('keeps only device-local pin and unread presentation preferences', () => {
     const storage = new MemoryStorage();
     const first = createService(storage, '/projects/Ariadne').service;
     const revisions: number[] = [];
     first.onSessionPresentationChanged(() => revisions.push(first.getSessionPresentationRevision()));
 
-    first.renameSession('session-1', '新的聊天名称');
     first.setSessionPinned('session-1', true);
     first.setSessionUnread('session-1', true);
-    first.archiveSession('session-1');
 
-    expect(revisions).toEqual([1, 2, 3, 4]);
-    expect(first.sessionTitle('session-1', 'Conversation')).toBe('新的聊天名称');
+    expect(revisions).toEqual([1, 2]);
     expect(first.isSessionPinned('session-1', false)).toBe(true);
-    expect(first.isSessionUnread('session-1')).toBe(false);
-    expect(first.isSessionArchived('session-1')).toBe(true);
+    expect(first.isSessionUnread('session-1')).toBe(true);
 
     const restored = createService(storage, '/projects/Ariadne').service;
-    expect(restored.sessionTitle('session-1', 'Conversation')).toBe('新的聊天名称');
     expect(restored.isSessionPinned('session-1', false)).toBe(true);
-    expect(restored.isSessionArchived('session-1')).toBe(true);
-    restored.restoreSession('session-1');
-    expect(restored.isSessionArchived('session-1')).toBe(false);
+    expect(restored.isSessionUnread('session-1')).toBe(true);
+  });
+
+  it('drops v2 local title and archive ownership while retaining device preferences', () => {
+    const storage = new MemoryStorage();
+    storage.setItem('ariadne.conversation-navigation.v1', JSON.stringify({
+      schemaVersion: 2,
+      selectedWorkspaceId: null,
+      sessionPreferences: {
+        'session-v2': {
+          title: 'stale local title',
+          archived: true,
+          pinned: true,
+          unread: true
+        }
+      }
+    }));
+
+    const service = createService(storage, '/projects/Ariadne').service;
+    expect(service.isSessionPinned('session-v2', false)).toBe(true);
+    expect(service.isSessionUnread('session-v2')).toBe(true);
   });
 
   it('migrates v1 pin overrides into the single session presentation record', () => {
@@ -73,7 +87,6 @@ describe('ConversationNavigationService', () => {
 
     const service = createService(storage, '/projects/Ariadne').service;
     expect(service.isSessionPinned('session-legacy', false)).toBe(true);
-    expect(service.sessionTitle('session-legacy', 'Conversation')).toBe('Conversation');
   });
 
   it('extracts folder names without depending on Node path APIs in Renderer', () => {
@@ -111,9 +124,11 @@ describe('ConversationNavigationService', () => {
 
     await service.listWorkspaces();
     await service.openWorkspace();
+    service.selectAssistant();
     unsubscribe();
 
-    expect(observed).toEqual([null, 'workspace-opened']);
+    expect(observed).toEqual([null, 'workspace-opened', null]);
+    expect(service.getSelectedWorkspaceId()).toBeNull();
   });
 
   it('persists workspace pin, archive and restore state through the settings authority', async () => {
@@ -170,8 +185,9 @@ function createService(
     access: 'write'
   }];
   const settings = (): AgentSettingsView => ({
-    schemaVersion: 4,
+    schemaVersion: 7,
     revision: 1,
+    assistant: createDefaultAssistantChatProfile(),
     routingStrategy: 'cloud-first',
     permissionMode: 'request',
     customPermissions: {
@@ -183,6 +199,7 @@ function createService(
     workspaces: catalog.map((workspace) => ({ ...workspace })),
     localModelRoots: [],
     providers: {} as AgentSettingsView['providers'],
+    subagentProviders: [],
     runtimePolicy: {} as AgentSettingsView['runtimePolicy']
   });
   const agentSettings = {

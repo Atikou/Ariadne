@@ -57,6 +57,12 @@ describe('DefaultAgentEffectContinuationPlanner', () => {
         delivery: 'next_step',
         content: 'Apply before the next model step.',
         contentDigest: `sha256:${'6'.repeat(64)}`,
+        source: {
+          kind: 'live_work',
+          jobId: 'job-next-step-after-effects',
+          workKind: 'process',
+          status: 'completed'
+        },
         queuedAt: at(7),
         updatedAt: at(7),
         state: 'queued'
@@ -75,7 +81,7 @@ describe('DefaultAgentEffectContinuationPlanner', () => {
     });
     expect(planned.turnInput.messages.at(-1)).toEqual({
       kind: 'text',
-      role: 'user',
+      role: 'system',
       content: 'Apply before the next model step.'
     });
     const claimed = transitionAgentRun(run, planned.command).run;

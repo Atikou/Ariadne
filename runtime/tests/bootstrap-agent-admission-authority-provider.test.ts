@@ -171,6 +171,58 @@ describe('bootstrap Agent admission authority provider', () => {
     });
   });
 
+  it('attenuates personal-assistant chat to full-computer read tools only', async () => {
+    const source = enabledSource();
+    const authority = source.manifests[0]!;
+    authority.workspace.scopeIds = ['computer-read-all', 'scope.project'];
+    authority.capabilityGrant.capabilities = [
+      { capabilityId: 'computer.read', scopeIds: ['computer-read-all'] },
+      { capabilityId: 'workspace.read', scopeIds: ['scope.project'] },
+      { capabilityId: 'workspace.shell', scopeIds: ['scope.project'] },
+      { capabilityId: 'workspace.write', scopeIds: ['scope.project'] }
+    ];
+    authority.toolCatalog.allowedToolNames = [
+      'computer.list_directory',
+      'computer.open_path',
+      'computer.read_text_file',
+      'workspace.list_files',
+      'workspace.read_file',
+      'workspace.run_shell',
+      'workspace.write_file'
+    ];
+    const provider = compileBootstrapAgentAdmissionAuthoritySource(source, {
+      now: () => Date.parse('2099-07-31T00:00:00.000Z')
+    });
+
+    const bundle = await provider.readAuthorityBundle({
+      ...query,
+      execution: { mode: 'chat' }
+    }, new AbortController().signal);
+
+    expect(bundle).toMatchObject({
+      workspace: { access: 'read' },
+      capabilityGrant: {
+        capabilities: [{
+          capabilityId: 'computer.read',
+          scopeIds: ['computer-read-all']
+        }]
+      },
+      toolCatalog: {
+        allowedToolNames: [
+          'computer.list_directory',
+          'computer.open_path',
+          'computer.read_text_file'
+        ]
+      },
+      rootBudget: {
+        vector: {
+          writeCalls: 0,
+          shellCalls: 0
+        }
+      }
+    });
+  });
+
   it('fails closed for disabled, unmatched, expired, and malformed sources', async () => {
     const disabled = compileBootstrapAgentAdmissionAuthoritySource({
       sourceVersion: 1,

@@ -5,7 +5,7 @@
 
 The recovery invariants and encryption boundary remain in force. The v2 table
 layout and single-Run commit shape described below are historical; active
-production persistence is schema v5 / ledger revision 49 as extended by
+production persistence is schema v7 / ledger revision 55 as extended by
 ADR-0009 and ADR-0013. The v2 table names and migration numbers below remain
 only as historical context.
 

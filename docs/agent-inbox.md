@@ -1,6 +1,6 @@
 # Agent inbox 与运行中交互
 
-> 当前状态：已进入 v3 生产链路；核对日期：2026-08-26。
+> 当前状态：已进入 v3 生产链路；核对日期：2026-08-29。
 
 Agent inbox 是同一 `AgentRun` 上唯一的运行中输入权威。它不取消当前 Run，也不创建“后继 Run”模拟续写。输入先作为可编辑的持久队列项提交；只有新的 Turn 在同一 command transaction 中登记成功时，输入才从 `queued` 变为 `claimed` 并进入精确模型历史。
 
@@ -12,6 +12,8 @@ Agent inbox 是同一 `AgentRun` 上唯一的运行中输入权威。它不取�
 | `next_step` | Ctrl/⌘+Enter | Tool result 后的下一模型 Step；若当前响应先结束，则在该响应边界领取 | 所有已排队项 |
 
 当一个响应边界同时存在两类输入时，系统领取全部 `next_step` 和最早一条 `next_turn`，同时保持被选输入在原始队列中的顺序。其余 `next_turn` 留待后续响应边界。
+
+Agent 主动提问复用相同 continuation，但不伪装成普通用户 follow-up：模型提交 `ask_user` Directive 后，问题正文与 2–8 个可选项写入受保护 `user_question` payload，Run 进入 `waiting/user_question`。公开 Decision 只携带经过脱敏的 `question`、选项和 opaque action token。回答通过 `agent.decision.resolve.v3` 的 `answer` choice 提交；Decision resolution、answer digest 与带 `source.kind=user_question_answer` 的 `next_step` inbox 输入在同一 Run commit 中落盘。
 
 排队项支持：
 
@@ -41,6 +43,15 @@ Renderer composer
   -> Public Projection
   -> projection.changed wake hint -> Renderer replays durable Projection tail
   -> Renderer queue + in-Run transcript
+
+Agent ask_user
+  -> protected user_question Directive payload + Decision/checkpoint
+  -> Public Projection question/options + opaque answer action
+  -> Renderer answer
+  -> Decision resolution + user_question_answer next_step input
+     (single SQLite transaction)
+  -> existing inbox claim / continuation planner
+  -> assistant question + user answer enter exact protected history
 ```
 
 Inbox-only mutations复用现有推理 checkpoint，不伪造新的 engine checkpoint；任何 Turn、Effect 或状态变化仍必须提交精确的新 checkpoint。旧持久化 Run 没有 `inbox` 字段时只规范化为 `inbox: []`，因此升级不会使当前快照不可读。
@@ -54,13 +65,17 @@ Inbox-only mutations复用现有推理 checkpoint，不伪造新的 engine check
 
 最终 assistant message 仍由 Conversation authority 在 Run 终止时提交。Renderer 按持久时间合并 Conversation message 与 `interactionMessages`，并按 `messageId` 去重；它不从临时状态猜测最终文本。
 
-Agent、Conversation 与 Model publisher 共用同一个 Projection commit/wake 边界：必须先完成权威 Projection commit，再发送按 `sourceId + feature` 稳定派生的非权威 wake hint。Renderer 收到 hint 后只重放 durable Projection tail；wake 不携带业务真相，也不允许用轮询或本地猜测替代。这样 terminal message 会及时清除 pending overlay，后续运行中输入不会被过期 UI 状态阻塞。
+Agent、Conversation 与 Model publisher 共用同一个 Projection commit/wake 边界：必须先完成权威 Projection commit，再发送按 `sourceId + feature` 稳定派生的非权威 wake hint。Renderer 收到 hint 后只重放 durable Projection tail；wake 不携带业务真相，也不是唯一的活性来源。只要存在非终态 Run，Renderer 就以低频增量读取继续追随同一权威 commit 流，终态后停止；因此丢失 wake 只影响延迟，不会让 Decision、terminal message 或后续输入被过期 UI 状态阻塞。这里的轮询不生成或猜测业务状态，也不读取第二份权威。
 
 ## 重启与幂等
 
 - 每个公开 mutation 使用 command receipt 重放；同一 command ID 不重复修改队列。
+- Renderer 发送 enqueue 前先将精确命令写入 Main-only `safeStorage` 加密 sender outbox；外层文件只暴露 commandId hash、密文与创建时间，不把正文写入 localStorage 或普通状态仓库。
+- sender outbox 不是 delivery authority，也没有 dispatch API。Renderer 或完整桌面重启后，未结算项只恢复为 `reconcile`；系统不会自动重放，用户重新确认时仍使用原 commandId 和完全相同 payload。
+- 确定性成功响应或 Public Projection 出现精确 inputId 会结算并删除 outbox 记录；确定性失败删除记录；传输结果不确定则保留。密文损坏、身份不符、同 ID payload 漂移和不支持的命令类型均 fail closed。
 - continuation 的 command、Turn、Attempt 和 Provider idempotency key 由 source Attempt、directive digest、input ID 和内容摘要稳定派生。
 - `inbox.inputs_claimed` 与新 Turn 在一个 Run commit 内产生，不存在“已出队但 Turn 未建立”的崩溃窗口。
+- ask-user 的 `decision.resolved` 与 answer inbox enqueue 在一个 commit 内产生；同一 command ID 精确重放，不会重复回答，question ref/digest 或回答正文漂移会 fail closed。
 - Provider 正在执行时加入的输入不会使 Provider 结果因普通 Run version conflict 丢失；结果在最新 inbox 版本上提交。
 - protected Turn input 保存完整累计模型历史，重启后的 follow-up 不重新领取输入，也不重复调用已越过边界的 Provider。
 
@@ -68,11 +83,13 @@ Agent、Conversation 与 Model publisher 共用同一个 Projection commit/wake 
 
 实现借鉴 deepseek-harness 的 unified inbox、`next_turn` / `next_step` 和持久 claim 思路：
 
-- [Agent lifecycle](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/docs/agent-lifecycle.md)
-- [Inbox implementation](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/core/agent/src/inbox.ts)
-- [Steering E2E](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/apps/web/tests/steering.e2e.ts)
+- [Agent lifecycle](https://github.com/deepseek-ai/deepseek-harness/blob/cd5ef8148158c3a752a658978873241fdf8e2bbc/docs/agent-lifecycle.md)
+- [Inbox implementation](https://github.com/deepseek-ai/deepseek-harness/blob/cd5ef8148158c3a752a658978873241fdf8e2bbc/packages/core/agent/src/inbox.ts)
+- [Steering E2E](https://github.com/deepseek-ai/deepseek-harness/blob/cd5ef8148158c3a752a658978873241fdf8e2bbc/apps/web/tests/steering.e2e.ts)
 
 Ariadne 没有复制进程内 Agent handle。这里的权威仍是 `AgentRun`、protected Turn input、command receipt、outbox 和单一 Public Projection；Renderer 不直连 Agent，也不拥有队列状态。
+
+这里的 sender outbox 只解决发送端在不确定传输结果下的展示与人工对账恢复；它与 Agent Control transaction outbox 职责不同，不能执行、领取或投影 inbox input。
 
 ## 当前不属于本能力的范围
 

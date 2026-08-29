@@ -1,0 +1,17 @@
+[project]
+name = "ariadne-voice-pack-builder"
+version = "0.1.0"
+description = "Reproducible Piper/VITS training and Ariadne .avp packaging CLI"
+requires-python = ">=3.11,<3.13"
+license = { text = "MIT" }
+dependencies = ["piper-tts==1.4.2"]
+
+[project.scripts]
+ariadne-voice = "ariadne_voice_builder.cli:main"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

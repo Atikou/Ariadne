@@ -21,7 +21,7 @@ import {
   createConservativeTokenCounter,
   remoteTokenizerProfile,
 } from "./TokenCounter.js";
-import { ProviderRequestError, providerHttpError } from "./ProviderError.js";
+import { ProviderRequestError, providerHttpError } from "../adapters/model/ProviderError.js";
 
 export interface OpenAICompatibleOptions {
   name: string;

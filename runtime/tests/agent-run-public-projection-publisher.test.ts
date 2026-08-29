@@ -1,4 +1,9 @@
 import {
+  admitAgentRun,
+  assertValidAgentRun,
+  digestAgentCommittedDirective,
+  digestAgentTurnInput,
+  summarizeAgentTurnInput,
   type AgentDecision,
   type AgentDecisionResolution,
   type AgentEffect,
@@ -11,6 +16,8 @@ import {
   type AgentRunOutboxClaimRequest,
   type AgentRunOutboxPublishRequest,
   type AgentRunOutboxStore,
+  type AgentDirectivePayloadLookup,
+  type AgentJsonValue,
   type ClaimedAgentRunOutboxMessage,
   sha256AgentControlData
 } from '@ariadne/agent-core';
@@ -35,7 +42,8 @@ describe('AgentRunPublicProjectionPublisher', () => {
   it.each([
     ['permission', ['allow_once', 'allow_run', 'deny'], 'approved'],
     ['plan', ['approve', 'reject'], 'rejected'],
-    ['recovery', ['retry', 'mark_failed'], 'approved']
+    ['recovery', ['retry', 'mark_failed'], 'approved'],
+    ['user_question', ['answer'], 'approved']
   ] as const)(
     'atomically upserts the Run and %s Decision request and resolution',
     async (kind, expectedChoices, expectedStatus) => {
@@ -85,6 +93,21 @@ describe('AgentRunPublicProjectionPublisher', () => {
       expect(requestCommit.changes[1]!.dto).toMatchObject({
         action: { actionToken: expect.stringMatching(/^decision-action\.v1:[a-f0-9]{64}$/u) }
       });
+      if (kind === 'user_question') {
+        expect(requestCommit.changes[1]!.dto).toMatchObject({
+          presentation: {
+            kind: 'user_question',
+            question: expect.stringContaining('[redacted path]'),
+            options: [{ optionId: 'local', label: 'Local only' }, {
+              optionId: 'remote',
+              label: 'Remote host',
+              description: expect.stringContaining('[redacted credential]')
+            }]
+          }
+        });
+        expect(JSON.stringify(requestCommit)).not.toContain('C:\\private');
+        expect(JSON.stringify(requestCommit)).not.toContain('topsecretvalue');
+      }
       expect(resolvedCommit.changes[1]).toMatchObject({
         feature: 'decisions',
         aggregateId: lifecycle.decision.decisionId,
@@ -321,6 +344,109 @@ describe('AgentRunPublicProjectionPublisher', () => {
     });
   });
 
+  it('projects only contract-pinned static Tool presentation and never protected result data', async () => {
+    const lifecycle = await decisionLifecycle('permission');
+    const request = requestArtifacts(lifecycle);
+    const outbox = new FakeAgentRunOutboxStore(messagesFor([request]));
+    const sink = new IdempotentPublicEventSink();
+    const publisher = new AgentRunPublicProjectionPublisher(
+      outbox,
+      new MapRunVersionReader([request]),
+      sink,
+      {
+        claimIdFactory: () => 'tool-presentation-claim',
+        toolPresentationResolver: {
+          resolveToolPresentation: (tool) => tool.toolName === 'private-tool'
+            ? {
+                kind: 'file_change',
+                label: '修改工作区文件'
+              }
+            : null
+        }
+      }
+    );
+
+    await publisher.publishPending();
+
+    const runDto = sink.appendCalls[0]?.changes.find((change) => change.feature === 'runs')?.dto;
+    expect(runDto).toMatchObject({
+      toolActivities: [{
+        toolName: 'private-tool',
+        presentation: {
+          kind: 'file_change',
+          label: '修改工作区文件'
+        }
+      }]
+    });
+    const serialized = JSON.stringify(runDto);
+    expect(serialized).not.toContain('resultVisibility');
+    expect(serialized).not.toContain('inputDigest');
+    expect(serialized).not.toContain('idempotency');
+    expect(serialized).not.toContain('workspace-private');
+  });
+
+  it('advances an inbox-only Run version without re-emitting its pending Decision', async () => {
+    const lifecycle = await decisionLifecycle('user_question');
+    const request = requestArtifacts(lifecycle);
+    const content = 'queued while the question remains pending';
+    const input = {
+      inputId: 'input-pending-decision',
+      messageId: 'message-pending-decision',
+      version: 1,
+      delivery: 'next_turn' as const,
+      content,
+      contentDigest: await sha256AgentControlData(content),
+      state: 'queued' as const,
+      queuedAt: at(2),
+      updatedAt: at(2)
+    };
+    const advancedRun: AgentRun = {
+      ...lifecycle.requestedRun,
+      version: lifecycle.requestedRun.version + 1,
+      inbox: [...lifecycle.requestedRun.inbox, input],
+      updatedAt: at(2)
+    };
+    assertValidAgentRun(advancedRun);
+    const advanced = artifacts(
+      advancedRun,
+      'command-inbox-while-decision-pending',
+      [
+        { type: 'inbox.input_enqueued', input },
+        {
+          type: 'run.state_changed',
+          from: lifecycle.requestedRun.state.status,
+          to: advancedRun.state
+        }
+      ]
+    );
+    const outbox = new FakeAgentRunOutboxStore(messagesFor([request, advanced]));
+    const sink = new IdempotentPublicEventSink();
+    const publisher = new AgentRunPublicProjectionPublisher(
+      outbox,
+      new MapRunVersionReader([request, advanced]),
+      sink,
+      { claimIdFactory: () => 'pending-decision-inbox-claim' }
+    );
+
+    await expect(publisher.publishPending()).resolves.toMatchObject({
+      projectedVersions: 2,
+      acknowledgedMessages: 4
+    });
+    expect(sink.appendCalls[0]!.changes.map((change) => change.feature))
+      .toEqual(['runs', 'decisions']);
+    expect(sink.appendCalls[1]!.changes).toEqual([
+      expect.objectContaining({
+        feature: 'runs',
+        aggregateId: advancedRun.runId,
+        aggregateVersion: advancedRun.version,
+        dto: expect.objectContaining({
+          status: 'waiting_decision',
+          inbox: [expect.objectContaining({ inputId: input.inputId, state: 'queued' })]
+        })
+      })
+    ]);
+  });
+
   it('keeps terminal result projection before public append and ACK', async () => {
     const previous = queuedRun('run-terminal');
     const terminal = cancelledRun(previous);
@@ -379,7 +505,9 @@ describe('AgentRunPublicProjectionPublisher', () => {
           kind: 'parent_delegation',
           parentRunId: 'run-parent-projection',
           delegationId: 'delegation-projection',
-          objectiveDigest: `sha256:${'7'.repeat(64)}`
+          objectiveDigest: `sha256:${'7'.repeat(64)}`,
+          providerId: 'ariadne.in_process',
+          mode: 'one_shot'
         },
         budget: {
           ...queued.binding.budget,
@@ -399,6 +527,8 @@ describe('AgentRunPublicProjectionPublisher', () => {
       runId: child.runId,
       parentRunId: 'run-parent-projection',
       delegationId: 'delegation-projection',
+      subagentMode: 'one_shot',
+      subagentProviderId: 'ariadne.in_process',
       title: 'SubAgent task'
     });
   });
@@ -410,6 +540,10 @@ interface DecisionLifecycle {
   readonly requestedRun: AgentRun;
   readonly resolvedRun: AgentRun;
   readonly planVersion?: AgentPlanVersionCommit;
+  readonly directivePayload?: {
+    readonly reference: AgentDirectivePayloadLookup;
+    readonly payload: AgentJsonValue;
+  };
 }
 
 interface VersionArtifacts {
@@ -417,6 +551,7 @@ interface VersionArtifacts {
   readonly commandId: string;
   readonly events: readonly AgentRunEvent[];
   readonly planVersion?: AgentPlanVersionCommit;
+  readonly directivePayload?: DecisionLifecycle['directivePayload'];
 }
 
 type OutboxMessage = Omit<
@@ -458,6 +593,7 @@ class MapRunVersionReader implements AgentRunVersionReader {
   private readonly runs: ReadonlyMap<string, AgentRun>;
   private readonly receipts: ReadonlyMap<string, AgentRunCommandReceipt>;
   private readonly plans: ReadonlyMap<string, AgentPlanVersionCommit>;
+  private readonly directives: ReadonlyMap<string, NonNullable<DecisionLifecycle['directivePayload']>>;
 
   public constructor(
     artifacts: readonly VersionArtifacts[],
@@ -484,6 +620,11 @@ class MapRunVersionReader implements AgentRunVersionReader {
         ? []
         : [[planKey(artifact.planVersion.ref), artifact.planVersion] as const]
     )));
+    this.directives = new Map(artifacts.flatMap((artifact) => (
+      artifact.directivePayload === undefined
+        ? []
+        : [[artifact.directivePayload.reference.artifactId, artifact.directivePayload] as const]
+    )));
   }
 
   public async loadRunVersion(runId: string, version: number): Promise<AgentRun | null> {
@@ -500,6 +641,16 @@ class MapRunVersionReader implements AgentRunVersionReader {
     reference: AgentPlanReference
   ): Promise<AgentPlanVersionCommit | null> {
     return this.plans.get(planKey(reference)) ?? null;
+  }
+
+  public async loadDirectivePayload(
+    reference: AgentDirectivePayloadLookup
+  ): Promise<AgentJsonValue> {
+    const stored = this.directives.get(reference.artifactId);
+    if (stored === undefined || JSON.stringify(stored.reference) !== JSON.stringify(reference)) {
+      throw new Error('test_directive_payload_lookup_mismatch');
+    }
+    return structuredClone(stored.payload);
   }
 }
 
@@ -661,6 +812,144 @@ async function decisionLifecycle(
     };
   }
 
+  if (kind === 'user_question') {
+    const runBinding = binding(runId);
+    if (runBinding.objectiveRef.kind !== 'conversation_message') {
+      throw new Error('expected conversation objective');
+    }
+    const input = {
+      messages: [{ kind: 'text' as const, role: 'user' as const, content: 'Choose a target.' }],
+      availableTools: []
+    };
+    const inputDigest = await digestAgentTurnInput(input);
+    const admitted = admitAgentRun({
+      kind: 'run.admit',
+      commandId: 'admit-user-question',
+      runId,
+      occurredAt: at(0),
+      binding: runBinding,
+      turn: {
+        cause: {
+          kind: 'conversation_objective',
+          messageId: runBinding.objectiveRef.messageId,
+          messageVersion: runBinding.objectiveRef.messageVersion,
+          contentDigest: runBinding.objectiveRef.contentDigest
+        },
+        turnId: 'turn-user-question',
+        attemptId: 'attempt-user-question',
+        providerIdempotencyKey: 'provider-user-question',
+        inputDigest,
+        inputSummary: summarizeAgentTurnInput(input)
+      }
+    }).run;
+    const payload = {
+      format: 'ariadne.user-question' as const,
+      schemaVersion: 1 as const,
+      prompt: 'Which deployment target should be used for C:\\private\\repo?',
+      options: [
+        { optionId: 'local', label: 'Local only' },
+        {
+          optionId: 'remote',
+          label: 'Remote host',
+          description: 'Requires api_key=topsecretvalue.'
+        }
+      ]
+    };
+    const questionDigest = await sha256AgentControlData(payload);
+    const directive = {
+      kind: 'ask_user' as const,
+      decisionId: 'decision-user-question',
+      questionRef: 'question-user-question',
+      questionDigest
+    };
+    const directiveDigest = await digestAgentCommittedDirective(directive);
+    const decision: AgentDecision = {
+      kind: 'user_question',
+      decisionId: directive.decisionId,
+      runId,
+      checkpoint: { runId, version: 2 },
+      requestedAt: at(1),
+      questionRef: directive.questionRef,
+      questionDigest
+    };
+    const turns = [{
+      ...admitted.turns[0]!,
+      attempts: [{
+        ...admitted.turns[0]!.attempts[0]!,
+        state: {
+          status: 'succeeded' as const,
+          finishedAt: at(1),
+          directive,
+          directiveDigest
+        }
+      }]
+    }];
+    const requestedRun: AgentRun = {
+      ...admitted,
+      version: 2,
+      state: {
+        status: 'waiting',
+        reason: 'user_question',
+        checkpointVersion: 2,
+        decision
+      },
+      turns,
+      updatedAt: at(1)
+    };
+    const answer = 'local: Local only';
+    const answerDigest = await sha256AgentControlData(answer);
+    const resolution: AgentDecisionResolution = {
+      kind: 'user_question',
+      decisionId: decision.decisionId,
+      checkpoint: decision.checkpoint,
+      resolvedAt: at(2),
+      questionRef: decision.questionRef,
+      questionDigest: decision.questionDigest,
+      answerInputId: 'input-user-question-answer',
+      answerDigest
+    };
+    const resolvedRun: AgentRun = {
+      ...requestedRun,
+      version: 3,
+      state: { status: 'running', checkpointVersion: 3, enteredAt: at(2) },
+      inbox: [{
+        inputId: resolution.answerInputId,
+        messageId: 'message-user-question-answer',
+        version: 1,
+        delivery: 'next_step',
+        content: answer,
+        contentDigest: answerDigest,
+        source: {
+          kind: 'user_question_answer',
+          decisionId: decision.decisionId,
+          questionDigest: decision.questionDigest
+        },
+        state: 'queued',
+        queuedAt: at(2),
+        updatedAt: at(2)
+      }],
+      updatedAt: at(2)
+    };
+    assertValidAgentRun(requestedRun);
+    assertValidAgentRun(resolvedRun);
+    return {
+      decision,
+      resolution,
+      requestedRun,
+      resolvedRun,
+      directivePayload: {
+        reference: {
+          runId,
+          artifactId: decision.questionRef,
+          kind: 'user_question',
+          directiveDigest,
+          contentDigest: questionDigest
+        },
+        payload
+      }
+    };
+  }
+
   const uncertain = effect(runId, {
     status: 'uncertain',
     observedAt: at(1),
@@ -733,7 +1022,10 @@ function requestArtifacts(lifecycle: DecisionLifecycle): VersionArtifacts {
       }
     ]
     ),
-    ...(lifecycle.planVersion === undefined ? {} : { planVersion: lifecycle.planVersion })
+    ...(lifecycle.planVersion === undefined ? {} : { planVersion: lifecycle.planVersion }),
+    ...(lifecycle.directivePayload === undefined
+      ? {}
+      : { directivePayload: lifecycle.directivePayload })
   };
 }
 
@@ -755,7 +1047,10 @@ function resolutionArtifacts(lifecycle: DecisionLifecycle): VersionArtifacts {
       }
     ]
     ),
-    ...(lifecycle.planVersion === undefined ? {} : { planVersion: lifecycle.planVersion })
+    ...(lifecycle.planVersion === undefined ? {} : { planVersion: lifecycle.planVersion }),
+    ...(lifecycle.directivePayload === undefined
+      ? {}
+      : { directivePayload: lifecycle.directivePayload })
   };
 }
 

@@ -1,5 +1,6 @@
 import { createServer } from 'node:https';
-import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 
 const options = parseArguments(process.argv.slice(2));
 const model = requireOption(options, 'model');
@@ -8,13 +9,17 @@ const readyPath = requireOption(options, 'ready');
 const pfxPath = requireOption(options, 'pfx');
 const passphrase = requireOption(options, 'passphrase');
 const workspaceId = requireOption(options, 'workspace-id');
+const agentDatabasePath = requireOption(options, 'agent-db');
 
 const scenarios = [
   'direct',
+  'image',
   'read',
   'write_allow',
   'write_deny',
   'inbox',
+  'question',
+  'crash_question',
   'cancel',
   'crash_inference',
   'crash_effect',
@@ -52,7 +57,11 @@ const server = createServer({
   }
   const messages = Array.isArray(body?.messages) ? body.messages : [];
   const scenario = identifyScenario(messages);
-  if (scenario === null || body?.model !== model) {
+  if (
+    scenario === null
+    || body?.model !== model
+    || (scenario === 'image' && !hasValidImageInput(messages))
+  ) {
     response.writeHead(422, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ error: 'unknown_smoke_scenario' }));
     return;
@@ -60,7 +69,10 @@ const server = createServer({
 
   const continuationPayload = readContinuationPayload(messages);
   const inboxContinuation = scenario === 'inbox' && hasInboxContinuation(messages);
-  const continuation = continuationPayload !== null || inboxContinuation;
+  const questionContinuation = (
+    scenario === 'question' || scenario === 'crash_question'
+  ) && hasQuestionContinuation(messages);
+  const continuation = continuationPayload !== null || inboxContinuation || questionContinuation;
   const scenarioState = state.scenarios[scenario];
   state.requests += 1;
   scenarioState.requests += 1;
@@ -76,34 +88,55 @@ const server = createServer({
 
   if (scenario === 'cancel' || scenario === 'crash_inference') return;
   if (scenario === 'inbox' && !continuation) {
-    // Keep the first inference observably active while Electron, the public
-    // projection and React all cross their real asynchronous boundaries. The
-    // test must enqueue during execution, not race a two-second mock response.
-    await delay(10_000);
+    // End the first response only after the real Renderer -> Main -> Runtime
+    // path has durably enqueued the exact input. A fixed delay makes this test
+    // depend on projection/React scheduling rather than the authority fact it
+    // is intended to verify.
+    if (!await waitForInboxInput(
+      agentDatabasePath,
+      'ARIADNE_SMOKE_INBOX_INPUT',
+      60_000
+    )) {
+      settled = true;
+      response.writeHead(504, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ error: 'smoke_inbox_enqueue_timeout' }));
+      return;
+    }
   }
   if (scenario === 'crash_projection' && continuation) {
     await delay(750);
   }
 
-  const directive = createDirective(scenario, continuationPayload, inboxContinuation);
-  const payload = JSON.stringify({
-    model,
-    choices: [{
-      message: {
-        role: 'assistant',
-        content: JSON.stringify({
-          protocol: 'ariadne.agent-directive.v3',
-          directive
-        })
-      }
-    }]
+  const directive = createDirective(
+    scenario,
+    continuationPayload,
+    inboxContinuation,
+    questionContinuation
+  );
+  const directivePayload = JSON.stringify({
+    protocol: 'ariadne.agent-directive.v3',
+    directive
   });
-  settled = true;
   response.writeHead(200, {
-    'content-type': 'application/json',
-    'content-length': Buffer.byteLength(payload)
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache',
+    connection: 'keep-alive'
   });
-  response.end(payload);
+  writeSseData(response, {
+    model,
+    choices: [{ delta: { reasoning_content: 'ARIADNE_SMOKE_STREAM_REASONING' } }]
+  });
+  await delay(750);
+  writeSseData(response, {
+    model,
+    choices: [{ delta: { content: directivePayload } }]
+  });
+  writeSseData(response, {
+    model,
+    choices: [{ delta: {}, finish_reason: 'stop' }]
+  });
+  response.end('data: [DONE]\n\n');
+  settled = true;
   state.responses += 1;
   scenarioState.responses += 1;
   persistState();
@@ -135,9 +168,22 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => server.close(() => process.exit(0)));
 }
 
-function createDirective(scenario, continuationPayload, inboxContinuation) {
+function createDirective(
+  scenario,
+  continuationPayload,
+  inboxContinuation,
+  questionContinuation
+) {
   if (inboxContinuation) {
     return { kind: 'respond', content: 'ARIADNE_SMOKE_INBOX_FINAL' };
+  }
+  if (questionContinuation) {
+    return {
+      kind: 'respond',
+      content: scenario === 'crash_question'
+        ? 'ARIADNE_SMOKE_CRASH_USER_QUESTION_COMPLETED'
+        : 'ARIADNE_SMOKE_USER_QUESTION_COMPLETED'
+    };
   }
   if (continuationPayload !== null) {
     if (!validContinuation(scenario, continuationPayload)) {
@@ -155,8 +201,30 @@ function createDirective(scenario, continuationPayload, inboxContinuation) {
   switch (scenario) {
     case 'direct':
       return { kind: 'respond', content: 'ARIADNE_SMOKE_DIRECT_OK' };
+    case 'image':
+      return { kind: 'respond', content: 'ARIADNE_SMOKE_IMAGE_OK' };
     case 'inbox':
       return { kind: 'respond', content: 'ARIADNE_SMOKE_INBOX_FIRST' };
+    case 'question':
+    case 'crash_question':
+      return {
+        kind: 'ask_user',
+        question: {
+          prompt: 'Which execution path should Ariadne use for this smoke?',
+          options: [
+            {
+              optionId: 'local',
+              label: 'Local only',
+              description: 'Continue on this machine.'
+            },
+            {
+              optionId: 'remote',
+              label: 'Remote host',
+              description: 'Continue on a remote machine.'
+            }
+          ]
+        }
+      };
     case 'read':
       return {
         kind: 'invoke_tools',
@@ -204,11 +272,33 @@ function hasInboxContinuation(messages) {
 
 function readContinuationPayload(messages) {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const content = messages[index]?.content;
-    if (typeof content !== 'string' || !content.includes('ariadne.agent-effect-results.v3')) continue;
+    const resultMessage = messages[index];
+    if (
+      resultMessage?.role !== 'tool'
+      || typeof resultMessage.tool_call_id !== 'string'
+      || typeof resultMessage.content !== 'string'
+    ) continue;
+    const assistantMessage = messages.slice(0, index).findLast((message) => (
+      message?.role === 'assistant'
+      && Array.isArray(message.tool_calls)
+      && message.tool_calls.some((call) => call?.id === resultMessage.tool_call_id)
+    ));
+    if (assistantMessage === undefined) return null;
     try {
-      const parsed = JSON.parse(content);
-      return parsed?.protocol === 'ariadne.agent-effect-results.v3' ? parsed : null;
+      const parsed = JSON.parse(resultMessage.content);
+      if (
+        parsed === null
+        || typeof parsed !== 'object'
+        || !['succeeded', 'failed', 'cancelled'].includes(parsed.status)
+        || !Object.hasOwn(parsed, 'output')
+      ) return null;
+      return {
+        results: [{
+          toolCallId: resultMessage.tool_call_id,
+          status: parsed.status,
+          output: parsed.output
+        }]
+      };
     } catch {
       return null;
     }
@@ -221,14 +311,17 @@ function validContinuation(scenario, payload) {
   const result = payload.results[0];
   if (result?.status !== 'succeeded') return false;
   if (scenario === 'read') {
-    return result.result?.path === 'fixtures/read.txt'
-      && result.result?.content === 'ARIADNE_SMOKE_READ_FIXTURE';
+    return result.output?.path === 'fixtures/read.txt'
+      && result.output?.content === 'ARIADNE_SMOKE_READ_FIXTURE'
+      && /^workspace-file-v1:[a-f0-9]{64}$/.test(result.output?.version ?? '');
   }
   if (scenario === 'write_allow') {
-    return result.result?.path === 'results/allow.txt';
+    return result.output?.path === 'results/allow.txt'
+      && result.output?.operation === 'created'
+      && /^workspace-file-v1:[a-f0-9]{64}$/.test(result.output?.version ?? '');
   }
   if (scenario === 'crash_projection') {
-    return result.result?.path === 'results/projection-once.txt';
+    return result.output?.path === 'results/projection-once.txt';
   }
   return scenario === 'crash_effect';
 }
@@ -239,7 +332,7 @@ function writeDirective(toolCallId, path, content) {
     invocations: [{
       toolCallId,
       toolName: 'workspace.write_file',
-      input: { path, content },
+      input: { path, content, mode: 'create_if_absent' },
       scope: [workspaceId]
     }]
   };
@@ -247,7 +340,13 @@ function writeDirective(toolCallId, path, content) {
 
 function identifyScenario(messages) {
   const text = messages
-    .map((message) => typeof message?.content === 'string' ? message.content : '')
+    .flatMap((message) => typeof message?.content === 'string'
+      ? [message.content]
+      : Array.isArray(message?.content)
+        ? message.content
+            .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+            .map((block) => block.text)
+        : [])
     .join('\n');
   let identified = null;
   let identifiedAt = -1;
@@ -259,6 +358,63 @@ function identifyScenario(messages) {
     }
   }
   return identified;
+}
+
+function hasQuestionContinuation(messages) {
+  const renderedQuestion = [
+    'Which execution path should Ariadne use for this smoke?',
+    '- Local only: Continue on this machine.',
+    '- Remote host: Continue on a remote machine.'
+  ].join('\n');
+  return messages.some((message) => (
+    message?.role === 'assistant'
+    && message?.content === renderedQuestion
+  )) && messages.some((message) => (
+    message?.role === 'user'
+    && message?.content === 'local: Local only'
+  ));
+}
+
+function hasValidImageInput(messages) {
+  return messages.some((message) => (
+    message?.role === 'user'
+    && Array.isArray(message.content)
+    && message.content.some((block) => (
+      block?.type === 'image_url'
+      && typeof block.image_url?.url === 'string'
+      && /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/u.test(
+        block.image_url.url
+      )
+    ))
+  ));
+}
+
+async function waitForInboxInput(path, content, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(path)) {
+      let database = null;
+      try {
+        database = new DatabaseSync(path, { readOnly: true });
+        const observed = database.prepare(`
+          SELECT 1 AS observed
+            FROM agent_v3_outbox
+           WHERE json_extract(event_json, '$.payload.type')='inbox.input_enqueued'
+             AND json_extract(event_json, '$.payload.input.content')=?
+           ORDER BY cursor DESC
+           LIMIT 1
+        `).get(content)?.observed === 1;
+        if (observed) return true;
+      } catch {
+        // Runtime owns writes with zero busy timeout. A transient read/open
+        // failure is retried from a fresh read-only connection.
+      } finally {
+        database?.close();
+      }
+    }
+    await delay(10);
+  }
+  return false;
 }
 
 function readJsonBody(request) {
@@ -317,4 +473,8 @@ function requireOption(options, key) {
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function writeSseData(response, value) {
+  response.write(`data: ${JSON.stringify(value)}\n\n`);
 }

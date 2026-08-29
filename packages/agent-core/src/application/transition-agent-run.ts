@@ -7,6 +7,7 @@ import type {
   CompleteAgentRunCommand,
   EnqueueAgentInboxInputCommand,
   FailAgentRunCommand,
+  InterruptContinuableAgentTurnCommand,
   RecordAgentEffectResultCommand,
   RegisterAgentEffectCommand,
   RequestAgentDecisionCommand,
@@ -58,7 +59,7 @@ import {
   type AgentTurnMutation,
   assertNoOpenAgentInferenceAttempts,
   assertNoStartedAgentInferenceAttempts,
-  authorizeInferenceCancelRun,
+  authorizeInferenceRecoveryResolution,
   cancelOpenAgentInferenceAttempts,
   registerAgentTurn,
   retryAgentInferenceAttempt,
@@ -192,6 +193,8 @@ export function transitionAgentRun(
       return completeRun(run, command);
     case 'run.fail':
       return failRun(run, command);
+    case 'run.interrupt_continuable_turn':
+      return interruptContinuableTurn(run, command);
     case 'run.cancel':
       return cancelRun(run, command);
   }
@@ -201,9 +204,13 @@ function enqueueInboxInput(
   run: AgentRun,
   command: EnqueueAgentInboxInputCommand
 ): AgentRunTransition {
+  const requiresContinuationCapacity = command.input.source?.kind !== 'live_work';
   if (
-    run.turns.length >= run.binding.budget.vector.modelTurns
-    || Date.parse(command.occurredAt) >= Date.parse(run.binding.budget.deadlineAt)
+    requiresContinuationCapacity
+    && (
+      run.turns.length >= run.binding.budget.vector.modelTurns
+      || Date.parse(command.occurredAt) >= Date.parse(run.binding.budget.deadlineAt)
+    )
   ) {
     throw new AgentRunTransitionError(
       'Agent inbox cannot accept input without a remaining model Turn and deadline.'
@@ -220,6 +227,7 @@ function enqueueInboxInput(
   }
   const input: AgentInboxInput = {
     ...command.input,
+    ...(command.input.source === undefined ? {} : { source: { ...command.input.source } }),
     version: 1,
     state: 'queued',
     queuedAt: command.occurredAt,
@@ -242,6 +250,9 @@ function replaceInboxInput(
   command: ReplaceAgentInboxInputCommand
 ): AgentRunTransition {
   const current = requireQueuedInboxInput(run, command.inputId, command.expectedInputVersion);
+  if (current.source !== undefined) {
+    throw new AgentRunTransitionError('System Agent inbox input is immutable.');
+  }
   const input: AgentInboxInput = {
     ...current,
     version: current.version + 1,
@@ -266,6 +277,9 @@ function removeInboxInput(
   command: RemoveAgentInboxInputCommand
 ): AgentRunTransition {
   const current = requireQueuedInboxInput(run, command.inputId, command.expectedInputVersion);
+  if (current.source !== undefined) {
+    throw new AgentRunTransitionError('System Agent inbox input is immutable.');
+  }
   return updateRun(
     run,
     command.occurredAt,
@@ -330,6 +344,8 @@ function inboxInputIds(
 ): readonly string[] {
   return cause.kind === 'inbox_inputs'
     ? cause.inputIds
+    : cause.kind === 'interrupted_inference'
+      ? cause.inputIds
     : cause.kind === 'effect_results'
       ? cause.inboxInputIds ?? []
       : [];
@@ -429,11 +445,17 @@ function resolveDecision(
     resolution: command.resolution
   }];
   let effects = run.effects;
+  let inbox = run.inbox;
   let state: AgentRunState = {
     status: 'running',
     checkpointVersion,
     enteredAt: command.occurredAt
   };
+  if (decision.kind !== 'user_question' && command.answerInput !== undefined) {
+    throw new AgentRunTransitionError(
+      'Only a user-question resolution may carry an inbox answer.'
+    );
+  }
 
   if (decision.kind === 'permission' && command.resolution.kind === 'permission') {
     const effect = requireEffect(run, decision.effectId);
@@ -530,9 +552,45 @@ function resolveDecision(
         break;
       }
     }
+  } else if (
+    decision.kind === 'user_question'
+    && command.resolution.kind === 'user_question'
+  ) {
+    const answer = command.answerInput;
+    if (
+      answer === undefined
+      || answer.inputId !== command.resolution.answerInputId
+      || answer.contentDigest !== command.resolution.answerDigest
+      || run.inbox.some((input) => (
+        input.inputId === answer.inputId || input.messageId === answer.messageId
+      ))
+    ) {
+      throw new AgentRunTransitionError(
+        'A user-question resolution requires one exact new inbox answer.'
+      );
+    }
+    const input: AgentInboxInput = {
+      inputId: answer.inputId,
+      messageId: answer.messageId,
+      version: 1,
+      delivery: 'next_step',
+      content: answer.content,
+      contentDigest: answer.contentDigest,
+      source: {
+        kind: 'user_question_answer',
+        decisionId: decision.decisionId,
+        questionDigest: decision.questionDigest
+      },
+      state: 'queued',
+      queuedAt: command.occurredAt,
+      updatedAt: command.occurredAt
+    };
+    assertValidAgentInboxInput(input);
+    inbox = [...run.inbox, input];
+    events.push({ type: 'inbox.input_enqueued', input });
   }
 
-  return updateRun(run, command.occurredAt, state, effects, events);
+  return updateRun(run, command.occurredAt, state, effects, events, run.turns, inbox);
 }
 
 function registerEffect(
@@ -799,7 +857,11 @@ function cancelRun(
   const inferenceRecovery =
     run.state.status === 'recovering'
     && run.state.reason === 'uncertain_inference'
-      ? authorizeInferenceCancelRun(run, command.recoveryDecisionId)
+      ? authorizeInferenceRecoveryResolution(
+          run,
+          command.recoveryDecisionId,
+          'cancel_run'
+        )
       : undefined;
   if (inferenceRecovery === undefined && command.recoveryDecisionId !== undefined) {
     throw new AgentRunTransitionError(
@@ -841,6 +903,50 @@ function cancelRun(
       { type: 'run.cancelled', reason: command.reason }
     ],
     cancelledTurns.turns
+  );
+}
+
+function interruptContinuableTurn(
+  run: AgentRun,
+  command: InterruptContinuableAgentTurnCommand
+): AgentRunTransition {
+  assertNonEmpty(command.reason, 'command.reason');
+  if (
+    run.binding.objectiveRef.kind !== 'parent_delegation'
+    || run.binding.objectiveRef.mode !== 'continuable'
+    || run.state.status !== 'recovering'
+    || run.state.reason !== 'uncertain_inference'
+  ) {
+    throw new AgentRunTransitionError(
+      'Only a continuable Child with an uncertain active inference can be interrupted.'
+    );
+  }
+  assertNoStartedEffects(run, command.kind);
+  const recovery = authorizeInferenceRecoveryResolution(
+    run,
+    command.recoveryDecisionId,
+    'interrupt_turn'
+  );
+  const state: AgentRunState = {
+    status: 'waiting_input',
+    checkpointVersion: nextCheckpoint(run),
+    enteredAt: command.occurredAt,
+    interruptedTurnId: recovery.turnId,
+    interruptedAttemptId: recovery.attemptId,
+    recoveryDecisionId: recovery.recoveryDecisionId
+  };
+  return updateRun(
+    run,
+    command.occurredAt,
+    state,
+    run.effects,
+    [{
+      type: 'run.inference_turn_interrupted',
+      turnId: recovery.turnId,
+      attemptId: recovery.attemptId,
+      recoveryDecisionId: recovery.recoveryDecisionId,
+      reason: command.reason
+    }]
   );
 }
 
@@ -1026,6 +1132,22 @@ function assertExactResolution(
       throw new AgentRunTransitionError(
         'A plan resolution must bind the exact plan ID, version, and hash.'
       );
+    }
+    return;
+  }
+
+  if (decision.kind === 'user_question' && resolution.kind === 'user_question') {
+    if (
+      resolution.questionRef !== decision.questionRef
+      || resolution.questionDigest !== decision.questionDigest
+    ) {
+      throw new AgentRunTransitionError(
+        'A user-question resolution must bind the exact protected question.'
+      );
+    }
+    assertCanonicalPublicId(resolution.answerInputId, 'resolution.answerInputId');
+    if (!/^sha256:[a-f0-9]{64}$/u.test(resolution.answerDigest)) {
+      throw new AgentRunTransitionError('A user-question answer digest is invalid.');
     }
     return;
   }

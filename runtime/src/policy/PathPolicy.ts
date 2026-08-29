@@ -313,7 +313,6 @@ function pathSpecsForTool(toolName: string, input: Record<string, unknown>): Pat
       add("path", "write", readPath("path"));
       break;
     case "shell_run":
-    case "background_shell_start":
     case "git_status":
       add("cwd", "shell", readPath("cwd") ?? ".");
       break;

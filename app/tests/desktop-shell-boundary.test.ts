@@ -21,6 +21,8 @@ describe('Ariadne desktop architecture boundary', () => {
       const normalized = file.replaceAll('\\', '/');
       const isRuntimeHost = normalized.includes('/src/main/runtime/');
       const isBrowserCapability = normalized.endsWith('/src/main/services/browser-service.ts');
+      const isComputerReadCapability = normalized.endsWith('/src/main/services/computer-read-service.ts');
+      const isSpeechCapability = normalized.includes('/src/main/speech/');
       const isMainCompositionRoot = normalized.endsWith('/src/main/application.ts');
       if (/createServer\s*\(|\.listen\s*\(/.test(source)) {
         offenders.push(file);
@@ -32,6 +34,8 @@ describe('Ariadne desktop architecture boundary', () => {
       } else if (
         !isRuntimeHost
         && !isBrowserCapability
+        && !isComputerReadCapability
+        && !isSpeechCapability
         && !isMainCompositionRoot
         && /child_process|node:child_process|@ariadne\/protocol\/host/.test(source)
       ) {
@@ -60,6 +64,17 @@ describe('Ariadne desktop architecture boundary', () => {
 
     const contract = await readFile(join(process.cwd(), 'src', 'renderer', 'src', 'core', 'modules', 'module-contract.ts'), 'utf8');
     expect(contract).not.toMatch(/@ariadne\/protocol\/host|child_process|node:child_process/);
+  });
+
+  it('isolates module render failures instead of blanking the desktop shell', async () => {
+    const registry = await readFile(
+      join(process.cwd(), 'src', 'renderer', 'src', 'core', 'modules', 'module-registry.tsx'),
+      'utf8'
+    );
+    expect(registry).toContain('<ModulePanelErrorBoundary');
+    expect(registry).toContain('getDerivedStateFromError');
+    expect(registry).toContain('Ariadne 其他功能仍可继续使用');
+    expect(registry).toContain('this.setState({ error: null })');
   });
 
   it('keeps Renderer isolated behind the fixed Preload bridge', async () => {

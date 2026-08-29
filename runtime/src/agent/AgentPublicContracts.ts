@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { AgentNotificationSchema } from "../background/NotificationContracts.js";
+import { AgentNotificationSchema } from '../notifications/NotificationContracts.js';
 import { CompanionAgentResultDeliverySchema } from "../companion/CompanionAgentResultContracts.js";
 import { JsonValueSchema } from "../core/jsonContracts.js";
 import { PermissionRequestPayloadSchema } from "../policy/permissionRequestTypes.js";

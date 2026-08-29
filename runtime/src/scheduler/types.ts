@@ -16,7 +16,6 @@ export const MissPolicySchema = z.enum(["skip", "run_once"]);
 export type MissPolicy = z.infer<typeof MissPolicySchema>;
 
 export const SchedulerEventTypeSchema = z.enum([
-  "background_completed",
   "file_changed",
   "git_changed",
 ]);
@@ -37,25 +36,6 @@ const TimeZoneSchema = NonBlankTextSchema.refine(isValidTimeZone, {
   message: "timezone 不是有效的 IANA 时区",
 });
 
-export const BackgroundCompletedEventFilterSchema = z.object({
-  status: z.enum(["running", "completed", "failed", "cancelled"]).optional(),
-  outputPattern: z.string().min(1).optional(),
-  outputRegex: z.boolean().optional(),
-  outputStream: z.enum(["stdout", "stderr", "both"]).optional(),
-  outputIgnoreCase: z.boolean().optional(),
-}).strict().superRefine((value, context) => {
-  if (value.outputPattern !== undefined) return;
-  for (const field of ["outputRegex", "outputStream", "outputIgnoreCase"] as const) {
-    if (value[field] !== undefined) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: [field],
-        message: `${field} 需要同时提供 outputPattern`,
-      });
-    }
-  }
-});
-
 export const FileChangedEventFilterSchema = z.object({
   watchPath: NonBlankTextSchema.optional(),
   pattern: NonBlankTextSchema.optional(),
@@ -68,7 +48,6 @@ export const GitChangedEventFilterSchema = z.object({
 }).strict();
 
 export const EventFilterSchema = z.union([
-  BackgroundCompletedEventFilterSchema,
   FileChangedEventFilterSchema,
   GitChangedEventFilterSchema,
 ]);
@@ -99,13 +78,6 @@ const CronTriggerInputSchema = z.object({
   cronMissPolicy: CronMissPolicySchema.optional(),
 }).strict();
 
-const BackgroundCompletedTriggerInputSchema = z.object({
-  ...CreateTriggerBaseShape,
-  kind: z.literal("event"),
-  eventType: z.literal("background_completed"),
-  eventFilter: BackgroundCompletedEventFilterSchema.optional(),
-}).strict();
-
 const FileChangedTriggerInputSchema = z.object({
   ...CreateTriggerBaseShape,
   kind: z.literal("event"),
@@ -124,7 +96,6 @@ export const CreateTriggerInputSchema = z.union([
   OnceTriggerInputSchema,
   IntervalTriggerInputSchema,
   CronTriggerInputSchema,
-  BackgroundCompletedTriggerInputSchema,
   FileChangedTriggerInputSchema,
   GitChangedTriggerInputSchema,
 ]);
@@ -164,14 +135,6 @@ const CronTriggerRecordSchema = z.object({
   cronMissPolicy: CronMissPolicySchema.optional(),
 }).strict();
 
-const BackgroundCompletedTriggerRecordSchema = z.object({
-  ...TriggerRecordBaseShape,
-  kind: z.literal("event"),
-  status: RecurringTriggerStatusSchema,
-  eventType: z.literal("background_completed"),
-  eventFilter: BackgroundCompletedEventFilterSchema.optional(),
-}).strict();
-
 const FileChangedTriggerRecordSchema = z.object({
   ...TriggerRecordBaseShape,
   kind: z.literal("event"),
@@ -192,7 +155,6 @@ export const TriggerRecordSchema = z.union([
   OnceTriggerRecordSchema,
   IntervalTriggerRecordSchema,
   CronTriggerRecordSchema,
-  BackgroundCompletedTriggerRecordSchema,
   FileChangedTriggerRecordSchema,
   GitChangedTriggerRecordSchema,
 ]);

@@ -54,9 +54,13 @@ import {
   type AgentRunRequestedHandoffMessage
 } from '../src/control/run/AgentRunAdmissionController.js';
 import type {
-  AgentToolContractDocumentV1,
+  AgentToolContractDocumentV2,
   AgentToolExecutableImplementationV1
 } from '../src/control/ports/AgentToolExecution.js';
+import type {
+  AgentInstructionAssemblyRequest,
+  AgentInstructionAssemblyService
+} from '../src/control/ports/AgentInstructionAssembly.js';
 
 const ACCEPTED_AT = '2030-01-01T00:00:00.000Z';
 const REQUESTED_AT = '2030-01-01T00:00:01.000Z';
@@ -79,7 +83,8 @@ describe('ProductionAgentRunAdmissionSnapshotReader', () => {
       catalogProvider(async (reference) => {
         catalogReference = reference;
         return catalog;
-      })
+      }),
+      instructionAssembly()
     );
 
     const snapshot = await reader.readAdmissionSnapshot(
@@ -246,7 +251,7 @@ describe('ProductionAgentRunAdmissionSnapshotReader', () => {
       fixture.conversation,
       provider(async () => bundle),
       catalogProvider(async () => new ImmutableAgentToolCatalog(catalogSnapshot)),
-      { resolve: () => '[INSTRUCTION authority=skill source=user:review]\nReview first.\n[/INSTRUCTION]' }
+      instructionAssembly('[INSTRUCTION authority=skill source=user:review]\nReview first.\n[/INSTRUCTION]')
     );
     const snapshot = await reader.readAdmissionSnapshot(
       fixture.request,
@@ -256,7 +261,9 @@ describe('ProductionAgentRunAdmissionSnapshotReader', () => {
       {
         kind: 'text',
         role: 'system',
-        content: '[INSTRUCTION authority=skill source=user:review]\nReview first.\n[/INSTRUCTION]'
+        content: expect.stringContaining(
+          '[INSTRUCTION authority=skill source=user:review]\nReview first.\n[/INSTRUCTION]'
+        )
       },
       { kind: 'text', role: 'user', content: OBJECTIVE }
     ]);
@@ -270,12 +277,60 @@ describe('ProductionAgentRunAdmissionSnapshotReader', () => {
       fixture.conversation,
       provider(async () => bundle),
       catalogProvider(async () => new ImmutableAgentToolCatalog(catalogSnapshot)),
-      { resolve: () => { throw new Error('skill_not_found:missing'); } }
+      { assemble: async () => { throw new Error('skill_not_found:missing'); } }
     );
     await expect(reader.readAdmissionSnapshot(
       fixture.request,
       new AbortController().signal
     )).rejects.toMatchObject({ code: 'AGENT_ADMISSION_INSTRUCTIONS_INVALID' });
+  });
+
+  it('fails closed when an admission Hook replaces the pinned SubAgent Provider snapshot', async () => {
+    const fixture = await createFixture();
+    const catalogSnapshot = compiledCatalog();
+    const bundle = await authorityBundle(fixture.request, catalogSnapshot);
+    const reader = new ProductionAgentRunAdmissionSnapshotReader(
+      fixture.conversation,
+      provider(async () => bundle),
+      catalogProvider(async () => new ImmutableAgentToolCatalog(catalogSnapshot)),
+      instructionAssembly(),
+      {
+        applyAdmission: async (binding) => {
+          if (binding.bindingVersion !== 4) return binding;
+          return {
+            ...binding,
+            executionProfile: {
+              ...binding.executionProfile,
+              subagentProviders: [{
+                providerId: 'external.changed',
+                displayName: 'Changed external provider',
+                configurationDigest: `sha256:${'b'.repeat(64)}`,
+                transport: 'external_process',
+                supportedModes: ['one_shot'],
+                supportsStructuredReport: false,
+                inheritsParentContext: false,
+                usesParentTools: false
+              }]
+            }
+          };
+        }
+      },
+      [{
+        providerId: 'external.original',
+        displayName: 'Original external provider',
+        configurationDigest: `sha256:${'a'.repeat(64)}`,
+        transport: 'external_process',
+        supportedModes: ['one_shot'],
+        supportsStructuredReport: false,
+        inheritsParentContext: false,
+        usesParentTools: false
+      }]
+    );
+
+    await expect(reader.readAdmissionSnapshot(
+      fixture.request,
+      new AbortController().signal
+    )).rejects.toMatchObject({ code: 'AGENT_ADMISSION_HOOK_REJECTED' });
   });
 
   it('rejects empty authority scopes and copied or partial bundles', async () => {
@@ -466,6 +521,8 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
     sessionId: commandIdentity.sessionId,
     workspaceId: commandIdentity.workspaceId,
     version: options.currentSessionVersion ?? 2,
+    title: 'Conversation',
+    status: 'active',
     createdAt: ACCEPTED_AT,
     updatedAt: ACCEPTED_AT
   };
@@ -606,8 +663,35 @@ function readerWith(
   return new ProductionAgentRunAdmissionSnapshotReader(
     conversation,
     authority,
-    catalogs
+    catalogs,
+    instructionAssembly()
   );
+}
+
+function instructionAssembly(content?: string): AgentInstructionAssemblyService {
+  return {
+    assemble: async (request: AgentInstructionAssemblyRequest) => {
+      const policy = content ?? (request.executionMode === 'plan'
+        ? 'Plan mode is read-only. Inspect with read-only tools when needed, then respond with a concrete implementation plan. Do not request or invoke write or shell tools.'
+        : request.executionMode === 'chat'
+          ? 'You are the local personal assistant. You may inspect and open computer resources only through the advertised read-only tools. Never modify, delete, move, create, or execute files or commands.'
+          : '');
+      return {
+        snapshotVersion: 1,
+        complete: true,
+        subject: { ...request },
+        blocks: policy.length === 0 ? [] : [{
+          blockId: 'test',
+          contributorId: 'test.instructions',
+          contributorVersion: '1.0.0',
+          order: 100,
+          scope: { kind: 'run', runId: request.runId },
+          revision: `sha256:${createHash('sha256').update(policy, 'utf8').digest('hex')}`,
+          content: policy
+        }]
+      };
+    }
+  };
 }
 
 function provider(
@@ -643,6 +727,7 @@ implements ConversationAuthorityUnitOfWork {
     this.active = true;
     const transaction: ConversationAuthorityTransaction = {
       loadSession: async () => this.session,
+      loadSessionVersion: async () => this.session,
       loadSaga: async () => this.saga,
       loadMessageHead: async () => this.head,
       loadMessageVersion: async () => {
@@ -653,6 +738,7 @@ implements ConversationAuthorityUnitOfWork {
       loadCommittedAuthorityCommand: async () => null,
       loadCommittedCommand: async () => null,
       commitCreatedSession: forbiddenWrite,
+      commitMutatedSession: forbiddenWrite,
       commitAcceptedUserMessage: forbiddenWrite,
       commitProjectedAgentResult: forbiddenWrite,
       commit: forbiddenWrite
@@ -721,11 +807,20 @@ function registration(
   access: 'read' | 'write'
 ): TrustedAgentToolRegistrationV1 {
   const artifacts = artifactBytes(toolName);
-  const document: AgentToolContractDocumentV1 = {
-    documentVersion: 1,
+  const document: AgentToolContractDocumentV2 = {
+    documentVersion: 2,
     toolName,
     toolVersion: '1.0.0',
     providerId: 'ariadne.builtin',
+    model: {
+      description: `Use the approved ${toolName} Tool.`,
+      guidance: ['Use only the exact approved scope.']
+    },
+    presentation: {
+      kind: access === 'read' ? 'file_read' : 'file_change',
+      label: toolName,
+      resultVisibility: 'protected'
+    },
     inputSchema: { type: 'object' },
     outputSchema: { type: 'object' },
     capabilityIds: [capabilityId],

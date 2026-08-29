@@ -3,7 +3,8 @@ import type {
   ConversationAuthorityEvent,
   ConversationMessageHead,
   ConversationMessageVersion,
-  ConversationSession
+  ConversationSession,
+  MutatedConversationSession
 } from '../../conversation/ConversationAuthority.js';
 import type {
   ConversationRunHandoffCommit,
@@ -43,6 +44,14 @@ export interface AcceptConversationUserMessageCommit {
   readonly handoff: ConversationRunHandoffCommit;
 }
 
+export interface MutateConversationSessionCommit extends MutatedConversationSession {
+  readonly receipt: Extract<
+    ConversationAuthorityCommandReceipt,
+    { readonly kind: 'conversation.mutate_session' }
+  >;
+  readonly expectedSessionVersion: number;
+}
+
 export interface ProjectConversationAgentResultCommit {
   readonly receipt: Extract<
     ConversationAuthorityCommandReceipt,
@@ -77,6 +86,11 @@ export interface ConversationAuthorityTransaction
 extends ConversationRunHandoffTransaction {
   loadSession(sessionId: string): Promise<ConversationSession | null>;
 
+  loadSessionVersion(
+    sessionId: string,
+    version: number
+  ): Promise<ConversationSession | null>;
+
   loadMessageHead(messageId: string): Promise<ConversationMessageHead | null>;
 
   loadMessageVersion(
@@ -96,6 +110,8 @@ extends ConversationRunHandoffTransaction {
   ): Promise<CommittedConversationAuthorityCommand | null>;
 
   commitCreatedSession(commit: CreateConversationSessionCommit): Promise<void>;
+
+  commitMutatedSession(commit: MutateConversationSessionCommit): Promise<void>;
 
   commitAcceptedUserMessage(commit: AcceptConversationUserMessageCommit): Promise<void>;
 

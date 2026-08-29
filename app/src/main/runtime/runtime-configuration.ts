@@ -4,6 +4,7 @@ import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:pa
 import type { RuntimeSupervisorOptions } from './runtime-supervisor';
 import type { RuntimeAgentSettings } from '../persistence/agent-settings-repository';
 import { AGENT_PROVIDER_CATALOG, AGENT_PROVIDER_IDS } from '@shared/contract';
+import { PERSONAL_ASSISTANT_WORKSPACE_ID } from '@ariadne/protocol/public';
 import {
   buildAgentAdmissionAuthoritySource
 } from './agent-admission-authority-source';
@@ -81,24 +82,48 @@ export function createDesktopRuntimeConfiguration(
       providerId,
       name: definition.runtimeModelId,
       protocol: definition.protocol,
+      usageReporting: definition.usageReporting,
       credentialEnvironmentVariable: definition.apiKeyEnvironmentVariable,
       enabled,
       baseUrl,
       model,
+      supportsVision: definition.supportsVision,
       contextWindowTokens,
       maxOutputTokens,
       inference
     };
   });
+  const subagentProviders = input.agentSettings.subagentProviders
+    .filter((provider) => provider.enabled)
+    .map(({ enabled: _enabled, ...provider }) => ({
+      ...provider,
+      command: requireAbsoluteEnvironmentPath('subagentProvider.command', provider.command),
+      args: [...provider.args]
+    }));
   const modelRoots = [...new Set([
     ...input.agentSettings.localModelRoots.map((entry) => requireAbsoluteEnvironmentPath('localModelRoots', entry)),
     ...environmentModelRoots
   ])];
+  const assistantWorkspace = {
+    workspaceId: PERSONAL_ASSISTANT_WORKSPACE_ID,
+    label: '个人助手',
+    rootPath: resolve(input.userDataPath),
+    access: 'read' as const
+  };
+  const agentWorkspaces = input.agentSettings.workspaces.map((workspace) => ({
+    workspaceId: workspace.workspaceId,
+    label: basename(workspace.rootPath) || 'Ariadne Workspace',
+    rootPath: requireAbsoluteEnvironmentPath('workspaceRoot', workspace.rootPath),
+    access: workspace.access
+  }));
   const agentAdmissionAuthoritySource = buildAgentAdmissionAuthoritySource({
     settingsRevision: input.agentSettings.revision,
     permissionMode: input.agentSettings.permissionMode,
     allowedPermissions: input.agentSettings.permissions.allowedPermissions,
-    workspaces: input.agentSettings.workspaces,
+    workspaces: [
+      { workspaceId: assistantWorkspace.workspaceId, access: 'read', kind: 'assistant' },
+      ...input.agentSettings.workspaces.map((workspace) => ({ ...workspace, kind: 'agent' as const }))
+    ],
     modelProviders,
     localModelRoots: modelRoots,
     skillNames: input.agentSettings.runtimePolicy.skills.enabled,
@@ -119,16 +144,13 @@ export function createDesktopRuntimeConfiguration(
     dataRoot: join(input.userDataPath, 'runtime'),
     modelRoots,
     modelProviders,
+    subagentProviders,
     routingStrategy: input.agentSettings.routingStrategy,
+    assistantProfile: structuredClone(input.agentSettings.assistant),
     agentPermissions: structuredClone(input.agentSettings.permissions),
     agentAdmissionAuthoritySource,
     runtimePolicy: structuredClone(input.agentSettings.runtimePolicy),
-    workspaces: input.agentSettings.workspaces.map((workspace) => ({
-      workspaceId: workspace.workspaceId,
-      label: basename(workspace.rootPath) || 'Ariadne Workspace',
-      rootPath: requireAbsoluteEnvironmentPath('workspaceRoot', workspace.rootPath),
-      access: workspace.access
-    })),
+    workspaces: [assistantWorkspace, ...agentWorkspaces],
     profile,
     appVersion: input.appVersion,
     runtimeVersion: '0.1.0',

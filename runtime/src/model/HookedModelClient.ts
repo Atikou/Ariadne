@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { HookManager } from "../hooks/HookManager.js";
-import { ProviderRequestError, classifyProviderError } from "./ProviderError.js";
+import { ProviderRequestError, classifyProviderError } from "../adapters/model/ProviderError.js";
 import type { ChatRequest, ModelClient, ModelResponse } from "./types.js";
 
 const MODEL_AUTHORITY_TIMEOUT_MS = 24 * 60 * 60_000;

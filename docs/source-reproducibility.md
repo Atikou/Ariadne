@@ -29,7 +29,7 @@ npm.cmd run verify:reproducible
 npm.cmd run test:electron
 ```
 
-`verify:reproducible` 依次检查源码快照、类型、全量测试、依赖方向、热点边界、Runtime 独立性和发布契约。`test:electron` 另外验证真实 Electron 窗口中的运行中 inbox continuation 及三处 Runtime 强杀恢复；每一处都必须由外层验证器确认目标进程已经退出并写入本次运行的确认标记，Renderer 才能继续验证恢复结果。artifact 中的 `inboxContinuationCompleted`、`runtimeBoundaryKillsAcknowledged` 和三项恢复语义必须同时为 `true`，因此低层 API 直写、最终状态自然完成或未真正强杀都不能伪装成通过。它不由普通静态 CI 代替。
+`verify:reproducible` 依次检查源码快照、类型、全量测试、依赖方向、热点边界、Runtime 独立性和发布契约。`test:electron` 另外验证真实 Electron 窗口中的运行中 inbox continuation、稳定 command receipt/权威对账及五处 Runtime 强杀恢复；每一处都必须由外层验证器确认目标进程已经退出并写入本次运行的确认标记，Renderer 才能继续验证恢复结果。随后同一隔离 userData 会经历 Renderer reload 和第二次完整桌面进程启动；未结算回执必须以相同 commandId/inputId 恢复为 `reconcile`，目标 inputId 必须仍不在 Public Projection，且只能由显式结算清空。artifact 中的 `inboxContinuationCompleted`、`agentInputDeliveryRecovered`、`rendererReloadDeliveryRecovered`、`userQuestionRuntimeRecoveryCompleted`、`runtimeBoundaryKillsAcknowledged` 和其余三项恢复语义必须同时为 `true`，`desktop-restart-delivery.json` 也必须 `passed=true`。因此低层 API 直写、最终状态自然完成、启动期自动重放、重复 inbox input 或未真正强杀都不能伪装成通过。它不由普通静态 CI 代替。
 
 ## `verify:source-snapshot` 的失败条件
 

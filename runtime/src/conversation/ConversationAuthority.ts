@@ -1,5 +1,7 @@
 import {
   conversationMessageExecutionV3Schema,
+  imageAttachmentRefV3Schema,
+  type ImageAttachmentRefV3,
   type ConversationMessageExecutionV3
 } from '@ariadne/protocol/public';
 import type { ConversationRunResultStatus } from './ConversationRunHandoffSaga.js';
@@ -8,6 +10,8 @@ export interface ConversationSession {
   readonly sessionId: string;
   readonly workspaceId: string;
   readonly version: number;
+  readonly title: string;
+  readonly status: 'active' | 'archived';
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -23,6 +27,7 @@ export interface ConversationMessageHead {
 
 export interface ConversationMessagePayload {
   readonly content: string;
+  readonly attachments?: readonly ImageAttachmentRefV3[];
   readonly execution?: ConversationMessageExecutionV3;
 }
 
@@ -51,6 +56,17 @@ extends ConversationAuthorityCommandBase {
   readonly expectedVersion: null;
 }
 
+export type ConversationSessionMutation =
+  | { readonly kind: 'rename'; readonly title: string }
+  | { readonly kind: 'set_status'; readonly status: 'active' | 'archived' };
+
+export interface MutateConversationSessionCommand
+extends ConversationAuthorityCommandBase {
+  readonly kind: 'conversation.mutate_session';
+  readonly expectedSessionVersion: number;
+  readonly mutation: ConversationSessionMutation;
+}
+
 export interface AcceptConversationUserMessageCommand
 extends ConversationAuthorityCommandBase {
   readonly kind: 'conversation.accept_user_message';
@@ -58,6 +74,7 @@ extends ConversationAuthorityCommandBase {
   readonly messageId: string;
   readonly expectedMessageVersion: null;
   readonly content: string;
+  readonly attachments?: readonly ImageAttachmentRefV3[];
   readonly execution?: ConversationMessageExecutionV3;
   readonly sagaId: string;
   readonly handoffCommandId: string;
@@ -115,6 +132,7 @@ extends ConversationAuthorityCommandBase {
 
 export type ConversationAuthorityCommand =
   | CreateConversationSessionCommand
+  | MutateConversationSessionCommand
   | AcceptConversationUserMessageCommand
   | ProjectConversationAgentStartFailureCommand
   | ProjectConversationAgentResultCommand;
@@ -143,6 +161,16 @@ export type ConversationAuthorityEvent =
       readonly sessionId: string;
       readonly workspaceId: string;
       readonly sessionVersion: number;
+      readonly occurredAt: string;
+    }
+  | {
+      readonly eventId: string;
+      readonly type: 'conversation.session.updated';
+      readonly commandId: string;
+      readonly sessionId: string;
+      readonly workspaceId: string;
+      readonly sessionVersion: number;
+      readonly mutation: ConversationSessionMutation;
       readonly occurredAt: string;
     }
   | {
@@ -205,6 +233,19 @@ export type ConversationAuthorityCommandReceipt =
     }
   | {
       readonly commandId: string;
+      readonly kind: 'conversation.mutate_session';
+      readonly commandFingerprint: string;
+      readonly eventId: string;
+      readonly sessionId: string;
+      readonly workspaceId: string;
+      readonly resultingSessionVersion: number;
+      readonly messageId: null;
+      readonly messageVersion: null;
+      readonly sagaId: null;
+      readonly committedAt: string;
+    }
+  | {
+      readonly commandId: string;
       readonly kind: 'conversation.project_agent_start_failure';
       readonly commandFingerprint: string;
       readonly eventId: string;
@@ -252,6 +293,14 @@ export interface CreatedConversationSession {
   >;
 }
 
+export interface MutatedConversationSession {
+  readonly session: ConversationSession;
+  readonly event: Extract<
+    ConversationAuthorityEvent,
+    { readonly type: 'conversation.session.updated' }
+  >;
+}
+
 export interface AcceptedConversationUserMessage {
   readonly session: ConversationSession;
   readonly messageHead: ConversationMessageHead;
@@ -289,6 +338,8 @@ export class ConversationAuthorityError extends Error {
       | 'CONVERSATION_SESSION_ALREADY_EXISTS'
       | 'CONVERSATION_SESSION_NOT_FOUND'
       | 'CONVERSATION_SESSION_VERSION_CONFLICT'
+      | 'CONVERSATION_SESSION_ARCHIVED'
+      | 'CONVERSATION_SESSION_MUTATION_UNCHANGED'
       | 'CONVERSATION_WORKSPACE_MISMATCH'
       | 'CONVERSATION_MESSAGE_ALREADY_EXISTS'
       | 'CONVERSATION_STORAGE_CORRUPTION',
@@ -308,6 +359,8 @@ export function createConversationSession(
     sessionId: command.sessionId,
     workspaceId: command.workspaceId,
     version: 1,
+    title: 'Conversation',
+    status: 'active',
     createdAt: command.occurredAt,
     updatedAt: command.occurredAt
   };
@@ -318,6 +371,70 @@ export function createConversationSession(
     sessionId: command.sessionId,
     workspaceId: command.workspaceId,
     sessionVersion: 1,
+    occurredAt: command.occurredAt
+  };
+  assertValidConversationSession(session);
+  assertValidConversationAuthorityEvent(event);
+  return { session, event };
+}
+
+export function mutateConversationSession(
+  current: ConversationSession | null,
+  command: MutateConversationSessionCommand
+): MutatedConversationSession {
+  assertMutateConversationSessionCommand(command);
+  if (current === null) {
+    throw new ConversationAuthorityError(
+      'CONVERSATION_SESSION_NOT_FOUND',
+      `Conversation session "${command.sessionId}" does not exist.`
+    );
+  }
+  assertValidConversationSession(current);
+  if (current.sessionId !== command.sessionId) {
+    throw invariant('Loaded Conversation session identity differs from the command.');
+  }
+  if (current.workspaceId !== command.workspaceId) {
+    throw new ConversationAuthorityError(
+      'CONVERSATION_WORKSPACE_MISMATCH',
+      'Conversation session is bound to a different workspace.'
+    );
+  }
+  if (current.version !== command.expectedSessionVersion) {
+    throw new ConversationAuthorityError(
+      'CONVERSATION_SESSION_VERSION_CONFLICT',
+      `Expected Conversation session version ${String(command.expectedSessionVersion)}, found ${String(current.version)}.`
+    );
+  }
+  if (Date.parse(command.occurredAt) < Date.parse(current.updatedAt)) {
+    throw invariant('Conversation Session mutation cannot move its clock backwards.');
+  }
+  if (
+    (command.mutation.kind === 'rename' && current.title === command.mutation.title)
+    || (command.mutation.kind === 'set_status' && current.status === command.mutation.status)
+  ) {
+    throw new ConversationAuthorityError(
+      'CONVERSATION_SESSION_MUTATION_UNCHANGED',
+      'Conversation Session mutation would not change authoritative state.'
+    );
+  }
+  const nextVersion = current.version + 1;
+  if (!Number.isSafeInteger(nextVersion)) throw invariant('Conversation session version overflow.');
+  const session: ConversationSession = {
+    ...current,
+    version: nextVersion,
+    ...(command.mutation.kind === 'rename'
+      ? { title: command.mutation.title }
+      : { status: command.mutation.status }),
+    updatedAt: command.occurredAt
+  };
+  const event: MutatedConversationSession['event'] = {
+    eventId: command.eventId,
+    type: 'conversation.session.updated',
+    commandId: command.commandId,
+    sessionId: command.sessionId,
+    workspaceId: command.workspaceId,
+    sessionVersion: nextVersion,
+    mutation: { ...command.mutation },
     occurredAt: command.occurredAt
   };
   assertValidConversationSession(session);
@@ -346,6 +463,12 @@ export function acceptConversationUserMessage(
     throw new ConversationAuthorityError(
       'CONVERSATION_WORKSPACE_MISMATCH',
       'Conversation session is bound to a different workspace.'
+    );
+  }
+  if (current.status !== 'active') {
+    throw new ConversationAuthorityError(
+      'CONVERSATION_SESSION_ARCHIVED',
+      'Archived Conversation sessions cannot accept new user messages.'
     );
   }
   if (current.version !== command.expectedSessionVersion) {
@@ -382,6 +505,9 @@ export function acceptConversationUserMessage(
     role: 'user',
     payload: {
       content: command.content,
+      ...(command.attachments === undefined
+        ? {}
+        : { attachments: command.attachments.map((attachment) => ({ ...attachment })) }),
       ...(command.execution === undefined
         ? {}
         : { execution: structuredClone(command.execution) })
@@ -567,6 +693,24 @@ export async function digestConversationMessageContent(content: string): Promise
   return sha256(content);
 }
 
+export async function digestConversationMessagePayload(
+  payload: ConversationMessagePayload
+): Promise<string> {
+  assertConversationMessagePayload(payload, 'messagePayload');
+  return sha256(conversationMessageDigestSource(payload));
+}
+
+/** Legacy text-only rows retain their original digest identity. */
+export function conversationMessageDigestSource(payload: ConversationMessagePayload): string {
+  return payload.attachments === undefined
+    ? payload.content
+    : JSON.stringify({
+        version: 1,
+        content: payload.content,
+        attachments: payload.attachments
+      });
+}
+
 export async function fingerprintConversationAuthorityCommand(
   command: ConversationAuthorityCommand,
   contentDigest?: string
@@ -580,6 +724,19 @@ export async function fingerprintConversationAuthorityCommand(
       command.sessionId,
       command.workspaceId,
       command.expectedVersion,
+      command.occurredAt
+    ]));
+  }
+  if (command.kind === 'conversation.mutate_session') {
+    assertMutateConversationSessionCommand(command);
+    return sha256(JSON.stringify([
+      command.kind,
+      command.commandId,
+      command.eventId,
+      command.sessionId,
+      command.workspaceId,
+      command.expectedSessionVersion,
+      command.mutation,
       command.occurredAt
     ]));
   }
@@ -662,6 +819,22 @@ export function createConversationAuthorityReceipt(
       committedAt: command.occurredAt
     };
   }
+  if (command.kind === 'conversation.mutate_session') {
+    assertMutateConversationSessionCommand(command);
+    return {
+      commandId: command.commandId,
+      kind: command.kind,
+      commandFingerprint,
+      eventId: command.eventId,
+      sessionId: command.sessionId,
+      workspaceId: command.workspaceId,
+      resultingSessionVersion,
+      messageId: null,
+      messageVersion: null,
+      sagaId: null,
+      committedAt: command.occurredAt
+    };
+  }
   if (command.kind === 'conversation.accept_user_message') {
     assertAcceptConversationUserMessageCommand(command);
     return {
@@ -719,11 +892,15 @@ export function createConversationAuthorityReceipt(
 
 export function assertValidConversationSession(session: ConversationSession): void {
   assertExactObjectKeys(session, [
-    'sessionId', 'workspaceId', 'version', 'createdAt', 'updatedAt'
+    'sessionId', 'workspaceId', 'version', 'title', 'status', 'createdAt', 'updatedAt'
   ], 'session');
   assertCanonicalId(session.sessionId, 'session.sessionId');
   assertCanonicalId(session.workspaceId, 'session.workspaceId');
   assertSafePositiveInteger(session.version, 'session.version');
+  assertSessionTitle(session.title, 'session.title');
+  if (session.status !== 'active' && session.status !== 'archived') {
+    throw invariant('Conversation Session status is invalid.');
+  }
   assertTimestamp(session.createdAt, 'session.createdAt');
   assertTimestamp(session.updatedAt, 'session.updatedAt');
   if (Date.parse(session.updatedAt) < Date.parse(session.createdAt)) {
@@ -760,12 +937,7 @@ export function assertValidConversationMessageVersion(
   if (message.role !== 'user' && message.role !== 'assistant') {
     throw invariant('Conversation message role is invalid.');
   }
-  assertExactObjectKeys(
-    message.payload,
-    message.payload.execution === undefined ? ['content'] : ['content', 'execution'],
-    'messageVersion.payload'
-  );
-  assertMessageContent(message.payload.content);
+  assertConversationMessagePayload(message.payload, 'messageVersion.payload');
   if (message.payload.execution !== undefined) {
     if (message.role !== 'user') {
       throw invariant('Only user messages may carry execution preferences.');
@@ -803,6 +975,8 @@ export function assertValidConversationAuthorityEvent(
         : event.type === 'conversation.agent_start.failed'
           ? [...commonKeys, 'messageId', 'messageVersion', 'contentDigest',
               'sagaId', 'sagaVersion', 'runRequestId', 'failureCode']
+          : event.type === 'conversation.session.updated'
+            ? [...commonKeys, 'mutation']
       : commonKeys,
     'authorityEvent'
   );
@@ -834,6 +1008,8 @@ export function assertValidConversationAuthorityEvent(
     assertSafePositiveInteger(event.sagaVersion, 'authorityEvent.sagaVersion');
     assertCanonicalId(event.runRequestId, 'authorityEvent.runRequestId');
     assertCanonicalId(event.failureCode, 'authorityEvent.failureCode');
+  } else if (event.type === 'conversation.session.updated') {
+    assertConversationSessionMutation(event.mutation, 'authorityEvent.mutation');
   } else if (event.type !== 'conversation.session.created') {
     throw invariant('Conversation authority event type is invalid.');
   }
@@ -887,6 +1063,14 @@ export function assertValidConversationAuthorityReceipt(
     ) throw invariant('Create Session receipt binding is invalid.');
     return;
   }
+  if (receipt.kind === 'conversation.mutate_session') {
+    if (
+      receipt.messageId !== null
+      || receipt.messageVersion !== null
+      || receipt.sagaId !== null
+    ) throw invariant('Mutate Session receipt binding is invalid.');
+    return;
+  }
   if (receipt.kind === 'conversation.project_agent_result') {
     assertCanonicalId(receipt.messageId, 'authorityReceipt.messageId');
     assertSafePositiveInteger(receipt.messageVersion, 'authorityReceipt.messageVersion');
@@ -937,12 +1121,31 @@ export function assertCreateConversationSessionCommand(
   }
 }
 
+export function assertMutateConversationSessionCommand(
+  command: MutateConversationSessionCommand
+): void {
+  assertExactObjectKeys(command, [
+    'kind', 'commandId', 'eventId', 'sessionId', 'workspaceId',
+    'expectedSessionVersion', 'mutation', 'occurredAt'
+  ], 'mutateSessionCommand');
+  assertCommandBase(command);
+  if (command.kind !== 'conversation.mutate_session') {
+    throw invariant('Mutate Session command shape is invalid.');
+  }
+  assertSafePositiveInteger(
+    command.expectedSessionVersion,
+    'mutateSessionCommand.expectedSessionVersion'
+  );
+  assertConversationSessionMutation(command.mutation, 'mutateSessionCommand.mutation');
+}
+
 export function assertAcceptConversationUserMessageCommand(
   command: AcceptConversationUserMessageCommand
 ): void {
   assertExactObjectKeys(command, [
     'kind', 'commandId', 'eventId', 'sessionId', 'workspaceId',
     'expectedSessionVersion', 'messageId', 'expectedMessageVersion', 'content',
+    ...(command.attachments === undefined ? [] : ['attachments']),
     ...(command.execution === undefined ? [] : ['execution']),
     'sagaId', 'handoffCommandId', 'handoffOutboxMessageId', 'occurredAt'
   ], 'acceptUserMessageCommand');
@@ -956,7 +1159,10 @@ export function assertAcceptConversationUserMessageCommand(
     'acceptUserMessageCommand.expectedSessionVersion'
   );
   assertCanonicalId(command.messageId, 'acceptUserMessageCommand.messageId');
-  assertMessageContent(command.content);
+  assertMessageContentOrAttachments(command.content, command.attachments);
+  if (command.attachments !== undefined) {
+    assertImageAttachments(command.attachments, 'acceptUserMessageCommand.attachments');
+  }
   if (command.execution !== undefined) {
     assertConversationMessageExecution(command.execution);
   }
@@ -976,6 +1182,35 @@ export function assertAcceptConversationUserMessageCommand(
   ];
   if (new Set(identities).size !== identities.length) {
     throw invariant('Accept user Message identities must be distinct.');
+  }
+}
+
+function assertConversationMessagePayload(
+  payload: ConversationMessagePayload,
+  location: string
+): void {
+  assertExactObjectKeys(payload, [
+    'content',
+    ...(payload.attachments === undefined ? [] : ['attachments']),
+    ...(payload.execution === undefined ? [] : ['execution'])
+  ], location);
+  assertMessageContentOrAttachments(payload.content, payload.attachments);
+  if (payload.attachments !== undefined) {
+    assertImageAttachments(payload.attachments, `${location}.attachments`);
+  }
+}
+
+function assertImageAttachments(
+  attachments: readonly ImageAttachmentRefV3[],
+  location: string
+): void {
+  if (!Array.isArray(attachments) || attachments.length === 0 || attachments.length > 4) {
+    throw invariant(`${location} must contain one through four images.`);
+  }
+  for (const [index, attachment] of attachments.entries()) {
+    if (!imageAttachmentRefV3Schema.safeParse(attachment).success) {
+      throw invariant(`${location}[${String(index)}] is invalid.`);
+    }
   }
 }
 
@@ -1124,12 +1359,55 @@ function assertCommandBase(command: ConversationAuthorityCommandBase): void {
   }
 }
 
+function assertConversationSessionMutation(
+  mutation: ConversationSessionMutation,
+  location: string
+): void {
+  if (mutation.kind === 'rename') {
+    assertExactObjectKeys(mutation, ['kind', 'title'], location);
+    assertSessionTitle(mutation.title, `${location}.title`);
+    return;
+  }
+  if (mutation.kind === 'set_status') {
+    assertExactObjectKeys(mutation, ['kind', 'status'], location);
+    if (mutation.status !== 'active' && mutation.status !== 'archived') {
+      throw invariant(`${location}.status is invalid.`);
+    }
+    return;
+  }
+  throw invariant(`${location}.kind is invalid.`);
+}
+
+function assertSessionTitle(value: unknown, field: string): asserts value is string {
+  if (
+    typeof value !== 'string'
+    || value.trim() !== value
+    || value.length < 1
+    || value.length > 80
+  ) throw invariant(`${field} must contain 1 to 80 trimmed characters.`);
+}
+
 function assertMessageContent(content: unknown): asserts content is string {
   if (
     typeof content !== 'string'
     || content.length === 0
     || content.length > 1_048_576
   ) throw invariant('Conversation message content must contain 1..1048576 code units.');
+}
+
+function assertMessageContentOrAttachments(
+  content: unknown,
+  attachments: readonly ImageAttachmentRefV3[] | undefined
+): asserts content is string {
+  if (
+    typeof content !== 'string'
+    || content.length > 1_048_576
+    || (content.trim().length === 0 && attachments === undefined)
+  ) {
+    throw invariant(
+      'Conversation user message must contain text or one through four image attachments.'
+    );
+  }
 }
 
 function assertConversationMessageExecution(

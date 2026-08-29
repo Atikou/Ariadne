@@ -182,6 +182,43 @@ describe('ComposedRuntimeIngress', () => {
     ]);
   });
 
+  it('preserves the deepest stable startup failure code through lifecycle wrappers', async () => {
+    const ingress = new ComposedRuntimeIngress({
+      commandJournal: new InMemoryRuntimeCommandJournal({ order: [] }),
+      runtimeApplicationFactory: {
+        create: async () => new FakeRuntimeApplication(
+          [],
+          async () => completed(successOutcome())
+        )
+      },
+      agentControlFactory: {
+        create: async () => ({
+          ...agentLifecycle([]),
+          start: async () => {
+            throw new Error('agent_control_public_projection_unhealthy', {
+              cause: new Error('agent_control_startup_projection_not_at_fixed_point')
+            });
+          }
+        })
+      },
+      preflightMemoryControlShadows: () => undefined,
+      readBuildManifest: () => ({
+        schemaVersion: 1,
+        runtimeVersion: '0.1.0',
+        fingerprint
+      })
+    });
+
+    await expect(ingress.initialize({
+      bootstrap: bootstrap(),
+      hostCapabilities: { request: async () => ({}) },
+      emitEvent: () => undefined
+    })).rejects.toMatchObject({
+      phase: 'agent_control_start',
+      code: 'AGENT_CONTROL_STARTUP_PROJECTION_NOT_AT_FIXED_POINT'
+    });
+  });
+
   it('replays one logical command without executing the application twice', async () => {
     const execute = vi.fn(async () => completed(successOutcome()));
     const harness = await createHarness({ execute });
@@ -217,6 +254,7 @@ describe('ComposedRuntimeIngress', () => {
           decisions: [],
           models: [],
           diagnostics: [],
+          inferenceStreams: [],
           tombstones: []
         }
       }

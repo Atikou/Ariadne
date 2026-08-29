@@ -1,4 +1,4 @@
-import type { AgentNotification } from "../background/types.js";
+import type { AgentNotification } from '../notifications/types.js';
 import type { ToolPermission } from "../core/permissions.js";
 import type { ContextManager } from "../context/ContextManager.js";
 import type { ChatMessage } from "../model/types.js";

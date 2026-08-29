@@ -1,4 +1,4 @@
-import { app, Menu, Notification, shell, Tray } from 'electron';
+import { app, Menu, Notification, powerMonitor, shell, Tray } from 'electron';
 import { isAbsolute, join } from 'node:path';
 import type { RuntimeCapabilityRequest } from '@ariadne/protocol/host';
 import type {
@@ -8,10 +8,12 @@ import type {
   AgentSettingsView,
   AgentWorkspacePinUpdate,
   AgentWorkspaceRequest,
+  ActivateSpeechVoiceRequest,
   OpenWorkspaceResult
 } from '@shared/contract';
 import { IPC_CHANNELS } from '@shared/ipc';
 import { AgentSettingsRepository } from './persistence/agent-settings-repository';
+import { AgentInputDeliveryOutbox } from './persistence/agent-input-delivery-outbox';
 import { AgentPersistenceKeyRingStore } from './persistence/agent-persistence-keyring';
 import { McpOAuthCredentialVault } from './persistence/mcp-oauth-credential-vault';
 import { ElectronSafeStorageCipher } from './persistence/secret-cipher';
@@ -27,6 +29,7 @@ import { TerminalSessionService } from './services/terminal-service';
 import { WorkspaceFileService } from './services/workspace-file-service';
 import { ApprovalNotificationService } from './services/approval-notification-service';
 import { BrowserService } from './services/browser-service';
+import { ComputerReadService } from './services/computer-read-service';
 import { McpRemoteService } from './runtime/mcp-remote-service';
 import { PreferencesCoordinator } from './services/preferences-coordinator';
 import { MainWindowController } from './windows/main-window';
@@ -35,6 +38,7 @@ import { createDesktopRuntimeConfiguration } from './runtime/runtime-configurati
 import { RuntimeSupervisor } from './runtime/runtime-supervisor';
 import { runElectronSmokeTest } from './smoke/electron-smoke';
 import { shouldRestartRuntimeForAgentSettings } from './settings/agent-settings-effects';
+import { SpeechGateway } from './speech/speech-gateway';
 
 export class ApplicationController {
   private isQuitting = false;
@@ -44,8 +48,13 @@ export class ApplicationController {
   private tray: Tray | null = null;
   private removeIpcHandlers: (() => void) | null = null;
   private removeApprovalNotificationEvents: (() => void) | null = null;
+  private removeSpeechEvents: (() => void) | null = null;
   private readonly state = new StateRepository(join(app.getPath('userData'), 'state.json'));
   private readonly secretCipher = new ElectronSafeStorageCipher();
+  private readonly agentInputDeliveryOutbox = new AgentInputDeliveryOutbox(
+    join(app.getPath('userData'), 'agent-input-delivery-outbox.json'),
+    this.secretCipher
+  );
   private readonly agentSettings = new AgentSettingsRepository(
     join(app.getPath('userData'), 'settings.toml'),
     this.secretCipher
@@ -66,9 +75,11 @@ export class ApplicationController {
   );
   private readonly gameActivity = new UnavailableGameActivityDetector();
   private readonly interruptionPolicy = new InterruptionPolicy();
+  private readonly speech = new SpeechGateway();
   private readonly systemCapabilities = new SystemCapabilityCatalog(
     new ElectronAutoLaunchService(),
-    this.gameActivity
+    this.gameActivity,
+    this.speech
   );
   private readonly preferences = new PreferencesCoordinator(this.state, this.systemCapabilities);
   private readonly workspaceFiles = new WorkspaceFileService([]);
@@ -80,6 +91,7 @@ export class ApplicationController {
       console.info('[browser-audit]', JSON.stringify(event));
     }
   });
+  private readonly computerRead = new ComputerReadService((path) => shell.openPath(path));
   private readonly runtime = new RuntimeSupervisor(this.createRuntimeConfiguration());
   private readonly rendererSource = new RendererSource(join(__dirname, '../renderer'), {
     allowDevelopmentServer: !app.isPackaged
@@ -151,17 +163,25 @@ export class ApplicationController {
         await this.mainWindow.saveWindowStateNow();
         await this.state.flush();
         await this.agentSettings.flush();
+        await this.agentInputDeliveryOutbox.flush();
         this.removeIpcHandlers?.();
         this.removeIpcHandlers = null;
         this.removeApprovalNotificationEvents?.();
         this.removeApprovalNotificationEvents = null;
         this.approvalNotifications.dispose();
+        powerMonitor.removeListener('lock-screen', this.handleSpeechLock);
+        powerMonitor.removeListener('unlock-screen', this.handleSpeechUnlock);
+        powerMonitor.removeListener('suspend', this.handleSpeechLock);
+        powerMonitor.removeListener('resume', this.handleSpeechUnlock);
+        this.removeSpeechEvents?.();
+        this.removeSpeechEvents = null;
+        await this.speech.dispose();
         await this.runtime.stop('app_quit');
         await this.mcpRemote.dispose();
         await this.mcpOAuthVault.flush();
         this.browser.dispose();
         this.rendererSource.stop();
-        this.terminals.dispose();
+        await this.terminals.dispose();
         this.tray?.destroy();
         this.tray = null;
       })();
@@ -173,9 +193,11 @@ export class ApplicationController {
     await Promise.all([
       this.state.initialize(),
       this.agentSettings.initialize(),
+      this.agentInputDeliveryOutbox.initialize(),
       this.mcpOAuthVault.initialize(),
       this.agentPersistenceKeyRing.initialize()
     ]);
+    await this.speech.initialize(this.state.getPreferences().speech);
     if (process.env.ARIADNE_SMOKE_TEST === '1') {
       const smokeWorkspaceRoot = process.env.ARIADNE_SMOKE_WORKSPACE_ROOT;
       const expectedWorkspaceId = process.env.ARIADNE_SMOKE_WORKSPACE_ID;
@@ -211,6 +233,9 @@ export class ApplicationController {
       terminals: this.terminals,
       workspaceFiles: this.workspaceFiles,
       runtime: this.runtime,
+      agentInputDeliveryOutbox: this.agentInputDeliveryOutbox,
+      speech: this.speech,
+      activateSpeechVoice: (request) => this.activateSpeechVoice(request),
       mainWindow: this.mainWindow,
       testApprovalNotification: () => this.approvalNotifications.showTestNotification()
     });
@@ -219,15 +244,29 @@ export class ApplicationController {
         console.error('Approval notification event handling failed.', error);
       });
     });
+    this.removeSpeechEvents = this.speech.onEvent((event) => {
+      if (event.kind === 'status' || event.kind === 'wake' || event.kind.startsWith('tts.')) {
+        this.updateTrayMenu();
+      }
+    });
+    powerMonitor.on('lock-screen', this.handleSpeechLock);
+    powerMonitor.on('unlock-screen', this.handleSpeechUnlock);
+    powerMonitor.on('suspend', this.handleSpeechLock);
+    powerMonitor.on('resume', this.handleSpeechUnlock);
     await this.mainWindow.waitUntilRendererLoaded();
-    if (initialRuntimeSettings.workspaces.length > 0) {
-      void this.runtime.start().catch(() => {
-        console.error('Runtime was unavailable during application startup.');
-      });
-    }
+    void this.runtime.start().catch(() => {
+      console.error('Runtime was unavailable during application startup.');
+    });
     this.tray = await this.createTray();
-    window.on('show', () => this.updateTrayMenu());
-    window.on('hide', () => this.updateTrayMenu());
+    window.on('show', () => {
+      this.speech.setBackground(false);
+      this.updateTrayMenu();
+    });
+    window.on('hide', () => {
+      this.speech.setBackground(true);
+      this.updateTrayMenu();
+    });
+    this.speech.setBackground(!window.isVisible());
   }
 
   private createRuntimeConfiguration() {
@@ -242,6 +281,7 @@ export class ApplicationController {
       agentSettings: this.agentSettings.getRuntimeSettings()
       }),
       capabilityHandler: async (request: RuntimeCapabilityRequest) => {
+        if (request.capability === 'computer_read') return this.computerRead.handle(request.operation);
         if (request.capability === 'browser') return this.browser.handle(request.operation);
         if (request.capability === 'mcp_remote') return this.mcpRemote.handle(request.operation);
         if (request.capability === 'agent_persistence') {
@@ -368,11 +408,6 @@ export class ApplicationController {
 
   private async synchronizeRuntime(): Promise<void> {
     const configuration = this.createRuntimeConfiguration();
-    if (configuration.workspaces.length === 0) {
-      await this.runtime.stop('user_request');
-      this.runtime.configure(configuration);
-      return;
-    }
     if (this.runtime.getStatus().availability === 'stopped') {
       this.runtime.configure(configuration);
       await this.runtime.start();
@@ -411,6 +446,28 @@ export class ApplicationController {
     app.quit();
   }
 
+  private readonly handleSpeechLock = (): void => {
+    this.speech.setLockedOrSuspended(true);
+  };
+
+  private readonly handleSpeechUnlock = (): void => {
+    this.speech.setLockedOrSuspended(false);
+  };
+
+  private async activateSpeechVoice(request: ActivateSpeechVoiceRequest) {
+    const voice = await this.speech.activateVoice(request);
+    const preferences = this.state.getPreferences();
+    await this.preferences.update({
+      ...preferences,
+      speech: {
+        ...preferences.speech,
+        activeVoiceId: request.voiceId,
+        activeVoiceVersion: request.version
+      }
+    });
+    return voice;
+  }
+
   private async createTray(): Promise<Tray> {
     const icon = await app.getFileIcon(process.execPath, { size: 'small' });
     const tray = new Tray(icon);
@@ -422,11 +479,17 @@ export class ApplicationController {
 
   private updateTrayMenu(tray = this.tray): void {
     if (!tray) return;
+    const speech = this.speech.getStatus();
+    tray.setToolTip(`Ariadne · 语音${speechLabel(speech.activity, speech.availability)}`);
     tray.setContextMenu(
       Menu.buildFromTemplate([
         {
           label: '显示 Ariadne',
           click: () => this.showFromUserActionSafely()
+        },
+        {
+          label: `语音：${speechLabel(speech.activity, speech.availability)}`,
+          enabled: false
         },
         { type: 'separator' },
         {
@@ -441,5 +504,21 @@ export class ApplicationController {
     void this.showFromUserAction().catch((error: unknown) => {
       console.error('Application could not be shown.', error);
     });
+  }
+}
+
+function speechLabel(
+  activity: ReturnType<SpeechGateway['getStatus']>['activity'],
+  availability: ReturnType<SpeechGateway['getStatus']>['availability']
+): string {
+  if (availability === 'disabled') return '已关闭';
+  if (availability === 'unavailable') return '未安装';
+  switch (activity) {
+    case 'waking': return '已唤醒';
+    case 'listening': return '正在聆听';
+    case 'transcribing': return '正在转写';
+    case 'speaking': return '正在播报';
+    case 'error': return '异常';
+    case 'idle': return availability === 'degraded' ? '部分可用' : '就绪';
   }
 }

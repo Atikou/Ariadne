@@ -70,13 +70,18 @@ describe('bottom edge workspace layout', () => {
     expect(styles).toMatch(/\.module-tab \{[^}]*width: 100%;[^}]*height: 100%;/);
   });
 
-  it('uses a consistent active-tab silhouette', async () => {
+  it('uses compact tabs with a directional active indicator', async () => {
     const styles = await readFile(join(rendererRoot, 'app', 'styles.css'), 'utf8');
-    expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-tab\.dv-active-tab \{[^}]*border-radius:\s*var\(--radius-lg\)\s+var\(--radius-lg\)\s+0\s+0;/);
-    expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-tab \{[^}]*transition:\s*border-radius 120ms ease;/);
-    expect(styles).not.toMatch(/\.ariadne-dockview-theme \.dv-tab \{[^}]*transition:[^}]*(?:background-color|\bcolor\b)/);
+    expect(styles).toContain('--dv-tabs-and-actions-container-height: 36px;');
+    expect(styles).toMatch(/\.dv-tabs-container\.dv-horizontal \{[^}]*align-items:\s*stretch;[^}]*padding:\s*0 7px;[^}]*scrollbar-width:\s*none;/);
+    expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-tabs-container\.dv-horizontal::\-webkit-scrollbar,[\s\S]*?\.ariadne-dockview-theme \.dv-scrollable > \.dv-scrollbar-horizontal\s*\{[^}]*display:\s*none;/);
+    expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-tab \{[^}]*height:\s*100%;/);
+    expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-tab\.dv-active-tab \{[^}]*border-radius:\s*6px 6px 0 0;[^}]*box-shadow:\s*inset 0 -2px 0 var\(--accent\);/);
+    expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-tab \{[^}]*transition:\s*color 120ms ease, background 120ms ease, border-color 120ms ease;/);
     expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-tab\.dv-active-tab \{[^}]*background:\s*var\(--module-tab-surface\) !important;/);
-    expect(styles).toContain('.dv-groupview:is(.dv-groupview-header-top, .dv-groupview-header-bottom)');
+    expect(styles).toMatch(/\.dv-groupview-header-bottom \.dv-tab\.dv-active-tab \{[^}]*box-shadow:\s*inset 0 2px 0 var\(--accent\);/);
+    expect(styles).toMatch(/\.dv-groupview-header-bottom \.dv-tabs-container\.dv-horizontal \{[^}]*align-items:\s*stretch;/);
+    expect(styles).not.toContain('box-shadow: 6px 0 0 0 var(--module-tab-surface)');
     expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-groupview \{[^}]*border-radius:\s*var\(--radius-md\);/);
   });
 

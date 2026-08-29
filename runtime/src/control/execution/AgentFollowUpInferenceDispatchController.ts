@@ -49,6 +49,7 @@ export function isOwnedAgentFollowUpInference(
     && (
       turn.intention.cause.kind === 'effect_results'
       || turn.intention.cause.kind === 'inbox_inputs'
+      || turn.intention.cause.kind === 'interrupted_inference'
       || turn.intention.cause.kind === 'child_results'
     )
     && turn.attempts.length === 1
@@ -99,6 +100,7 @@ export class AgentFollowUpInferenceDispatchController {
     if (
       cause.kind !== 'effect_results'
       && cause.kind !== 'inbox_inputs'
+      && cause.kind !== 'interrupted_inference'
       && cause.kind !== 'child_results'
     ) {
       throw invariant('Follow-up inference cannot own an objective Turn.');
@@ -109,7 +111,9 @@ export class AgentFollowUpInferenceDispatchController {
       turn.turnId,
       attempt.attemptId,
       turn.intention.inputDigest,
-      cause.sourceDirectiveDigest
+      cause.kind === 'interrupted_inference'
+        ? cause.recoveryDecisionId
+        : cause.sourceDirectiveDigest
     );
     let result: AgentInferenceDispatchResult;
     try {

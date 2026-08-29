@@ -172,7 +172,9 @@ describe('ConversationAgentResultCoordinator', () => {
           kind: 'parent_delegation',
           parentRunId: 'parent-result',
           delegationId: 'delegation-result',
-          objectiveDigest: `sha256:${'a'.repeat(64)}`
+          objectiveDigest: `sha256:${'a'.repeat(64)}`,
+          providerId: 'ariadne.in_process',
+          mode: 'one_shot'
         },
         budget: {
           ...cancelledRun(`sha256:${'a'.repeat(64)}`).binding.budget,

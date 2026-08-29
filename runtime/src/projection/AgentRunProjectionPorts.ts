@@ -1,9 +1,12 @@
 import type {
   AgentPlanReference,
   AgentPlanVersionCommit,
+  AgentDirectivePayloadReader,
   AgentRun,
-  AgentRunCommandReceiptReader
+  AgentRunCommandReceiptReader,
+  AgentPinnedToolIdentity
 } from '@ariadne/agent-core';
+import type { PublicToolActivityProjectionV3 } from '@ariadne/protocol/public';
 
 /**
  * Immutable inputs required to project one exact AgentRun version.
@@ -17,12 +20,13 @@ export interface AgentRunVersionReader extends AgentRunCommandReceiptReader {
   loadPlanVersion?(
     reference: AgentPlanReference
   ): Promise<AgentPlanVersionCommit | null>;
+  loadDirectivePayload?: AgentDirectivePayloadReader['loadDirectivePayload'];
 }
 
 export interface AgentRunInteractionProjectionMessage {
   readonly messageId: string;
   readonly turnId: string;
-  readonly role: 'user' | 'assistant';
+  readonly role: 'user' | 'assistant' | 'system';
   readonly content: string;
   readonly occurredAt: string;
 }
@@ -32,6 +36,20 @@ export interface AgentRunInteractionProjectionResolver {
   resolveInteractionMessages(
     run: AgentRun
   ): Promise<readonly AgentRunInteractionProjectionMessage[]>;
+}
+
+/** Resolves only static, contract-pinned public metadata for one exact Tool. */
+export interface AgentPublicToolPresentationMetadata {
+  readonly kind: NonNullable<
+    PublicToolActivityProjectionV3['presentation']
+  >['kind'];
+  readonly label: string;
+}
+
+export interface AgentToolPresentationResolver {
+  resolveToolPresentation(
+    tool: AgentPinnedToolIdentity
+  ): AgentPublicToolPresentationMetadata | null;
 }
 
 export interface AgentRunTerminalResultProjectionRequest {

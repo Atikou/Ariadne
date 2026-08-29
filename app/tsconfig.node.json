@@ -28,6 +28,7 @@
     "src/renderer/src/core/events/**/*.ts",
     "src/renderer/src/core/modules/module-contract.ts",
     "src/renderer/src/core/runtime/**/*.ts",
+    "src/renderer/src/core/speech/**/*.ts",
     "src/renderer/src/core/services/module-services.ts",
     "src/renderer/src/core/services/renderer-composition-root.ts",
     "src/renderer/src/app/module-popout-policy.ts",

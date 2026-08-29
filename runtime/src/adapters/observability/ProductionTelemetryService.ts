@@ -10,21 +10,14 @@ import {
 } from '@opentelemetry/sdk-trace-node';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
 import type { RuntimePolicySnapshot } from '@ariadne/protocol/settings';
+import type { AgentProviderTelemetryRecord } from '../../control/ports/AgentLifecycleObservability.js';
 
 const ALLOWED_ATTRIBUTE_KEYS = new Set([
   'provider.id', 'model.id', 'operation', 'outcome', 'error.category',
   'retry.count', 'status.code'
 ]);
 
-export interface ProviderTelemetryRecord {
-  providerId: string;
-  model: string;
-  outcome: 'success' | 'failure';
-  durationMs: number;
-  retryCount: number;
-  errorCategory?: string;
-  statusCode?: number;
-}
+export type ProviderTelemetryRecord = AgentProviderTelemetryRecord;
 
 export interface LifecycleTelemetryRecord { operation: string; outcome: string; }
 

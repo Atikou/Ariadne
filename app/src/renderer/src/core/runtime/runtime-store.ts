@@ -2,11 +2,13 @@ import { useSyncExternalStore } from 'react';
 
 import {
   PUBLIC_DECISION_ACTION_CONTRACT_VERSION,
-  PUBLIC_PROJECTION_CONTRACT_VERSION
+  PUBLIC_PROJECTION_CONTRACT_VERSION,
+  PERSONAL_ASSISTANT_WORKSPACE_ID
 } from '@ariadne/protocol/public';
 import type {
   ChatRoutingStrategy,
   ConversationSession,
+  EncodedImageAttachmentV3,
   ModelInferenceOptions,
   ModelSummary,
   PublicDecisionChoiceV3,
@@ -32,25 +34,34 @@ import {
 } from './projection/projection-runtime-client';
 import { PublicResultError, unwrapPublicResult } from './public-result';
 import {
+  AgentInputDeliveryTracker,
+  type AgentInputDeliveryReceipt
+} from './agent-input-delivery';
+import {
   presentDiagnostic,
+  presentInferenceStreamMessage,
   presentMessage,
   presentModel,
   presentPermissionDecision,
   presentPlanDecision,
+  presentUserQuestionDecision,
   presentRun,
   presentRunActivities,
   presentSession,
   type RuntimeMessage,
   type RuntimePermissionDecision,
   type RuntimePlanDecision,
+  type RuntimeUserQuestionDecision,
   type RuntimeRun
 } from './runtime-projection-presenter';
 import { RuntimeUiState } from './runtime-ui-state';
 
+export type { AgentInputDeliveryReceipt } from './agent-input-delivery';
 export type {
   RuntimeMessage,
   RuntimePermissionDecision,
   RuntimePlanDecision,
+  RuntimeUserQuestionDecision,
   RuntimeRun
 } from './runtime-projection-presenter';
 export { PublicResultError, unwrapPublicResult } from './public-result';
@@ -71,7 +82,9 @@ export interface RuntimeSnapshot {
   activities: RunActivity[];
   permissions: RuntimePermissionDecision[];
   planHandoffs: RuntimePlanDecision[];
+  userQuestions: RuntimeUserQuestionDecision[];
   trace: TraceEntry[];
+  agentInputDeliveries: AgentInputDeliveryReceipt[];
   lastError: string | null;
 }
 
@@ -80,6 +93,9 @@ export interface SendMessageOptions {
   inference?: ModelInferenceOptions;
   routingStrategy?: ChatRoutingStrategy;
   workspaceId?: string;
+  sessionId?: string;
+  selectSession?: boolean;
+  attachments?: readonly EncodedImageAttachmentV3[];
 }
 
 const STOPPED_STATUS: RuntimeStatus = {
@@ -87,6 +103,8 @@ const STOPPED_STATUS: RuntimeStatus = {
   capabilities: [],
   observedAt: new Date(0).toISOString()
 };
+
+const ACTIVE_PROJECTION_POLL_INTERVAL_MS = 500;
 
 /**
  * Renderer composition store. The six authoritative domain collections are
@@ -97,6 +115,7 @@ export class RuntimeStore {
   private readonly projectionClient: ProjectionRuntimeClient;
   private readonly projection = new ProjectionCache();
   private readonly ui = new RuntimeUiState();
+  private readonly agentInputDeliveries = new AgentInputDeliveryTracker();
   private readonly listeners = new Set<() => void>();
   private readonly removeProjectionListener: () => void;
   private initialized = false;
@@ -115,8 +134,15 @@ export class RuntimeStore {
   private synchronizationRequested = false;
   private snapshotRequired = true;
   private lifecycleReady = false;
+  private projectionPollTimer: ReturnType<typeof setTimeout> | null = null;
+  private agentInputDeliveryPersistenceReady: boolean;
+  private agentInputDeliveryPersistenceError: string | null = null;
 
-  constructor(private readonly api: AriadneApi['runtime']) {
+  constructor(
+    private readonly api: AriadneApi['runtime'],
+    private readonly agentInputDeliveryPersistence?: AriadneApi['agentInputDeliveryOutbox']
+  ) {
+    this.agentInputDeliveryPersistenceReady = agentInputDeliveryPersistence === undefined;
     this.projectionClient = new ProjectionRuntimeClient(api);
     this.snapshot = this.createSnapshot(this.projection.getSnapshot());
     this.removeProjectionListener = this.projection.subscribe(() => {
@@ -125,7 +151,12 @@ export class RuntimeStore {
         this.lastProjectionResetEpoch = projection.resetEpoch;
         this.ui.clearPendingOverlay();
       }
+      const settledCommandIds = this.agentInputDeliveries.observeProjection(projection.runs);
       this.publish(projection);
+      this.updateProjectionPolling(projection);
+      for (const commandId of settledCommandIds) {
+        void this.settlePersistedAgentInputDelivery(commandId);
+      }
     });
   }
 
@@ -140,6 +171,7 @@ export class RuntimeStore {
     if (this.initializePromise !== null) return this.initializePromise;
     const generation = ++this.lifecycleGeneration;
     this.lifecycleReady = false;
+    this.stopProjectionPolling();
     this.snapshotRequired = true;
     this.synchronizationRequested = false;
     this.synchronizationGeneration += 1;
@@ -161,6 +193,7 @@ export class RuntimeStore {
     this.lifecycleGeneration += 1;
     this.synchronizationGeneration += 1;
     this.lifecycleReady = false;
+    this.stopProjectionPolling();
     this.synchronizationRequested = false;
     this.snapshotRequired = true;
     this.removeStatusListener?.();
@@ -191,6 +224,21 @@ export class RuntimeStore {
     this.publish();
   }
 
+  async renameSession(session: ConversationSession, title: string): Promise<void> {
+    await this.mutateSession(session, {
+      kind: 'conversation.session.rename.v3',
+      title: title.trim()
+    });
+  }
+
+  async archiveSession(session: ConversationSession): Promise<void> {
+    await this.mutateSession(session, { kind: 'conversation.session.archive.v3' });
+  }
+
+  async restoreSession(session: ConversationSession): Promise<void> {
+    await this.mutateSession(session, { kind: 'conversation.session.restore.v3' });
+  }
+
   isPlanModeEnabled(sessionId: string | null = this.ui.selectedSessionId): boolean {
     return this.ui.isPlanModeEnabled(sessionId);
   }
@@ -207,16 +255,23 @@ export class RuntimeStore {
     message: string,
     options: SendMessageOptions = {}
   ): Promise<{ messageId: string; sessionId: string }> {
-    const selectedSessionId = this.ui.selectedSessionId ?? undefined;
-    const planMode = this.ui.isPlanModeEnabled(selectedSessionId ?? null);
-    if (planMode && !this.status.capabilities.includes('companion.agent-plan')) {
-      throw new Error('runtime_capability_missing:companion.agent-plan');
-    }
+    const selectedSessionId = options.sessionId ?? this.ui.selectedSessionId ?? undefined;
     const selectedSession = this.projection.sessions.getSnapshot().find(
       (session) => session.sessionId === selectedSessionId && session.status === 'active'
     );
-    const workspaceId = selectedSession?.workspaceId ?? options.workspaceId;
-    if (!workspaceId) throw new Error('conversation_workspace_required');
+    const workspaceId = selectedSession?.workspaceId
+      ?? options.workspaceId
+      ?? PERSONAL_ASSISTANT_WORKSPACE_ID;
+    const planMode = workspaceId !== PERSONAL_ASSISTANT_WORKSPACE_ID
+      && this.ui.isPlanModeEnabled(selectedSessionId ?? null);
+    if (planMode && !this.status.capabilities.includes('companion.agent-plan')) {
+      throw new Error('runtime_capability_missing:companion.agent-plan');
+    }
+    const executionMode = workspaceId === PERSONAL_ASSISTANT_WORKSPACE_ID
+      ? 'chat' as const
+      : planMode
+        ? 'plan' as const
+        : 'agent' as const;
     const pending = this.ui.beginPendingChat(message, new Date().toISOString());
     this.publish();
 
@@ -237,7 +292,7 @@ export class RuntimeStore {
         ) throw new Error(`runtime_result_invalid:${created.kind}`);
         expectedSessionVersion = created.version;
         if (planMode) this.ui.moveNewSessionPlanMode(sessionId);
-        this.ui.selectSession(sessionId);
+        if (options.selectSession !== false) this.ui.selectSession(sessionId);
         this.ui.acceptPendingChat(pending.clientMessageId, sessionId);
         this.publish();
       }
@@ -252,8 +307,11 @@ export class RuntimeStore {
         expectedSessionVersion,
         messageId: pending.clientMessageId,
         content: message,
+        ...(options.attachments === undefined
+          ? {}
+          : { attachments: options.attachments.map((attachment) => ({ ...attachment })) }),
         execution: {
-          mode: planMode ? 'plan' : 'agent',
+          mode: executionMode,
           ...(options.modelId === undefined ? {} : { modelId: options.modelId }),
           ...(options.inference === undefined ? {} : { inference: options.inference }),
           ...(options.routingStrategy === undefined
@@ -308,7 +366,7 @@ export class RuntimeStore {
     run: RuntimeRun,
     content: string,
     delivery: 'next_turn' | 'next_step'
-  ): Promise<string> {
+  ): Promise<AgentInputDeliveryReceipt> {
     if (!this.status.capabilities.includes('agent.inbox')) {
       throw new Error('runtime_capability_missing:agent.inbox');
     }
@@ -316,7 +374,8 @@ export class RuntimeStore {
       throw new Error('projection_run_action_unavailable:inbox');
     }
     const inputId = crypto.randomUUID();
-    const result = await this.command({
+    const commandId = crypto.randomUUID();
+    const command = {
       kind: 'agent.inbox.enqueue.v3',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       runId: run.runId,
@@ -324,14 +383,120 @@ export class RuntimeStore {
       inputId,
       delivery,
       content
+    } satisfies Extract<RuntimeCommand, { kind: 'agent.inbox.enqueue.v3' }>;
+    if (!this.agentInputDeliveryPersistenceReady) {
+      const receipt = this.agentInputDeliveries.begin(
+        commandId,
+        command,
+        new Date().toISOString()
+      );
+      const failed = this.agentInputDeliveries.fail(
+        commandId,
+        this.agentInputDeliveryPersistenceError
+          ?? '无法安全保存待发送输入，输入未发送。',
+        new Date().toISOString()
+      );
+      this.publish();
+      return { ...receipt, ...failed };
+    }
+    try {
+      const staged = await this.agentInputDeliveryPersistence?.stage({ commandId, command });
+      this.agentInputDeliveries.begin(
+        commandId,
+        command,
+        staged?.createdAt ?? new Date().toISOString()
+      );
+    } catch (error) {
+      this.agentInputDeliveries.begin(commandId, command, new Date().toISOString());
+      const failed = this.agentInputDeliveries.fail(
+        commandId,
+        runtimeRequestErrorMessage(error, '无法安全保存待发送输入，输入未发送。'),
+        new Date().toISOString()
+      );
+      this.publish();
+      return failed;
+    }
+    this.publish();
+    return this.dispatchAgentInputDelivery(commandId, false);
+  }
+
+  async reconcileAgentInputDelivery(commandId: string): Promise<AgentInputDeliveryReceipt> {
+    this.agentInputDeliveries.beginReconciliation(commandId, new Date().toISOString());
+    this.publish();
+    return this.dispatchAgentInputDelivery(commandId, true);
+  }
+
+  dismissAgentInputDelivery(commandId: string): void {
+    this.agentInputDeliveries.dismiss(commandId);
+    this.publish();
+  }
+
+  async sendSubagentInput(
+    parent: RuntimeRun,
+    child: RuntimeRun,
+    content: string
+  ): Promise<string> {
+    if (!this.status.capabilities.includes('agent.subagents')) {
+      throw new Error('runtime_capability_missing:agent.subagents');
+    }
+    if (
+      parent.origin !== 'projection'
+      || child.origin !== 'projection'
+      || parent.sessionId === undefined
+      || child.sessionId !== parent.sessionId
+      || child.parentRunId !== parent.runId
+      || child.subagentMode !== 'continuable'
+    ) {
+      throw new Error('projection_run_action_unavailable:subagent');
+    }
+    const inputId = crypto.randomUUID();
+    const result = await this.command({
+      kind: 'agent.subagent.send.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      parentRunId: parent.runId,
+      childRunId: child.runId,
+      sessionId: parent.sessionId,
+      inputId,
+      content
     });
     if (
-      result.kind !== 'agent.inbox.enqueued.v3'
-      || result.runId !== run.runId
+      result.kind !== 'agent.subagent.input.sent.v3'
+      || result.parentRunId !== parent.runId
+      || result.childRunId !== child.runId
       || result.inputId !== inputId
     ) throw new Error(`runtime_result_invalid:${result.kind}`);
     void this.requestSynchronization(false);
     return inputId;
+  }
+
+  async interruptSubagent(parent: RuntimeRun, child: RuntimeRun): Promise<void> {
+    if (!this.status.capabilities.includes('agent.subagents')) {
+      throw new Error('runtime_capability_missing:agent.subagents');
+    }
+    if (
+      parent.origin !== 'projection'
+      || child.origin !== 'projection'
+      || parent.sessionId === undefined
+      || child.sessionId !== parent.sessionId
+      || child.parentRunId !== parent.runId
+      || child.subagentMode !== 'continuable'
+    ) throw new Error('projection_run_action_unavailable:subagent');
+    const result = await this.command({
+      kind: 'agent.subagent.interrupt.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      parentRunId: parent.runId,
+      childRunId: child.runId,
+      sessionId: parent.sessionId,
+      expectedChildVersion: child.aggregateVersion,
+      occurredAt: new Date().toISOString(),
+      reason: 'user_requested'
+    });
+    if (
+      result.kind !== 'agent.subagent.interrupted.v3'
+      || result.parentRunId !== parent.runId
+      || result.childRunId !== child.runId
+    ) throw new Error(`runtime_result_invalid:${result.kind}`);
+    void this.requestSynchronization(false);
   }
 
   async replaceAgentInput(
@@ -470,6 +635,10 @@ export class RuntimeStore {
   }
 
   private async initializeRuntime(generation: number): Promise<void> {
+    if (this.agentInputDeliveryPersistence !== undefined) {
+      await this.restorePersistedAgentInputDeliveries(generation);
+      if (generation !== this.lifecycleGeneration) return;
+    }
     try {
       const status = unwrapPublicResult(await this.api.getStatus());
       if (generation !== this.lifecycleGeneration) return;
@@ -606,9 +775,12 @@ export class RuntimeStore {
       && synchronization === this.synchronizationGeneration;
   }
 
-  private async command(command: RuntimeCommand): Promise<RuntimeResult> {
+  private async command(
+    command: RuntimeCommand,
+    commandId?: string
+  ): Promise<RuntimeResult> {
     try {
-      const result = await this.requestRuntime(command);
+      const result = await this.requestRuntime(command, commandId);
       this.requestError = null;
       this.publish();
       return result;
@@ -619,12 +791,93 @@ export class RuntimeStore {
     }
   }
 
+  private updateProjectionPolling(
+    projection: ProjectionCacheSnapshot = this.projection.getSnapshot()
+  ): void {
+    if (
+      !this.lifecycleReady
+      || this.status.availability !== 'ready'
+      || !projection.runs.some((run) => !isTerminalPublicRun(run))
+    ) {
+      this.stopProjectionPolling();
+      return;
+    }
+    if (this.projectionPollTimer !== null) return;
+
+    const lifecycle = this.lifecycleGeneration;
+    const timer = setTimeout(() => {
+      if (this.projectionPollTimer === timer) this.projectionPollTimer = null;
+      if (
+        lifecycle !== this.lifecycleGeneration
+        || !this.lifecycleReady
+        || this.status.availability !== 'ready'
+      ) return;
+      void this.requestSynchronization(false).finally(() => {
+        if (lifecycle === this.lifecycleGeneration) this.updateProjectionPolling();
+      });
+    }, ACTIVE_PROJECTION_POLL_INTERVAL_MS);
+    this.projectionPollTimer = timer;
+    (timer as unknown as { unref?: () => void }).unref?.();
+  }
+
+  private stopProjectionPolling(): void {
+    if (this.projectionPollTimer === null) return;
+    clearTimeout(this.projectionPollTimer);
+    this.projectionPollTimer = null;
+  }
+
+  async answerUserQuestion(
+    question: RuntimeUserQuestionDecision,
+    answer: string
+  ): Promise<void> {
+    if (!question.actionAvailable) {
+      throw new Error('projection_decision_action_unavailable:user_question');
+    }
+    await this.resolveProjectedDecision({
+      decisionId: question.decisionId,
+      runId: question.runId,
+      expectedVersion: question.projectionVersion,
+      kind: 'user_question',
+      choice: 'answer',
+      answer
+    });
+  }
+
+  private async mutateSession(
+    session: ConversationSession,
+    mutation:
+      | { readonly kind: 'conversation.session.rename.v3'; readonly title: string }
+      | { readonly kind: 'conversation.session.archive.v3' }
+      | { readonly kind: 'conversation.session.restore.v3' }
+  ): Promise<void> {
+    const authoritative = this.projection.sessions.getSnapshot().find(
+      (candidate) => candidate.sessionId === session.sessionId
+    );
+    if (authoritative === undefined || authoritative.workspaceId !== session.workspaceId) {
+      throw new Error('conversation_session_projection_missing');
+    }
+    const result = await this.command({
+      ...mutation,
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      sessionId: authoritative.sessionId,
+      workspaceId: authoritative.workspaceId,
+      expectedSessionVersion: authoritative.version
+    });
+    if (
+      result.kind !== 'conversation.session.updated.v3'
+      || result.sessionId !== authoritative.sessionId
+      || result.version !== authoritative.version + 1
+    ) throw new Error(`runtime_result_invalid:${result.kind}`);
+    void this.requestSynchronization(false);
+  }
+
   private async resolveProjectedDecision(input: {
     readonly decisionId: string;
     readonly runId: string | undefined;
     readonly expectedVersion: number;
-    readonly kind: 'permission' | 'plan' | 'recovery' | 'budget';
+    readonly kind: 'permission' | 'plan' | 'recovery' | 'budget' | 'user_question';
     readonly choice: PublicDecisionChoiceV3;
+    readonly answer?: string;
   }): Promise<void> {
     const decision = this.projection.decisions.getSnapshot().find(
       (candidate) => candidate.decisionId === input.decisionId
@@ -640,7 +893,8 @@ export class RuntimeStore {
       action: {
         contractVersion: PUBLIC_DECISION_ACTION_CONTRACT_VERSION,
         actionToken: decision.action.actionToken,
-        choice: input.choice
+        choice: input.choice,
+        ...(input.answer === undefined ? {} : { answer: input.answer })
       }
     });
     if (
@@ -650,12 +904,36 @@ export class RuntimeStore {
     ) {
       throw new Error('runtime_result_invalid:agent.decision.resolved.v3');
     }
-    void this.requestSynchronization(false);
+    await this.awaitDecisionProjectionSettlement(decision.decisionId);
+  }
+
+  private async awaitDecisionProjectionSettlement(decisionId: string): Promise<void> {
+    const settled = (): boolean => {
+      const current = this.projection.decisions.getSnapshot().find(
+        (candidate) => candidate.decisionId === decisionId
+      );
+      return current === undefined || current.status !== 'pending';
+    };
+    if (settled()) return;
+
+    const retryDelaysMs = [0, 25, 50, 100, 200, 400, 800, 1_600, 2_000];
+    for (const [index, delayMs] of retryDelaysMs.entries()) {
+      if (delayMs > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      }
+      if (this.status.availability !== 'ready' || !this.lifecycleReady) continue;
+      // A command response can win the race with its asynchronous Projection
+      // drain, and wake hints are deliberately non-authoritative. Re-read the
+      // durable snapshot until the exact Decision is no longer actionable.
+      await this.requestSynchronization(index > 0);
+      if (settled()) return;
+    }
+    throw new Error('projection_decision_settlement_timeout');
   }
 
   private async requestRuntime(
     command: RuntimeCommand,
-    commandId = crypto.randomUUID()
+    commandId: string = crypto.randomUUID()
   ): Promise<RuntimeResult> {
     return unwrapPublicResult(await this.api.request(command, { commandId }));
   }
@@ -674,8 +952,22 @@ export class RuntimeStore {
 
   private createSnapshot(projection: ProjectionCacheSnapshot): RuntimeSnapshot {
     const authoritativeMessages = projection.messages.map(presentMessage);
+    const terminalAssistantRunIds = new Set(authoritativeMessages
+      .filter((message) => message.role === 'assistant' && message.status === 'completed')
+      .flatMap((message) => message.runId === undefined ? [] : [message.runId]));
+    const inferenceMessages = projection.inferenceStreams.flatMap((stream) => {
+      if (terminalAssistantRunIds.has(stream.runId)) return [];
+      const message = presentInferenceStreamMessage(
+        stream,
+        projection.runs.find((run) => run.runId === stream.runId)
+      );
+      return message === null ? [] : [message];
+    });
     const messages = this.ui.projectedMessages(
-      mergeInteractionMessages(authoritativeMessages, projection.runs),
+      mergeInteractionMessages(
+        [...authoritativeMessages, ...inferenceMessages],
+        projection.runs
+      ),
       projection.runs
     );
     const pendingOverlayId = this.ui.pendingChatOverlayId;
@@ -685,9 +977,7 @@ export class RuntimeStore {
       projectionStreamId: projection.streamId,
       projectionCursor: projection.cursor,
       projectionIntegrityError: projection.integrityError,
-      sessions: projection.sessions
-        .filter((session) => session.status === 'active')
-        .map(presentSession),
+      sessions: projection.sessions.map(presentSession),
       selectedSessionId: this.ui.selectedSessionId,
       planModeSessionIds: [...this.ui.planModeSessionIds].sort(compareCodeUnits),
       pendingOverlayIds: pendingOverlayId === null
@@ -705,9 +995,108 @@ export class RuntimeStore {
         const handoff = presentPlanDecision(decision);
         return handoff === null ? [] : [handoff];
       }),
+      userQuestions: projection.decisions.flatMap((decision) => {
+        const question = presentUserQuestionDecision(decision);
+        return question === null ? [] : [question];
+      }),
       trace: projection.diagnostics.map(presentDiagnostic),
-      lastError: projection.integrityError ?? this.requestError
+      agentInputDeliveries: this.agentInputDeliveries.snapshot(),
+      lastError: projection.integrityError
+        ?? this.agentInputDeliveryPersistenceError
+        ?? this.requestError
     };
+  }
+
+  private async dispatchAgentInputDelivery(
+    commandId: string,
+    reconciliationAttempt: boolean
+  ): Promise<AgentInputDeliveryReceipt> {
+    const command = this.agentInputDeliveries.command(commandId);
+    try {
+      const result = await this.command(command, commandId);
+      if (
+        result.kind !== 'agent.inbox.enqueued.v3'
+        || result.runId !== command.runId
+        || result.inputId !== command.inputId
+      ) throw new Error(`runtime_result_invalid:${result.kind}`);
+      const receipt = this.agentInputDeliveries.accept(
+        commandId,
+        new Date().toISOString()
+      );
+      this.publish();
+      void this.settlePersistedAgentInputDelivery(commandId);
+      void this.requestSynchronization(false);
+      return receipt;
+    } catch (error) {
+      const message = runtimeRequestErrorMessage(error, 'Agent 输入提交失败。');
+      const shouldReconcile = shouldReconcileAgentInputDelivery(
+        error,
+        commandId,
+        reconciliationAttempt
+      );
+      const persistenceSettled = shouldReconcile
+        ? false
+        : await this.settlePersistedAgentInputDelivery(commandId);
+      const receipt = shouldReconcile || !persistenceSettled
+        ? this.agentInputDeliveries.requireReconciliation(
+            commandId,
+            persistenceSettled
+              ? message
+              : `${message} 本地发送记录尚未安全结算，请重新确认。`,
+            new Date().toISOString()
+          )
+        : this.agentInputDeliveries.fail(
+            commandId,
+            message,
+            new Date().toISOString()
+          );
+      this.publish();
+      return receipt;
+    }
+  }
+
+  private async restorePersistedAgentInputDeliveries(generation: number): Promise<void> {
+    if (this.agentInputDeliveryPersistence === undefined) return;
+    try {
+      const records = await this.agentInputDeliveryPersistence.list();
+      if (generation !== this.lifecycleGeneration) return;
+      const now = new Date().toISOString();
+      for (const record of records) {
+        this.agentInputDeliveries.restore(
+          record.commandId,
+          record.command,
+          record.createdAt,
+          now
+        );
+      }
+      this.agentInputDeliveryPersistenceReady = true;
+      this.agentInputDeliveryPersistenceError = null;
+      this.publish();
+    } catch (error) {
+      if (generation !== this.lifecycleGeneration) return;
+      this.agentInputDeliveryPersistenceReady = false;
+      this.agentInputDeliveryPersistenceError = runtimeRequestErrorMessage(
+        error,
+        '未结算输入的安全恢复记录不可用。'
+      );
+      this.publish();
+    }
+  }
+
+  private async settlePersistedAgentInputDelivery(commandId: string): Promise<boolean> {
+    if (this.agentInputDeliveryPersistence === undefined) return true;
+    try {
+      await this.agentInputDeliveryPersistence.settle({ commandId });
+      this.agentInputDeliveryPersistenceError = null;
+      return true;
+    } catch (error) {
+      this.agentInputDeliveryPersistenceError = runtimeRequestErrorMessage(
+        error,
+        '未结算输入的安全恢复记录无法更新。'
+      );
+      this.publish();
+      return false;
+    }
   }
 }
 
@@ -767,7 +1156,7 @@ function isExactActionableDecision(
     readonly decisionId: string;
     readonly runId: string | undefined;
     readonly expectedVersion: number;
-    readonly kind: 'permission' | 'plan' | 'recovery' | 'budget';
+    readonly kind: 'permission' | 'plan' | 'recovery' | 'budget' | 'user_question';
     readonly choice: PublicDecisionChoiceV3;
   }
 ): decision is PublicDecisionProjectionV3 & {
@@ -791,7 +1180,9 @@ function isExactActionableDecision(
       ? ['approve', 'reject']
       : expected.kind === 'recovery'
         ? ['retry', 'mark_succeeded', 'mark_failed', 'cancel_run']
-        : ['resume', 'cancel_run'];
+        : expected.kind === 'budget'
+          ? ['resume', 'cancel_run']
+          : ['answer'];
   return decision.action.choices.length === expectedChoices.length
     && decision.action.choices.every(
       (choice, index) => choice === expectedChoices[index]
@@ -805,4 +1196,39 @@ function sanitizeRuntimeCommandError(
 ): unknown {
   if (command.kind !== 'agent.decision.resolve.v3') return error;
   return new Error(runtimeRequestErrorMessage(error));
+}
+
+function isTerminalPublicRun(run: PublicRunProjectionV3): boolean {
+  return run.status === 'completed'
+    || run.status === 'failed'
+    || run.status === 'cancelled';
+}
+
+const RECONCILABLE_AGENT_INPUT_ERROR_CODES = new Set([
+  'command_outcome_uncertain',
+  'runtime_request_timeout',
+  'runtime_request_cancelled',
+  'runtime_request_send_failed'
+]);
+
+const DEFERRED_RECONCILIATION_ERROR_CODES = new Set([
+  'runtime_unavailable',
+  'runtime_initializing',
+  'runtime_shutting_down',
+  'runtime_stopped',
+  'runtime_exited'
+]);
+
+function shouldReconcileAgentInputDelivery(
+  error: unknown,
+  commandId: string,
+  reconciliationAttempt: boolean
+): boolean {
+  if (!(error instanceof PublicResultError)) return false;
+  const { code, correlationId } = error.publicError;
+  if (
+    correlationId === commandId
+    && RECONCILABLE_AGENT_INPUT_ERROR_CODES.has(code)
+  ) return true;
+  return reconciliationAttempt && DEFERRED_RECONCILIATION_ERROR_CODES.has(code);
 }

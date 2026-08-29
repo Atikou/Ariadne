@@ -14,6 +14,7 @@ import {
   projectionCommit,
   projectionSnapshot,
   readBatch,
+  run,
   session,
   upsertChange
 } from './projection-v3-fixture';
@@ -118,6 +119,50 @@ describe('RuntimeStore v3 projection startup', () => {
     });
     expect(commands).not.toContainEqual(expect.objectContaining({ kind: 'runtime.snapshot.get' }));
     expect(commands).not.toContainEqual(expect.objectContaining({ kind: 'events.replay' }));
+  });
+
+  it('tails authoritative commits while a run is active even when no wake event arrives', async () => {
+    let readCalls = 0;
+    const completedRun = run('run-active', 'completed', 2);
+    const terminalCommit = projectionCommit('event-run-completed', [
+      upsertChange('runs', completedRun, completedRun.runId)
+    ]);
+    const store = new RuntimeStore(successfulRuntimeApi({
+      getStatus: async () => READY,
+      request: async (command) => {
+        if (command.kind === 'projection.snapshot.get') {
+          return {
+            kind: 'projection.snapshot',
+            snapshot: projectionSnapshot({ runs: [run('run-active')] })
+          };
+        }
+        if (command.kind === 'projection.commits.read') {
+          readCalls += 1;
+          return {
+            kind: 'projection.commits',
+            batch: readBatch(
+              command.request.afterCursor,
+              command.request.afterDigest,
+              readCalls === 2 ? [terminalCommit] : [],
+              { streamId: command.request.streamId }
+            )
+          };
+        }
+        throw new Error(`Unexpected command: ${command.kind}`);
+      },
+      onEvent: () => () => undefined
+    }));
+
+    await store.initialize();
+    expect(store.getSnapshot().runs).toEqual([
+      expect.objectContaining({ runId: 'run-active', status: 'running' })
+    ]);
+
+    await vi.waitFor(() => expect(store.getSnapshot().runs).toEqual([
+      expect.objectContaining({ runId: 'run-active', status: 'completed' })
+    ]), { timeout: 2_000 });
+    expect(readCalls).toBeGreaterThanOrEqual(2);
+    store.dispose();
   });
 
   it('uses an event arriving during snapshot load only as a wake hint and converges by replay', async () => {

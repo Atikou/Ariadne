@@ -14,6 +14,10 @@ import type {
   AgentRunWorkClassification,
   AgentRunWorkClassifier
 } from '../control/execution/AgentRunWorkClassifier.js';
+import type {
+  AgentRunRetiredToolCatalogTerminalizationOwner,
+  AgentRunRetiredToolCatalogTerminalizationReceipt
+} from '../control/ports/AgentRunAuthorityRetirement.js';
 
 type StartedWork = Extract<
   AgentRunWorkClassification,
@@ -117,7 +121,9 @@ export interface AgentRunWorkFollowUpRequest {
 interface AgentRunWorkFollowUpResultIdentity {
   readonly run: { readonly runId: string; readonly version: number };
   readonly turn: { readonly turnId: string };
-  readonly attempt: { readonly attemptId: string };
+  readonly attempt: { readonly attemptId: string; readonly state?: { readonly status: string } };
+  readonly status?: string;
+  readonly recoveryDecisionId?: string;
 }
 
 export type AgentRunWorkFollowUpReceipt =
@@ -140,6 +146,35 @@ export interface AgentRunWorkFollowUpOwner {
     signal: AbortSignal
   ): Promise<AgentRunWorkFollowUpReceipt>;
 }
+
+export interface ActiveAgentTurnInterruptionRecovery {
+  readonly runId: string;
+  readonly runVersion: number;
+  readonly turnId: string;
+  readonly attemptId: string;
+  readonly recoveryDecisionId: string;
+}
+
+export interface ActiveAgentTurnInterruptionRequest {
+  readonly commandId: string;
+  readonly runId: string;
+  readonly expectedVersion: number;
+  readonly finalize: (
+    recovery: ActiveAgentTurnInterruptionRecovery
+  ) => Promise<{ readonly runId: string; readonly runVersion: number }>;
+}
+
+export type ActiveAgentTurnInterruptionResult =
+  | { readonly status: 'not_active' }
+  | {
+      readonly status: 'interrupted';
+      readonly runId: string;
+      readonly runVersion: number;
+      readonly turnId: string;
+      readonly attemptId: string;
+      readonly recoveryDecisionId: string;
+    }
+  | { readonly status: 'already_settled' };
 
 export interface AgentRunWorkTerminalizationReceipt {
   readonly receiptVersion: 1;
@@ -186,9 +221,19 @@ export interface AgentRunWorkSchedulerClock {
 }
 
 export interface AgentRunWorkAuthorityVerifier {
-  /** Restores the exact historical model and immutable Tool Catalog authority. */
-  assertRestorable(run: AgentRun, signal: AbortSignal): Promise<void>;
+  /**
+   * Distinguishes an intentionally retired immutable Catalog from authority
+   * corruption. All other unavailable or drifting authority remains an error.
+   */
+  assessRestorability(
+    run: AgentRun,
+    signal: AbortSignal
+  ): Promise<AgentRunWorkAuthorityAssessment>;
 }
+
+export type AgentRunWorkAuthorityAssessment =
+  | { readonly status: 'restorable' }
+  | { readonly status: 'retired_tool_catalog' };
 
 export interface AgentRunWorkSchedulerOptions {
   readonly intervalMs?: number;
@@ -198,7 +243,11 @@ export interface AgentRunWorkSchedulerOptions {
   /** Startup-only. Steady-state started work is always a health fault. */
   readonly startedWorkRecovery?: AgentRunStartedWorkRecoveryOwner;
   readonly authorityVerifier?: AgentRunWorkAuthorityVerifier;
+  readonly retiredToolCatalogTerminalizations?:
+    AgentRunRetiredToolCatalogTerminalizationOwner;
   readonly delegatedInference?: AgentRunWorkFollowUpOwner;
+  /** Provider-routed follow-up owner for durable delegated Child Runs only. */
+  readonly delegatedFollowUps?: AgentRunWorkFollowUpOwner;
   readonly childResultsContinuation?: AgentRunWorkChildResultsContinuationOwner;
 }
 
@@ -254,6 +303,21 @@ interface ScanRound {
   readonly runs: readonly ScannedRun[];
 }
 
+interface PendingActiveInterruption {
+  readonly request: ActiveAgentTurnInterruptionRequest;
+  readonly result: Promise<ActiveAgentTurnInterruptionResult>;
+  readonly resolve: (result: ActiveAgentTurnInterruptionResult) => void;
+  readonly reject: (error: unknown) => void;
+}
+
+interface ActiveInferenceDispatch {
+  readonly expectedVersion: number;
+  readonly turnId: string;
+  readonly attemptId: string;
+  readonly controller: AbortController;
+  interruption: PendingActiveInterruption | null;
+}
+
 const SYSTEM_CLOCK: AgentRunWorkSchedulerClock = {
   now: () => new Date().toISOString()
 };
@@ -273,11 +337,16 @@ export class AgentRunWorkScheduler {
   private readonly clock: AgentRunWorkSchedulerClock;
   private readonly startedWorkRecovery: AgentRunStartedWorkRecoveryOwner | undefined;
   private readonly authorityVerifier: AgentRunWorkAuthorityVerifier | undefined;
+  private readonly retiredToolCatalogTerminalizations:
+    | AgentRunRetiredToolCatalogTerminalizationOwner
+    | undefined;
   private readonly delegatedInference: AgentRunWorkFollowUpOwner | undefined;
+  private readonly delegatedFollowUps: AgentRunWorkFollowUpOwner | undefined;
   private readonly childResultsContinuation:
     | AgentRunWorkChildResultsContinuationOwner
     | undefined;
   private readonly abortController = new AbortController();
+  private readonly activeInferenceByRun = new Map<string, ActiveInferenceDispatch>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private activeDrain: Promise<AgentRunWorkDrainResult> | null = null;
   private startOperation: Promise<void> | null = null;
@@ -307,7 +376,10 @@ export class AgentRunWorkScheduler {
     this.clock = options.clock ?? SYSTEM_CLOCK;
     this.startedWorkRecovery = options.startedWorkRecovery;
     this.authorityVerifier = options.authorityVerifier;
+    this.retiredToolCatalogTerminalizations =
+      options.retiredToolCatalogTerminalizations;
     this.delegatedInference = options.delegatedInference;
+    this.delegatedFollowUps = options.delegatedFollowUps;
     this.childResultsContinuation = options.childResultsContinuation;
   }
 
@@ -352,6 +424,39 @@ export class AgentRunWorkScheduler {
     return this.activeDrain ?? this.beginDrain();
   }
 
+  /** Interrupts only the exact inference currently owned by this scheduler. */
+  public interruptActiveTurn(
+    request: ActiveAgentTurnInterruptionRequest
+  ): Promise<ActiveAgentTurnInterruptionResult> {
+    const active = this.activeInferenceByRun.get(request.runId);
+    if (
+      active === undefined
+      || (
+        request.expectedVersion !== active.expectedVersion
+        && request.expectedVersion !== active.expectedVersion + 1
+      )
+    ) return Promise.resolve({ status: 'not_active' });
+    if (active.interruption !== null) {
+      if (active.interruption.request.commandId !== request.commandId) {
+        return Promise.reject(new Error(
+          'A different interruption already owns this active Agent inference.'
+        ));
+      }
+      return active.interruption.result;
+    }
+    let resolve!: (result: ActiveAgentTurnInterruptionResult) => void;
+    let reject!: (error: unknown) => void;
+    const result = new Promise<ActiveAgentTurnInterruptionResult>((accept, fail) => {
+      resolve = accept;
+      reject = fail;
+    });
+    active.interruption = { request, result, resolve, reject };
+    if (!active.controller.signal.aborted) {
+      active.controller.abort(new Error('agent_subagent_turn_interruption_requested'));
+    }
+    return result;
+  }
+
   public shutdown(deadlineAt: string): Promise<void> {
     this.stopOperation ??= this.finishShutdown(deadlineAt);
     return this.stopOperation;
@@ -386,9 +491,16 @@ export class AgentRunWorkScheduler {
   private async recoverAbandonedStartedWork(): Promise<ScanRound> {
     let round = await this.scanAllRuns();
     for (let index = 0; index < this.maxFixedPointRounds; index += 1) {
-      const faults = collectFaults(round, this.startedWorkRecovery !== undefined);
+      const retiredCatalogRuns = await this.assessAuthorities(round, false);
+      const retiredRunIds = new Set(
+        retiredCatalogRuns.map((item) => item.recovery.run.runId)
+      );
+      const faults = collectFaults(
+        round,
+        this.startedWorkRecovery !== undefined,
+        retiredRunIds
+      );
       if (faults.length > 0) throw new AgentRunWorkSchedulerHealthError(faults);
-      await this.verifyAuthorities(round, false);
       const started = round.runs.flatMap((item) => (
         item.work?.kind === 'recovery_uncertain_effect'
           || item.work?.kind === 'recovery_uncertain_inference'
@@ -396,29 +508,34 @@ export class AgentRunWorkScheduler {
           ? [item.work]
           : []
       ));
-      if (started.length === 0) return round;
-      const owner = this.startedWorkRecovery;
-      if (owner === undefined) {
-        throw new AgentRunWorkSchedulerHealthError(
-          started.map(startedWorkFault)
-        );
-      }
-      let staleSnapshot = false;
-      for (const work of started) {
-        this.abortController.signal.throwIfAborted();
-        try {
-          const receipt = await owner.recover(work, this.abortController.signal);
-          assertStartedWorkRecoveryReceipt(receipt, work);
-        } catch (error) {
-          if (error instanceof AgentRunVersionConflictError) {
-            staleSnapshot = true;
-            break;
-          }
-          throw error;
+      if (started.length > 0) {
+        const owner = this.startedWorkRecovery;
+        if (owner === undefined) {
+          throw new AgentRunWorkSchedulerHealthError(
+            started.map(startedWorkFault)
+          );
         }
+        let staleSnapshot = false;
+        for (const work of started) {
+          this.abortController.signal.throwIfAborted();
+          try {
+            const receipt = await owner.recover(work, this.abortController.signal);
+            assertStartedWorkRecoveryReceipt(receipt, work);
+          } catch (error) {
+            if (error instanceof AgentRunVersionConflictError) {
+              staleSnapshot = true;
+              break;
+            }
+            throw error;
+          }
+        }
+        round = await this.scanAllRuns();
+        if (staleSnapshot) continue;
+        continue;
       }
+      if (retiredCatalogRuns.length === 0) return round;
+      await this.terminalizeRetiredCatalogRuns(retiredCatalogRuns);
       round = await this.scanAllRuns();
-      if (staleSnapshot) continue;
     }
     throw new Error('Agent Run startup recovery did not reach a fixed point.');
   }
@@ -461,7 +578,14 @@ export class AgentRunWorkScheduler {
       result.scannedRuns += current.runs.length;
       const faults = collectFaults(current, false);
       if (faults.length > 0) throw new AgentRunWorkSchedulerHealthError(faults);
-      await this.verifyAuthorities(current, true);
+      const retiredCatalogRuns = await this.assessAuthorities(current, true);
+      if (retiredCatalogRuns.length > 0) {
+        result.terminalizedRuns += await this.terminalizeRetiredCatalogRuns(
+          retiredCatalogRuns
+        );
+        this.dirty = true;
+        continue;
+      }
 
       let progressed = false;
       for (const item of current.runs) {
@@ -537,13 +661,12 @@ export class AgentRunWorkScheduler {
       }
       case 'dispatch_follow_up': {
         requireResumable(recovery, work);
-        const receipt = await this.followUps.dispatchOwned({
-          runId: work.runId,
-          turnId: work.turnId,
-          attemptId: work.attemptId,
-          expectedVersion: work.expectedVersion,
-          occurredAt: this.now()
-        }, this.abortController.signal);
+        const isDelegatedChild = recovery.run.binding.objectiveRef.kind === 'parent_delegation';
+        const owner = isDelegatedChild ? this.delegatedFollowUps : this.followUps;
+        if (owner === undefined) {
+          throw new Error('Delegated SubAgent follow-up has no execution provider owner.');
+        }
+        const receipt = await this.dispatchOwnedInference(owner, work);
         assertFollowUpReceipt(receipt, work);
         result.dispatchedFollowUps += 1;
         return;
@@ -566,13 +689,7 @@ export class AgentRunWorkScheduler {
         if (this.delegatedInference === undefined) {
           throw new Error('Delegated inference has no production work owner.');
         }
-        const receipt = await this.delegatedInference.dispatchOwned({
-          runId: work.runId,
-          turnId: work.turnId,
-          attemptId: work.attemptId,
-          expectedVersion: work.expectedVersion,
-          occurredAt: this.now()
-        }, this.abortController.signal);
+        const receipt = await this.dispatchOwnedInference(this.delegatedInference, work);
         assertFollowUpReceipt(receipt, work);
         result.dispatchedDelegatedInitials += 1;
         return;
@@ -588,6 +705,64 @@ export class AgentRunWorkScheduler {
         result.terminalizedRuns += 1;
         return;
       }
+    }
+  }
+
+  private async dispatchOwnedInference(
+    owner: AgentRunWorkFollowUpOwner,
+    work: Extract<
+      ActionableWork,
+      { readonly kind: 'dispatch_follow_up' | 'dispatch_delegated_initial' }
+    >
+  ): Promise<AgentRunWorkFollowUpReceipt> {
+    if (this.activeInferenceByRun.has(work.runId)) {
+      throw new Error('An Agent Run already has an active work-scheduler inference.');
+    }
+    const controller = new AbortController();
+    const active: ActiveInferenceDispatch = {
+      expectedVersion: work.expectedVersion,
+      turnId: work.turnId,
+      attemptId: work.attemptId,
+      controller,
+      interruption: null
+    };
+    this.activeInferenceByRun.set(work.runId, active);
+    try {
+      const receipt = await owner.dispatchOwned({
+        runId: work.runId,
+        turnId: work.turnId,
+        attemptId: work.attemptId,
+        expectedVersion: work.expectedVersion,
+        occurredAt: this.now()
+      }, AbortSignal.any([this.abortController.signal, controller.signal]));
+      const interruption = active.interruption;
+      if (interruption === null) return receipt;
+      const uncertain = exactUncertainInferenceRecovery(receipt, work);
+      if (uncertain === null) {
+        interruption.resolve({ status: 'already_settled' });
+        return receipt;
+      }
+      try {
+        const finalized = await interruption.request.finalize(uncertain);
+        if (
+          finalized.runId !== uncertain.runId
+          || finalized.runVersion <= uncertain.runVersion
+        ) throw new Error('Agent Turn interruption finalizer returned contradictory evidence.');
+        interruption.resolve({
+          status: 'interrupted',
+          ...uncertain,
+          runVersion: finalized.runVersion
+        });
+      } catch (error) {
+        interruption.reject(error);
+        throw error;
+      }
+      return receipt;
+    } catch (error) {
+      active.interruption?.reject(error);
+      throw error;
+    } finally {
+      this.activeInferenceByRun.delete(work.runId);
     }
   }
 
@@ -636,21 +811,58 @@ export class AgentRunWorkScheduler {
     return { runs };
   }
 
-  private async verifyAuthorities(
+  private async assessAuthorities(
     round: ScanRound,
     actionableOnly: boolean
-  ): Promise<void> {
+  ): Promise<readonly ScannedRun[]> {
     const verifier = this.authorityVerifier;
-    if (verifier === undefined) return;
+    if (verifier === undefined) return [];
+    const retiredCatalogRuns: ScannedRun[] = [];
     for (const item of round.runs) {
       if (!item.recovery.ready || item.recovery.phase !== 'resumable') continue;
       if (actionableOnly && (item.work === null || !isActionable(item.work))) continue;
       this.abortController.signal.throwIfAborted();
-      await verifier.assertRestorable(
+      const assessment = await verifier.assessRestorability(
         item.recovery.run,
         this.abortController.signal
       );
+      if (assessment.status === 'retired_tool_catalog') {
+        retiredCatalogRuns.push(item);
+      } else if (assessment.status !== 'restorable') {
+        throw new Error('Agent Run authority verifier returned an invalid assessment.');
+      }
     }
+    return retiredCatalogRuns;
+  }
+
+  private async terminalizeRetiredCatalogRuns(
+    items: readonly ScannedRun[]
+  ): Promise<number> {
+    const owner = this.retiredToolCatalogTerminalizations;
+    if (owner === undefined) {
+      throw new Error(
+        'Retired Tool Catalog Runs have no durable terminalization owner.'
+      );
+    }
+    let terminalized = 0;
+    for (const item of childFirstRetirementOrder(items)) {
+      this.abortController.signal.throwIfAborted();
+      try {
+        const receipt = await owner.terminalize(
+          item.recovery.run,
+          this.abortController.signal
+        );
+        assertRetiredToolCatalogTerminalizationReceipt(
+          receipt,
+          item.recovery.run
+        );
+        terminalized += 1;
+      } catch (error) {
+        if (error instanceof AgentRunVersionConflictError) return terminalized;
+        throw error;
+      }
+    }
+    return terminalized;
   }
 
   private now(): string {
@@ -701,6 +913,41 @@ export class AgentRunWorkScheduler {
   }
 }
 
+function childFirstRetirementOrder(items: readonly ScannedRun[]): readonly ScannedRun[] {
+  const byRunId = new Map(items.map((item) => [item.recovery.run.runId, item]));
+  const childrenByParent = new Map<string, ScannedRun[]>();
+  for (const item of items) {
+    const objective = item.recovery.run.binding.objectiveRef;
+    if (objective.kind !== 'parent_delegation' || !byRunId.has(objective.parentRunId)) {
+      continue;
+    }
+    const children = childrenByParent.get(objective.parentRunId) ?? [];
+    children.push(item);
+    childrenByParent.set(objective.parentRunId, children);
+  }
+  const ordered: ScannedRun[] = [];
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (item: ScannedRun): void => {
+    const runId = item.recovery.run.runId;
+    if (visited.has(runId)) return;
+    if (visiting.has(runId)) {
+      throw new Error('Retired Tool Catalog Run lineage contains a cycle.');
+    }
+    visiting.add(runId);
+    const children = childrenByParent.get(runId) ?? [];
+    children.sort((left, right) => (
+      left.recovery.run.runId < right.recovery.run.runId ? -1 : 1
+    ));
+    for (const child of children) visit(child);
+    visiting.delete(runId);
+    visited.add(runId);
+    ordered.push(item);
+  };
+  for (const item of items) visit(item);
+  return ordered;
+}
+
 interface MutableAgentRunWorkDrainResult {
   rounds: number;
   scannedRuns: number;
@@ -729,10 +976,12 @@ function mutableDrainResult(): MutableAgentRunWorkDrainResult {
 
 function collectFaults(
   round: ScanRound,
-  startupRecoveryAvailable: boolean
+  startupRecoveryAvailable: boolean,
+  ignoredRunIds: ReadonlySet<string> = new Set()
 ): AgentRunWorkSchedulerFault[] {
   const faults: AgentRunWorkSchedulerFault[] = [];
   for (const item of round.runs) {
+    if (ignoredRunIds.has(item.recovery.run.runId)) continue;
     if (!item.recovery.ready) {
       faults.push({
         runId: item.recovery.run.runId,
@@ -892,6 +1141,31 @@ function assertFollowUpReceipt(
   assertFollowUpResultIdentity(receipt.result, work);
 }
 
+function exactUncertainInferenceRecovery(
+  receipt: AgentRunWorkFollowUpReceipt,
+  work: Extract<
+    ActionableWork,
+    { readonly kind: 'dispatch_follow_up' | 'dispatch_delegated_initial' }
+  >
+): ActiveAgentTurnInterruptionRecovery | null {
+  if (
+    receipt.status !== 'waiting_recovery'
+    || receipt.reason !== 'inference_outcome_uncertain'
+    || receipt.result === undefined
+    || receipt.result.status !== 'uncertain'
+    || receipt.result.attempt.state?.status !== 'uncertain'
+    || !nonEmpty(receipt.result.recoveryDecisionId ?? '')
+  ) return null;
+  assertFollowUpResultIdentity(receipt.result, work);
+  return {
+    runId: receipt.result.run.runId,
+    runVersion: receipt.result.run.version,
+    turnId: receipt.result.turn.turnId,
+    attemptId: receipt.result.attempt.attemptId,
+    recoveryDecisionId: receipt.result.recoveryDecisionId!
+  };
+}
+
 function assertFollowUpResultIdentity(
   result: AgentRunWorkFollowUpResultIdentity,
   work: Extract<
@@ -933,6 +1207,26 @@ function assertTerminalizationReceipt(
     || !nonEmpty(receipt.commandId)
   ) {
     throw new Error('Run terminalization returned a contradictory work receipt.');
+  }
+}
+
+function assertRetiredToolCatalogTerminalizationReceipt(
+  receipt: AgentRunRetiredToolCatalogTerminalizationReceipt,
+  run: AgentRun
+): void {
+  if (
+    receipt.receiptVersion !== 1
+    || receipt.runId !== run.runId
+    || receipt.runVersion <= run.version
+    || receipt.checkpointVersion <= run.state.checkpointVersion
+    || receipt.status !== 'failed'
+    || receipt.reason !== 'tool_catalog_retired'
+    || receipt.errorCode !== 'agent_tool_catalog_retired'
+    || !nonEmpty(receipt.commandId)
+  ) {
+    throw new Error(
+      'Retired Tool Catalog terminalization returned a contradictory receipt.'
+    );
   }
 }
 

@@ -3,12 +3,14 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
+import type { ProjectionCommitV3 } from '@ariadne/protocol/public';
 
 import { SqliteConversationRunHandoffUnitOfWork } from '../src/adapters/persistence/SqliteConversationRunHandoffUnitOfWork.js';
 import { SqlitePublicProjectionStore } from '../src/adapters/persistence/SqlitePublicProjectionStore.js';
 import type {
   AcceptConversationUserMessageCommand,
-  CreateConversationSessionCommand
+  CreateConversationSessionCommand,
+  MutateConversationSessionCommand
 } from '../src/conversation/ConversationAuthority.js';
 import { ConversationAuthorityService } from '../src/control/conversation/ConversationAuthorityService.js';
 import { createShutdownContext } from '../src/ingress/ShutdownContext.js';
@@ -39,7 +41,15 @@ describe('ConversationPublicProjectionPublisher', () => {
     const authority = new ConversationAuthorityService(conversation);
     await authority.createSession(createSession());
     await authority.acceptUserMessage(acceptMessage(
-      'inspect C:\\private\\repo and /srv/private; api_key=topsecretvalue'
+      'inspect C:\\private\\repo and /srv/private; api_key=topsecretvalue',
+      [{
+        attachmentId: `sha256:${'a'.repeat(64)}`,
+        mediaType: 'image/webp',
+        bytes: 1_024,
+        width: 800,
+        height: 600,
+        name: 'api_key=topsecretvalue.webp'
+      }]
     ));
 
     const publisher = new ConversationPublicProjectionPublisher(
@@ -86,6 +96,14 @@ describe('ConversationPublicProjectionPublisher', () => {
     });
     expect(snapshot.messages[0]?.content).toContain('[redacted path]');
     expect(snapshot.messages[0]?.content).toContain('[redacted credential]');
+    expect(snapshot.messages[0]?.attachments).toEqual([{
+      attachmentId: `sha256:${'a'.repeat(64)}`,
+      mediaType: 'image/webp',
+      bytes: 1_024,
+      width: 800,
+      height: 600,
+      name: '[redacted credential]'
+    }]);
     expect(JSON.stringify(snapshot)).not.toContain('C:\\private');
     expect(JSON.stringify(snapshot)).not.toContain('/srv/private');
     expect(JSON.stringify(snapshot)).not.toContain('topsecretvalue');
@@ -117,6 +135,41 @@ describe('ConversationPublicProjectionPublisher', () => {
     expect({ ...after, capturedAt: before.capturedAt }).toEqual(before);
     expect(after.cursor).toBe(2);
   });
+
+  it('projects the exact title and archive state for every immutable Session version', async () => {
+    const root = tempRoot();
+    const conversation = trackConversation(
+      new SqliteConversationRunHandoffUnitOfWork(root)
+    );
+    const authority = new ConversationAuthorityService(conversation);
+    await authority.createSession(createSession());
+    await authority.mutateSession(sessionMutation(
+      'command-rename-projection',
+      'event-rename-projection',
+      1,
+      { kind: 'rename', title: 'Durable projection title' },
+      at(1)
+    ));
+    await authority.mutateSession(sessionMutation(
+      'command-archive-projection',
+      'event-archive-projection',
+      2,
+      { kind: 'set_status', status: 'archived' },
+      at(2)
+    ));
+
+    const commits: ProjectionCommitV3[] = [];
+    const publisher = new ConversationPublicProjectionPublisher(conversation, {
+      append: async (commit) => { commits.push(commit); }
+    });
+    await drain(publisher);
+
+    expect(commits.map((commit) => commit.changes[0]?.dto)).toEqual([
+      expect.objectContaining({ version: 1, title: 'Conversation', status: 'active' }),
+      expect.objectContaining({ version: 2, title: 'Durable projection title', status: 'active' }),
+      expect.objectContaining({ version: 3, title: 'Durable projection title', status: 'archived' })
+    ]);
+  });
 });
 
 async function drain(publisher: ConversationPublicProjectionPublisher): Promise<void> {
@@ -137,7 +190,10 @@ function createSession(): CreateConversationSessionCommand {
   };
 }
 
-function acceptMessage(content: string): AcceptConversationUserMessageCommand {
+function acceptMessage(
+  content: string,
+  attachments?: AcceptConversationUserMessageCommand['attachments']
+): AcceptConversationUserMessageCommand {
   return {
     kind: 'conversation.accept_user_message',
     commandId: 'command-accept-projection',
@@ -148,10 +204,30 @@ function acceptMessage(content: string): AcceptConversationUserMessageCommand {
     messageId: 'message-projection',
     expectedMessageVersion: null,
     content,
+    ...(attachments === undefined ? {} : { attachments }),
     sagaId: 'saga-projection',
     handoffCommandId: 'handoff-command-projection',
     handoffOutboxMessageId: 'handoff-outbox-projection',
     occurredAt: at(1)
+  };
+}
+
+function sessionMutation(
+  commandId: string,
+  eventId: string,
+  expectedSessionVersion: number,
+  mutation: MutateConversationSessionCommand['mutation'],
+  occurredAt: string
+): MutateConversationSessionCommand {
+  return {
+    kind: 'conversation.mutate_session',
+    commandId,
+    eventId,
+    sessionId: 'session-projection',
+    workspaceId: 'workspace-projection',
+    expectedSessionVersion,
+    mutation,
+    occurredAt
   };
 }
 

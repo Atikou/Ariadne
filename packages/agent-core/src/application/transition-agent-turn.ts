@@ -1,5 +1,8 @@
 import type { AgentRun, AgentRunState } from '../domain/agent-run.js';
-import { cloneAgentRunBinding } from '../domain/run-binding.js';
+import {
+  cloneAgentExecutionProfile,
+  cloneAgentRunBinding
+} from '../domain/run-binding.js';
 import { isTerminalEffect } from '../domain/effect.js';
 import {
   AgentRunInvariantError,
@@ -28,7 +31,7 @@ export interface AgentTurnMutation {
   readonly events: readonly AgentRunEventPayload[];
 }
 
-export interface AgentInferenceCancelRunResolution {
+export interface AgentInferenceRecoveryResolution {
   readonly turnId: string;
   readonly attemptId: string;
   readonly recoveryDecisionId: string;
@@ -38,7 +41,7 @@ export function registerAgentTurn(
   run: AgentRun,
   command: RegisterAgentTurnCommand
 ): AgentTurnMutation {
-  requireRunning(run, command.kind);
+  requireTurnRegistrationState(run, command);
   if (run.turns.length === 0) {
     const objective = run.binding.objectiveRef;
     if (
@@ -65,11 +68,13 @@ export function registerAgentTurn(
     assertExactEffectResultCause(run, command.turn.cause);
   } else if (command.turn.cause.kind === 'inbox_inputs') {
     assertExactInboxCause(run, command.turn.cause);
+  } else if (command.turn.cause.kind === 'interrupted_inference') {
+    assertExactInterruptedInferenceCause(run, command.turn.cause);
   } else if (command.turn.cause.kind === 'child_results') {
     assertExactChildResultsCause(run, command.turn.cause);
   } else {
     throw new AgentRunTransitionError(
-      'Every continuation Turn must bind Effect results, child results, or claimed Agent inbox inputs.'
+      'Every continuation Turn must bind Effect results, child results, an interrupted inference, or claimed Agent inbox inputs.'
     );
   }
   assertNoStartedEffects(run, command.kind);
@@ -114,6 +119,8 @@ export function registerAgentTurn(
           }
         : command.turn.cause.kind === 'inbox_inputs'
           ? { ...command.turn.cause, inputIds: [...command.turn.cause.inputIds] }
+          : command.turn.cause.kind === 'interrupted_inference'
+            ? { ...command.turn.cause, inputIds: [...command.turn.cause.inputIds] }
           : command.turn.cause.kind === 'child_results'
             ? {
                 ...command.turn.cause,
@@ -123,7 +130,7 @@ export function registerAgentTurn(
         : { ...command.turn.cause },
       bindingVersion: binding.bindingVersion,
       ...(binding.bindingVersion === 4
-        ? { executionProfile: { ...binding.executionProfile } }
+        ? { executionProfile: cloneAgentExecutionProfile(binding.executionProfile) }
         : {}),
       sessionId: binding.sessionId,
       objectiveRef: binding.objectiveRef,
@@ -195,13 +202,42 @@ function assertExactInboxCause(
     sourceTurn === undefined
     || sourceAttempt?.state.status !== 'succeeded'
     || (sourceAttempt.state.directive.kind !== 'respond'
-      && sourceAttempt.state.directive.kind !== 'complete')
+      && sourceAttempt.state.directive.kind !== 'complete'
+      && sourceAttempt.state.directive.kind !== 'ask_user')
     || sourceTurn.turnId !== cause.sourceTurnId
     || sourceAttempt.attemptId !== cause.sourceAttemptId
     || sourceAttempt.state.directiveDigest !== cause.sourceDirectiveDigest
   ) {
     throw new AgentRunTransitionError(
       'Inbox continuation must extend the latest succeeded response boundary.'
+    );
+  }
+  assertExactQueuedInboxOrder(run, cause.inputIds);
+}
+
+function assertExactInterruptedInferenceCause(
+  run: AgentRun,
+  cause: Extract<
+    RegisterAgentTurnCommand['turn']['cause'],
+    { kind: 'interrupted_inference' }
+  >
+): void {
+  const sourceTurn = run.turns.at(-1);
+  const sourceAttempt = sourceTurn?.attempts.at(-1);
+  if (
+    run.state.status !== 'waiting_input'
+    || !('recoveryDecisionId' in run.state)
+    || sourceTurn === undefined
+    || sourceAttempt?.state.status !== 'uncertain'
+    || sourceTurn.turnId !== cause.sourceTurnId
+    || sourceAttempt.attemptId !== cause.sourceAttemptId
+    || sourceAttempt.state.recovery.decisionId !== cause.recoveryDecisionId
+    || run.state.interruptedTurnId !== cause.sourceTurnId
+    || run.state.interruptedAttemptId !== cause.sourceAttemptId
+    || run.state.recoveryDecisionId !== cause.recoveryDecisionId
+  ) {
+    throw new AgentRunTransitionError(
+      'Interrupted-inference continuation must extend the exact interrupted inference boundary.'
     );
   }
   assertExactQueuedInboxOrder(run, cause.inputIds);
@@ -424,10 +460,11 @@ export function cancelOpenAgentInferenceAttempts(
   return { turns: next, events };
 }
 
-export function authorizeInferenceCancelRun(
+export function authorizeInferenceRecoveryResolution(
   run: AgentRun,
-  recoveryDecisionId: string | undefined
-): AgentInferenceCancelRunResolution {
+  recoveryDecisionId: string | undefined,
+  action: 'cancel_run' | 'interrupt_turn'
+): AgentInferenceRecoveryResolution {
   if (
     run.state.status !== 'recovering'
     || run.state.reason !== 'uncertain_inference'
@@ -441,10 +478,10 @@ export function authorizeInferenceCancelRun(
   if (
     attempt.state.status !== 'uncertain'
     || recoveryDecisionId !== attempt.state.recovery.decisionId
-    || !attempt.state.recovery.allowedActions.includes('cancel_run')
+    || !attempt.state.recovery.allowedActions.includes(action)
   ) {
     throw new AgentRunTransitionError(
-      'Run cancellation must use the exact uncertain-inference recovery decision.'
+      `Inference recovery action "${action}" must use the exact uncertain-inference recovery decision.`
     );
   }
   return {
@@ -487,6 +524,24 @@ function assertNoStartedEffects(run: AgentRun, commandKind: AgentRunCommand['kin
 
 function requireRunning(run: AgentRun, commandKind: AgentRunCommand['kind']): void {
   if (run.state.status !== 'running') throw invalidRunState(run, commandKind);
+}
+
+function requireTurnRegistrationState(
+  run: AgentRun,
+  command: RegisterAgentTurnCommand
+): void {
+  if (run.state.status === 'running') return;
+  if (
+    run.state.status === 'waiting_input'
+    && (
+      ('responseTurnId' in run.state && command.turn.cause.kind === 'inbox_inputs')
+      || ('recoveryDecisionId' in run.state
+        && command.turn.cause.kind === 'interrupted_inference')
+    )
+  ) return;
+  throw new AgentRunTransitionError(
+    `Run state "${run.state.status}" cannot handle "${command.kind}".`
+  );
 }
 
 function invalidRunState(

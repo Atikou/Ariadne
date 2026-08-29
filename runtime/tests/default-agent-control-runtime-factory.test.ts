@@ -257,8 +257,8 @@ describe('DefaultAgentControlRuntimeFactory', () => {
     });
     expect(runtime.storageSchemas).toEqual({
       agentControl: runtime.schemaVersion,
-      conversation: 2,
-      publicProjection: 1
+      conversation: 3,
+      publicProjection: 2
     });
     await expect(runtime.executeOwnedCommand({
       commandId: 'legacy-query',
@@ -268,6 +268,41 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       command: { kind: 'runtime.status.get' }
     })).resolves.toBeNull();
     await runtime.shutdown(shutdownContext());
+  });
+
+  it('binds live-work completion before start and drains it before Agent stores close', async () => {
+    const order: string[] = [];
+    const bindCompletionSink = vi.fn(() => ({
+      assertHealthy: vi.fn(),
+      drain: vi.fn(async () => { order.push('drain'); }),
+      unbind: vi.fn(() => { order.push('unbind'); })
+    }));
+    const runtime = await new DefaultAgentControlRuntimeFactory().create({
+      dataRoot: createRoot(),
+      production: false,
+      runtimeInstanceId,
+      agentAdmissionAuthoritySource: disabledAdmissionAuthoritySource(),
+      modelProviders: [],
+      modelCatalog: emptyModelCatalog,
+      publicEventSink: discardPublicEventSink,
+      hostCapabilities: broker(keyRing(
+        1,
+        activeKeyId,
+        Buffer.alloc(32, 99).toString('base64')
+      )),
+      runtimeServices: {
+        liveWorkLifecycle: {
+          closeOwner: vi.fn(),
+          close: vi.fn(async () => { order.push('close'); }),
+          bindCompletionSink
+        }
+      }
+    });
+
+    expect(bindCompletionSink).toHaveBeenCalledTimes(1);
+    await runtime.start();
+    await runtime.shutdown(shutdownContext());
+    expect(order).toEqual(['close', 'drain', 'unbind']);
   });
 
   it('publishes the bound Runtime model catalog into the v3 Snapshot before ready', async () => {

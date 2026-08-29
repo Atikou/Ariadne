@@ -15,6 +15,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/write-build-manifest.mjs",
+    "verify:tool-artifacts": "node dist/cli/verify-first-party-tool-artifacts.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --maxWorkers=4",
     "start": "node dist/entry/runtime-process.js",
@@ -25,11 +26,15 @@
     "sandbox:native:build": "node scripts/publish-windows-sandbox.mjs",
     "sandbox:status": "tsx src/cli/sandbox.ts status",
     "sandbox:setup": "tsx src/cli/sandbox.ts setup",
+    "agent-control:migrate:v5-v6": "tsx src/cli/migrate-agent-control-v5-v6.ts",
+    "agent-control:migrate:v6-v7": "tsx src/cli/migrate-agent-control-v6-v7.ts",
     "storage:status": "tsx src/cli/storage.ts status",
     "storage:cleanup": "tsx src/cli/storage.ts cleanup"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "1.4.0",
     "@ariadne/agent-core": "file:../packages/agent-core",
+    "@ariadne/live-work": "file:../packages/live-work",
     "@ariadne/protocol": "file:../packages/protocol",
     "@lancedb/lancedb": "^0.30.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -44,6 +49,8 @@
     "chokidar": "^5.0.0",
     "croner": "^10.0.1",
     "node-llama-cpp": "^3.19.0",
+    "node-pty": "^1.1.0",
+    "sharp": "0.35.3",
     "tree-sitter-wasms": "^0.1.13",
     "web-tree-sitter": "^0.20.8",
     "zod": "^4.4.3"

@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { AgentLoop, type LoopChatFn } from "../agent/AgentLoop.js";
 import type { UserPermissionPolicy } from "../agent/RunPolicyPrimitives.js";
 import type { ToolPermission } from "../core/permissions.js";
-import { BackgroundTaskManager, NotificationQueue } from "../background/index.js";
+import { NotificationQueue } from '../notifications/index.js';
 import { loadConfig } from "../config/loadConfig.js";
 import {
   buildWorkspaceCatalog,
@@ -125,7 +125,6 @@ export class AppContext {
   readonly traceCatalog: TraceCatalog;
   readonly notificationQueue: NotificationQueue;
   readonly scheduler: Scheduler;
-  readonly backgroundTasks: BackgroundTaskManager;
   readonly processSandbox: ProcessSandbox;
   readonly directChat: ReturnType<typeof createDirectChatFn>;
   readonly planner: AppModelRoutingRuntime["planner"];
@@ -194,7 +193,6 @@ export class AppContext {
     traceCatalog: TraceCatalog;
     notificationQueue: NotificationQueue;
     scheduler: Scheduler;
-    backgroundTasks: BackgroundTaskManager;
     processSandbox: ProcessSandbox;
     directChat: ReturnType<typeof createDirectChatFn>;
     planner: AppModelRoutingRuntime["planner"];
@@ -261,7 +259,6 @@ export class AppContext {
     this.traceCatalog = opts.traceCatalog;
     this.notificationQueue = opts.notificationQueue;
     this.scheduler = opts.scheduler;
-    this.backgroundTasks = opts.backgroundTasks;
     this.processSandbox = opts.processSandbox;
     this.directChat = opts.directChat;
     this.planner = opts.planner;
@@ -317,7 +314,6 @@ export class AppContext {
     this.shutdownCoordinator = new AppShutdownCoordinator({
       runtime: opts.runtime,
       orchestrator: opts.orchestrator,
-      backgroundTasks: opts.backgroundTasks,
       trace: opts.trace,
       registry: opts.registry,
       companionService: opts.companionService,
@@ -573,69 +569,6 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     },
   );
 
-  const orchestratorHolder: { current?: Orchestrator } = {};
-  const backgroundRunStoreHolder: { current?: RunAggregateRepository } = {};
-
-  const backgroundTasks = new BackgroundTaskManager(
-    workspaceRoot,
-    notificationQueue,
-    processSandbox,
-    trace,
-    (record) => {
-      scheduler.handleBackgroundCompleted(record);
-      const runs = backgroundRunStoreHolder.current;
-      if (!runs || !record.runId) return;
-      const existing = runs.get(record.runId);
-      let prior: Record<string, unknown> = {};
-      if (!existing) return;
-      if (existing.result && typeof existing.result === "object" && !Array.isArray(existing.result)) {
-        prior = existing.result as Record<string, unknown>;
-      }
-      if (record.status === "completed") {
-        runs.execute({
-          type: "run.complete",
-          runId: existing.id,
-          expectedAggregateVersion: existing.aggregateVersion,
-          result: { ...prior, backgroundTask: record },
-        });
-      } else if (record.status === "cancelled") {
-        runs.execute({
-          type: "run.cancel",
-          runId: existing.id,
-          expectedAggregateVersion: existing.aggregateVersion,
-          reason: record.error,
-        });
-      } else {
-        runs.execute({
-          type: "run.fail",
-          runId: existing.id,
-          expectedAggregateVersion: existing.aggregateVersion,
-          error: record.error ?? `Background task ${record.status}`,
-        });
-      }
-    },
-    (input) => {
-      const orch = orchestratorHolder.current;
-      if (!orch) return;
-      void orch
-        .executeUnattendedTrigger({
-          triggerId: `background:${input.record.id}`,
-          goal: input.goal,
-        })
-        .then(({ runId }) => {
-          backgroundTasks.markTriggeredRun(input.record.id, runId);
-        })
-        .catch((error) => {
-          trace.write({
-            type: "background_trigger_next_error",
-            taskId: input.record.id,
-            error: String(error),
-          });
-        });
-    },
-    shellPolicy,
-  );
-
   const directChat = createDirectChatFn(() => [...clientMap.values()], {
     strategy: config.routing.strategy,
     fallback: config.routing.fallback,
@@ -646,7 +579,6 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
 
   const registry = createDefaultRegistry({ trace, dataDir, shellPolicy, networkPolicy, processSandbox });
   if (opts.hostCapabilities) registry.setDefaultContext({ hostCapabilities: opts.hostCapabilities });
-  registry.register(backgroundTasks.startTool);
   const contextManager = new ContextManager({
     dataDir,
     useLanceDb: true,
@@ -662,7 +594,6 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
   const resources = new ResourceRegistry(contextManager.db.connection, dataDir);
   registry.setDefaultContext({ resources });
   const runs = new RunAggregateRepository(contextManager.db);
-  backgroundRunStoreHolder.current = runs;
   const runStateStore = new RunStateStore(contextManager.db);
   const permissionRequestStore = new PermissionRequestStore(contextManager.db.connection);
   const planHandoffStore = new PlanHandoffStore(contextManager.db.connection);
@@ -854,7 +785,6 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     resolveInstructions,
     hooks,
   });
-  orchestratorHolder.current = orchestrator;
   const startupRecoveryCoordinator = new StartupRecoveryCoordinator();
   const unifiedAssistantRuntime = createUnifiedAssistantRuntime({
     projectRoot, companionDataDir: paths.companionDataDir, directChat, contextManager,
@@ -955,7 +885,6 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     traceCatalog,
     notificationQueue,
     scheduler,
-    backgroundTasks,
     processSandbox,
     directChat,
     planner,

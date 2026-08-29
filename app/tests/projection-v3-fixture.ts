@@ -30,6 +30,7 @@ export function projectionSnapshot(
     decisions: [],
     models: [],
     diagnostics: [],
+    inferenceStreams: [],
     tombstones: [],
     ...overrides
   };

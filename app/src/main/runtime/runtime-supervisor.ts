@@ -11,6 +11,7 @@ import {
   type RuntimeBootstrap,
   type RuntimeCancel,
   type AgentPermissionsBootstrap,
+  type AcpSubagentProviderBootstrap,
   type ModelProviderBootstrap,
   type RuntimeReady,
   type RuntimeResponse,
@@ -19,7 +20,7 @@ import {
   type AgentAdmissionAuthoritySource,
   type RuntimeToHostMessage
 } from '@ariadne/protocol/host';
-import type { RuntimePolicySnapshot } from '@ariadne/protocol/settings';
+import type { AssistantChatProfile, RuntimePolicySnapshot } from '@ariadne/protocol/settings';
 import { readRuntimeBuildManifest } from './runtime-build-manifest';
 import {
   runtimeCommandSchema,
@@ -50,7 +51,9 @@ export interface RuntimeSupervisorOptions {
   dataRoot: string;
   modelRoots: string[];
   modelProviders: ModelProviderBootstrap[];
+  subagentProviders?: AcpSubagentProviderBootstrap[];
   routingStrategy: 'local-first' | 'cloud-first' | 'privacy-first' | 'quality-first';
+  assistantProfile: AssistantChatProfile;
   agentPermissions: AgentPermissionsBootstrap;
   agentAdmissionAuthoritySource: AgentAdmissionAuthoritySource;
   runtimePolicy: RuntimePolicySnapshot;
@@ -180,9 +183,6 @@ export class RuntimeSupervisor {
 
   async start(): Promise<RuntimeReady> {
     return this.runLifecycleOperation(async () => {
-      if (this.options.workspaces.length === 0) {
-        throw new RuntimeRequestError('runtime_workspace_missing', '请先打开工作区。', false);
-      }
       const buildFingerprint = this.resolveRuntimeBuildFingerprint();
       if (
         this.child
@@ -496,7 +496,16 @@ export class RuntimeSupervisor {
       dataRoot: this.options.dataRoot,
       modelRoots: [...this.options.modelRoots],
       modelProviders: this.options.modelProviders.map((provider) => ({ ...provider })),
+      ...(this.options.subagentProviders === undefined
+        ? {}
+        : {
+            subagentProviders: this.options.subagentProviders.map((provider) => ({
+              ...provider,
+              args: [...provider.args]
+            }))
+          }),
       routingStrategy: this.options.routingStrategy,
+      assistantProfile: structuredClone(this.options.assistantProfile),
       agentPermissions: structuredClone(this.options.agentPermissions),
       agentAdmissionAuthoritySource: structuredClone(
         this.options.agentAdmissionAuthoritySource

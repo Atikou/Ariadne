@@ -56,10 +56,13 @@ export function summarizeAgentTurnInput(
     contentCharacterCount: input.messages.reduce(
       (sum, message) => sum + (message.kind === 'text'
         ? message.content.length
-        : message.effectId.length
-          + message.toolCallId.length
-          + message.status.length
-          + canonicalize(message.result).length),
+        : message.kind === 'image'
+          ? message.attachment.attachmentId.length
+            + (message.attachment.name?.length ?? 0)
+          : message.effectId.length
+            + message.toolCallId.length
+            + message.status.length
+            + canonicalize(message.result).length),
       0
     )
   };
@@ -104,6 +107,15 @@ function assertBoundedAgentTurnInput(input: AgentTurnInputModelData): void {
       if (typeof message.content !== 'string') {
         throw new AgentRunInvariantError('Agent Turn message content must be a string.');
       }
+      continue;
+    }
+    if (message.kind === 'image') {
+      assertPlainExactObject(message, ['kind', 'role', 'owner', 'attachment'], path);
+      if (message.role !== 'user') {
+        throw new AgentRunInvariantError('Agent Turn image input must have user role.');
+      }
+      assertImageOwner(message.owner, `${path}.owner`);
+      assertImageAttachment(message.attachment, `${path}.attachment`);
       continue;
     }
     if (message.kind !== 'effect_result') {
@@ -159,6 +171,69 @@ function assertBoundedAgentTurnInput(input: AgentTurnInputModelData): void {
       'Agent Turn input exceeds its canonical UTF-8 byte-size bound.'
     );
   }
+}
+
+function assertImageOwner(
+  owner: Extract<AgentTurnInputModelData['messages'][number], { readonly kind: 'image' }>['owner'],
+  path: string
+): void {
+  assertPlainExactObject(owner, [
+    'sessionId', 'workspaceId', 'messageId', 'messageVersion'
+  ], path);
+  assertCanonicalPublicId(owner.sessionId, `${path}.sessionId`);
+  assertCanonicalPublicId(owner.workspaceId, `${path}.workspaceId`);
+  assertCanonicalPublicId(owner.messageId, `${path}.messageId`);
+  if (!Number.isSafeInteger(owner.messageVersion) || owner.messageVersion < 1) {
+    throw new AgentRunInvariantError(`${path}.messageVersion is invalid.`);
+  }
+}
+
+function assertImageAttachment(
+  attachment: Extract<AgentTurnInputModelData['messages'][number], { readonly kind: 'image' }>['attachment'],
+  path: string
+): void {
+  assertPlainExactObject(attachment, [
+    'attachmentId', 'mediaType', 'bytes', 'width', 'height',
+    ...(attachment.name === undefined ? [] : ['name']),
+    ...(attachment.originalDimensions === undefined ? [] : ['originalDimensions'])
+  ], path);
+  if (!/^sha256:[a-f0-9]{64}$/u.test(attachment.attachmentId)) {
+    throw new AgentRunInvariantError(`${path}.attachmentId is invalid.`);
+  }
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(attachment.mediaType)) {
+    throw new AgentRunInvariantError(`${path}.mediaType is invalid.`);
+  }
+  if (!Number.isSafeInteger(attachment.bytes) || attachment.bytes < 1 || attachment.bytes > 2 * 1024 * 1024) {
+    throw new AgentRunInvariantError(`${path}.bytes is invalid.`);
+  }
+  assertDimensions(attachment.width, attachment.height, path);
+  if (attachment.name !== undefined && (
+    attachment.name.trim().length === 0 || attachment.name.length > 256
+  )) throw new AgentRunInvariantError(`${path}.name is invalid.`);
+  if (attachment.originalDimensions !== undefined) {
+    assertPlainExactObject(
+      attachment.originalDimensions,
+      ['width', 'height'],
+      `${path}.originalDimensions`
+    );
+    assertDimensions(
+      attachment.originalDimensions.width,
+      attachment.originalDimensions.height,
+      `${path}.originalDimensions`
+    );
+  }
+}
+
+function assertDimensions(width: number, height: number, path: string): void {
+  if (
+    !Number.isSafeInteger(width)
+    || !Number.isSafeInteger(height)
+    || width < 1
+    || height < 1
+    || width > 8_192
+    || height > 8_192
+    || width * height > 64_000_000
+  ) throw new AgentRunInvariantError(`${path} dimensions are invalid.`);
 }
 
 function inspectDataMessage(

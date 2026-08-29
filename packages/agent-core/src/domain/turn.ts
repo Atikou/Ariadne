@@ -32,6 +32,38 @@ export interface AgentTurnInputSummary {
   readonly contentCharacterCount: number;
 }
 
+/**
+ * Provider usage tied to one exact serialized request and reusable only under the same header.
+ * Input counts are disjoint: context input is input + cache read + cache write.
+ */
+export interface AgentInferenceUsageAnchorV1 {
+  readonly anchorVersion: 1;
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly settingsRevision: number;
+  readonly requestHeaderDigest: string;
+  readonly requestEnvelopeDigest: string;
+  readonly estimatedInputTokens: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadInputTokens?: number;
+  readonly cacheWriteInputTokens?: number;
+}
+
+/** Sanitized exact-response evidence retained with the succeeded Attempt. */
+export interface AgentInferenceResponseEnvelopeV1 {
+  readonly envelopeVersion: 1;
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly settingsRevision: number;
+  readonly adapter: 'openai-compatible' | 'anthropic-messages' | 'embedded-local';
+  readonly finishReason: 'stop' | 'tool_calls' | 'length' | 'content_filter' | 'other';
+  readonly requestEnvelopeDigest: string;
+  readonly contentBlocksDigest: string;
+  readonly contentBlockTypes: readonly ('text' | 'reasoning' | 'tool_call')[];
+  readonly providerResponseIdDigest?: string;
+}
+
 export type AgentTurnCause =
   | {
       readonly kind: 'conversation_objective';
@@ -59,6 +91,13 @@ export type AgentTurnCause =
       readonly sourceTurnId: string;
       readonly sourceAttemptId: string;
       readonly sourceDirectiveDigest: string;
+      readonly inputIds: readonly string[];
+    }
+  | {
+      readonly kind: 'interrupted_inference';
+      readonly sourceTurnId: string;
+      readonly sourceAttemptId: string;
+      readonly recoveryDecisionId: string;
       readonly inputIds: readonly string[];
     }
   | {
@@ -94,6 +133,7 @@ export type AgentInferenceRecoveryAction =
   | 'retry'
   | 'mark_succeeded'
   | 'mark_failed'
+  | 'interrupt_turn'
   | 'cancel_run';
 
 export interface AgentInferenceRecoveryDecision {
@@ -118,6 +158,8 @@ export type AgentInferenceAttemptState =
       readonly finishedAt: string;
       readonly directive: AgentCommittedDirective;
       readonly directiveDigest: string;
+      readonly usageAnchor?: AgentInferenceUsageAnchorV1;
+      readonly responseEnvelope?: AgentInferenceResponseEnvelopeV1;
     }
   | {
       readonly status: 'failed';
@@ -169,6 +211,8 @@ export type AgentInferenceAttemptTransition =
       readonly at: string;
       readonly directive: AgentCommittedDirective;
       readonly directiveDigest: string;
+      readonly usageAnchor?: AgentInferenceUsageAnchorV1;
+      readonly responseEnvelope?: AgentInferenceResponseEnvelopeV1;
       readonly recoveryDecisionId?: string;
     }
   | {
@@ -229,6 +273,32 @@ export function assertValidAgentTurn(
     if (attempt.turnId !== turn.turnId || attempt.runId !== turn.runId) {
       throw new AgentRunInvariantError(
         'Every inference attempt must belong to its containing turn and run.'
+      );
+    }
+    if (
+      attempt.state.status === 'succeeded'
+      && attempt.state.usageAnchor !== undefined
+      && (
+        attempt.state.usageAnchor.providerId !== runBinding.model.providerId
+        || attempt.state.usageAnchor.modelId !== runBinding.model.modelId
+        || attempt.state.usageAnchor.settingsRevision !== runBinding.model.settingsRevision
+      )
+    ) {
+      throw new AgentRunInvariantError(
+        'Inference usage anchor must bind the exact immutable Run model.'
+      );
+    }
+    if (
+      attempt.state.status === 'succeeded'
+      && attempt.state.responseEnvelope !== undefined
+      && (
+        attempt.state.responseEnvelope.providerId !== runBinding.model.providerId
+        || attempt.state.responseEnvelope.modelId !== runBinding.model.modelId
+        || attempt.state.responseEnvelope.settingsRevision !== runBinding.model.settingsRevision
+      )
+    ) {
+      throw new AgentRunInvariantError(
+        'Inference response envelope must bind the exact immutable Run model.'
       );
     }
     assertUnique(attemptIds, attempt.attemptId, 'attemptId');
@@ -308,7 +378,13 @@ export function transitionAgentInferenceAttempt(
         status: 'succeeded',
         finishedAt: transition.at,
         directive: transition.directive,
-        directiveDigest: transition.directiveDigest
+        directiveDigest: transition.directiveDigest,
+        ...(transition.usageAnchor === undefined
+          ? {}
+          : { usageAnchor: transition.usageAnchor }),
+        ...(transition.responseEnvelope === undefined
+          ? {}
+          : { responseEnvelope: transition.responseEnvelope })
       };
       break;
     case 'fail':
@@ -433,6 +509,7 @@ function assertValidTurnIntention(
   assertInputSummary(intention.inputSummary);
   const causeMatchesObjective = intention.cause.kind === 'effect_results'
     || intention.cause.kind === 'inbox_inputs'
+    || intention.cause.kind === 'interrupted_inference'
     || intention.cause.kind === 'child_results'
     || (
       intention.cause.kind === 'conversation_objective'
@@ -563,6 +640,32 @@ function assertValidTurnCause(cause: AgentTurnCause): void {
         );
       }
       return;
+    case 'interrupted_inference':
+      assertExactObjectKeys(
+        cause,
+        [
+          'kind',
+          'sourceTurnId',
+          'sourceAttemptId',
+          'recoveryDecisionId',
+          'inputIds'
+        ],
+        'turn.intention.cause'
+      );
+      assertIdentifier(cause.sourceTurnId, 'turn.intention.cause.sourceTurnId');
+      assertIdentifier(cause.sourceAttemptId, 'turn.intention.cause.sourceAttemptId');
+      assertIdentifier(
+        cause.recoveryDecisionId,
+        'turn.intention.cause.recoveryDecisionId'
+      );
+      assertDenseDataArray(cause.inputIds, 'turn.intention.cause.inputIds');
+      assertUniqueCanonicalPublicIds(cause.inputIds, 'turn.intention.cause.inputIds');
+      if (cause.inputIds.length === 0) {
+        throw new AgentRunInvariantError(
+          'Interrupted inference continuation requires at least one claimed input.'
+        );
+      }
+      return;
     case 'child_results':
       assertExactObjectKeys(
         cause,
@@ -597,7 +700,6 @@ function assertValidTurnCause(cause: AgentTurnCause): void {
           'Child-result Turn causes require non-empty paired Delegation and child Run identities.'
         );
       }
-      return;
       return;
   }
 }
@@ -684,15 +786,26 @@ function assertValidAttemptState(state: AgentInferenceAttemptState): void {
       assertTimestamp(state.startedAt, 'inferenceAttempt.state.startedAt');
       return;
     case 'succeeded':
+      {
+        const keys = ['status', 'finishedAt', 'directive', 'directiveDigest'];
+        if (state.usageAnchor !== undefined) keys.push('usageAnchor');
+        if (state.responseEnvelope !== undefined) keys.push('responseEnvelope');
       assertExactObjectKeys(
         state,
-        ['status', 'finishedAt', 'directive', 'directiveDigest'],
+        keys,
         'inferenceAttempt.state'
       );
       assertTimestamp(state.finishedAt, 'inferenceAttempt.state.finishedAt');
       assertValidCommittedAgentDirective(state.directive);
       assertSha256Digest(state.directiveDigest, 'inferenceAttempt.state.directiveDigest');
+      if (state.usageAnchor !== undefined) {
+        assertValidAgentInferenceUsageAnchor(state.usageAnchor);
+      }
+      if (state.responseEnvelope !== undefined) {
+        assertValidAgentInferenceResponseEnvelope(state.responseEnvelope);
+      }
       return;
+      }
     case 'failed':
       assertExactObjectKeys(
         state,
@@ -740,6 +853,135 @@ function assertValidAttemptState(state: AgentInferenceAttemptState): void {
   }
 }
 
+export function assertValidAgentInferenceUsageAnchor(
+  anchor: AgentInferenceUsageAnchorV1
+): void {
+  if (!isPlainObject(anchor)) {
+    throw new AgentRunInvariantError('inferenceAttempt.usageAnchor must be a plain object.');
+  }
+  assertExactObjectKeys(anchor, [
+    'anchorVersion',
+    'providerId',
+    'modelId',
+    'settingsRevision',
+    'requestHeaderDigest',
+    'requestEnvelopeDigest',
+    'estimatedInputTokens',
+    'inputTokens',
+    'outputTokens',
+    ...(anchor.cacheReadInputTokens === undefined ? [] : ['cacheReadInputTokens']),
+    ...(anchor.cacheWriteInputTokens === undefined ? [] : ['cacheWriteInputTokens'])
+  ], 'inferenceAttempt.usageAnchor');
+  if (anchor.anchorVersion !== 1) {
+    throw new AgentRunInvariantError('inferenceAttempt.usageAnchor version is invalid.');
+  }
+  assertCanonicalPublicId(anchor.providerId, 'inferenceAttempt.usageAnchor.providerId');
+  assertCanonicalPublicId(anchor.modelId, 'inferenceAttempt.usageAnchor.modelId');
+  assertPositiveInteger(
+    anchor.settingsRevision,
+    'inferenceAttempt.usageAnchor.settingsRevision'
+  );
+  assertSha256Digest(
+    anchor.requestHeaderDigest,
+    'inferenceAttempt.usageAnchor.requestHeaderDigest'
+  );
+  assertSha256Digest(
+    anchor.requestEnvelopeDigest,
+    'inferenceAttempt.usageAnchor.requestEnvelopeDigest'
+  );
+  assertPositiveInteger(
+    anchor.estimatedInputTokens,
+    'inferenceAttempt.usageAnchor.estimatedInputTokens'
+  );
+  assertSafeNonNegativeInteger(
+    anchor.inputTokens,
+    'inferenceAttempt.usageAnchor.inputTokens',
+    MAX_SUMMARY_COUNT
+  );
+  assertSafeNonNegativeInteger(
+    anchor.outputTokens,
+    'inferenceAttempt.usageAnchor.outputTokens',
+    MAX_SUMMARY_COUNT
+  );
+  if (anchor.cacheReadInputTokens !== undefined) {
+    assertSafeNonNegativeInteger(
+      anchor.cacheReadInputTokens,
+      'inferenceAttempt.usageAnchor.cacheReadInputTokens',
+      MAX_SUMMARY_COUNT
+    );
+  }
+  if (anchor.cacheWriteInputTokens !== undefined) {
+    assertSafeNonNegativeInteger(
+      anchor.cacheWriteInputTokens,
+      'inferenceAttempt.usageAnchor.cacheWriteInputTokens',
+      MAX_SUMMARY_COUNT
+    );
+  }
+}
+
+export function assertValidAgentInferenceResponseEnvelope(
+  envelope: AgentInferenceResponseEnvelopeV1
+): void {
+  if (!isPlainObject(envelope)) {
+    throw new AgentRunInvariantError(
+      'inferenceAttempt.responseEnvelope must be a plain object.'
+    );
+  }
+  assertExactObjectKeys(envelope, [
+    'envelopeVersion',
+    'providerId',
+    'modelId',
+    'settingsRevision',
+    'adapter',
+    'finishReason',
+    'requestEnvelopeDigest',
+    'contentBlocksDigest',
+    'contentBlockTypes',
+    ...(envelope.providerResponseIdDigest === undefined
+      ? []
+      : ['providerResponseIdDigest'])
+  ], 'inferenceAttempt.responseEnvelope');
+  if (envelope.envelopeVersion !== 1) {
+    throw new AgentRunInvariantError('inferenceAttempt.responseEnvelope version is invalid.');
+  }
+  assertCanonicalPublicId(envelope.providerId, 'inferenceAttempt.responseEnvelope.providerId');
+  assertCanonicalPublicId(envelope.modelId, 'inferenceAttempt.responseEnvelope.modelId');
+  assertPositiveInteger(
+    envelope.settingsRevision,
+    'inferenceAttempt.responseEnvelope.settingsRevision'
+  );
+  if (!['openai-compatible', 'anthropic-messages', 'embedded-local'].includes(
+    envelope.adapter
+  )) throw new AgentRunInvariantError('inferenceAttempt.responseEnvelope adapter is invalid.');
+  if (!['stop', 'tool_calls', 'length', 'content_filter', 'other'].includes(
+    envelope.finishReason
+  )) throw new AgentRunInvariantError('inferenceAttempt.responseEnvelope finish is invalid.');
+  assertSha256Digest(
+    envelope.requestEnvelopeDigest,
+    'inferenceAttempt.responseEnvelope.requestEnvelopeDigest'
+  );
+  assertSha256Digest(
+    envelope.contentBlocksDigest,
+    'inferenceAttempt.responseEnvelope.contentBlocksDigest'
+  );
+  if (envelope.providerResponseIdDigest !== undefined) {
+    assertSha256Digest(
+      envelope.providerResponseIdDigest,
+      'inferenceAttempt.responseEnvelope.providerResponseIdDigest'
+    );
+  }
+  if (
+    !Array.isArray(envelope.contentBlockTypes)
+    || envelope.contentBlockTypes.length === 0
+    || envelope.contentBlockTypes.length > 4_096
+    || envelope.contentBlockTypes.some((type) => (
+      type !== 'text' && type !== 'reasoning' && type !== 'tool_call'
+    ))
+  ) throw new AgentRunInvariantError(
+    'inferenceAttempt.responseEnvelope content block types are invalid.'
+  );
+}
+
 function assertValidRecoveryDecision(
   recovery: AgentInferenceRecoveryDecision,
   requestedAt: string
@@ -769,6 +1011,7 @@ function assertValidRecoveryDecision(
     'retry',
     'mark_succeeded',
     'mark_failed',
+    'interrupt_turn',
     'cancel_run'
   ]);
   if (recovery.allowedActions.some((action) => !allowed.has(action))) {

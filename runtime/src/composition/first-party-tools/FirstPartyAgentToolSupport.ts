@@ -8,11 +8,14 @@ import type {
   TrustedAgentToolRegistrationV1
 } from '../../adapters/tool/TrustedAgentToolCatalogCompiler.js';
 import type {
-  AgentToolContractDocumentV1,
+  AgentToolContractDocumentV2,
   AgentToolExecutableImplementationV1,
   AgentToolExecutionContext
 } from '../../control/ports/AgentToolExecution.js';
 import type { AgentProcessSandbox } from '../../control/ports/AgentProcessSandbox.js';
+import {
+  firstPartyToolImplementationArtifacts
+} from './FirstPartyToolArtifactAuthority.js';
 
 export const MAX_TEXT_BYTES = 256 * 1024;
 export const MAX_DIRECTORY_ENTRIES = 2_000;
@@ -30,13 +33,18 @@ export type FirstPartyProcessSandboxFactory = (
 
 interface RegistrationDefinition {
   readonly toolName: string;
+  readonly toolVersion?: string;
+  readonly model: AgentToolContractDocumentV2['model'];
+  readonly presentation: AgentToolContractDocumentV2['presentation'];
+  /** Module whose built JavaScript closure owns this Tool implementation. */
+  readonly implementationModuleUrl: string;
   readonly capabilityIds: readonly string[];
   readonly requiredWorkspaceAccess: 'read' | 'write';
   readonly sideEffect: 'read' | 'write' | 'external';
   readonly approval: 'never' | 'required';
   readonly timeoutMs?: number;
-  readonly resourceSemantics?: AgentToolContractDocumentV1['resourceSemantics'];
-  readonly lifecycleSemantics?: AgentToolContractDocumentV1['lifecycleSemantics'];
+  readonly resourceSemantics?: AgentToolContractDocumentV2['resourceSemantics'];
+  readonly lifecycleSemantics?: AgentToolContractDocumentV2['lifecycleSemantics'];
   readonly inputSchema: AgentToolJsonValue;
   readonly outputSchema: AgentToolJsonValue;
   readonly validate: AgentToolExecutableImplementationV1['normalizeAndValidate'];
@@ -46,17 +54,17 @@ interface RegistrationDefinition {
 export function registration(
   definition: RegistrationDefinition
 ): TrustedAgentToolRegistrationV1 {
-  const artifacts = {
-    provider: artifactBytes(`${definition.toolName}:provider:v1`),
-    normalizer: artifactBytes(`${definition.toolName}:normalizer:v1`),
-    preparedValidator: artifactBytes(`${definition.toolName}:prepared-validator:v1`),
-    execute: artifactBytes(`${definition.toolName}:execute:v1`)
-  };
-  const document: AgentToolContractDocumentV1 = {
-    documentVersion: 1,
+  const toolVersion = definition.toolVersion ?? '1.0.0';
+  const artifacts = firstPartyToolImplementationArtifacts(
+    definition.implementationModuleUrl
+  );
+  const document: AgentToolContractDocumentV2 = {
+    documentVersion: 2,
     toolName: definition.toolName,
-    toolVersion: '1.0.0',
+    toolVersion,
     providerId: 'ariadne.runtime',
+    model: definition.model,
+    presentation: definition.presentation,
     inputSchema: definition.inputSchema,
     outputSchema: definition.outputSchema,
     capabilityIds: definition.capabilityIds,
@@ -190,6 +198,12 @@ export async function resolveWritableWorkspacePath(
   requested: string
 ): Promise<string> {
   const target = resolveContainedPath(rootPath, requested);
+  try {
+    const targetStat = await lstat(target);
+    if (targetStat.isSymbolicLink()) throw new Error('workspace_symlink_rejected');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
   let cursor = path.dirname(target);
   while (cursor !== rootPath) {
     try {
@@ -295,10 +309,6 @@ function assertContained(rootPath: string, targetPath: string): void {
   ) {
     throw new Error('workspace_path_outside_root');
   }
-}
-
-function artifactBytes(value: string): Uint8Array {
-  return new TextEncoder().encode(`ariadne-first-party-tool-artifact\0${value}`);
 }
 
 function digestArtifact(value: Uint8Array): string {

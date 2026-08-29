@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { ProviderResilienceConfig } from "../src/config/types.js";
-import { ProviderRequestError } from "../src/model/ProviderError.js";
+import { ProviderRequestError } from "../src/adapters/model/ProviderError.js";
 import { ResilientModelClient } from "../src/model/ProviderResilience.js";
 import { createConservativeTokenCounter } from "../src/model/TokenCounter.js";
 import type { ChatRequest, ModelClient, ModelResponse } from "../src/model/types.js";
@@ -12,7 +12,7 @@ const request: ChatRequest = {
 };
 
 describe("Provider resilience policy", () => {
-  it("honors Retry-After and retries only transient failures", async () => {
+  it("honors bounded Retry-After and retries only transient failures", async () => {
     const chat = vi.fn<ModelClient["chat"]>()
       .mockRejectedValueOnce(new ProviderRequestError("rate_limit", "limited", 429, 2_000))
       .mockResolvedValueOnce(response());
@@ -26,7 +26,7 @@ describe("Provider resilience policy", () => {
 
     await expect(client.chat(request)).resolves.toMatchObject({ content: "ok" });
     expect(chat).toHaveBeenCalledTimes(2);
-    expect(sleeps).toEqual([2_000]);
+    expect(sleeps).toEqual([1_000]);
     expect(telemetry.recordProviderCall).toHaveBeenCalledWith(expect.objectContaining({
       outcome: "success",
       retryCount: 1,
@@ -107,6 +107,27 @@ describe("Provider resilience policy", () => {
     await client.chat(request);
     await client.chat(request);
     expect(sleeps).toEqual([60_000]);
+    expect(chat).toHaveBeenCalledTimes(2);
+  });
+
+  it("serializes calls at the configured Provider concurrency boundary", async () => {
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const chat = vi.fn<ModelClient["chat"]>(async () => {
+      if (chat.mock.calls.length === 1) await firstGate;
+      return response();
+    });
+    const client = resilient(fakeClient(chat), policy({ maxConcurrency: 1 }), {
+      sleep: async () => undefined,
+    });
+
+    const first = client.chat(request);
+    await vi.waitFor(() => expect(chat).toHaveBeenCalledTimes(1));
+    const second = client.chat(request);
+    await Promise.resolve();
+    expect(chat).toHaveBeenCalledTimes(1);
+    releaseFirst();
+    await Promise.all([first, second]);
     expect(chat).toHaveBeenCalledTimes(2);
   });
 });

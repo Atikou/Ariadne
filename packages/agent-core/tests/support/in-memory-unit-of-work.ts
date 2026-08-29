@@ -434,7 +434,9 @@ async function testTurnInputPayload(
             kind: 'parent_delegation',
             parentRunId: objective.parentRunId,
             delegationId: objective.delegationId,
-            objectiveDigest: objective.objectiveDigest
+            objectiveDigest: objective.objectiveDigest,
+            mode: objective.mode,
+            providerId: objective.providerId
           },
       messages: cloneJson(input.messages),
       availableTools: cloneJson(input.availableTools)
@@ -462,6 +464,18 @@ function directivePayloadsForCommand(
         kind: 'response_content',
         contentDigest: directive.contentDigest,
         payload: `fixture:${directive.contentRef}`
+      }];
+    case 'ask_user':
+      return [{
+        ...base,
+        artifactId: directive.questionRef,
+        kind: 'user_question',
+        contentDigest: directive.questionDigest,
+        payload: {
+          format: 'ariadne.user-question',
+          schemaVersion: 1,
+          prompt: `fixture:${directive.questionRef}`
+        }
       }];
     case 'checkpoint':
       return [{

@@ -20,7 +20,6 @@ describe("AppShutdownCoordinator", () => {
       "hook",
       "runtime-producers-stopped",
       "agent-runs-cancelled",
-      "background-stopped",
       "trace-closed",
       "trace-index-closed",
       "mcp-stopped",
@@ -75,7 +74,6 @@ describe("AppShutdownCoordinator", () => {
       "hook",
       "runtime-producers-stopped",
       "agent-runs-cancelled",
-      "background-stopped",
     ]);
   });
 });
@@ -94,12 +92,6 @@ function dependencies(order: string[], expectedDeadlineAt: number) {
         .mockReturnValue([]),
       cancelRun: () => { order.push("agent-runs-cancelled"); },
       waitUntilAgentRunIdle: async () => undefined,
-    },
-    backgroundTasks: {
-      shutdown: async (timeoutMs?: number) => {
-        expect(timeoutMs).toBeGreaterThan(0);
-        order.push("background-stopped");
-      },
     },
     trace: {
       close: async (context?: { deadlineAt: number }) => {

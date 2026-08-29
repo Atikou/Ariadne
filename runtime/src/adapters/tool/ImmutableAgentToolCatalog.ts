@@ -21,12 +21,14 @@ import type {
   AgentAdmissionToolCatalog
 } from '../../control/ports/AgentAdmissionAuthority.js';
 import type {
-  AgentInferenceToolContractDescriptorV1,
+  AgentInferenceToolContractDescriptorV2,
   AgentInferenceToolContractReader,
   ReadAgentInferenceToolContractsRequest
 } from '../../control/ports/AgentInferenceToolContracts.js';
 import type {
-  AgentToolExecutionContext
+  AgentToolExecutionContext,
+  AgentToolExecutionServices,
+  AgentToolPresentationV1
 } from '../../control/ports/AgentToolExecution.js';
 import {
   assertTrustedAgentToolCatalogSnapshot,
@@ -91,7 +93,8 @@ AgentInferenceToolContractReader {
 
   public constructor(
     snapshot: TrustedAgentToolCatalogSnapshot,
-    private readonly lifecycleHook?: AgentToolLifecycleHook
+    private readonly lifecycleHook?: AgentToolLifecycleHook,
+    private readonly executionServices: AgentToolExecutionServices = Object.freeze({})
   ) {
     assertTrustedAgentToolCatalogSnapshot(snapshot);
     this.identity = Object.freeze({
@@ -138,7 +141,7 @@ AgentInferenceToolContractReader {
   public async readInferenceToolContracts(
     request: ReadAgentInferenceToolContractsRequest,
     signal: AbortSignal
-  ): Promise<readonly AgentInferenceToolContractDescriptorV1[]> {
+  ): Promise<readonly AgentInferenceToolContractDescriptorV2[]> {
     signal.throwIfAborted();
     if (
       request.catalog.catalogId !== this.identity.catalogId
@@ -167,9 +170,13 @@ AgentInferenceToolContractReader {
           'Inference Tool contract request drifted from the exact admission snapshot.'
         );
       }
-      return Object.freeze<AgentInferenceToolContractDescriptorV1>({
-        descriptorVersion: 1,
+      return Object.freeze<AgentInferenceToolContractDescriptorV2>({
+        descriptorVersion: 2,
         tool: Object.freeze(cloneAgentPinnedToolIdentity(entry.available.tool)),
+        model: Object.freeze({
+          description: entry.document.model.description,
+          guidance: Object.freeze([...entry.document.model.guidance])
+        }),
         inputSchema: deepFreezeJson(
           cloneCanonicalAgentToolInput(
             entry.document.inputSchema,
@@ -182,6 +189,21 @@ AgentInferenceToolContractReader {
     });
     signal.throwIfAborted();
     return Object.freeze(descriptors);
+  }
+
+  public readToolPresentation(
+    tool: AgentAvailableTool['tool']
+  ): AgentToolPresentationV1 | null {
+    const exact = cloneAgentPinnedToolIdentity(tool, 'toolPresentation.tool');
+    const entry = this.entriesByName.get(exact.toolName);
+    if (entry === undefined || !sameAgentPinnedToolIdentity(entry.available.tool, exact)) {
+      return null;
+    }
+    return Object.freeze({
+      kind: entry.document.presentation.kind,
+      label: entry.document.presentation.label,
+      resultVisibility: entry.document.presentation.resultVisibility
+    });
   }
 
   /**
@@ -372,7 +394,10 @@ AgentInferenceToolContractReader {
       idempotencyKey: snapshot.idempotencyKey,
       capabilityIds: Object.freeze([...snapshot.capabilityIds]),
       scope: Object.freeze([...snapshot.scope]),
-      signal
+      signal,
+      ...(this.executionServices.protectedEffectResults === undefined
+        ? {}
+        : { protectedEffectResults: this.executionServices.protectedEffectResults })
     };
     return entry.executable.execute(
       deepFreezeJson(cloneCanonicalAgentToolInput(durableInput)),

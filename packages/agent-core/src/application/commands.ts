@@ -19,7 +19,7 @@ import type {
   AgentTurnCause,
   AgentTurnInputSummary
 } from '../domain/turn.js';
-import type { AgentInboxDelivery } from '../domain/inbox.js';
+import type { AgentInboxDelivery, AgentInboxInputSource } from '../domain/inbox.js';
 
 interface AgentCommandBase {
   readonly commandId: AgentCommandId;
@@ -65,6 +65,7 @@ export interface EnqueueAgentInboxInputCommand extends AgentRunMutationCommandBa
     readonly delivery: AgentInboxDelivery;
     readonly content: string;
     readonly contentDigest: string;
+    readonly source?: AgentInboxInputSource;
   };
 }
 
@@ -106,6 +107,8 @@ export type AgentInferenceAttemptResult =
       readonly status: 'succeeded';
       readonly directive: AgentCommittedDirective;
       readonly directiveDigest: string;
+      readonly usageAnchor?: import('../domain/turn.js').AgentInferenceUsageAnchorV1;
+      readonly responseEnvelope?: import('../domain/turn.js').AgentInferenceResponseEnvelopeV1;
     }
   | {
       /** A deterministic, sanitized Provider rejection known not to produce a directive. */
@@ -153,6 +156,12 @@ export interface RequestAgentDecisionCommand extends AgentRunMutationCommandBase
 export interface ResolveAgentDecisionCommand extends AgentRunMutationCommandBase {
   readonly kind: 'run.resolve_decision';
   readonly resolution: AgentDecisionResolution;
+  readonly answerInput?: {
+    readonly inputId: string;
+    readonly messageId: string;
+    readonly content: string;
+    readonly contentDigest: string;
+  };
 }
 
 export interface RegisterAgentEffectCommand extends AgentRunMutationCommandBase {
@@ -223,6 +232,12 @@ export interface CancelAgentRunCommand extends AgentRunMutationCommandBase {
   readonly recoveryDecisionId?: string;
 }
 
+export interface InterruptContinuableAgentTurnCommand extends AgentRunMutationCommandBase {
+  readonly kind: 'run.interrupt_continuable_turn';
+  readonly reason: string;
+  readonly recoveryDecisionId: string;
+}
+
 export type AgentRunCommand =
   | AdmitAgentRunCommand
   | StartAgentRunCommand
@@ -242,4 +257,5 @@ export type AgentRunCommand =
   | RecordAgentEffectResultCommand
   | CompleteAgentRunCommand
   | FailAgentRunCommand
+  | InterruptContinuableAgentTurnCommand
   | CancelAgentRunCommand;

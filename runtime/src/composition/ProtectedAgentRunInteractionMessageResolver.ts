@@ -12,6 +12,10 @@ import type {
   AgentRunInteractionProjectionMessage,
   AgentRunInteractionProjectionResolver
 } from '../projection/AgentRunProjectionPorts.js';
+import {
+  parseProtectedAgentUserQuestion,
+  renderProtectedAgentUserQuestion
+} from '../conversation/ProtectedAgentUserQuestion.js';
 
 const MAX_INTERACTION_CONTENT_LENGTH = 1_048_576;
 
@@ -33,7 +37,11 @@ implements AgentRunInteractionProjectionResolver {
 
     for (const turn of run.turns.slice(1)) {
       const cause = turn.intention.cause;
-      if (cause.kind !== 'inbox_inputs' && cause.kind !== 'effect_results') continue;
+      if (
+        cause.kind !== 'inbox_inputs'
+        && cause.kind !== 'interrupted_inference'
+        && cause.kind !== 'effect_results'
+      ) continue;
 
       if (cause.kind === 'inbox_inputs') {
         const sourceAttempt = requireSourceAttempt(
@@ -58,6 +66,8 @@ implements AgentRunInteractionProjectionResolver {
 
       const inputIds = cause.kind === 'inbox_inputs'
         ? cause.inputIds
+        : cause.kind === 'interrupted_inference'
+          ? cause.inputIds
         : cause.inboxInputIds ?? [];
       for (const inputId of inputIds) {
         const input = run.inbox.find((candidate) => candidate.inputId === inputId);
@@ -73,7 +83,7 @@ implements AgentRunInteractionProjectionResolver {
         messages.push({
           messageId: input.messageId,
           turnId: turn.turnId,
-          role: 'user',
+          role: input.source?.kind === 'live_work' ? 'system' : 'user',
           content: input.content,
           occurredAt: input.claimedAt
         });
@@ -100,6 +110,7 @@ function requireSourceAttempt(
     || (
       attempt.state.directive.kind !== 'respond'
       && attempt.state.directive.kind !== 'complete'
+      && attempt.state.directive.kind !== 'ask_user'
     )
   ) {
     throw new AgentRunInvariantError(
@@ -128,6 +139,14 @@ async function resolveAttemptContent(
       directiveDigest: attempt.state.directiveDigest,
       contentDigest: directive.contentDigest
     };
+  } else if (directive.kind === 'ask_user') {
+    reference = {
+      runId: run.runId,
+      artifactId: directive.questionRef,
+      kind: 'user_question',
+      directiveDigest: attempt.state.directiveDigest,
+      contentDigest: directive.questionDigest
+    };
   } else if (
     directive.kind === 'complete'
     && directive.outputRef !== undefined
@@ -143,6 +162,9 @@ async function resolveAttemptContent(
   }
   if (reference === null) return 'Agent completed without a textual response.';
   const content = await payloads.loadDirectivePayload(reference);
+  if (directive.kind === 'ask_user') {
+    return renderProtectedAgentUserQuestion(parseProtectedAgentUserQuestion(content));
+  }
   if (
     typeof content !== 'string'
     || content.length === 0

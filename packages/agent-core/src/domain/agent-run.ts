@@ -3,6 +3,7 @@ import {
   type PermissionDecision,
   type PlanDecision,
   type RecoveryDecision,
+  type UserQuestionDecision,
   assertValidDecision
 } from './decision.js';
 import {
@@ -64,9 +65,16 @@ export interface PlanWaitingAgentRunState extends AgentRunStateBase {
   readonly decision: PlanDecision;
 }
 
+export interface UserQuestionWaitingAgentRunState extends AgentRunStateBase {
+  readonly status: 'waiting';
+  readonly reason: 'user_question';
+  readonly decision: UserQuestionDecision;
+}
+
 export type WaitingAgentRunState =
   | PermissionWaitingAgentRunState
-  | PlanWaitingAgentRunState;
+  | PlanWaitingAgentRunState
+  | UserQuestionWaitingAgentRunState;
 
 export interface EffectRecoveringAgentRunState extends AgentRunStateBase {
   readonly status: 'recovering';
@@ -91,6 +99,26 @@ export interface WaitingChildrenAgentRunState extends AgentRunStateBase {
   readonly requiredChildRunIds: readonly string[];
   readonly terminalChildRunIds: readonly string[];
 }
+
+/** A continuable delegated Run has settled one response and is parked for inbox work. */
+export interface ResponseWaitingInputAgentRunState extends AgentRunStateBase {
+  readonly status: 'waiting_input';
+  readonly enteredAt: string;
+  readonly responseTurnId: string;
+}
+
+/** An interrupted inference was explicitly abandoned and the Child remains resumable. */
+export interface InterruptedWaitingInputAgentRunState extends AgentRunStateBase {
+  readonly status: 'waiting_input';
+  readonly enteredAt: string;
+  readonly interruptedTurnId: string;
+  readonly interruptedAttemptId: string;
+  readonly recoveryDecisionId: string;
+}
+
+export type WaitingInputAgentRunState =
+  | ResponseWaitingInputAgentRunState
+  | InterruptedWaitingInputAgentRunState;
 
 export interface CancellingAgentRunState extends AgentRunStateBase {
   readonly status: 'cancelling';
@@ -130,6 +158,7 @@ export type AgentRunState =
   | WaitingAgentRunState
   | RecoveringAgentRunState
   | WaitingChildrenAgentRunState
+  | WaitingInputAgentRunState
   | CancellingAgentRunState
   | CompletedAgentRunState
   | FailedAgentRunState
@@ -223,6 +252,8 @@ export function assertValidAgentRun(run: AgentRun): void {
       const cause = turn?.intention.cause;
       const claimedIds = cause?.kind === 'inbox_inputs'
         ? cause.inputIds
+        : cause?.kind === 'interrupted_inference'
+          ? cause.inputIds
         : cause?.kind === 'effect_results'
           ? cause.inboxInputIds ?? []
           : [];
@@ -252,6 +283,7 @@ export function assertValidAgentRun(run: AgentRun): void {
         turnIndex > 0
         && turn.intention.cause.kind !== 'effect_results'
         && turn.intention.cause.kind !== 'inbox_inputs'
+        && turn.intention.cause.kind !== 'interrupted_inference'
         && turn.intention.cause.kind !== 'child_results'
       )
     ) {
@@ -539,18 +571,43 @@ export function assertValidAgentRun(run: AgentRun): void {
     }
   } else if (uncertainInferenceAttempts.length > 0) {
     const uncertain = uncertainInferenceAttempts[0];
-    const recovery = run.state.status === 'cancelled'
-      ? run.state.inferenceRecovery
-      : undefined;
+    const interruptedCause = uncertain === undefined
+      ? undefined
+      : run.turns.slice(1).map((turn) => turn.intention.cause).find((cause) => (
+          cause.kind === 'interrupted_inference'
+          && cause.sourceTurnId === uncertain.turn.turnId
+          && cause.sourceAttemptId === uncertain.attempt.attemptId
+        ));
+    const resolution = run.state.status === 'cancelled'
+      ? run.state.inferenceRecovery === undefined
+        ? undefined
+        : { ...run.state.inferenceRecovery, action: 'cancel_run' as const }
+      : run.state.status === 'waiting_input' && 'recoveryDecisionId' in run.state
+        ? {
+            turnId: run.state.interruptedTurnId,
+            attemptId: run.state.interruptedAttemptId,
+            recoveryDecisionId: run.state.recoveryDecisionId,
+            action: 'interrupt_turn' as const
+          }
+        : interruptedCause?.kind === 'interrupted_inference'
+          ? {
+              turnId: interruptedCause.sourceTurnId,
+              attemptId: interruptedCause.sourceAttemptId,
+              recoveryDecisionId: interruptedCause.recoveryDecisionId,
+              action: 'interrupt_turn' as const
+            }
+        : undefined;
     if (
       uncertainInferenceAttempts.length !== 1
       || uncertain === undefined
-      || recovery === undefined
-      || recovery.turnId !== uncertain.turn.turnId
-      || recovery.attemptId !== uncertain.attempt.attemptId
+      || resolution === undefined
+      || resolution.turnId !== uncertain.turn.turnId
+      || resolution.attemptId !== uncertain.attempt.attemptId
       || uncertain.attempt.state.status !== 'uncertain'
-      || recovery.recoveryDecisionId !== uncertain.attempt.state.recovery.decisionId
-      || !uncertain.attempt.state.recovery.allowedActions.includes('cancel_run')
+      || resolution.recoveryDecisionId !== uncertain.attempt.state.recovery.decisionId
+      || !uncertain.attempt.state.recovery.allowedActions.includes(
+        resolution.action
+      )
     ) {
       throw new AgentRunInvariantError(
         'An unresolved uncertain inference requires recovery or an exact cancel-run resolution.'
@@ -634,6 +691,7 @@ function assertValidState(run: AgentRun): void {
       if (
         (state.reason === 'tool_permission' && state.decision.kind !== 'permission')
         || (state.reason === 'plan_approval' && state.decision.kind !== 'plan')
+        || (state.reason === 'user_question' && state.decision.kind !== 'user_question')
       ) {
         throw new AgentRunInvariantError(
           'A waiting reason must match its decision kind.'
@@ -653,6 +711,56 @@ function assertValidState(run: AgentRun): void {
       assertTimestamp(state.enteredAt, 'run.state.enteredAt');
       assertChildWaitSet(state.requiredChildRunIds, state.terminalChildRunIds);
       return;
+    case 'waiting_input': {
+      assertTimestamp(state.enteredAt, 'run.state.enteredAt');
+      if (
+        run.binding.objectiveRef.kind !== 'parent_delegation'
+        || run.binding.objectiveRef.mode !== 'continuable'
+      ) {
+        throw new AgentRunInvariantError(
+          'waiting_input requires a continuable delegated Run.'
+        );
+      }
+      const latestTurn = run.turns.at(-1);
+      const latestAttempt = latestTurn?.attempts.at(-1);
+      if ('responseTurnId' in state) {
+        assertCanonicalPublicId(state.responseTurnId, 'run.state.responseTurnId');
+        if (
+          latestTurn?.turnId !== state.responseTurnId
+          || latestAttempt?.state.status !== 'succeeded'
+          || latestAttempt.state.directive.kind !== 'respond'
+        ) {
+          throw new AgentRunInvariantError(
+            'Response waiting_input must bind the latest succeeded response.'
+          );
+        }
+      } else {
+        assertCanonicalPublicId(
+          state.interruptedTurnId,
+          'run.state.interruptedTurnId'
+        );
+        assertCanonicalPublicId(
+          state.interruptedAttemptId,
+          'run.state.interruptedAttemptId'
+        );
+        assertCanonicalPublicId(
+          state.recoveryDecisionId,
+          'run.state.recoveryDecisionId'
+        );
+        if (
+          latestTurn?.turnId !== state.interruptedTurnId
+          || latestAttempt?.attemptId !== state.interruptedAttemptId
+          || latestAttempt.state.status !== 'uncertain'
+          || latestAttempt.state.recovery.decisionId !== state.recoveryDecisionId
+          || !latestAttempt.state.recovery.allowedActions.includes('interrupt_turn')
+        ) {
+          throw new AgentRunInvariantError(
+            'Interrupted waiting_input must bind the latest uncertain inference.'
+          );
+        }
+      }
+      return;
+    }
     case 'cancelling':
       assertTimestamp(state.requestedAt, 'run.state.requestedAt');
       assertNonEmpty(state.reason, 'run.state.reason');

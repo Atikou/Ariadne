@@ -14,7 +14,7 @@ import {
   type TrustedAgentToolCatalogSnapshot
 } from '../src/adapters/tool/TrustedAgentToolCatalogCompiler.js';
 import type {
-  AgentToolContractDocumentV1,
+  AgentToolContractDocumentV2,
   AgentToolExecutableImplementationV1
 } from '../src/control/ports/AgentToolExecution.js';
 
@@ -271,8 +271,12 @@ describe('ImmutableAgentToolCatalog', () => {
     );
 
     expect(descriptors).toEqual([{
-      descriptorVersion: 1,
+      descriptorVersion: 2,
       tool,
+      model: {
+        description: 'Write one approved Workspace file.',
+        guidance: ['Use the exact Workspace-relative path.']
+      },
       inputSchema: {
         type: 'object',
         required: ['path'],
@@ -284,6 +288,8 @@ describe('ImmutableAgentToolCatalog', () => {
     expect(Object.isFrozen(descriptors)).toBe(true);
     expect(Object.isFrozen(descriptors[0])).toBe(true);
     expect(Object.isFrozen(descriptors[0]?.tool)).toBe(true);
+    expect(Object.isFrozen(descriptors[0]?.model)).toBe(true);
+    expect(Object.isFrozen(descriptors[0]?.model.guidance)).toBe(true);
     expect(Object.isFrozen(descriptors[0]?.inputSchema)).toBe(true);
     expect(descriptors[0]).not.toHaveProperty('executable');
     expect(descriptors[0]).not.toHaveProperty('outputSchema');
@@ -297,6 +303,21 @@ describe('ImmutableAgentToolCatalog', () => {
     }, new AbortController().signal)).rejects.toThrow(
       'Inference Tool contract request drifted from the exact admission snapshot.'
     );
+  });
+
+  it('resolves only contract-pinned static presentation metadata', () => {
+    const { catalog, tool } = trustedCatalog();
+
+    expect(catalog.readToolPresentation(tool)).toEqual({
+      kind: 'file_change',
+      label: '写入工作区文件',
+      resultVisibility: 'protected'
+    });
+    expect(Object.isFrozen(catalog.readToolPresentation(tool))).toBe(true);
+    expect(catalog.readToolPresentation({
+      ...tool,
+      contractDigest: `sha256:${'f'.repeat(64)}`
+    })).toBeNull();
   });
 
   it('retains the compiled document and callback references after source mutation', async () => {
@@ -323,7 +344,7 @@ describe('ImmutableAgentToolCatalog', () => {
 });
 
 interface TrustedCatalogOptions {
-  readonly document?: Partial<AgentToolContractDocumentV1>;
+  readonly document?: Partial<AgentToolContractDocumentV2>;
   readonly executable?: Partial<AgentToolExecutableImplementationV1>;
 }
 
@@ -348,13 +369,22 @@ function trustedCatalog(options: TrustedCatalogOptions = {}): {
 
 function contractDocument(
   artifacts: AgentToolExecutableImplementationV1['artifacts'],
-  overrides: Partial<AgentToolContractDocumentV1> = {}
-): AgentToolContractDocumentV1 {
+  overrides: Partial<AgentToolContractDocumentV2> = {}
+): AgentToolContractDocumentV2 {
   return {
-    documentVersion: 1,
+    documentVersion: 2,
     toolName: 'workspace.write',
     toolVersion: '3.0.0',
     providerId: 'ariadne.builtin',
+    model: {
+      description: 'Write one approved Workspace file.',
+      guidance: ['Use the exact Workspace-relative path.']
+    },
+    presentation: {
+      kind: 'file_change',
+      label: '写入工作区文件',
+      resultVisibility: 'protected'
+    },
     inputSchema: {
       type: 'object',
       required: ['path'],

@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { imageAttachmentRefV3Schema } from './attachments-v3.js';
+
 export const PUBLIC_PROJECTION_CONTRACT_VERSION = '3.0' as const;
 
 export const publicProjectionCanonicalIdSchema = z
@@ -56,10 +58,25 @@ export const publicMessageProjectionV3Schema = z.object({
   version: versionSchema,
   role: z.enum(['user', 'assistant', 'system']),
   content: boundedTextSchema,
+  attachments: z.array(imageAttachmentRefV3Schema).min(1).max(4).optional(),
   status: z.enum(['streaming', 'completed', 'interrupted', 'failed']),
   createdAt: publicProjectionCanonicalTimestampSchema,
   updatedAt: publicProjectionCanonicalTimestampSchema
 }).strict().superRefine((value, context) => {
+  if (value.content.trim().length === 0 && value.attachments === undefined) {
+    context.addIssue({
+      code: 'custom',
+      path: ['content'],
+      message: 'A projected Message requires text or an image attachment.'
+    });
+  }
+  if (value.attachments !== undefined && value.role !== 'user') {
+    context.addIssue({
+      code: 'custom',
+      path: ['attachments'],
+      message: 'Only projected user Messages may contain image attachments.'
+    });
+  }
   if (Date.parse(value.updatedAt) < Date.parse(value.createdAt)) {
     context.addIssue({
       code: 'custom',
@@ -74,6 +91,20 @@ export const publicToolActivityProjectionV3Schema = z.object({
   activityId: publicProjectionCanonicalIdSchema,
   callId: publicProjectionCanonicalIdSchema,
   toolName: publicProjectionCanonicalIdSchema,
+  presentation: z.object({
+    kind: z.enum([
+      'generic',
+      'file_read',
+      'file_search',
+      'file_change',
+      'command',
+      'terminal',
+      'browser',
+      'skill',
+      'external'
+    ]),
+    label: z.string().trim().min(1).max(128)
+  }).strict().optional(),
   status: z.enum(['pending', 'running', 'completed', 'failed']),
   occurredAt: publicProjectionCanonicalTimestampSchema,
   startedAt: publicProjectionCanonicalTimestampSchema.optional(),
@@ -89,6 +120,19 @@ export const publicAgentInboxInputV3Schema = z.object({
   version: versionSchema,
   delivery: z.enum(['next_turn', 'next_step']),
   content: boundedTextSchema,
+  source: z.discriminatedUnion('kind', [
+    z.object({
+      kind: z.literal('live_work'),
+      jobId: publicProjectionCanonicalIdSchema,
+      workKind: publicProjectionCanonicalIdSchema,
+      status: z.enum(['completed', 'killed', 'failed', 'interrupted'])
+    }).strict(),
+    z.object({
+      kind: z.literal('user_question_answer'),
+      decisionId: publicProjectionCanonicalIdSchema,
+      questionDigest: publicProjectionDigestSchema
+    }).strict()
+  ]).optional(),
   state: z.enum(['queued', 'claimed']),
   queuedAt: publicProjectionCanonicalTimestampSchema,
   updatedAt: publicProjectionCanonicalTimestampSchema,
@@ -102,6 +146,8 @@ export const publicRunProjectionV3Schema = z.object({
   sourceMessageId: publicProjectionCanonicalIdSchema.optional(),
   parentRunId: publicProjectionCanonicalIdSchema.optional(),
   delegationId: publicProjectionCanonicalIdSchema.optional(),
+  subagentMode: z.enum(['one_shot', 'continuable']).optional(),
+  subagentProviderId: publicProjectionCanonicalIdSchema.optional(),
   version: versionSchema,
   title: boundedLabelSchema,
   status: z.enum([
@@ -127,11 +173,15 @@ export const publicRunProjectionV3Schema = z.object({
   startedAt: publicProjectionCanonicalTimestampSchema.optional(),
   completedAt: publicProjectionCanonicalTimestampSchema.optional()
 }).strict().superRefine((value, context) => {
-  if ((value.parentRunId === undefined) !== (value.delegationId === undefined)) {
+  if (
+    (value.parentRunId === undefined) !== (value.delegationId === undefined)
+    || (value.parentRunId === undefined) !== (value.subagentMode === undefined)
+    || (value.parentRunId === undefined) !== (value.subagentProviderId === undefined)
+  ) {
     context.addIssue({
       code: 'custom',
       path: ['parentRunId'],
-      message: 'parentRunId and delegationId must appear together.'
+      message: 'SubAgent parent, delegation, mode, and provider identity must appear together.'
     });
   }
   if (
@@ -170,7 +220,8 @@ export const publicDecisionChoiceV3Schema = z.enum([
   'mark_succeeded',
   'mark_failed',
   'cancel_run',
-  'resume'
+  'resume',
+  'answer'
 ]);
 export type PublicDecisionChoiceV3 = z.infer<typeof publicDecisionChoiceV3Schema>;
 
@@ -197,14 +248,16 @@ const publicDecisionKindV3Schema = z.enum([
   'permission',
   'plan',
   'recovery',
-  'budget'
+  'budget',
+  'user_question'
 ]);
 
 const publicDecisionChoicesByKind = {
   permission: ['allow_once', 'allow_run', 'deny'],
   plan: ['approve', 'reject'],
   recovery: ['retry', 'mark_succeeded', 'mark_failed', 'cancel_run'],
-  budget: ['resume', 'cancel_run']
+  budget: ['resume', 'cancel_run'],
+  user_question: ['answer']
 } as const satisfies Record<
   z.infer<typeof publicDecisionKindV3Schema>,
   readonly PublicDecisionChoiceV3[]
@@ -302,11 +355,36 @@ const publicBudgetDecisionPresentationV1Schema = z.object({
   summary: publicDecisionSummarySchema
 }).strict();
 
+export const publicUserQuestionDecisionPresentationV1Schema = z.object({
+  contractVersion: z.literal(PUBLIC_DECISION_PRESENTATION_CONTRACT_VERSION),
+  kind: z.literal('user_question'),
+  headline: publicDecisionHeadlineSchema,
+  question: z.string().trim().min(1).max(8_192),
+  options: z.array(z.object({
+    optionId: publicProjectionCanonicalIdSchema,
+    label: z.string().trim().min(1).max(256),
+    description: z.string().trim().min(1).max(1_024).optional()
+  }).strict()).min(2).max(8).optional(),
+  allowsFreeText: z.literal(true)
+}).strict().superRefine((value, context) => {
+  if (
+    value.options !== undefined
+    && new Set(value.options.map((option) => option.optionId)).size !== value.options.length
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['options'],
+      message: 'User-question option IDs must be unique.'
+    });
+  }
+});
+
 export const publicDecisionPresentationV1Schema = z.discriminatedUnion('kind', [
   publicPermissionDecisionPresentationV1Schema,
   publicPlanDecisionPresentationV1Schema,
   publicRecoveryDecisionPresentationV1Schema,
-  publicBudgetDecisionPresentationV1Schema
+  publicBudgetDecisionPresentationV1Schema,
+  publicUserQuestionDecisionPresentationV1Schema
 ]);
 export type PublicDecisionPresentationV1 = z.infer<
   typeof publicDecisionPresentationV1Schema
@@ -412,13 +490,74 @@ export type PublicDiagnosticProjectionV3 = z.infer<
   typeof publicDiagnosticProjectionV3Schema
 >;
 
+export const publicInferenceChunkProjectionV3Schema = z.object({
+  sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  channel: z.enum(['token', 'reasoning']),
+  text: z.string().min(1).max(32 * 1_024).superRefine((value, context) => {
+    if (new TextEncoder().encode(value).byteLength > 32 * 1_024) {
+      context.addIssue({ code: 'custom', message: 'Inference chunk exceeds 32768 UTF-8 bytes.' });
+    }
+  }),
+  observedAt: publicProjectionCanonicalTimestampSchema
+}).strict();
+export type PublicInferenceChunkProjectionV3 = z.infer<
+  typeof publicInferenceChunkProjectionV3Schema
+>;
+
+export const publicInferenceStreamProjectionV3Schema = z.object({
+  inferenceStreamId: publicProjectionCanonicalIdSchema,
+  runId: publicProjectionCanonicalIdSchema,
+  turnId: publicProjectionCanonicalIdSchema,
+  attemptId: publicProjectionCanonicalIdSchema,
+  version: versionSchema,
+  status: z.enum(['streaming', 'committed', 'interrupted']),
+  retainedFromSequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  finalSequence: cursorSchema,
+  chunks: z.array(publicInferenceChunkProjectionV3Schema).max(1_024),
+  updatedAt: publicProjectionCanonicalTimestampSchema
+}).strict().superRefine((value, context) => {
+  let expected = value.retainedFromSequence;
+  let retainedBytes = 0;
+  for (let index = 0; index < value.chunks.length; index += 1) {
+    const chunk = value.chunks[index]!;
+    if (chunk.sequence !== expected) {
+      context.addIssue({
+        code: 'custom',
+        path: ['chunks', index, 'sequence'],
+        message: 'Retained inference chunks must be strictly contiguous.'
+      });
+    }
+    expected += 1;
+    retainedBytes += new TextEncoder().encode(chunk.text).byteLength;
+  }
+  if (retainedBytes > 256 * 1_024) {
+    context.addIssue({
+      code: 'custom',
+      path: ['chunks'],
+      message: 'Retained inference stream text exceeds 262144 UTF-8 bytes.'
+    });
+  }
+  const expectedFinal = value.chunks.at(-1)?.sequence ?? value.retainedFromSequence - 1;
+  if (value.finalSequence !== expectedFinal) {
+    context.addIssue({
+      code: 'custom',
+      path: ['finalSequence'],
+      message: 'finalSequence must equal the last retained chunk sequence.'
+    });
+  }
+});
+export type PublicInferenceStreamProjectionV3 = z.infer<
+  typeof publicInferenceStreamProjectionV3Schema
+>;
+
 export const publicProjectionFeatureV3Schema = z.enum([
   'sessions',
   'messages',
   'runs',
   'decisions',
   'models',
-  'diagnostics'
+  'diagnostics',
+  'inference_streams'
 ]);
 export type PublicProjectionFeatureV3 = z.infer<typeof publicProjectionFeatureV3Schema>;
 
@@ -540,13 +679,24 @@ const publicDiagnosticProjectionChangeV3Schema = z.object({
   }
 });
 
+const publicInferenceStreamProjectionChangeV3Schema = z.object({
+  feature: z.literal('inference_streams'),
+  ...projectionChangeFields,
+  dto: publicInferenceStreamProjectionV3Schema.nullable()
+}).strict().superRefine((value, context) => {
+  for (const issue of changeIdentityIssues(value, 'inferenceStreamId')) {
+    context.addIssue({ code: 'custom', path: [...issue.path], message: issue.message });
+  }
+});
+
 export const publicProjectionChangeV3Schema = z.union([
   publicSessionProjectionChangeV3Schema,
   publicMessageProjectionChangeV3Schema,
   publicRunProjectionChangeV3Schema,
   publicDecisionProjectionChangeV3Schema,
   publicModelProjectionChangeV3Schema,
-  publicDiagnosticProjectionChangeV3Schema
+  publicDiagnosticProjectionChangeV3Schema,
+  publicInferenceStreamProjectionChangeV3Schema
 ]);
 export type PublicProjectionChangeV3 = z.infer<typeof publicProjectionChangeV3Schema>;
 
@@ -572,6 +722,7 @@ export const publicProjectionSnapshotV3Schema = z.object({
   decisions: z.array(publicDecisionProjectionV3Schema).max(20_000),
   models: z.array(publicModelProjectionV3Schema).max(10_000),
   diagnostics: z.array(publicDiagnosticProjectionV3Schema).max(20_000),
+  inferenceStreams: z.array(publicInferenceStreamProjectionV3Schema).max(20_000),
   tombstones: z.array(publicProjectionTombstoneV3Schema).max(190_000)
 }).strict().superRefine((value, context) => {
   if (
@@ -761,6 +912,11 @@ export function assertPublicProjectionSnapshotV3(
     'diagnostics'
   );
   assertSortedUnique(
+    snapshot.inferenceStreams,
+    (entry) => entry.inferenceStreamId,
+    'inference_streams'
+  );
+  assertSortedUnique(
     snapshot.tombstones,
     (entry) => `${entry.feature}\u0000${entry.aggregateId}`,
     'tombstones'
@@ -877,7 +1033,10 @@ function assertSnapshotTombstonesDoNotOverlapVisibleRows(
     ...snapshot.runs.map((entry) => `runs\u0000${entry.runId}`),
     ...snapshot.decisions.map((entry) => `decisions\u0000${entry.decisionId}`),
     ...snapshot.models.map((entry) => `models\u0000${entry.modelId}`),
-    ...snapshot.diagnostics.map((entry) => `diagnostics\u0000${entry.diagnosticId}`)
+    ...snapshot.diagnostics.map((entry) => `diagnostics\u0000${entry.diagnosticId}`),
+    ...snapshot.inferenceStreams.map(
+      (entry) => `inference_streams\u0000${entry.inferenceStreamId}`
+    )
   ]);
   for (const tombstone of snapshot.tombstones) {
     const identity = `${tombstone.feature}\u0000${tombstone.aggregateId}`;

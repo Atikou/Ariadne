@@ -9,6 +9,7 @@ import {
   assertValidAgentRun,
   digestAgentCommittedDirective,
   digestAgentTurnInput,
+  sha256AgentControlData,
   summarizeAgentTurnInput,
   type AgentCommittedDirective,
   type AgentRun,
@@ -509,6 +510,232 @@ describe('durable Agent Turn and inference attempts', () => {
       occurredAt: at(3)
     })).resolves.toMatchObject({ status: 'succeeded' });
     expect(observed).toEqual([marker]);
+  });
+
+  it('persists a user question and resumes through one exact durable inbox answer', async () => {
+    const setup = await createIntendedAttempt('run-user-question');
+    const dispatcher = new AgentInferenceDispatchService(
+      setup.unit,
+      executionInputReader(
+        setup.unit,
+        setup.inputDigest,
+        ATTEMPT_ID,
+        'run-user-question'
+      ),
+      preparedEngine({
+        decide: async () => ({
+          kind: 'ask_user',
+          question: {
+            prompt: 'Which deployment target should be used?',
+            options: [
+              { optionId: 'local', label: 'Local only' },
+              {
+                optionId: 'remote',
+                label: 'Remote host',
+                description: 'Requires network access.'
+              }
+            ]
+          }
+        })
+      }),
+      directivePlanner(),
+      checkpointFactory(),
+      { now: () => at(4) }
+    );
+
+    const asked = await dispatcher.dispatch({
+      commandId: 'dispatch-user-question',
+      runId: 'run-user-question',
+      turnId: TURN_ID,
+      attemptId: ATTEMPT_ID,
+      expectedVersion: 3,
+      occurredAt: at(3)
+    });
+    expect(asked.run.state).toMatchObject({
+      status: 'waiting',
+      reason: 'user_question'
+    });
+    if (asked.command === null) throw new Error('expected committed inference result');
+    expect(setup.unit.loadCommittedArtifacts(asked.command.commandId)?.directivePayloads)
+      .toMatchObject([{
+        kind: 'user_question',
+        payload: {
+          format: 'ariadne.user-question',
+          schemaVersion: 1,
+          prompt: 'Which deployment target should be used?',
+          options: [
+            { optionId: 'local', label: 'Local only' },
+            {
+              optionId: 'remote',
+              label: 'Remote host',
+              description: 'Requires network access.'
+            }
+          ]
+        }
+      }]);
+    if (
+      asked.run.state.status !== 'waiting'
+      || asked.run.state.reason !== 'user_question'
+    ) throw new Error('expected durable user-question decision');
+
+    const answer = 'local: Local only';
+    const answerDigest = await sha256AgentControlData(answer);
+    const resolve = {
+      kind: 'run.resolve_decision',
+      commandId: 'resolve-user-question',
+      runId: 'run-user-question',
+      expectedVersion: asked.run.version,
+      occurredAt: at(5),
+      resolution: {
+        kind: 'user_question',
+        decisionId: asked.run.state.decision.decisionId,
+        checkpoint: asked.run.state.decision.checkpoint,
+        resolvedAt: at(5),
+        questionRef: asked.run.state.decision.questionRef,
+        questionDigest: asked.run.state.decision.questionDigest,
+        answerInputId: 'inbox-user-question-answer',
+        answerDigest
+      },
+      answerInput: {
+        inputId: 'inbox-user-question-answer',
+        messageId: 'message-user-question-answer',
+        content: answer,
+        contentDigest: answerDigest
+      }
+    } as const;
+    const resumed = await setup.commands.execute(resolve);
+    expect(resumed.run).toMatchObject({
+      state: { status: 'running' },
+      inbox: [{
+        inputId: 'inbox-user-question-answer',
+        delivery: 'next_step',
+        content: answer,
+        contentDigest: answerDigest,
+        state: 'queued',
+        source: {
+          kind: 'user_question_answer',
+          decisionId: asked.run.state.decision.decisionId,
+          questionDigest: asked.run.state.decision.questionDigest
+        }
+      }]
+    });
+    expect(resumed.events.map((event) => event.payload.type)).toEqual([
+      'decision.resolved',
+      'inbox.input_enqueued',
+      'run.state_changed'
+    ]);
+    await expect(setup.commands.execute(resolve)).resolves.toMatchObject({
+      replayed: true,
+      run: { version: resumed.run.version }
+    });
+
+    await expect(setup.commands.execute({
+      ...resolve,
+      answerInput: { ...resolve.answerInput, content: 'remote: Remote host' }
+    })).rejects.toMatchObject({ reason: 'command_mismatch' });
+  });
+
+  it('commits exact Provider usage with the succeeded Attempt instead of a side log', async () => {
+    const setup = await createIntendedAttempt('run-usage-anchor');
+    const anchor = {
+      anchorVersion: 1 as const,
+      providerId: binding.model.providerId,
+      modelId: binding.model.modelId,
+      settingsRevision: binding.model.settingsRevision,
+      requestHeaderDigest: `sha256:${'8'.repeat(64)}`,
+      requestEnvelopeDigest: `sha256:${'9'.repeat(64)}`,
+      estimatedInputTokens: 120,
+      inputTokens: 137,
+      outputTokens: 11,
+      cacheReadInputTokens: 17,
+      cacheWriteInputTokens: 5
+    };
+    const dispatcher = new AgentInferenceDispatchService(
+      setup.unit,
+      executionInputReader(
+        setup.unit,
+        setup.inputDigest,
+        ATTEMPT_ID,
+        'run-usage-anchor'
+      ),
+      {
+        prepare: async () => ({
+          modelContext: { lifecycle: 'full' },
+          decide: async () => ({ kind: 'respond', content: 'usage anchored' } as const),
+          readUsageAnchor: () => ({ ...anchor })
+        })
+      },
+      directivePlanner(),
+      checkpointFactory(),
+      { now: () => at(4) }
+    );
+
+    const dispatched = await dispatcher.dispatch({
+      commandId: 'dispatch-usage-anchor',
+      runId: 'run-usage-anchor',
+      turnId: TURN_ID,
+      attemptId: ATTEMPT_ID,
+      expectedVersion: 3,
+      occurredAt: at(3)
+    });
+
+    expect(dispatched.run.turns[0]?.attempts[0]?.state).toMatchObject({
+      status: 'succeeded',
+      usageAnchor: anchor
+    });
+  });
+
+  it('commits sanitized response replay evidence with the exact succeeded Attempt', async () => {
+    const setup = await createIntendedAttempt('run-response-envelope');
+    const responseEnvelope = {
+      envelopeVersion: 1 as const,
+      providerId: binding.model.providerId,
+      modelId: binding.model.modelId,
+      settingsRevision: binding.model.settingsRevision,
+      adapter: 'openai-compatible' as const,
+      finishReason: 'tool_calls' as const,
+      requestEnvelopeDigest: `sha256:${'7'.repeat(64)}`,
+      contentBlocksDigest: `sha256:${'6'.repeat(64)}`,
+      contentBlockTypes: ['reasoning', 'tool_call'] as const,
+      providerResponseIdDigest: `sha256:${'5'.repeat(64)}`
+    };
+    const dispatcher = new AgentInferenceDispatchService(
+      setup.unit,
+      executionInputReader(
+        setup.unit,
+        setup.inputDigest,
+        ATTEMPT_ID,
+        'run-response-envelope'
+      ),
+      {
+        prepare: async () => ({
+          modelContext: { lifecycle: 'full' },
+          decide: async () => ({ kind: 'respond', content: 'replay anchored' } as const),
+          readResponseEnvelope: () => ({
+            ...responseEnvelope,
+            contentBlockTypes: [...responseEnvelope.contentBlockTypes]
+          })
+        })
+      },
+      directivePlanner(),
+      checkpointFactory(),
+      { now: () => at(4) }
+    );
+
+    const dispatched = await dispatcher.dispatch({
+      commandId: 'dispatch-response-envelope',
+      runId: 'run-response-envelope',
+      turnId: TURN_ID,
+      attemptId: ATTEMPT_ID,
+      expectedVersion: 3,
+      occurredAt: at(3)
+    });
+
+    expect(dispatched.attempt.state).toMatchObject({
+      status: 'succeeded',
+      responseEnvelope
+    });
+    expect(() => assertValidAgentRun(dispatched.run)).not.toThrow();
   });
 
   it('does not cross the durable start boundary when already cancelled', async () => {

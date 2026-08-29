@@ -1,5 +1,12 @@
+import { randomUUID } from 'node:crypto';
 import type { WebContents } from 'electron';
-import { spawn, type IPty } from 'node-pty';
+import {
+  LocalLiveWorkRegistry,
+  type LiveWorkOutcome,
+  type LiveWorkOwner,
+  type LiveWorkSnapshot
+} from '@ariadne/live-work';
+import { spawn } from 'node-pty';
 import type {
   CreateTerminalSessionRequest,
   ResizeTerminalRequest,
@@ -10,137 +17,198 @@ import { IPC_CHANNELS } from '@shared/ipc';
 
 const MAX_SESSIONS_PER_RENDERER = 8;
 
-interface ManagedTerminalSession extends TerminalSession {
-  ownerId: number;
-  pty: IPty;
-}
-
+/**
+ * Electron PTY producer backed by the same live-work registry as Runtime
+ * processes. Main owns the PTY; the registry owns lifecycle, owner fencing,
+ * output cursors, retention, cancellation, and completion ordering.
+ */
 export class TerminalSessionService {
-  private readonly sessions = new Map<string, ManagedTerminalSession>();
+  private readonly registry = new LocalLiveWorkRegistry({
+    createId: randomUUID,
+    maxConcurrentPerOwner: MAX_SESSIONS_PER_RENDERER
+  });
+  private readonly owners = new Map<number, WebContents>();
+  private readonly sessionOwners = new Map<string, LiveWorkOwner>();
   private readonly ownerDestroyedListeners = new Map<number, { owner: WebContents; listener: () => void }>();
+  private readonly removeOutputListener: () => void;
+  private readonly removeDoneListener: () => void;
 
-  constructor(private readonly resolveWorkingDirectory: (workspaceId: string) => string) {}
+  public constructor(private readonly resolveWorkingDirectory: (workspaceId: string) => string) {
+    this.removeOutputListener = this.registry.onOutput(({ snapshot, chunk }) => {
+      const owner = this.ownerFor(snapshot);
+      if (!owner || owner.isDestroyed()) return;
+      owner.send(IPC_CHANNELS.terminalOutput, {
+        sessionId: snapshot.id,
+        work: snapshot,
+        chunk
+      });
+    });
+    this.removeDoneListener = this.registry.onDone(({ snapshot }) => {
+      const owner = this.ownerFor(snapshot);
+      if (owner && !owner.isDestroyed()) {
+        owner.send(IPC_CHANNELS.terminalExit, { sessionId: snapshot.id, work: snapshot });
+      }
+      this.sessionOwners.delete(snapshot.id);
+      this.releaseOwnerIfIdle(Number(snapshot.owner.ownerId));
+    });
+  }
 
-  create(owner: WebContents, request: CreateTerminalSessionRequest): TerminalSession {
+  public create(owner: WebContents, request: CreateTerminalSessionRequest): TerminalSession {
     if (process.platform !== 'win32') throw new Error('PowerShell and CMD terminals require Windows.');
-    if (this.sessions.has(request.sessionId)) throw new Error('Terminal session already exists.');
-
-    const activeSessionCount = [...this.sessions.values()].filter((session) => session.ownerId === owner.id).length;
-    if (activeSessionCount >= MAX_SESSIONS_PER_RENDERER) throw new Error('Too many terminal sessions are open.');
-
     const cwd = this.resolveWorkingDirectory(request.workspaceId);
     const shell = resolveShell(request.shell);
-    const terminal = spawn(shell.executable, shell.args, {
-      name: 'xterm-256color',
-      cols: request.columns,
-      rows: request.rows,
-      cwd,
-      env: {
-        ...process.env,
-        TERM: 'xterm-256color',
-        COLORTERM: 'truecolor'
-      },
-      useConpty: true,
-      useConptyDll: true
-    });
-
-    const session: ManagedTerminalSession = {
-      id: request.sessionId,
-      workspaceId: request.workspaceId,
-      shell: request.shell,
-      cwd,
-      ownerId: owner.id,
-      pty: terminal
-    };
-    this.sessions.set(session.id, session);
+    this.owners.set(owner.id, owner);
     this.watchOwner(owner);
 
-    terminal.onData((data) => {
-      if (!owner.isDestroyed()) owner.send(IPC_CHANNELS.terminalData, { sessionId: session.id, data });
-    });
-    terminal.onExit(({ exitCode, signal }) => {
-      this.sessions.delete(session.id);
-      this.releaseOwnerIfIdle(session.ownerId);
-      if (!owner.isDestroyed()) {
-        owner.send(IPC_CHANNELS.terminalExit, {
-          sessionId: session.id,
-          exitCode,
-          ...(typeof signal === 'number' ? { signal } : {})
+    let cancelled = false;
+    let work: LiveWorkSnapshot;
+    try {
+      work = this.registry.start({
+      kind: 'terminal',
+      label: `${request.shell}:${cwd}`.slice(0, 1_024),
+      owner: terminalOwner(owner.id, request.workspaceId),
+      preferredId: request.sessionId,
+      metadata: { shell: request.shell, cwd },
+      start: (context) => {
+        const terminal = spawn(shell.executable, shell.args, {
+          name: 'xterm-256color',
+          cols: request.columns,
+          rows: request.rows,
+          cwd,
+          env: {
+            ...process.env,
+            TERM: 'xterm-256color',
+            COLORTERM: 'truecolor'
+          },
+          useConpty: true,
+          useConptyDll: true
         });
+        context.patchMetadata({ processId: terminal.pid });
+        let resolveDone!: (outcome: LiveWorkOutcome) => void;
+        const done = new Promise<LiveWorkOutcome>((resolve) => { resolveDone = resolve; });
+        terminal.onData((data) => context.appendOutput('terminal', data));
+        terminal.onExit(({ exitCode, signal }) => {
+          if (typeof signal === 'number') context.patchMetadata({ signal });
+          resolveDone(cancelled
+            ? { status: 'killed', exitCode }
+            : exitCode === 0
+              ? { status: 'completed', exitCode }
+              : { status: 'failed', exitCode, detail: `terminal_exit_${exitCode}` });
+        });
+        return {
+          done,
+          cancel: () => {
+            cancelled = true;
+            safelyKill(terminal);
+          },
+          write: (text) => terminal.write(text),
+          resize: ({ columns, rows }) => terminal.resize(columns, rows),
+          signal: (signal) => {
+            if (signal === 'interrupt') terminal.write('\x03');
+            else {
+              cancelled = true;
+              safelyKill(terminal);
+            }
+          }
+        };
       }
-    });
-
-    return {
-      id: session.id,
-      workspaceId: session.workspaceId,
-      shell: session.shell,
-      cwd: session.cwd
-    };
-  }
-
-  write(ownerId: number, request: WriteTerminalRequest): void {
-    this.getOwnedSession(ownerId, request.sessionId).pty.write(request.data);
-  }
-
-  resize(ownerId: number, request: ResizeTerminalRequest): void {
-    this.getOwnedSession(ownerId, request.sessionId).pty.resize(request.columns, request.rows);
-  }
-
-  close(ownerId: number, sessionId: string): void {
-    const session = this.sessions.get(sessionId);
-    if (!session || session.ownerId !== ownerId) return;
-    this.sessions.delete(sessionId);
-    safelyKill(session.pty);
-    this.releaseOwnerIfIdle(ownerId);
-  }
-
-  closeOwnedBy(ownerId: number): void {
-    for (const session of [...this.sessions.values()]) {
-      if (session.ownerId === ownerId) this.close(ownerId, session.id);
+      });
+    } catch (error) {
+      this.releaseOwnerIfIdle(owner.id);
+      throw error;
     }
+    this.sessionOwners.set(work.id, work.owner);
+
+    return { id: work.id, workspaceId: request.workspaceId, shell: request.shell, cwd, work };
   }
 
-  dispose(): void {
-    for (const session of this.sessions.values()) safelyKill(session.pty);
-    this.sessions.clear();
+  public async write(ownerId: number, request: WriteTerminalRequest): Promise<void> {
+    const owner = this.ownerForId(ownerId, request.sessionId);
+    await this.registry.write(owner, request.sessionId, request.data);
+  }
+
+  public async resize(ownerId: number, request: ResizeTerminalRequest): Promise<void> {
+    const owner = this.ownerForId(ownerId, request.sessionId);
+    await this.registry.resize(owner, request.sessionId, {
+      columns: request.columns,
+      rows: request.rows
+    });
+  }
+
+  public async close(ownerId: number, sessionId: string): Promise<void> {
+    const snapshot = this.findOwned(ownerId, sessionId);
+    if (snapshot === undefined) return;
+    await this.registry.kill(snapshot.owner, sessionId, 'renderer_requested');
+  }
+
+  public async closeOwnedBy(ownerId: number): Promise<void> {
+    await this.registry.closeAuthorityOwner('renderer', String(ownerId));
+  }
+
+  public async dispose(): Promise<void> {
+    this.removeOutputListener();
+    this.removeDoneListener();
+    await this.registry.close();
     for (const { owner, listener } of this.ownerDestroyedListeners.values()) {
       owner.removeListener('destroyed', listener);
     }
     this.ownerDestroyedListeners.clear();
+    this.owners.clear();
+    this.sessionOwners.clear();
   }
 
-  private getOwnedSession(ownerId: number, sessionId: string): ManagedTerminalSession {
-    const session = this.sessions.get(sessionId);
-    if (!session || session.ownerId !== ownerId) throw new Error('Terminal session was not found.');
-    return session;
+  private ownerFor(snapshot: LiveWorkSnapshot): WebContents | undefined {
+    return this.owners.get(Number(snapshot.owner.ownerId));
+  }
+
+  private ownerForId(ownerId: number, sessionId: string): LiveWorkOwner {
+    const snapshot = this.findOwned(ownerId, sessionId);
+    if (snapshot === undefined) throw new Error('Terminal session was not found.');
+    return snapshot.owner;
+  }
+
+  private findOwned(ownerId: number, sessionId: string): LiveWorkSnapshot | undefined {
+    const owner = this.sessionOwners.get(sessionId);
+    if (owner === undefined || owner.ownerId !== String(ownerId)) return undefined;
+    try {
+      return this.registry.get(owner, sessionId);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'live_work_not_found') return undefined;
+      throw error;
+    }
   }
 
   private watchOwner(owner: WebContents): void {
     if (this.ownerDestroyedListeners.has(owner.id)) return;
-    const listener = (): void => this.closeOwnedBy(owner.id);
+    const listener = (): void => { void this.closeOwnedBy(owner.id); };
     this.ownerDestroyedListeners.set(owner.id, { owner, listener });
     owner.once('destroyed', listener);
   }
 
   private releaseOwnerIfIdle(ownerId: number): void {
-    if ([...this.sessions.values()].some((session) => session.ownerId === ownerId)) return;
+    const hasLive = [...this.sessionOwners.values()].some((owner) => owner.ownerId === String(ownerId));
+    if (hasLive) return;
     const watched = this.ownerDestroyedListeners.get(ownerId);
-    if (!watched) return;
-    watched.owner.removeListener('destroyed', watched.listener);
-    this.ownerDestroyedListeners.delete(ownerId);
+    if (watched) {
+      watched.owner.removeListener('destroyed', watched.listener);
+      this.ownerDestroyedListeners.delete(ownerId);
+    }
+    this.owners.delete(ownerId);
   }
+}
+
+function terminalOwner(ownerId: number, workspaceId: string): LiveWorkOwner {
+  return { authority: 'renderer', ownerId: String(ownerId), workspaceId };
 }
 
 function resolveShell(shell: CreateTerminalSessionRequest['shell']): { executable: string; args: string[] } {
   switch (shell) {
-    case 'powershell':
-      return { executable: 'powershell.exe', args: ['-NoLogo'] };
-    case 'cmd':
-      return { executable: 'cmd.exe', args: [] };
+    case 'powershell': return { executable: 'powershell.exe', args: ['-NoLogo'] };
+    case 'cmd': return { executable: 'cmd.exe', args: [] };
   }
 }
 
-function safelyKill(terminal: IPty): void {
+function safelyKill(terminal: { kill(): void }): void {
   try {
     terminal.kill();
   } catch {

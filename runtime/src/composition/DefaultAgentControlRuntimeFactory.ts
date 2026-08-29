@@ -1,5 +1,6 @@
 import { assertCanonicalAbsoluteDataRoot } from '@ariadne/protocol/host';
 import {
+  type AgentDirectivePayloadLookup,
   type AgentPlanReference
 } from '@ariadne/agent-core';
 import type { RuntimeResult } from '@ariadne/protocol/public';
@@ -45,6 +46,10 @@ import type { RuntimeCommandEnvelope } from '../ingress/RuntimeIngress.js';
 import type {
   RuntimeCommandReconciliation
 } from '../control/ports/RuntimeCommandJournal.js';
+import {
+  AgentLiveWorkCompletionLifecycle
+} from '../control/execution/AgentLiveWorkCompletionLifecycle.js';
+import type { AgentControlLiveWorkService } from '../control/ports/AgentLiveWork.js';
 import {
   ConversationAgentResultProjectionService
 } from '../control/conversation/ConversationAgentResultProjectionService.js';
@@ -92,9 +97,13 @@ import {
 import {
   AgentControlPublicCommandRouter
 } from './AgentControlPublicCommandRouter.js';
-import type { ProductionSkillCatalog } from './runtime-capabilities/ProductionSkillCatalog.js';
 import { PublicAgentObservability } from '../adapters/observability/PublicAgentObservability.js';
-import type { TelemetryService } from '../adapters/observability/ProductionTelemetryService.js';
+import {
+  InferenceStreamPublicProjectionPublisher,
+  type InferenceStreamIdentity
+} from '../projection/InferenceStreamPublicProjectionPublisher.js';
+import { LocalConversationAttachmentStore } from '../adapters/attachment/LocalConversationAttachmentStore.js';
+import type { ConversationAttachmentStore } from '../control/ports/ConversationAttachmentStore.js';
 
 const DEFAULT_PUBLIC_PROJECTION_INTERVAL_MS = 50;
 const EMPTY_MODEL_CATALOG: ModelCatalogProjectionSource = Object.freeze({
@@ -105,7 +114,7 @@ export interface AgentControlPublicProjectionLifecycleOptions {
   readonly publishIntervalMs?: number;
   readonly publisher?: Omit<
     AgentRunPublicProjectionPublisherOptions,
-    'terminalResultSink' | 'interactionResolver'
+    'terminalResultSink' | 'interactionResolver' | 'toolPresentationResolver'
   >;
   readonly conversationPublisher?: ConversationPublicProjectionPublisherOptions;
   readonly modelPublisher?: ModelCatalogPublicProjectionPublisherOptions;
@@ -136,6 +145,7 @@ implements AgentControlRuntimeLifecycle {
   private shutdownDrainContext: ShutdownContext | null = null;
   private prepareOperation: Promise<void> | null = null;
   private shutdownOperation: Promise<void> | null = null;
+  private readonly liveWorkCompletion?: AgentLiveWorkCompletionLifecycle;
 
   public constructor(
     private readonly unitOfWork: SqliteAgentRunUnitOfWork,
@@ -147,7 +157,9 @@ implements AgentControlRuntimeLifecycle {
     modelCatalog: ModelCatalogProjectionSource = EMPTY_MODEL_CATALOG,
     projectionWakeEventSink?: RuntimePublicEventSink,
     authorizedWorkspaceIds: readonly string[] = [],
-    private readonly observability?: PublicAgentObservability
+    private readonly observability?: PublicAgentObservability,
+    liveWork?: AgentControlLiveWorkService,
+    attachmentStore?: ConversationAttachmentStore
   ) {
     this.publishIntervalMs = options.publishIntervalMs
       ?? DEFAULT_PUBLIC_PROJECTION_INTERVAL_MS;
@@ -179,7 +191,8 @@ implements AgentControlRuntimeLifecycle {
       {
         ...options.publisher,
         terminalResultSink: terminalResults,
-        interactionResolver: new ProtectedAgentRunInteractionMessageResolver(unitOfWork)
+        interactionResolver: new ProtectedAgentRunInteractionMessageResolver(unitOfWork),
+        toolPresentationResolver: executionPipeline?.toolPresentationResolver
       }
     );
     this.conversationPublisher = new ConversationPublicProjectionPublisher(
@@ -210,9 +223,16 @@ implements AgentControlRuntimeLifecycle {
         authorizedWorkspaceIds,
         conversationCommandNow,
         agentDecisionCommandNow: options.agentDecisionCommandNow,
-        agentInboxCommandNow: options.agentInboxCommandNow
+        agentInboxCommandNow: options.agentInboxCommandNow,
+        attachmentStore
       }
     );
+    if (liveWork !== undefined) {
+      this.liveWorkCompletion = new AgentLiveWorkCompletionLifecycle(liveWork, unitOfWork, {
+        wakeWorkScheduler: () => executionPipeline?.runWorkScheduler.wake(),
+        wakeProjectionDrain: () => this.wakeProjectionDrain()
+      });
+    }
   }
 
   public async start(): Promise<void> {
@@ -236,9 +256,16 @@ implements AgentControlRuntimeLifecycle {
           throw new Error('agent_run_work_scheduler_required');
         }
       } else {
+        // Recover durable interruption facts before any scheduler can consume
+        // the affected Run or cross a fresh Provider/Tool boundary.
+        await this.liveWorkCompletion?.reconcileStartup();
         // Crossed initial-inference dispatch fences must fail before any other
         // producer is allowed to perform Provider or Tool I/O.
         await this.executionPipeline.executionScheduler.preflightStartupRecovery();
+        // Replay already committed terminal Child facts before authority
+        // retirement scans Parent Runs. This closes a crash window where the
+        // Child terminal event was durable but its Parent observation was not.
+        await this.drainPending();
         await this.executionPipeline.runWorkScheduler.start();
         this.executionPipeline.runWorkScheduler.assertHealthy();
         await this.executionPipeline.executionScheduler.start();
@@ -260,6 +287,7 @@ implements AgentControlRuntimeLifecycle {
   }
 
   public assertHealthy(): void {
+    this.liveWorkCompletion?.assertHealthy();
     this.executionPipeline?.runWorkScheduler.assertHealthy();
     this.executionPipeline?.executionScheduler.assertHealthy();
     this.executionPipeline?.handoffProducer.assertHealthy();
@@ -406,6 +434,13 @@ implements AgentControlRuntimeLifecycle {
     }
     try {
       context.throwIfExpired();
+      await this.liveWorkCompletion?.prepareShutdown(context.remainingMs());
+      context.throwIfExpired();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      context.throwIfExpired();
       await this.observability?.drain();
       context.throwIfExpired();
       if (this.activeDrain !== null) await this.activeDrain;
@@ -517,6 +552,7 @@ implements AgentControlRuntimeFactory {
     assertCanonicalAbsoluteDataRoot(input.dataRoot);
     const executionPipelineFactory = this.executionPipelineFactory
       ?? createProductionExecutionPipelineFactory(input);
+    const attachmentStore = new LocalConversationAttachmentStore(input.dataRoot);
     if (!input.production) {
       let unitOfWork: SqliteAgentRunUnitOfWork | undefined;
       let conversation: SqliteConversationRunHandoffUnitOfWork | undefined;
@@ -529,17 +565,25 @@ implements AgentControlRuntimeFactory {
         );
         conversation = new SqliteConversationRunHandoffUnitOfWork(input.dataRoot);
         publicProjection = new SqlitePublicProjectionStore(input.dataRoot);
+        const inferenceStreams = new InferenceStreamPublicProjectionPublisher(publicProjection);
+        await inferenceStreams.reconcileOpenStreams(
+          (identity) => resolveInferenceStreamTerminalState(unitOfWork!, identity)
+        );
         observability = await createPublicAgentObservability(input, publicProjection);
         const executionPipeline = await executionPipelineFactory?.create({
           unitOfWork,
           conversation,
           agentAdmissionAuthoritySource: input.agentAdmissionAuthoritySource,
           modelProviders: input.modelProviders,
+          subagentProviders: input.subagentProviders,
           ...(input.installRoot === undefined ? {} : { installRoot: input.installRoot }),
           ...(input.workspaces === undefined ? {} : { workspaces: input.workspaces }),
           ...(input.runtimePolicy === undefined ? {} : { runtimePolicy: input.runtimePolicy }),
-          ...skillCatalogInput(input),
           hookDeliverySink: observability,
+          providerTelemetry: input.runtimeServices?.telemetry,
+          processSandboxForWorkspace: input.runtimeServices?.processSandboxForWorkspace,
+          inferenceStreamPublisher: inferenceStreams,
+          attachmentStore,
           ...(input.modelInferenceGateway === undefined
             ? {}
             : { modelInferenceGateway: input.modelInferenceGateway })
@@ -554,7 +598,9 @@ implements AgentControlRuntimeFactory {
           input.modelCatalog,
           input.publicEventSink,
           input.workspaces?.map((workspace) => workspace.workspaceId) ?? [],
-          observability
+          observability,
+          input.runtimeServices?.liveWorkLifecycle,
+          attachmentStore
         );
       } catch (error) {
         const cleanupContext = createShutdownContext(Date.now() + 5_000);
@@ -613,6 +659,10 @@ implements AgentControlRuntimeFactory {
       });
       conversation = new SqliteConversationRunHandoffUnitOfWork(input.dataRoot);
       publicProjection = new SqlitePublicProjectionStore(input.dataRoot);
+      const inferenceStreams = new InferenceStreamPublicProjectionPublisher(publicProjection);
+      await inferenceStreams.reconcileOpenStreams(
+        (identity) => resolveInferenceStreamTerminalState(unitOfWork!, identity)
+      );
       observability = await createPublicAgentObservability(input, publicProjection);
       const executionPipeline = await executionPipelineFactory?.create({
         unitOfWork,
@@ -622,8 +672,10 @@ implements AgentControlRuntimeFactory {
         ...(input.installRoot === undefined ? {} : { installRoot: input.installRoot }),
         ...(input.workspaces === undefined ? {} : { workspaces: input.workspaces }),
         ...(input.runtimePolicy === undefined ? {} : { runtimePolicy: input.runtimePolicy }),
-        ...skillCatalogInput(input),
         hookDeliverySink: observability,
+        providerTelemetry: input.runtimeServices?.telemetry,
+        inferenceStreamPublisher: inferenceStreams,
+        attachmentStore,
         ...(input.modelInferenceGateway === undefined
           ? {}
           : { modelInferenceGateway: input.modelInferenceGateway })
@@ -638,7 +690,9 @@ implements AgentControlRuntimeFactory {
         input.modelCatalog,
         input.publicEventSink,
         input.workspaces?.map((workspace) => workspace.workspaceId) ?? [],
-        observability
+        observability,
+        input.runtimeServices?.liveWorkLifecycle,
+        attachmentStore
       );
     } catch (error) {
       const cleanupContext = createShutdownContext(Date.now() + 5_000);
@@ -657,24 +711,28 @@ implements AgentControlRuntimeFactory {
   }
 }
 
-function skillCatalogInput(
-  input: AgentControlRuntimeFactoryInput
-): { readonly skillCatalog?: ProductionSkillCatalog } {
-  const skillCatalog = input.capabilityManifest?.service<ProductionSkillCatalog>(
-    'agent.skills.catalog'
-  );
-  return skillCatalog === undefined ? {} : { skillCatalog };
+async function resolveInferenceStreamTerminalState(
+  unitOfWork: SqliteAgentRunUnitOfWork,
+  identity: InferenceStreamIdentity
+): Promise<'committed' | 'interrupted'> {
+  return unitOfWork.transaction(async (transaction) => {
+    const run = await transaction.loadRun(identity.runId);
+    const turn = run?.turns.find((candidate) => candidate.turnId === identity.turnId);
+    const attempt = turn?.attempts.find(
+      (candidate) => candidate.attemptId === identity.attemptId
+    );
+    return attempt?.state.status === 'succeeded' ? 'committed' : 'interrupted';
+  });
 }
 
 async function createPublicAgentObservability(
   input: AgentControlRuntimeFactoryInput,
   publicProjection: SqlitePublicProjectionStore
 ): Promise<PublicAgentObservability> {
-  const telemetry = input.capabilityManifest?.service<TelemetryService>('agent.telemetry');
   const observability = new PublicAgentObservability(
     publicProjection,
     new PublicProjectionWakeCommitSink(publicProjection, input.publicEventSink),
-    telemetry
+    input.runtimeServices?.telemetry
   );
   await observability.start();
   return observability;
@@ -686,11 +744,15 @@ function createProductionExecutionPipelineFactory(
   if (input.workspaces === undefined || input.credentialEnvironment === undefined) {
     return undefined;
   }
-  if (input.capabilityManifest === undefined) return undefined;
+  if (input.agentToolCatalogSnapshots === undefined) return undefined;
+  if (input.runtimeServices?.instructionAssembly === undefined) return undefined;
+  if (input.runtimeServices.lifecycleHooks === undefined) return undefined;
   return new ProductionAgentControlExecutionPipelineFactory({
-    toolCatalogSnapshots: input.capabilityManifest.agentToolCatalogSnapshots,
+    toolCatalogSnapshots: input.agentToolCatalogSnapshots,
     credentialEnvironment: input.credentialEnvironment,
-    processSessionLifecycle: input.capabilityManifest.service('agent.process-sessions'),
+    instructionAssembly: input.runtimeServices.instructionAssembly,
+    lifecycleHooks: input.runtimeServices.lifecycleHooks,
+    liveWorkLifecycle: input.runtimeServices?.liveWorkLifecycle,
     recoveryReporter: {
       reportExecutionIntentRecovery: async (notice) => {
         console.error('[agent-control] execution intent requires recovery', {
@@ -719,6 +781,9 @@ function createAgentRunVersionReader(
         }
         return transaction.loadPlanVersion(reference);
       }
+    ),
+    loadDirectivePayload: (reference: AgentDirectivePayloadLookup) => (
+      unitOfWork.loadDirectivePayload(reference)
     )
   });
 }

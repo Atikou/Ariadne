@@ -1,4 +1,4 @@
-import type { AgentNotification } from "../background/types.js";
+import type { AgentNotification } from '../notifications/types.js';
 import type {
   AgentPromptStrategySummary,
   AgentRouterDecisionSummary,

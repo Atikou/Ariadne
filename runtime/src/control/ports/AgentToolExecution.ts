@@ -4,6 +4,33 @@ import type {
   AgentToolJsonValue
 } from '@ariadne/agent-core';
 
+export interface AgentProtectedEffectResultReadResult {
+  readonly effectId: string;
+  readonly toolCallId: string;
+  readonly status: 'succeeded' | 'failed';
+  readonly digest: string;
+  readonly totalBytes: number;
+  readonly cursor: number;
+  readonly nextCursor: number;
+  readonly content: string;
+  readonly complete: boolean;
+}
+
+/** Owner-scoped access to an already-protected durable Effect result. */
+export interface AgentProtectedEffectResultReader {
+  read(input: {
+    readonly runId: string;
+    readonly workspaceId: string;
+    readonly effectId: string;
+    readonly cursor: number;
+    readonly maxBytes: number;
+  }): Promise<AgentProtectedEffectResultReadResult>;
+}
+
+export interface AgentToolExecutionServices {
+  readonly protectedEffectResults?: AgentProtectedEffectResultReader;
+}
+
 export interface AgentToolExecutionContext {
   readonly runId: string;
   readonly effectId: string;
@@ -12,6 +39,8 @@ export interface AgentToolExecutionContext {
   readonly capabilityIds: readonly string[];
   readonly scope: readonly string[];
   readonly signal: AbortSignal;
+  /** Internal execution service; never appears in the data-only Tool contract. */
+  readonly protectedEffectResults?: AgentProtectedEffectResultReader;
 }
 
 export type AgentToolInputValidationResult =
@@ -28,11 +57,39 @@ export type AgentToolInputValidationResult =
  * compiler hashes the canonical form of every field; callers never provide a
  * contract pin directly.
  */
-export interface AgentToolContractDocumentV1 {
-  readonly documentVersion: 1;
+export type AgentToolPresentationKind =
+  | 'generic'
+  | 'file_read'
+  | 'file_search'
+  | 'file_change'
+  | 'command'
+  | 'terminal'
+  | 'browser'
+  | 'skill'
+  | 'external';
+
+export interface AgentToolModelSemanticsV1 {
+  /** Trusted provider-visible purpose; never synthesized from the Tool name. */
+  readonly description: string;
+  /** Short, declarative constraints that improve correct model invocation. */
+  readonly guidance: readonly string[];
+}
+
+export interface AgentToolPresentationV1 {
+  readonly kind: AgentToolPresentationKind;
+  /** Public, static activity label. Inputs and results never enter this field. */
+  readonly label: string;
+  /** Tool results remain in protected Effect storage, not Public Projection. */
+  readonly resultVisibility: 'protected';
+}
+
+export interface AgentToolContractDocumentV2 {
+  readonly documentVersion: 2;
   readonly toolName: string;
   readonly toolVersion: string;
   readonly providerId: string;
+  readonly model: AgentToolModelSemanticsV1;
+  readonly presentation: AgentToolPresentationV1;
   readonly inputSchema: AgentToolJsonValue;
   readonly outputSchema: AgentToolJsonValue;
   readonly capabilityIds: readonly string[];
@@ -99,7 +156,7 @@ export interface AgentToolExecutableImplementationV1 {
 
 /** Compiler-produced immutable Catalog contract consumed across composition seams. */
 export interface AgentToolCatalogSnapshotEntry {
-  readonly document: AgentToolContractDocumentV1;
+  readonly document: AgentToolContractDocumentV2;
   readonly tool: AgentPinnedToolIdentity;
   readonly executable: Pick<
     AgentToolExecutableImplementationV1,

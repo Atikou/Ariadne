@@ -25,6 +25,9 @@ import {
 import type {
   ModelCatalogProjectionHead
 } from '../../projection/ModelCatalogProjectionPorts.js';
+import type {
+  InferenceStreamProjectionHead
+} from '../../projection/InferenceStreamProjectionPorts.js';
 import { openPublicProjectionDatabase } from './PublicProjectionDbSchema.js';
 import {
   closeOwnedSqliteDatabase,
@@ -142,6 +145,27 @@ export class SqlitePublicProjectionStore {
   public readModelProjectionHeads(): Promise<readonly ModelCatalogProjectionHead[]> {
     if (this.unhealthyCause !== null) return Promise.reject(this.unhealthyError());
     return this.schedule(() => readModelProjectionHeads(this.database));
+  }
+
+  public readInferenceStreamProjectionHead(
+    inferenceStreamIdValue: string
+  ): Promise<InferenceStreamProjectionHead | null> {
+    if (this.unhealthyCause !== null) return Promise.reject(this.unhealthyError());
+    let inferenceStreamId: string;
+    try {
+      inferenceStreamId = publicProjectionCanonicalIdSchema.parse(inferenceStreamIdValue);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return this.schedule(() => {
+      const row = selectHead(this.database, 'inference_streams', inferenceStreamId);
+      return row === undefined ? null : inferenceStreamHead(row);
+    });
+  }
+
+  public readInferenceStreamProjectionHeads(): Promise<readonly InferenceStreamProjectionHead[]> {
+    if (this.unhealthyCause !== null) return Promise.reject(this.unhealthyError());
+    return this.schedule(() => readInferenceStreamProjectionHeads(this.database));
   }
 
   public readPublicProjectionSourceCheckpoint(sourceIdValue: string): Promise<number> {
@@ -777,6 +801,33 @@ function readModelProjectionHeads(
   });
 }
 
+function readInferenceStreamProjectionHeads(
+  database: DatabaseSync
+): readonly InferenceStreamProjectionHead[] {
+  const rows = database.prepare(
+    `SELECT feature, aggregate_id, aggregate_version, operation,
+            projected_at, dto_json, payload_digest, commit_cursor, change_index
+     FROM projection_heads
+     WHERE feature='inference_streams'
+     ORDER BY aggregate_id`
+  ).all() as unknown as HeadRow[];
+  return rows.map(inferenceStreamHead);
+}
+
+function inferenceStreamHead(row: HeadRow): InferenceStreamProjectionHead {
+  const change = versionRowAsChange(row);
+  assertVersionRowMatchesChange(row, change);
+  if (change.feature !== 'inference_streams') {
+    throw storageCorruption(`inference_stream_head_feature_invalid:${row.aggregate_id}`);
+  }
+  return {
+    aggregateId: change.aggregateId,
+    aggregateVersion: change.aggregateVersion,
+    operation: change.operation,
+    dto: change.dto
+  };
+}
+
 function readSourceCheckpoint(database: DatabaseSync, sourceId: string): number {
   const checkpoint = database.prepare(
     `SELECT source_id, source_cursor, event_id, updated_at
@@ -804,6 +855,7 @@ function buildSnapshot(
     decisions: readFeatureDtos(database, 'decisions'),
     models: readFeatureDtos(database, 'models'),
     diagnostics: readFeatureDtos(database, 'diagnostics'),
+    inferenceStreams: readFeatureDtos(database, 'inference_streams'),
     tombstones: readProjectionTombstones(database)
   });
 }

@@ -336,6 +336,9 @@ export class AgentInferenceDispatchService {
     const startedTurn = requireTurn(started.run, request.turnId);
     const startedAttempt = requireAttempt(startedTurn, request.attemptId);
     let directive: AgentDirective | null = null;
+    let usageAnchor: import('../domain/turn.js').AgentInferenceUsageAnchorV1 | undefined;
+    let responseEnvelope: import('../domain/turn.js').AgentInferenceResponseEnvelopeV1
+      | undefined;
     let result: AgentInferenceAttemptResult | undefined;
     let effectPayloads: readonly AgentEffectPayloadCommit[] = [];
     let directivePayloads: readonly AgentDirectivePayloadCommit[] = [];
@@ -343,6 +346,8 @@ export class AgentInferenceDispatchService {
     let subagent: AgentSubagentDelegationPlan | undefined;
     try {
       directive = await prepared.decide(signal);
+      usageAnchor = prepared.readUsageAnchor?.() ?? undefined;
+      responseEnvelope = prepared.readResponseEnvelope?.() ?? undefined;
     } catch (error) {
       if (error instanceof AgentInferenceDeterministicFailureError) {
         result = {
@@ -357,7 +362,7 @@ export class AgentInferenceDispatchService {
           providerCancellationAcknowledgementId: error.acknowledgementId
         };
       } else {
-        result = await uncertainResult(request, UNCERTAIN_REASON);
+        result = await uncertainResult(request, UNCERTAIN_REASON, started.run);
       }
     }
 
@@ -396,7 +401,13 @@ export class AgentInferenceDispatchService {
           messages: payload.input.messages,
           occurredAt: finishedAt
         });
-        result = plan.result;
+        result = plan.result.status === 'succeeded'
+          ? {
+              ...plan.result,
+              ...(usageAnchor === undefined ? {} : { usageAnchor }),
+              ...(responseEnvelope === undefined ? {} : { responseEnvelope })
+            }
+          : plan.result;
         effectPayloads = plan.effectPayloads;
         directivePayloads = plan.directivePayloads;
         planVersions = plan.planVersions;
@@ -404,7 +415,8 @@ export class AgentInferenceDispatchService {
       } catch {
         result = await uncertainResult(
           request,
-          DIRECTIVE_PLANNING_UNCERTAIN_REASON
+          DIRECTIVE_PLANNING_UNCERTAIN_REASON,
+          resultAuthority
         );
         effectPayloads = [];
         directivePayloads = [];
@@ -453,6 +465,14 @@ export class AgentInferenceDispatchService {
         });
     const recordedTurn = requireTurn(recorded.run, request.turnId);
     const recordedAttempt = requireAttempt(recordedTurn, request.attemptId);
+    try {
+      await prepared.streamLifecycle?.settle(
+        recordedAttempt.state.status === 'succeeded' ? 'committed' : 'interrupted'
+      );
+    } catch {
+      // Projection is not Agent authority. Startup reconciliation closes any
+      // stream whose terminal projection could not be committed here.
+    }
     observeAgentDispatchLifecycle(this.lifecycleObserver, {
       event: 'inference.dispatch.post',
       eventId: request.attemptId,
@@ -622,7 +642,8 @@ function checkpointArtifacts(
 
 async function uncertainResult(
   request: DispatchAgentInferenceRequest,
-  reason: string
+  reason: string,
+  run: AgentRun
 ): Promise<Extract<AgentInferenceAttemptResult, { readonly status: 'uncertain' }>> {
   return {
     status: 'uncertain',
@@ -634,7 +655,16 @@ async function uncertainResult(
       request.turnId,
       request.attemptId
     ),
-    allowedActions: ['retry', 'mark_succeeded', 'mark_failed', 'cancel_run']
+    allowedActions: [
+      'retry',
+      'mark_succeeded',
+      'mark_failed',
+      ...(run.binding.objectiveRef.kind === 'parent_delegation'
+        && run.binding.objectiveRef.mode === 'continuable'
+        ? ['interrupt_turn' as const]
+        : []),
+      'cancel_run'
+    ]
   };
 }
 

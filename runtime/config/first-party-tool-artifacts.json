@@ -1,0 +1,266 @@
+{
+  "schemaVersion": 1,
+  "algorithm": "ariadne-tool-module-closure-v1",
+  "modules": [
+    {
+      "module": "dist/composition/first-party-tools/BrowserAgentTools.js",
+      "files": [
+        {
+          "path": "dist/composition/first-party-tools/BrowserAgentTools.js",
+          "byteLength": 17029,
+          "sha256": "sha256:1721e58c93f54ee8b363ca15356d1cd6c7ed7f0dbe974a3c46c58af9e8727dba"
+        },
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyAgentToolSupport.js",
+          "byteLength": 8537,
+          "sha256": "sha256:55d49e44c653b376f9eaec03f2d6ad0f2c72d97794218209a2efe3995ca2a351"
+        },
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyToolArtifactAuthority.js",
+          "byteLength": 8521,
+          "sha256": "sha256:ab6f63a72bfbddc338048c153fa257e3f47533253e3ab625d9e7af37480b22c3"
+        }
+      ],
+      "artifactDigest": "sha256:f024cfb96049a5c43937d13806a7f81c27f490b160b0e49f7d4ad095b8b67c6f"
+    },
+    {
+      "module": "dist/composition/first-party-tools/ComputerReadAgentTools.js",
+      "files": [
+        {
+          "path": "dist/composition/first-party-tools/ComputerReadAgentTools.js",
+          "byteLength": 4070,
+          "sha256": "sha256:711230d18789ecb190d89897fcb51fd7b342627734ba636a5ee3289359147a01"
+        },
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyAgentToolSupport.js",
+          "byteLength": 8537,
+          "sha256": "sha256:55d49e44c653b376f9eaec03f2d6ad0f2c72d97794218209a2efe3995ca2a351"
+        },
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyToolArtifactAuthority.js",
+          "byteLength": 8521,
+          "sha256": "sha256:ab6f63a72bfbddc338048c153fa257e3f47533253e3ab625d9e7af37480b22c3"
+        }
+      ],
+      "artifactDigest": "sha256:2df702fdf8cddf477f1bf137aa69f724650488734077a1791001a2143885d1dc"
+    },
+    {
+      "module": "dist/composition/first-party-tools/LiveWorkControlAgentTools.js",
+      "files": [
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyAgentToolSupport.js",
+          "byteLength": 8537,
+          "sha256": "sha256:55d49e44c653b376f9eaec03f2d6ad0f2c72d97794218209a2efe3995ca2a351"
+        },
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyToolArtifactAuthority.js",
+          "byteLength": 8521,
+          "sha256": "sha256:ab6f63a72bfbddc338048c153fa257e3f47533253e3ab625d9e7af37480b22c3"
+        },
+        {
+          "path": "dist/composition/first-party-tools/LiveWorkAgentToolSupport.js",
+          "byteLength": 1120,
+          "sha256": "sha256:d128e224becad29ca03aa36801676571ab261fd9a118692df84af2e2e5a71be1"
+        },
+        {
+          "path": "dist/composition/first-party-tools/LiveWorkControlAgentTools.js",
+          "byteLength": 16246,
+          "sha256": "sha256:2cf9e2c5353be20829afda843d187c474bc0bfe5761416fb501b33550aaa42a7"
+        }
+      ],
+      "artifactDigest": "sha256:cda5346f795b07200cf4c6b1917e67b1fd3d56acc03a981fccc0461ee532cd8c"
+    },
+    {
+      "module": "dist/composition/first-party-tools/LiveWorkStartAgentTools.js",
+      "files": [
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyAgentToolSupport.js",
+          "byteLength": 8537,
+          "sha256": "sha256:55d49e44c653b376f9eaec03f2d6ad0f2c72d97794218209a2efe3995ca2a351"
+        },
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyToolArtifactAuthority.js",
+          "byteLength": 8521,
+          "sha256": "sha256:ab6f63a72bfbddc338048c153fa257e3f47533253e3ab625d9e7af37480b22c3"
+        },
+        {
+          "path": "dist/composition/first-party-tools/LiveWorkAgentToolSupport.js",
+          "byteLength": 1120,
+          "sha256": "sha256:d128e224becad29ca03aa36801676571ab261fd9a118692df84af2e2e5a71be1"
+        },
+        {
+          "path": "dist/composition/first-party-tools/LiveWorkStartAgentTools.js",
+          "byteLength": 7755,
+          "sha256": "sha256:f89b24c8a5dc4e88aa5c8894c1a5f47489a56bbd9f58769125f502508a7b3c3e"
+        }
+      ],
+      "artifactDigest": "sha256:c5a621edb880fe0176bc65dd49a615dc75a6bafb8e1f9708deeac27e11b93016"
+    },
+    {
+      "module": "dist/composition/first-party-tools/McpAgentTools.js",
+      "files": [
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyAgentToolSupport.js",
+          "byteLength": 8537,
+          "sha256": "sha256:55d49e44c653b376f9eaec03f2d6ad0f2c72d97794218209a2efe3995ca2a351"
+        },
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyToolArtifactAuthority.js",
+          "byteLength": 8521,
+          "sha256": "sha256:ab6f63a72bfbddc338048c153fa257e3f47533253e3ab625d9e7af37480b22c3"
+        },
+        {
+          "path": "dist/composition/first-party-tools/McpAgentTools.js",
+          "byteLength": 5611,
+          "sha256": "sha256:df3361235e57b576bc5c93eb7c0bae8326cb178192a0904602873f89b2a0e80a"
+        }
+      ],
+      "artifactDigest": "sha256:aa14864e402284c1b5f23de48deee4b83f571a7a821e52b74e52730ed3f93f34"
+    },
+    {
+      "module": "dist/composition/first-party-tools/ProtectedResultAgentTools.js",
+      "files": [
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyAgentToolSupport.js",
+          "byteLength": 8537,
+          "sha256": "sha256:55d49e44c653b376f9eaec03f2d6ad0f2c72d97794218209a2efe3995ca2a351"
+        },
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyToolArtifactAuthority.js",
+          "byteLength": 8521,
+          "sha256": "sha256:ab6f63a72bfbddc338048c153fa257e3f47533253e3ab625d9e7af37480b22c3"
+        },
+        {
+          "path": "dist/composition/first-party-tools/ProtectedResultAgentTools.js",
+          "byteLength": 4019,
+          "sha256": "sha256:2a00ca40b25bb2d69b2e39567651e6f3f633a031cd6eb0f6543a8b05ec160399"
+        }
+      ],
+      "artifactDigest": "sha256:e55c0367260487152700b1e3a419339c5f742a9e2bb604fad16b138a856414ef"
+    },
+    {
+      "module": "dist/composition/first-party-tools/WorkspaceAgentTools.js",
+      "files": [
+        {
+          "path": "dist/adapters/filesystem/LocalWorkspaceFileService.js",
+          "byteLength": 12095,
+          "sha256": "sha256:0d2c06678d10134429b5024c0735c527fe316a9ec148cd18321fb9762ab47d83"
+        },
+        {
+          "path": "dist/adapters/filesystem/LocalWorkspaceSearchService.js",
+          "byteLength": 10052,
+          "sha256": "sha256:990c6756d82941ea26de10b355c7305cb99203ceb8296077ea903b3f6a91b83e"
+        },
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyAgentToolSupport.js",
+          "byteLength": 8537,
+          "sha256": "sha256:55d49e44c653b376f9eaec03f2d6ad0f2c72d97794218209a2efe3995ca2a351"
+        },
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyToolArtifactAuthority.js",
+          "byteLength": 8521,
+          "sha256": "sha256:ab6f63a72bfbddc338048c153fa257e3f47533253e3ab625d9e7af37480b22c3"
+        },
+        {
+          "path": "dist/composition/first-party-tools/WorkspaceAgentTools.js",
+          "byteLength": 6971,
+          "sha256": "sha256:5bbbf59fdca46c1bf6577aad7211ec95c252ca68f27bec286c704eb9e7a1fe4e"
+        },
+        {
+          "path": "dist/composition/first-party-tools/WorkspaceFileAgentTools.js",
+          "byteLength": 14179,
+          "sha256": "sha256:0467e09336a16c70039474bfbb69abb8da1bd67dbd08b9a67ef6c0fbd8328981"
+        },
+        {
+          "path": "dist/composition/first-party-tools/WorkspaceSearchAgentTools.js",
+          "byteLength": 12887,
+          "sha256": "sha256:e4bcce2c74e135d12c6ed249e9fc7f7092716198748889674e2dc199735d5a87"
+        }
+      ],
+      "artifactDigest": "sha256:5a5de0df9b0a40067e6cb583d8c72fcb53ff3d4b7d611dc77070a294de2cf0ed"
+    },
+    {
+      "module": "dist/composition/first-party-tools/WorkspaceFileAgentTools.js",
+      "files": [
+        {
+          "path": "dist/adapters/filesystem/LocalWorkspaceFileService.js",
+          "byteLength": 12095,
+          "sha256": "sha256:0d2c06678d10134429b5024c0735c527fe316a9ec148cd18321fb9762ab47d83"
+        },
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyAgentToolSupport.js",
+          "byteLength": 8537,
+          "sha256": "sha256:55d49e44c653b376f9eaec03f2d6ad0f2c72d97794218209a2efe3995ca2a351"
+        },
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyToolArtifactAuthority.js",
+          "byteLength": 8521,
+          "sha256": "sha256:ab6f63a72bfbddc338048c153fa257e3f47533253e3ab625d9e7af37480b22c3"
+        },
+        {
+          "path": "dist/composition/first-party-tools/WorkspaceFileAgentTools.js",
+          "byteLength": 14179,
+          "sha256": "sha256:0467e09336a16c70039474bfbb69abb8da1bd67dbd08b9a67ef6c0fbd8328981"
+        }
+      ],
+      "artifactDigest": "sha256:26983f3e6af0330ef5081dedc4684f80e4a912575dfd6d1106424d52d5b24ecd"
+    },
+    {
+      "module": "dist/composition/first-party-tools/WorkspaceSearchAgentTools.js",
+      "files": [
+        {
+          "path": "dist/adapters/filesystem/LocalWorkspaceFileService.js",
+          "byteLength": 12095,
+          "sha256": "sha256:0d2c06678d10134429b5024c0735c527fe316a9ec148cd18321fb9762ab47d83"
+        },
+        {
+          "path": "dist/adapters/filesystem/LocalWorkspaceSearchService.js",
+          "byteLength": 10052,
+          "sha256": "sha256:990c6756d82941ea26de10b355c7305cb99203ceb8296077ea903b3f6a91b83e"
+        },
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyAgentToolSupport.js",
+          "byteLength": 8537,
+          "sha256": "sha256:55d49e44c653b376f9eaec03f2d6ad0f2c72d97794218209a2efe3995ca2a351"
+        },
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyToolArtifactAuthority.js",
+          "byteLength": 8521,
+          "sha256": "sha256:ab6f63a72bfbddc338048c153fa257e3f47533253e3ab625d9e7af37480b22c3"
+        },
+        {
+          "path": "dist/composition/first-party-tools/WorkspaceSearchAgentTools.js",
+          "byteLength": 12887,
+          "sha256": "sha256:e4bcce2c74e135d12c6ed249e9fc7f7092716198748889674e2dc199735d5a87"
+        }
+      ],
+      "artifactDigest": "sha256:20a4e9932cfe1e489ffb282f9bb96c4afd56b96c3f87d685f38264d601e00540"
+    },
+    {
+      "module": "dist/composition/runtime-capabilities/ProductionSkillLoadTool.js",
+      "files": [
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyAgentToolSupport.js",
+          "byteLength": 8537,
+          "sha256": "sha256:55d49e44c653b376f9eaec03f2d6ad0f2c72d97794218209a2efe3995ca2a351"
+        },
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyToolArtifactAuthority.js",
+          "byteLength": 8521,
+          "sha256": "sha256:ab6f63a72bfbddc338048c153fa257e3f47533253e3ab625d9e7af37480b22c3"
+        },
+        {
+          "path": "dist/composition/runtime-capabilities/ProductionSkillCatalogSupport.js",
+          "byteLength": 8056,
+          "sha256": "sha256:deac6231ae627758008150d3edcd4e32ae9dd4fc360fb6ea7634baf647e4ce97"
+        },
+        {
+          "path": "dist/composition/runtime-capabilities/ProductionSkillLoadTool.js",
+          "byteLength": 7476,
+          "sha256": "sha256:b4eaaa737e0d1805696d1f51e7ff232cd224530d1d59cf9414d176454c4d3e1b"
+        }
+      ],
+      "artifactDigest": "sha256:65beb31273d927b23482af7a413472748a5d857ae63f20f35278205031d4abeb"
+    }
+  ]
+}

@@ -1,0 +1,76 @@
+.agent-input-deliveries {
+  display: grid;
+  gap: 5px;
+  margin: 0 0 7px;
+}
+
+.agent-input-delivery {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: center;
+  padding: 5px 6px;
+  color: var(--text-2);
+  background: color-mix(in srgb, var(--bg-2) 78%, transparent);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font-size: 11px;
+}
+
+.agent-input-delivery[data-state='reconcile'] {
+  border-color: color-mix(in srgb, var(--warning) 55%, var(--border-subtle));
+}
+
+.agent-input-delivery[data-state='failed'] {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border-subtle));
+}
+
+.agent-input-delivery-state {
+  color: var(--accent);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.agent-input-delivery[data-state='reconcile'] .agent-input-delivery-state {
+  color: var(--warning);
+}
+
+.agent-input-delivery[data-state='failed'] .agent-input-delivery-state {
+  color: var(--danger);
+}
+
+.agent-input-delivery code {
+  color: var(--text-3);
+  font-size: 10px;
+}
+
+.agent-input-delivery-content,
+.agent-input-delivery-error {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-input-delivery-error {
+  grid-column: 3 / -1;
+  color: var(--text-3);
+}
+
+.agent-input-delivery button {
+  padding: 2px 5px;
+  color: var(--text-2);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.agent-input-delivery button:hover:not(:disabled) {
+  color: var(--text-1);
+  background: var(--bg-hover);
+}
+
+.agent-input-delivery button:disabled {
+  opacity: .45;
+  cursor: default;
+}

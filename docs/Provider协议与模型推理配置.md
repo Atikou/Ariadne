@@ -68,4 +68,4 @@ interface ModelInferenceOptions {
 6. 在受控环境完成至少一次真实模型 direct answer 和 Tool call 验收。
 7. 更新 [验收矩阵](verification-matrix.json)，未完成的 realModel/realWindow 维度保持 `not_accepted`。
 
-Provider Resilience 的 schema 和隔离实现已经存在，但当前 v3 inference 路径尚未完成统一 retry/rate-limit/circuit-breaker lifecycle；上层不得自行叠加第二套透明重试。
+Provider Resilience 的冻结 policy 由 bootstrap 直接装配进 exact v3 transport。共享协调器按精确 Provider/model/settings 路由拥有并发、每分钟请求/预留 token、熔断和退避状态；只有 429、可重试 5xx、timeout/临时网络错误且尚未出现 text、reasoning 或 native Tool-call 输出时才透明重试。`Retry-After` 受本地 `maxBackoffMs` 上限约束，用户取消保留原始 Abort 原因，context overflow 仍交给既有有界压缩恢复。上层不得叠加第二套透明重试。

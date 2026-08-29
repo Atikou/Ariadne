@@ -64,15 +64,23 @@ describe('RuntimeStore command routing', () => {
     expect(commands).toEqual([]);
   });
 
-  it('constructs exact v3 Permission and Plan commands from the internal projection cache', async () => {
+  it('constructs exact v3 Permission, Plan, and user-answer commands from the internal projection cache', async () => {
     const commands: RuntimeCommand[] = [];
-    const decisions = [permissionDecision(), planDecision()];
+    const decisions = [permissionDecision(), planDecision(), userQuestionDecision()];
+    const resolvedDecisionIds = new Set<string>();
     const store = new RuntimeStore(successfulRuntimeApi({
       getStatus: async () => READY,
       request: async (command) => {
         commands.push(command);
         if (command.kind === 'projection.snapshot.get') {
-          return { kind: 'projection.snapshot', snapshot: projectionSnapshot({ decisions }) };
+          return {
+            kind: 'projection.snapshot',
+            snapshot: projectionSnapshot({
+              decisions: decisions.filter((decision) => (
+                !resolvedDecisionIds.has(decision.decisionId)
+              ))
+            })
+          };
         }
         if (command.kind === 'projection.commits.read') {
           return {
@@ -86,6 +94,7 @@ describe('RuntimeStore command routing', () => {
           };
         }
         if (command.kind === 'agent.decision.resolve.v3') {
+          resolvedDecisionIds.add(command.decisionId);
           return {
             kind: 'agent.decision.resolved.v3',
             runId: command.runId,
@@ -100,14 +109,17 @@ describe('RuntimeStore command routing', () => {
     await store.initialize();
     const permission = store.getSnapshot().permissions[0]!;
     const plan = store.getSnapshot().planHandoffs[0]!;
+    const question = store.getSnapshot().userQuestions[0]!;
 
     expect(permission.actionAvailable).toBe(true);
     expect(plan.actionAvailable).toBe(true);
-    expect(JSON.stringify({ permission, plan })).not.toContain(ACTION_TOKEN);
-    expect(JSON.stringify({ permission, plan })).not.toContain('decision-action');
+    expect(question.actionAvailable).toBe(true);
+    expect(JSON.stringify({ permission, plan, question })).not.toContain(ACTION_TOKEN);
+    expect(JSON.stringify({ permission, plan, question })).not.toContain('decision-action');
 
     await store.respondToPermission(permission, 'allow_once');
     await store.respondToPlan(plan, 'approve');
+    await store.answerUserQuestion(question, 'local: Local only');
 
     expect(commands.filter((command) => command.kind === 'agent.decision.resolve.v3'))
       .toEqual([
@@ -131,6 +143,18 @@ describe('RuntimeStore command routing', () => {
             contractVersion: '1.0',
             actionToken: ACTION_TOKEN,
             choice: 'approve'
+          }
+        },
+        {
+          kind: 'agent.decision.resolve.v3',
+          contractVersion: '3.0',
+          runId: 'run-user-question',
+          decisionId: 'decision-user-question',
+          action: {
+            contractVersion: '1.0',
+            actionToken: ACTION_TOKEN,
+            choice: 'answer',
+            answer: 'local: Local only'
           }
         }
       ]);
@@ -321,6 +345,34 @@ function planDecision(): PublicDecisionProjectionV3 {
   };
 }
 
+function userQuestionDecision(): PublicDecisionProjectionV3 {
+  return {
+    decisionId: 'decision-user-question',
+    runId: 'run-user-question',
+    sessionId: 'session-user-question',
+    version: 1,
+    kind: 'user_question',
+    status: 'pending',
+    presentation: {
+      contractVersion: '1.0',
+      kind: 'user_question',
+      headline: 'Agent needs your input',
+      question: 'Which deployment target should be used?',
+      options: [
+        { optionId: 'local', label: 'Local only' },
+        { optionId: 'remote', label: 'Remote host' }
+      ],
+      allowsFreeText: true
+    },
+    requestedAt: '2026-07-31T00:00:00.000Z',
+    action: {
+      contractVersion: '1.0',
+      actionToken: ACTION_TOKEN,
+      choices: ['answer']
+    }
+  };
+}
+
 function recoveryDecision(): PublicDecisionProjectionV3 {
   return {
     decisionId: 'decision-recovery',
@@ -389,12 +441,20 @@ async function initializedDecisionStore(
   decisions: PublicDecisionProjectionV3[],
   failureToken?: string
 ): Promise<RuntimeStore> {
+  const resolvedDecisionIds = new Set<string>();
   const store = new RuntimeStore(successfulRuntimeApi({
     getStatus: async () => READY,
     request: async (command) => {
       commands.push(command);
       if (command.kind === 'projection.snapshot.get') {
-        return { kind: 'projection.snapshot', snapshot: projectionSnapshot({ decisions }) };
+        return {
+          kind: 'projection.snapshot',
+          snapshot: projectionSnapshot({
+            decisions: decisions.filter((decision) => (
+              !resolvedDecisionIds.has(decision.decisionId)
+            ))
+          })
+        };
       }
       if (command.kind === 'projection.commits.read') {
         return {
@@ -411,6 +471,7 @@ async function initializedDecisionStore(
         if (failureToken !== undefined) {
           throw new Error(`Unsafe provider detail: ${failureToken}`);
         }
+        resolvedDecisionIds.add(command.decisionId);
         return {
           kind: 'agent.decision.resolved.v3',
           runId: command.runId,
