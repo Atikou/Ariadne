@@ -103,6 +103,7 @@ import {
   type InferenceStreamIdentity
 } from '../projection/InferenceStreamPublicProjectionPublisher.js';
 import { LocalConversationAttachmentStore } from '../adapters/attachment/LocalConversationAttachmentStore.js';
+import { FileAgentSubagentSessionStore } from '../adapters/subagent/FileAgentSubagentSessionStore.js';
 import type { ConversationAttachmentStore } from '../control/ports/ConversationAttachmentStore.js';
 
 const DEFAULT_PUBLIC_PROJECTION_INTERVAL_MS = 50;
@@ -559,9 +560,14 @@ implements AgentControlRuntimeFactory {
       let publicProjection: SqlitePublicProjectionStore | undefined;
       let observability: PublicAgentObservability | undefined;
       try {
+        const persistenceCodec = new StrictJsonAgentPersistencePayloadCodec();
         unitOfWork = new SqliteAgentRunUnitOfWork(
           input.dataRoot,
-          new StrictJsonAgentPersistencePayloadCodec()
+          persistenceCodec
+        );
+        const subagentSessionStore = new FileAgentSubagentSessionStore(
+          input.dataRoot,
+          persistenceCodec
         );
         conversation = new SqliteConversationRunHandoffUnitOfWork(input.dataRoot);
         publicProjection = new SqlitePublicProjectionStore(input.dataRoot);
@@ -584,6 +590,7 @@ implements AgentControlRuntimeFactory {
           processSandboxForWorkspace: input.runtimeServices?.processSandboxForWorkspace,
           inferenceStreamPublisher: inferenceStreams,
           attachmentStore,
+          subagentSessionStore,
           ...(input.modelInferenceGateway === undefined
             ? {}
             : { modelInferenceGateway: input.modelInferenceGateway })
@@ -664,18 +671,22 @@ implements AgentControlRuntimeFactory {
         (identity) => resolveInferenceStreamTerminalState(unitOfWork!, identity)
       );
       observability = await createPublicAgentObservability(input, publicProjection);
+      const subagentSessionStore = new FileAgentSubagentSessionStore(input.dataRoot, codec);
       const executionPipeline = await executionPipelineFactory?.create({
         unitOfWork,
         conversation,
         agentAdmissionAuthoritySource: input.agentAdmissionAuthoritySource,
         modelProviders: input.modelProviders,
+        subagentProviders: input.subagentProviders,
         ...(input.installRoot === undefined ? {} : { installRoot: input.installRoot }),
         ...(input.workspaces === undefined ? {} : { workspaces: input.workspaces }),
         ...(input.runtimePolicy === undefined ? {} : { runtimePolicy: input.runtimePolicy }),
         hookDeliverySink: observability,
         providerTelemetry: input.runtimeServices?.telemetry,
+        processSandboxForWorkspace: input.runtimeServices?.processSandboxForWorkspace,
         inferenceStreamPublisher: inferenceStreams,
         attachmentStore,
+        subagentSessionStore,
         ...(input.modelInferenceGateway === undefined
           ? {}
           : { modelInferenceGateway: input.modelInferenceGateway })

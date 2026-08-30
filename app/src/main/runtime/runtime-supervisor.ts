@@ -11,7 +11,7 @@ import {
   type RuntimeBootstrap,
   type RuntimeCancel,
   type AgentPermissionsBootstrap,
-  type AcpSubagentProviderBootstrap,
+  type SubagentProviderBootstrap,
   type ModelProviderBootstrap,
   type RuntimeReady,
   type RuntimeResponse,
@@ -51,7 +51,7 @@ export interface RuntimeSupervisorOptions {
   dataRoot: string;
   modelRoots: string[];
   modelProviders: ModelProviderBootstrap[];
-  subagentProviders?: AcpSubagentProviderBootstrap[];
+  subagentProviders?: SubagentProviderBootstrap[];
   routingStrategy: 'local-first' | 'cloud-first' | 'privacy-first' | 'quality-first';
   assistantProfile: AssistantChatProfile;
   agentPermissions: AgentPermissionsBootstrap;

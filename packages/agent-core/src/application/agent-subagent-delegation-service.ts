@@ -38,7 +38,7 @@ import { deriveStableAgentId } from './stable-id.js';
 import { digestAgentTurnInput, summarizeAgentTurnInput } from './turn-input-digest.js';
 import { assertValidCommittedAgentDirective } from '../domain/directive.js';
 
-export interface CommitAgentSubagentDelegationRequest {
+interface CommitAgentSubagentDelegationBase {
   readonly commandId: string;
   readonly runId: string;
   readonly expectedVersion: number;
@@ -47,7 +47,16 @@ export interface CommitAgentSubagentDelegationRequest {
   readonly attemptId: string;
   readonly result: Extract<AgentInferenceAttemptResult, { readonly status: 'succeeded' }>;
   readonly parentArtifacts: AgentRunCommitArtifacts;
+}
+
+export interface CommitAgentSubagentDelegationRequest
+  extends CommitAgentSubagentDelegationBase {
   readonly delegation: AgentSubagentDelegationPlan;
+}
+
+export interface CommitAgentSubagentDelegationsRequest
+  extends CommitAgentSubagentDelegationBase {
+  readonly delegations: readonly AgentSubagentDelegationPlan[];
 }
 
 export interface AgentSubagentDelegationCommitResult {
@@ -58,31 +67,56 @@ export interface AgentSubagentDelegationCommitResult {
   readonly replayed: boolean;
 }
 
-/**
- * Commits one model delegation as one parent-result plus admitted-child command.
- * Raw objectives exist only in protected Delegation/Turn-input payloads.
- */
+export interface AgentSubagentDelegationsCommitResult {
+  readonly commandId: string;
+  readonly parent: AgentRun;
+  readonly children: readonly AgentRun[];
+  readonly parentEvents: readonly AgentRunEvent[];
+  readonly replayed: boolean;
+}
+
+interface PreparedChild {
+  readonly plan: AgentSubagentDelegationPlan;
+  readonly run: AgentRun;
+  readonly events: readonly AgentRunEventPayload[];
+  readonly artifacts: AgentRunCommitArtifacts;
+  readonly vector: AgentBudgetVector;
+}
+
+/** Atomically commits one model delegation batch as one parent result plus admitted children. */
 export class AgentSubagentDelegationService {
   public constructor(private readonly unitOfWork: AgentRunUnitOfWork) {}
 
   public async commit(
     request: CommitAgentSubagentDelegationRequest
   ): Promise<AgentSubagentDelegationCommitResult> {
-    const directive = request.result.directive;
-    assertValidCommittedAgentDirective(directive);
-    if (
-      directive.kind !== 'delegate_subagent'
-      || directive.delegationId !== request.delegation.delegationId
-      || directive.childRunId !== request.delegation.childRunId
-      || directive.objectiveDigest !== request.delegation.objectiveDigest
-      || await sha256AgentControlData(request.delegation.objective)
-        !== request.delegation.objectiveDigest
-    ) {
-      throw new AgentRunInvariantError(
-        'SubAgent result must bind its exact protected Delegation plan.'
-      );
-    }
-    const commandDigest = await sha256AgentControlData({
+    const committed = await this.commitBatch({ ...request, delegations: [request.delegation] });
+    const child = committed.children[0];
+    if (child === undefined) throw new AgentRunInvariantError('SubAgent child is unavailable.');
+    return { ...committed, child };
+  }
+
+  public async commitBatch(
+    request: CommitAgentSubagentDelegationsRequest
+  ): Promise<AgentSubagentDelegationsCommitResult> {
+    await assertExactDelegationPlans(request.result, request.delegations);
+    const only = request.delegations.length === 1 ? request.delegations[0] : undefined;
+    const commandDigest = await sha256AgentControlData(only === undefined ? {
+      kind: 'control.inference.delegate_subagents',
+      commandId: request.commandId,
+      runId: request.runId,
+      expectedVersion: request.expectedVersion,
+      occurredAt: request.occurredAt,
+      turnId: request.turnId,
+      attemptId: request.attemptId,
+      result: request.result,
+      delegations: request.delegations.map((delegation) => ({
+        delegationId: delegation.delegationId,
+        childRunId: delegation.childRunId,
+        childGrantId: delegation.childGrantId,
+        objective: delegation.objective
+      }))
+    } : {
       kind: 'control.inference.delegate_subagent',
       commandId: request.commandId,
       runId: request.runId,
@@ -91,10 +125,10 @@ export class AgentSubagentDelegationService {
       turnId: request.turnId,
       attemptId: request.attemptId,
       result: request.result,
-      delegationId: request.delegation.delegationId,
-      childRunId: request.delegation.childRunId,
-      childGrantId: request.delegation.childGrantId,
-      objective: request.delegation.objective
+      delegationId: only.delegationId,
+      childRunId: only.childRunId,
+      childGrantId: only.childGrantId,
+      objective: only.objective
     });
 
     return this.unitOfWork.transaction(async (transaction) => {
@@ -104,119 +138,20 @@ export class AgentSubagentDelegationService {
       if (parent === null || parent.version !== request.expectedVersion) {
         throw new AgentRunInvariantError('SubAgent parent authority changed before commit.');
       }
-      if (await transaction.loadRun(request.delegation.childRunId) !== null) {
-        throw new AgentRunInvariantError('SubAgent child Run identity already exists.');
+      for (const plan of request.delegations) {
+        if (await transaction.loadRun(plan.childRunId) !== null) {
+          throw new AgentRunInvariantError('SubAgent child Run identity already exists.');
+        }
       }
       if (transaction.loadBudgetSnapshot === undefined) {
         throw new AgentRunInvariantError('SubAgent delegation requires durable Budget authority.');
       }
       const budget = await transaction.loadBudgetSnapshot(parent.binding.budget.grantId);
       assertExactBudget(parent, budget);
-      const childVector = allocateChildBudget(budget.available);
-      const childBinding = childBindingFromParent(
-        parent,
-        request.delegation,
-        childVector
-      );
-      assertAgentChildRunBindingSubset(parent.runId, parent.binding, childBinding);
-
-      const childTurnId = await deriveStableAgentId(
-        'delegated-turn',
-        request.delegation.childRunId,
-        request.delegation.delegationId
-      );
-      const childAttemptId = await deriveStableAgentId(
-        'delegated-attempt',
-        request.delegation.childRunId,
-        request.delegation.delegationId
-      );
-      const providerIdempotencyKey = await deriveStableAgentId(
-        'delegated-provider',
-        request.delegation.childRunId,
-        request.delegation.delegationId
-      );
-      const provider = selectedSubagentProvider(parent.binding, request.delegation.providerId);
-      const childMessages = [
-        ...(provider.inheritsParentContext
-          ? request.delegation.sourceMessages.filter((message) => (
-              message.kind === 'text' && message.role === 'system'
-            ))
-          : []),
-        {
-          kind: 'text' as const,
-          role: 'user' as const,
-          content: request.delegation.prompt
-        }
-      ];
-      const childAvailableTools = provider.usesParentTools
-        ? request.delegation.availableTools
-        : [];
-      const childModelInput = {
-        messages: childMessages,
-        availableTools: childAvailableTools
-      };
-      const childInputDigest = await digestAgentTurnInput(childModelInput);
-      const childCause = {
-        kind: 'delegation_objective' as const,
-        parentRunId: parent.runId,
-        delegationId: request.delegation.delegationId,
-        objectiveDigest: request.delegation.objectiveDigest
-      };
-      const childAdmission = admitAgentRun({
-        kind: 'run.admit',
-        commandId: request.commandId,
-        runId: request.delegation.childRunId,
-        occurredAt: request.occurredAt,
-        binding: childBinding,
-        turn: {
-          cause: childCause,
-          turnId: childTurnId,
-          attemptId: childAttemptId,
-          providerIdempotencyKey,
-          inputDigest: childInputDigest,
-          inputSummary: summarizeAgentTurnInput(childModelInput)
-        }
-      });
-      const childTurnInput: AgentTurnInputSnapshotV1 = {
-        format: 'ariadne.agent-turn-input',
-        schemaVersion: 1,
-        runId: request.delegation.childRunId,
-        turnId: childTurnId,
-        cause: childCause,
-        authorityRef: {
-          kind: 'parent_delegation',
-          parentRunId: parent.runId,
-          delegationId: request.delegation.delegationId,
-          objectiveDigest: request.delegation.objectiveDigest,
-          mode: request.delegation.mode,
-          providerId: request.delegation.providerId
-        },
-        messages: childMessages,
-        availableTools: childAvailableTools
-      };
-      const childArtifacts: AgentRunCommitArtifacts = {
-        checkpoint: {
-          checkpointVersion: 1,
-          createdAt: request.occurredAt,
-          payload: {
-            format: 'ariadne.agent-checkpoint',
-            schemaVersion: 1,
-            engineContinuation: {
-              phase: 'delegation_objective',
-              parentRunId: parent.runId,
-              delegationId: request.delegation.delegationId
-            },
-            modelContext: null
-          }
-        },
-        turnInputPayloads: [{
-          turnId: childTurnId,
-          inputDigest: childInputDigest,
-          payload: childTurnInput,
-          recordedAt: request.occurredAt
-        }],
-        effectPayloads: []
-      };
+      const childVector = allocateChildBudget(budget.available, request.delegations.length);
+      const children = await Promise.all(request.delegations.map((plan) =>
+        prepareChild(parent, plan, childVector, request)
+      ));
 
       const resultTransition = transitionAgentRun(parent, {
         kind: 'run.record_inference_attempt_result',
@@ -228,86 +163,74 @@ export class AgentSubagentDelegationService {
         attemptId: request.attemptId,
         result: request.result
       });
+      const requiredChildRunIds = children.map((child) => child.run.runId).sort(codeUnitCompare);
       const waitingState: AgentRunState = {
         status: 'waiting_children',
         checkpointVersion: resultTransition.run.state.checkpointVersion,
         enteredAt: request.occurredAt,
-        requiredChildRunIds: [request.delegation.childRunId],
+        requiredChildRunIds,
         terminalChildRunIds: []
       };
-      const nextParent: AgentRun = {
-        ...resultTransition.run,
-        state: waitingState
-      };
+      const nextParent: AgentRun = { ...resultTransition.run, state: waitingState };
       assertValidAgentRun(nextParent);
-      const parentPayloads = [
+      const parentPayloads: readonly AgentRunEventPayload[] = [
         ...resultTransition.events.filter((event) => event.type !== 'run.state_changed'),
         {
-          type: 'children.delegated' as const,
-          children: [{
-            delegationId: request.delegation.delegationId,
-            childRunId: request.delegation.childRunId,
-            childGrantId: request.delegation.childGrantId,
-            objectiveDigest: request.delegation.objectiveDigest,
+          type: 'children.delegated',
+          children: children.map(({ plan }) => ({
+            delegationId: plan.delegationId,
+            childRunId: plan.childRunId,
+            childGrantId: plan.childGrantId,
+            objectiveDigest: plan.objectiveDigest,
             required: true
-          }]
+          }))
         },
-        {
-          type: 'run.state_changed' as const,
-          from: parent.state.status,
-          to: waitingState
-        }
+        { type: 'run.state_changed', from: parent.state.status, to: waitingState }
       ];
-      const facts = delegationFacts(
-        parent,
-        request.delegation,
-        childVector,
+      const parentEvents = await decorateEvents(
+        request.commandId,
+        nextParent,
+        parentPayloads,
         request.occurredAt
       );
-      const [parentEvents, childEvents] = await Promise.all([
-        decorateEvents(request.commandId, nextParent, parentPayloads, request.occurredAt),
-        decorateEvents(
-          request.commandId,
-          childAdmission.run,
-          childAdmission.events,
-          request.occurredAt
-        )
-      ]);
-      const mutations: AgentRunCommitMutation[] = [
-        {
-          runId: nextParent.runId,
-          expectedVersion: parent.version,
-          resultingVersion: nextParent.version,
-          run: nextParent,
-          events: parentEvents,
-          artifacts: request.parentArtifacts
-        },
-        {
-          runId: childAdmission.run.runId,
-          expectedVersion: null,
-          resultingVersion: childAdmission.run.version,
-          run: childAdmission.run,
-          events: childEvents,
-          artifacts: childArtifacts
-        }
-      ].sort((left, right) => codeUnitCompare(left.runId, right.runId));
+      const childEvents = await Promise.all(children.map((child) => decorateEvents(
+        request.commandId,
+        child.run,
+        child.events,
+        request.occurredAt
+      )));
+      const mutations: AgentRunCommitMutation[] = [{
+        runId: nextParent.runId,
+        expectedVersion: parent.version,
+        resultingVersion: nextParent.version,
+        run: nextParent,
+        events: parentEvents,
+        artifacts: request.parentArtifacts
+      }, ...children.map((child, index): AgentRunCommitMutation => ({
+        runId: child.run.runId,
+        expectedVersion: null,
+        resultingVersion: child.run.version,
+        run: child.run,
+        events: childEvents[index] ?? [],
+        artifacts: child.artifacts
+      }))].sort((left, right) => codeUnitCompare(left.runId, right.runId));
       assertAgentRunCommitArtifacts(parent, nextParent, request.parentArtifacts);
-      assertAgentRunCommitArtifacts(null, childAdmission.run, childArtifacts);
+      children.forEach((child) => assertAgentRunCommitArtifacts(null, child.run, child.artifacts));
       await Promise.all([
         assertAgentRunCommitArtifactDigests(parent, nextParent, request.parentArtifacts),
-        assertAgentRunCommitArtifactDigests(null, childAdmission.run, childArtifacts)
+        ...children.map((child) => assertAgentRunCommitArtifactDigests(null, child.run, child.artifacts))
       ]);
       const commit: AgentRunCommandCommit = {
         commandId: request.commandId,
         commandDigest,
         mutations,
-        facts
+        facts: delegationFacts(parent, children, request.occurredAt)
       };
       await transaction.commitCommand(commit);
       return {
         commandId: request.commandId,
         parent: nextParent,
-        child: childAdmission.run,
+        children: children.map((child) => child.run),
         parentEvents,
         replayed: false
       };
@@ -315,10 +238,134 @@ export class AgentSubagentDelegationService {
   }
 }
 
-function selectedSubagentProvider(
-  binding: AgentRunBinding,
-  providerId: string
-) {
+async function assertExactDelegationPlans(
+  result: Extract<AgentInferenceAttemptResult, { readonly status: 'succeeded' }>,
+  plans: readonly AgentSubagentDelegationPlan[]
+): Promise<void> {
+  const directive = result.directive;
+  assertValidCommittedAgentDirective(directive);
+  const committed = directive.kind === 'delegate_subagent'
+    ? [{
+        delegationId: directive.delegationId,
+        childRunId: directive.childRunId,
+        objectiveDigest: directive.objectiveDigest,
+        mode: directive.mode,
+        providerId: directive.providerId
+      }]
+    : directive.kind === 'delegate_subagents'
+      ? directive.delegations
+      : [];
+  if (plans.length === 0 || plans.length !== committed.length) {
+    throw new AgentRunInvariantError('SubAgent result must bind its exact delegation batch.');
+  }
+  const objectiveDigests = await Promise.all(plans.map((plan) => sha256AgentControlData(plan.objective)));
+  plans.forEach((plan, index) => {
+    const item = committed[index];
+    if (
+      item === undefined
+      || item.delegationId !== plan.delegationId
+      || item.childRunId !== plan.childRunId
+      || item.objectiveDigest !== plan.objectiveDigest
+      || item.mode !== plan.mode
+      || item.providerId !== plan.providerId
+      || objectiveDigests[index] !== plan.objectiveDigest
+    ) throw new AgentRunInvariantError('SubAgent result must bind its exact protected Delegation plan.');
+  });
+}
+
+async function prepareChild(
+  parent: AgentRun,
+  plan: AgentSubagentDelegationPlan,
+  vector: AgentBudgetVector,
+  request: CommitAgentSubagentDelegationsRequest
+): Promise<PreparedChild> {
+  const childBinding = childBindingFromParent(parent, plan, vector);
+  assertAgentChildRunBindingSubset(parent.runId, parent.binding, childBinding);
+  const [childTurnId, childAttemptId, providerIdempotencyKey] = await Promise.all([
+    deriveStableAgentId('delegated-turn', plan.childRunId, plan.delegationId),
+    deriveStableAgentId('delegated-attempt', plan.childRunId, plan.delegationId),
+    deriveStableAgentId('delegated-provider', plan.childRunId, plan.delegationId)
+  ]);
+  const provider = selectedSubagentProvider(parent.binding, plan.providerId);
+  const childMessages = [
+    ...(provider.inheritsParentContext
+      ? plan.sourceMessages.filter((message) => message.kind === 'text' && message.role === 'system')
+      : []),
+    { kind: 'text' as const, role: 'user' as const, content: plan.prompt }
+  ];
+  const childAvailableTools = provider.usesParentTools ? plan.availableTools : [];
+  const childModelInput = { messages: childMessages, availableTools: childAvailableTools };
+  const childInputDigest = await digestAgentTurnInput(childModelInput);
+  const childCause = {
+    kind: 'delegation_objective' as const,
+    parentRunId: parent.runId,
+    delegationId: plan.delegationId,
+    objectiveDigest: plan.objectiveDigest
+  };
+  const admission = admitAgentRun({
+    kind: 'run.admit',
+    commandId: request.commandId,
+    runId: plan.childRunId,
+    occurredAt: request.occurredAt,
+    binding: childBinding,
+    turn: {
+      cause: childCause,
+      turnId: childTurnId,
+      attemptId: childAttemptId,
+      providerIdempotencyKey,
+      inputDigest: childInputDigest,
+      inputSummary: summarizeAgentTurnInput(childModelInput)
+    }
+  });
+  const childTurnInput: AgentTurnInputSnapshotV1 = {
+    format: 'ariadne.agent-turn-input',
+    schemaVersion: 1,
+    runId: plan.childRunId,
+    turnId: childTurnId,
+    cause: childCause,
+    authorityRef: {
+      kind: 'parent_delegation',
+      parentRunId: parent.runId,
+      delegationId: plan.delegationId,
+      objectiveDigest: plan.objectiveDigest,
+      mode: plan.mode,
+      providerId: plan.providerId
+    },
+    messages: childMessages,
+    availableTools: childAvailableTools
+  };
+  return {
+    plan,
+    run: admission.run,
+    events: admission.events,
+    vector,
+    artifacts: {
+      checkpoint: {
+        checkpointVersion: 1,
+        createdAt: request.occurredAt,
+        payload: {
+          format: 'ariadne.agent-checkpoint',
+          schemaVersion: 1,
+          engineContinuation: {
+            phase: 'delegation_objective',
+            parentRunId: parent.runId,
+            delegationId: plan.delegationId
+          },
+          modelContext: null
+        }
+      },
+      turnInputPayloads: [{
+        turnId: childTurnId,
+        inputDigest: childInputDigest,
+        payload: childTurnInput,
+        recordedAt: request.occurredAt
+      }],
+      effectPayloads: []
+    }
+  };
+}
+
+function selectedSubagentProvider(binding: AgentRunBinding, providerId: string) {
   const providers = binding.bindingVersion === 4
     ? binding.executionProfile.subagentProviders
     : undefined;
@@ -326,27 +373,25 @@ function selectedSubagentProvider(
     (candidate) => candidate.providerId === providerId
   );
   if (provider === undefined) {
-    throw new AgentRunInvariantError(
-      'SubAgent delegation selected a Provider outside the pinned Catalog.'
-    );
+    throw new AgentRunInvariantError('SubAgent delegation selected a Provider outside the pinned Catalog.');
   }
   return provider;
 }
 
-function allocateChildBudget(available: AgentBudgetVector): AgentBudgetVector {
-  if (available.modelTurns < 2) {
+function allocateChildBudget(available: AgentBudgetVector, childCount: number): AgentBudgetVector {
+  if (childCount < 1 || available.modelTurns < childCount + 1) {
     throw new AgentRunInvariantError(
-      'SubAgent delegation requires one child turn and one reserved parent continuation turn.'
+      'SubAgent delegation requires one child turn per child and one reserved parent continuation turn.'
     );
   }
-  const half = (value: number): number => Math.floor(value / 2);
+  const share = (value: number): number => Math.floor(value / (childCount + 1));
   return {
-    modelTurns: Math.max(1, Math.min(8, half(available.modelTurns))),
-    toolCalls: Math.min(16, half(available.toolCalls)),
-    readCalls: Math.min(16, half(available.readCalls)),
-    writeCalls: Math.min(16, half(available.writeCalls)),
-    shellCalls: Math.min(8, half(available.shellCalls)),
-    costMicrousd: half(available.costMicrousd)
+    modelTurns: Math.max(1, Math.min(8, share(available.modelTurns))),
+    toolCalls: Math.min(16, share(available.toolCalls)),
+    readCalls: Math.min(16, share(available.readCalls)),
+    writeCalls: Math.min(16, share(available.writeCalls)),
+    shellCalls: Math.min(8, share(available.shellCalls)),
+    costMicrousd: share(available.costMicrousd)
   };
 }
 
@@ -372,7 +417,7 @@ function childBindingFromParent(
       vector: { ...vector },
       deadlineAt: parent.binding.budget.deadlineAt,
       source: {
-        kind: 'parent_allocation',
+        kind: 'parent_allocation' as const,
         parentRunId: parent.runId,
         parentGrantId: parent.binding.budget.grantId,
         delegationId: plan.delegationId
@@ -383,27 +428,26 @@ function childBindingFromParent(
 
 function delegationFacts(
   parent: AgentRun,
-  plan: AgentSubagentDelegationPlan,
-  vector: AgentBudgetVector,
+  children: readonly PreparedChild[],
   occurredAt: string
 ): AgentControlCommitFacts {
   return {
     ...EMPTY_AGENT_CONTROL_COMMIT_FACTS,
-    budgetGrants: [{
+    budgetGrants: children.map(({ plan, vector }) => ({
       grantId: plan.childGrantId,
       runId: plan.childRunId,
       vector: { ...vector },
       deadlineAt: parent.binding.budget.deadlineAt,
       createdAt: occurredAt,
       source: {
-        kind: 'parent_allocation',
+        kind: 'parent_allocation' as const,
         parentRunId: parent.runId,
         parentGrantId: parent.binding.budget.grantId,
         delegationId: plan.delegationId
       }
-    }],
-    budgetEntries: [{
-      kind: 'parent_allocation',
+    })).sort((left, right) => codeUnitCompare(left.grantId, right.grantId)),
+    budgetEntries: children.map(({ plan, vector }) => ({
+      kind: 'parent_allocation' as const,
       entryId: `budget-entry:allocation:${plan.delegationId}`,
       runId: parent.runId,
       grantId: parent.binding.budget.grantId,
@@ -412,8 +456,8 @@ function delegationFacts(
       childRunId: plan.childRunId,
       childGrantId: plan.childGrantId,
       occurredAt
-    }],
-    delegations: [{
+    })).sort((left, right) => codeUnitCompare(left.entryId, right.entryId)),
+    delegations: children.map(({ plan }) => ({
       delegationId: plan.delegationId,
       parentRunId: parent.runId,
       childRunId: plan.childRunId,
@@ -423,7 +467,7 @@ function delegationFacts(
       objective: plan.objective,
       required: true,
       createdAt: occurredAt
-    }]
+    })).sort((left, right) => codeUnitCompare(left.delegationId, right.delegationId))
   };
 }
 
@@ -438,12 +482,7 @@ async function decorateEvents(
   occurredAt: string
 ): Promise<readonly AgentRunEvent[]> {
   return Promise.all(payloads.map(async (payload, index) => ({
-    eventId: await deriveStableAgentId(
-      'event',
-      commandId,
-      run.runId,
-      String(index + 1)
-    ),
+    eventId: await deriveStableAgentId('event', commandId, run.runId, String(index + 1)),
     commandId,
     runId: run.runId,
     runVersion: run.version,
@@ -462,25 +501,23 @@ function assertExactBudget(
     || budget.grant.runId !== run.runId
     || budget.grant.grantId !== run.binding.budget.grantId
     || budget.grant.deadlineAt !== run.binding.budget.deadlineAt
-  ) {
-    throw new AgentRunInvariantError('SubAgent parent Budget authority is unavailable.');
-  }
+  ) throw new AgentRunInvariantError('SubAgent parent Budget authority is unavailable.');
 }
 
 function replayResult(
   committed: CommittedAgentRunCommand,
-  request: CommitAgentSubagentDelegationRequest,
+  request: CommitAgentSubagentDelegationsRequest,
   commandDigest: string
-): AgentSubagentDelegationCommitResult {
+): AgentSubagentDelegationsCommitResult {
   const parent = committed.mutations.find((item) => item.runId === request.runId);
-  const child = committed.mutations.find(
-    (item) => item.runId === request.delegation.childRunId
-  );
+  const children = request.delegations.map((delegation) => committed.mutations.find(
+    (item) => item.runId === delegation.childRunId
+  ));
   if (
     committed.commandDigest !== commandDigest
-    || committed.mutations.length !== 2
+    || committed.mutations.length !== request.delegations.length + 1
     || parent === undefined
-    || child === undefined
+    || children.some((child) => child === undefined)
   ) {
     throw new AgentRunCommandConflictError(
       request.commandId,
@@ -492,7 +529,7 @@ function replayResult(
   return {
     commandId: committed.commandId,
     parent: parent.run,
-    child: child.run,
+    children: children.map((child) => child!.run),
     parentEvents: parent.events,
     replayed: true
   };

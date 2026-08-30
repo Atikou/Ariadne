@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
 import { AlertTriangle, ArchiveRestore, BellRing, CheckCircle2, ChevronRight, Database, FolderArchive, KeyRound, Laptop, MessageCircle, Mic, Moon, PackageOpen, Plus, RotateCcw, Save, Sun, X } from 'lucide-react';
 import type {
-  AgentAcpSubagentProviderSettingsView,
+  AgentSubagentProviderSettingsView,
   AgentProviderId,
   AgentProviderSettingsPatch,
   AgentProviderSettingsView,
@@ -172,7 +172,9 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
 
   const updateSubagentProvider = (
     index: number,
-    patch: Partial<AgentAcpSubagentProviderSettingsView>
+    patch: Partial<Pick<AgentSubagentProviderSettingsView,
+      'providerId' | 'displayName' | 'command' | 'args' | 'networkAccess'
+      | 'timeoutMs' | 'disposeGraceMs' | 'enabled'>>
   ): void => {
     setAgentSettings((current) => current ? {
       ...current,
@@ -180,6 +182,41 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
         providerIndex === index ? { ...provider, ...patch } : provider
       ))
     } : current);
+  };
+
+  const replaceSubagentProvider = (
+    index: number,
+    provider: AgentSubagentProviderSettingsView
+  ): void => {
+    setAgentSettings((current) => current ? {
+      ...current,
+      subagentProviders: current.subagentProviders.map((candidate, providerIndex) => (
+        providerIndex === index ? provider : candidate
+      ))
+    } : current);
+  };
+
+  const changeSubagentProviderKind = (
+    index: number,
+    kind: AgentSubagentProviderSettingsView['kind']
+  ): void => {
+    const current = agentSettings?.subagentProviders[index];
+    if (current === undefined || current.kind === kind) return;
+    const common = {
+      providerId: current.providerId,
+      displayName: current.displayName,
+      enabled: current.enabled,
+      command: current.command,
+      args: [...current.args],
+      networkAccess: current.networkAccess,
+      timeoutMs: current.timeoutMs,
+      disposeGraceMs: current.disposeGraceMs
+    };
+    replaceSubagentProvider(index, kind === 'acp_stdio'
+      ? { ...common, kind, permissionPolicy: 'reject', sessionPersistence: 'one_shot' }
+      : kind === 'codex_app_server'
+        ? { ...common, kind, permissionPolicy: 'never' }
+        : { ...common, kind, permissionPolicy: 'dontAsk' });
   };
 
   const addSubagentProvider = (): void => {
@@ -195,6 +232,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
           enabled: false,
           command: 'C:\\path\\to\\acp-agent.exe',
           args: [],
+          sessionPersistence: 'one_shot',
           permissionPolicy: 'reject',
           networkAccess: 'offline',
           timeoutMs: 30 * 60_000,
@@ -520,8 +558,8 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
 
             <div className="provider-settings-list" aria-label="外部 SubAgent Provider">
               <div className="settings-section-copy">
-                <h3>外部 SubAgent（ACP）</h3>
-                <p>每次委派启动独立进程，只共享当前工作目录和委派目标。默认拒绝无人值守权限请求；允许项和联网仍受 Child 冻结权限与能力约束，不会继承父对话、父工具或环境凭据。</p>
+                <h3>外部 SubAgent Provider</h3>
+                <p>支持 ACP 跨进程续接、Codex app-server 与 Claude Code。每次委派只共享当前工作目录和目标；权限、联网、超时与进程回收仍由 Child 冻结能力和 Windows 沙箱约束。</p>
               </div>
               {agentSettings.subagentProviders.map((provider, index) => (
                 <fieldset className="provider-settings-card is-expanded" key={`${provider.providerId}-${index}`}>
@@ -535,6 +573,18 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
                   </legend>
                   <div className="provider-settings-body">
                     <div className="agent-settings-grid">
+                      <div className="settings-field settings-select-field"><span>产品协议</span><SelectMenu
+                        className="settings-select-menu"
+                        ariaLabel="选择 SubAgent 产品协议"
+                        placement="bottom"
+                        value={provider.kind}
+                        options={[
+                          { value: 'acp_stdio', label: 'ACP stdio' },
+                          { value: 'codex_app_server', label: 'Codex app-server' },
+                          { value: 'claude_code', label: 'Claude Code' }
+                        ]}
+                        onChange={(kind) => changeSubagentProviderKind(index, kind)}
+                      /></div>
                       <label className="settings-field"><span>Provider ID</span><input
                         value={provider.providerId}
                         onChange={(event) => updateSubagentProvider(index, { providerId: event.target.value })}
@@ -543,7 +593,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
                         value={provider.displayName}
                         onChange={(event) => updateSubagentProvider(index, { displayName: event.target.value })}
                       /></label>
-                      <label className="settings-field settings-field--wide"><span>ACP 可执行文件（绝对路径）</span><input
+                      <label className="settings-field settings-field--wide"><span>可执行文件（绝对路径）</span><input
                         value={provider.command}
                         onChange={(event) => updateSubagentProvider(index, { command: event.target.value })}
                       /></label>
@@ -553,14 +603,69 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
                           args: event.target.value.split(/\r?\n/u).filter((value) => value.length > 0)
                         })}
                       /></label>
-                      <div className="settings-field settings-select-field"><span>权限请求</span><SelectMenu
-                        className="settings-select-menu"
-                        ariaLabel="选择 ACP 权限策略"
-                        placement="bottom"
-                        value={provider.permissionPolicy}
-                        options={[{ value: 'reject', label: '默认拒绝' }, { value: 'allow', label: '按 Child 权限允许' }]}
-                        onChange={(permissionPolicy) => updateSubagentProvider(index, { permissionPolicy })}
-                      /></div>
+                      {provider.kind === 'acp_stdio' ? <>
+                        <div className="settings-field settings-select-field"><span>权限请求</span><SelectMenu
+                          className="settings-select-menu"
+                          ariaLabel="选择 ACP 权限策略"
+                          placement="bottom"
+                          value={provider.permissionPolicy}
+                          options={[{ value: 'reject', label: '默认拒绝' }, { value: 'allow', label: '按 Child 权限允许' }]}
+                          onChange={(permissionPolicy) => replaceSubagentProvider(index, { ...provider, permissionPolicy })}
+                        /></div>
+                        <div className="settings-field settings-select-field"><span>会话续接</span><SelectMenu
+                          className="settings-select-menu"
+                          ariaLabel="选择 ACP 会话续接策略"
+                          placement="bottom"
+                          value={provider.sessionPersistence ?? 'one_shot'}
+                          options={[{ value: 'one_shot', label: '一次性会话' }, { value: 'resume', label: '跨进程恢复' }]}
+                          onChange={(sessionPersistence) => replaceSubagentProvider(index, { ...provider, sessionPersistence })}
+                        /></div>
+                      </> : provider.kind === 'codex_app_server' ? <>
+                        <div className="settings-field settings-select-field"><span>Codex 权限</span><SelectMenu
+                          className="settings-select-menu"
+                          ariaLabel="选择 Codex 权限策略"
+                          placement="bottom"
+                          value={provider.permissionPolicy}
+                          options={[
+                            { value: 'never', label: '不询问' },
+                            { value: 'approve-for-me', label: '沙箱内自动审阅' },
+                            { value: 'danger-full-access', label: '完全访问（危险）' }
+                          ]}
+                          onChange={(permissionPolicy) => replaceSubagentProvider(index, { ...provider, permissionPolicy })}
+                        /></div>
+                        <label className="settings-field"><span>Codex 模型（可选）</span><input
+                          value={provider.model ?? ''}
+                          onChange={(event) => replaceSubagentProvider(index, {
+                            ...provider,
+                            ...(event.target.value.trim().length === 0
+                              ? { model: undefined }
+                              : { model: event.target.value })
+                          })}
+                        /></label>
+                      </> : <>
+                        <div className="settings-field settings-select-field"><span>Claude 权限</span><SelectMenu
+                          className="settings-select-menu"
+                          ariaLabel="选择 Claude 权限策略"
+                          placement="bottom"
+                          value={provider.permissionPolicy}
+                          options={[
+                            { value: 'dontAsk', label: '不询问' },
+                            { value: 'acceptEdits', label: '接受编辑' },
+                            { value: 'plan', label: '仅计划' },
+                            { value: 'bypassPermissions', label: '绕过权限（危险）' }
+                          ]}
+                          onChange={(permissionPolicy) => replaceSubagentProvider(index, { ...provider, permissionPolicy })}
+                        /></div>
+                        <label className="settings-field"><span>Claude 模型（可选）</span><input
+                          value={provider.model ?? ''}
+                          onChange={(event) => replaceSubagentProvider(index, {
+                            ...provider,
+                            ...(event.target.value.trim().length === 0
+                              ? { model: undefined }
+                              : { model: event.target.value })
+                          })}
+                        /></label>
+                      </>}
                       <div className="settings-field settings-select-field"><span>网络</span><SelectMenu
                         className="settings-select-menu"
                         ariaLabel="选择 ACP 网络策略"
@@ -589,7 +694,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
                 className="local-model-root-add"
                 disabled={agentSettings.subagentProviders.length >= 8}
                 onClick={addSubagentProvider}
-              ><Plus size={12} />添加 ACP Provider</button>
+              ><Plus size={12} />添加外部 Provider</button>
             </div>
 
             <div className="settings-json-note"><Database size={14} /><p>配置写入用户数据目录的 <code>settings.toml</code>。API Key 只以系统安全存储生成的密文保存，加载设置时不会回传明文。</p></div>
@@ -803,7 +908,7 @@ function sameJsonValue(left: unknown, right: unknown): boolean {
 }
 
 function nextAcpProviderId(
-  providers: readonly AgentAcpSubagentProviderSettingsView[]
+  providers: readonly AgentSubagentProviderSettingsView[]
 ): string {
   const existing = new Set(providers.map((provider) => provider.providerId));
   for (let index = 1; index <= 8; index += 1) {

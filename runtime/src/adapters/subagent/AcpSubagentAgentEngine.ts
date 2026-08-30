@@ -5,6 +5,7 @@ import {
   methods,
   ndJsonStream,
   type ContentBlock,
+  type InitializeResponse,
   type StopReason,
   type ToolKind
 } from '@agentclientprotocol/sdk';
@@ -23,6 +24,11 @@ import type {
   AgentProcessLease,
   AgentProcessSandbox
 } from '../../control/ports/AgentProcessSandbox.js';
+import type {
+  AgentSubagentSessionOwner,
+  AgentSubagentSessionRecord,
+  AgentSubagentSessionStore
+} from '../../control/ports/AgentSubagentSessionStore.js';
 
 const MAX_ASSISTANT_BYTES = 1_048_576;
 const MAX_PROTOCOL_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -35,9 +41,11 @@ export interface AcpSubagentAgentEngineOptions {
   readonly config: AcpSubagentProviderBootstrap;
   readonly workspaceRoots: ReadonlyMap<string, string>;
   readonly sandboxForWorkspace: (workspaceRoot: string) => AgentProcessSandbox;
+  readonly sessionStore?: AgentSubagentSessionStore;
+  readonly now?: () => Date;
 }
 
-/** Fresh-process, one-shot ACP engine. Only cwd and delegated prompt cross the boundary. */
+/** Fresh-process ACP engine with optional provider-private session reconnect. */
 export class AcpSubagentAgentEngine implements AgentEngine {
   private readonly configDigest: string;
 
@@ -54,7 +62,10 @@ export class AcpSubagentAgentEngine implements AgentEngine {
     if (
       objective.kind !== 'parent_delegation'
       || objective.providerId !== this.options.config.providerId
-      || objective.mode !== 'one_shot'
+      || (
+        objective.mode === 'continuable'
+        && this.options.config.sessionPersistence !== 'resume'
+      )
     ) throw deterministic('acp_child_authority_invalid', 'ACP Child authority is invalid.');
     const workspaceRoot = this.options.workspaceRoots.get(
       input.run.binding.workspace.workspaceId
@@ -62,7 +73,7 @@ export class AcpSubagentAgentEngine implements AgentEngine {
     if (workspaceRoot === undefined) {
       throw deterministic('acp_workspace_unavailable', 'ACP Child workspace is unavailable.');
     }
-    const prompt = delegatedPrompt(input);
+    const prompt = delegatedPrompt(input, objective.mode);
     const mode = input.run.binding.workspace.access === 'write'
       ? 'workspace-write' as const
       : 'read-only' as const;
@@ -72,6 +83,17 @@ export class AcpSubagentAgentEngine implements AgentEngine {
       this.options.config,
       networkAccess
     );
+    const sessionOwner = sessionOwnerFor(input, this.options.config.providerId, this.configDigest);
+    if (objective.mode === 'continuable' && this.options.sessionStore === undefined) {
+      throw deterministic(
+        'acp_session_store_unavailable',
+        'ACP continuation persistence is unavailable.'
+      );
+    }
+    const sessionStore = this.options.sessionStore ?? ONE_SHOT_SESSION_STORE;
+    const persistedSession = objective.mode === 'continuable'
+      ? await sessionStore.read(sessionOwner)
+      : null;
     return {
       modelContext: {
         format: 'ariadne.acp-subagent-context',
@@ -82,7 +104,9 @@ export class AcpSubagentAgentEngine implements AgentEngine {
         inheritsParentContext: false,
         permissionPolicy: allowedToolKinds.size === 0 ? 'reject' : 'allow_authorized',
         allowedToolKinds: [...allowedToolKinds].sort(),
-        networkAccess
+        networkAccess,
+        sessionPersistence: objective.mode === 'continuable' ? 'resume' : 'one_shot',
+        reconnectState: persistedSession === null ? 'new_session' : 'persisted_session'
       },
       decide: (decisionSignal) => runAcpTurn({
         config: this.options.config,
@@ -91,6 +115,10 @@ export class AcpSubagentAgentEngine implements AgentEngine {
         prompt,
         networkAccess,
         allowedToolKinds,
+        sessionOwner,
+        sessionStore,
+        subagentMode: objective.mode,
+        now: this.options.now ?? (() => new Date()),
         sandbox: this.options.sandboxForWorkspace(workspaceRoot),
         signal: decisionSignal
       })
@@ -113,6 +141,10 @@ interface AcpTurnRequest {
   readonly prompt: string;
   readonly networkAccess: 'offline' | 'online-approved';
   readonly allowedToolKinds: ReadonlySet<ToolKind>;
+  readonly sessionOwner: AgentSubagentSessionOwner;
+  readonly sessionStore: AgentSubagentSessionStore;
+  readonly subagentMode: 'one_shot' | 'continuable';
+  readonly now: () => Date;
   readonly sandbox: AgentProcessSandbox;
   readonly signal: AbortSignal;
 }
@@ -203,15 +235,52 @@ async function runAcpTurn(request: AcpTurnRequest): Promise<AgentDirective> {
   request.signal.addEventListener('abort', abort, { once: true });
 
   try {
-    await agent.request(methods.agent.initialize, {
+    const initialized = await agent.request(methods.agent.initialize, {
       protocolVersion: PROTOCOL_VERSION,
       clientCapabilities: {}
     });
-    const session = await agent.request(methods.agent.session.new, {
-      cwd: request.workspaceRoot,
-      mcpServers: []
-    });
-    sessionId = session.sessionId;
+    const persisted = request.subagentMode === 'continuable'
+      ? await request.sessionStore.read(request.sessionOwner)
+      : null;
+    if (persisted === null) {
+      const session = await agent.request(methods.agent.session.new, {
+        cwd: request.workspaceRoot,
+        mcpServers: []
+      });
+      sessionId = session.sessionId;
+      if (request.subagentMode === 'continuable') {
+        const reconnectMethod = supportedReconnectMethod(initialized);
+        if (reconnectMethod === null) {
+          throw deterministic(
+            'acp_continuation_unsupported',
+            'ACP provider did not advertise a reconnectable session capability.'
+          );
+        }
+        const record: AgentSubagentSessionRecord = {
+          ...request.sessionOwner,
+          remoteSessionId: sessionId,
+          reconnectMethod,
+          createdAt: request.now().toISOString()
+        };
+        await request.sessionStore.bind(record);
+      }
+    } else {
+      assertReconnectCapability(initialized, persisted.reconnectMethod);
+      sessionId = persisted.remoteSessionId;
+      if (persisted.reconnectMethod === 'resume') {
+        await agent.request(methods.agent.session.resume, {
+          sessionId,
+          cwd: request.workspaceRoot,
+          mcpServers: []
+        });
+      } else {
+        await agent.request(methods.agent.session.load, {
+          sessionId,
+          cwd: request.workspaceRoot,
+          mcpServers: []
+        });
+      }
+    }
     request.signal.throwIfAborted();
     promptStarted = true;
     const result = await agent.request(methods.agent.session.prompt, {
@@ -240,7 +309,16 @@ async function runAcpTurn(request: AcpTurnRequest): Promise<AgentDirective> {
   }
 }
 
-function delegatedPrompt(input: AgentTurnInput): string {
+const ONE_SHOT_SESSION_STORE: AgentSubagentSessionStore = {
+  read: async () => null,
+  bind: async () => { throw new Error('subagent_session_store_unavailable'); },
+  remove: async () => undefined
+};
+
+function delegatedPrompt(
+  input: AgentTurnInput,
+  mode: 'one_shot' | 'continuable'
+): string {
   if (input.messages.some((message) => message.kind !== 'text')) {
     throw deterministic('acp_child_input_invalid', 'ACP Child input must be fresh text.');
   }
@@ -250,11 +328,53 @@ function delegatedPrompt(input: AgentTurnInput): string {
   > => (
     message.kind === 'text' && message.role === 'user'
   ));
-  const prompt = users.length === 1 ? users[0]?.content : undefined;
+  const prompt = mode === 'one_shot' && users.length !== 1
+    ? undefined
+    : users.at(-1)?.content;
   if (prompt === undefined || prompt.length === 0 || prompt.length > 1_048_576) {
     throw deterministic('acp_child_input_invalid', 'ACP Child objective is invalid.');
   }
   return prompt;
+}
+
+function sessionOwnerFor(
+  input: AgentTurnInput,
+  providerId: string,
+  configurationDigest: string
+): AgentSubagentSessionOwner {
+  return {
+    runId: input.run.runId,
+    workspaceId: input.run.binding.workspace.workspaceId,
+    providerId,
+    configurationDigest
+  };
+}
+
+function supportedReconnectMethod(
+  initialized: InitializeResponse
+): 'resume' | 'load' | null {
+  const response = initialized as {
+    readonly agentCapabilities?: {
+      readonly loadSession?: boolean;
+      readonly sessionCapabilities?: { readonly resume?: object | null };
+    };
+  };
+  if (response.agentCapabilities?.sessionCapabilities?.resume != null) return 'resume';
+  if (response.agentCapabilities?.loadSession === true) return 'load';
+  return null;
+}
+
+function assertReconnectCapability(
+  initialized: InitializeResponse,
+  method: 'resume' | 'load'
+): void {
+  const supported = supportedReconnectMethod(initialized);
+  if (supported !== method) {
+    throw deterministic(
+      'acp_reconnect_capability_changed',
+      'ACP provider reconnect capability changed after the Child session was pinned.'
+    );
+  }
 }
 
 function directiveForStopReason(reason: StopReason, content: string): AgentDirective {

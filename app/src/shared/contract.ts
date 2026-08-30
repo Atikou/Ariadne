@@ -1,6 +1,6 @@
 import type { LiveWorkOutputChunk, LiveWorkSnapshot } from '@ariadne/live-work';
 import type {
-  AcpSubagentProviderConfiguration,
+  SubagentProviderConfiguration,
   AssistantChatProfile
 } from '@ariadne/protocol/settings';
 export { createDefaultAssistantChatProfile } from '@ariadne/protocol/settings';
@@ -286,10 +286,11 @@ export interface AgentProviderSettingsView {
   apiKeyStatus: ApiKeyStatus;
 }
 
-export interface AgentAcpSubagentProviderSettingsView
-extends AcpSubagentProviderConfiguration {
+export type AgentSubagentProviderSettingsView = SubagentProviderConfiguration & {
   enabled: boolean;
-}
+};
+/** @deprecated Use AgentSubagentProviderSettingsView. */
+export type AgentAcpSubagentProviderSettingsView = AgentSubagentProviderSettingsView;
 
 export interface AgentSettingsView {
   schemaVersion: 7;
@@ -302,7 +303,7 @@ export interface AgentSettingsView {
   workspaces: AgentWorkspaceSettingsView[];
   localModelRoots: string[];
   providers: Record<AgentProviderId, AgentProviderSettingsView>;
-  subagentProviders: AgentAcpSubagentProviderSettingsView[];
+  subagentProviders: AgentSubagentProviderSettingsView[];
   runtimePolicy: RuntimePolicySnapshot;
 }
 

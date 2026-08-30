@@ -6,10 +6,12 @@ import { z } from 'zod';
 import { modelInferenceProfileSchema, type ModelInferenceProfile } from '@ariadne/protocol/public';
 import {
   acpSubagentProviderConfigurationSchema,
+  claudeSubagentProviderConfigurationSchema,
+  codexSubagentProviderConfigurationSchema,
   assistantChatProfileSchema,
   createDefaultAssistantChatProfile,
   type AssistantChatProfile,
-  type AcpSubagentProviderConfiguration
+  type SubagentProviderConfiguration
 } from '@ariadne/protocol/settings';
 import {
   createDefaultRuntimePolicySnapshot,
@@ -81,9 +83,11 @@ const persistedProviderFileSchema = z.object({
   inference: modelInferenceProfileSchema.optional(),
   encryptedApiKey: encryptedApiKeySchema.optional()
 }).strict();
-const persistedAcpSubagentProviderSchema = acpSubagentProviderConfigurationSchema.extend({
-  enabled: z.boolean()
-}).strict();
+const persistedSubagentProviderSchema = z.discriminatedUnion('kind', [
+  acpSubagentProviderConfigurationSchema.extend({ enabled: z.boolean() }).strict(),
+  codexSubagentProviderConfigurationSchema.extend({ enabled: z.boolean() }).strict(),
+  claudeSubagentProviderConfigurationSchema.extend({ enabled: z.boolean() }).strict()
+]);
 const legacyAssistantChatProfileSchema = z.object({
   mode: z.enum(['standard', 'unrestricted']),
   name: z.string().trim().min(1).max(64),
@@ -109,7 +113,7 @@ const persistedAgentSettingsSchema = z.object({
   workspaceAccess: z.enum(['read', 'write']),
   workspaces: z.array(persistedWorkspaceSchema).max(32),
   providers: z.record(agentProviderIdSchema, persistedProviderSchema),
-  subagentProviders: z.array(persistedAcpSubagentProviderSchema).max(8),
+  subagentProviders: z.array(persistedSubagentProviderSchema).max(8),
   runtimePolicy: runtimePolicySnapshotSchema
 }).strict();
 const persistedAgentSettingsFileSchema = z.object({
@@ -128,7 +132,7 @@ const persistedAgentSettingsFileSchema = z.object({
   workspaceAccess: z.enum(['read', 'write']).optional(),
   workspaces: z.array(persistedWorkspaceSchema).max(32).optional(),
   providers: z.partialRecord(agentProviderIdSchema, persistedProviderFileSchema),
-  subagentProviders: z.array(persistedAcpSubagentProviderSchema).max(8).optional(),
+  subagentProviders: z.array(persistedSubagentProviderSchema).max(8).optional(),
   runtimePolicy: runtimePolicySnapshotSchema.optional()
 }).strict().superRefine((settings, context) => {
   if (settings.schemaVersion >= 4 && settings.workspaceRoot !== undefined) {
@@ -170,7 +174,7 @@ export interface RuntimeAgentSettings {
   workspaces: AgentWorkspaceSettingsView[];
   localModelRoots: string[];
   providers: Record<AgentProviderId, RuntimeAgentProviderSettings>;
-  subagentProviders: Array<AcpSubagentProviderConfiguration & { enabled: boolean }>;
+  subagentProviders: Array<SubagentProviderConfiguration & { enabled: boolean }>;
   runtimePolicy: RuntimePolicySnapshot;
 }
 

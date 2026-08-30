@@ -85,7 +85,7 @@ Message accepted
 
 当前默认生产 Composition 在 bootstrap 时先编译静态 Capability Provider 图并冻结单一 Manifest，再由它向 Runtime Kernel 和 Agent Control 提供公开能力与 immutable first-party Tool Catalog。Provider 用 `dependsOn` 声明纯顺序、用 `consumes`/`provides` 声明实际 service 依赖；compiler 只把已声明且已启动的 service 注入 Provider scope。Workspace/Skill/mode instruction contributors 先组合为全有或全无的准入快照，再与 Telemetry、live-work 一起由终端 Provider 组装为类型化 Agent Control service bundle；默认 Factory 不再从 Manifest 按字符串查找扩展 service，也不再拼接系统提示。Tool 身份、schema、中立 model description/guidance、可公开静态 kind/label、输入摘要、工作区、能力授权和模型绑定在 admission 时固定；执行和投影时不得按名称重新解析成另一实现或展示映射，Tool input/result 仍留在受保护边界。
 
-Plan、Budget、Delegation 和 Child Run 已进入 Agent Core/Control 权威模型。one-shot/continuable SubAgent 已接通模型 Directive、原子 Child Run 创建、普通 v3 调度、持久 `waiting_input`、direct-parent send、运行中非终态 interrupt、终态结果回灌、公开父子/Provider 投影和 UI 状态；冻结 execution Provider seam 与 Settings 可配置的 fresh-process ACP one-shot adapter 已接入，Codex/Claude 与外部 continuable 尚未接入。
+Plan、Budget、Delegation 和 Child Run 已进入 Agent Core/Control 权威模型。单个和批量 SubAgent Directive 都以一次事务提交 Parent 结果、预算、Delegation 与全部 Child；one-shot/continuable ordinary Child、持久 `waiting_input`、direct-parent send、interrupt、聚合结果回灌、父子/Provider 投影和 UI 状态已接通。Settings 可配置 ACP one-shot/resume、Codex app-server 与 Claude Code one-shot；外部 session ID 只进入加密的 provider-private store。
 
 ## 5. Public Projection 与 Renderer
 
@@ -111,7 +111,7 @@ Renderer 的写操作只使用 v3 Session lifecycle/Message、Decision、Cancel 
 | Hooks | 8 个 typed lifecycle extension point 由 Manifest-owned 静态可信 Provider service 管理；pre 可拒绝、admission 只能收窄，post observer-only；handler set 与 Provider 按反向顺序关闭 |
 | Context | Conversation 历史、确定性 semantic compaction、protected Effect result spill、usage anchor、逐 binding tokenizer、最终投影硬准入和 overflow recovery 已进入 v3；真实本地 llama.cpp 跨进程长上下文验收已通过，远程 Live Provider 仍待有 credential 的环境执行 |
 | Memory/Embedding | 有旧实现和测试，但没有完整 v3 生产 consumer |
-| SubAgent | one-shot/continuable ordinary Child Run、list/status/send/interrupt、冻结 execution Provider seam 与 fresh-process ACP one-shot adapter 已接入；外部 continuable/Codex/Claude 尚未接入 |
+| SubAgent | 单个/批量 Child、one-shot/continuable ordinary Run、list/status/send/interrupt、ACP resume、Codex app-server 与 Claude Code one-shot 已接入；structured report、真实窗口与 Claude live credential gate 待验收 |
 | Scheduler | 有旧 cron/interval/file/git 模块基础，没有 v3 产品闭环；旧 Background process/trigger contract 已删除 |
 | Diagnostics/Telemetry | lifecycle diagnostics 已持久、脱敏、可重放；Telemetry 只在 exporter 启动成功后宣告 |
 | Provider Resilience | 冻结 policy 已进入 exact v3 transport；按 Provider/model/settings 隔离并发、速率、首语义输出前重试和熔断，429/5xx/timeout 与有界 Retry-After 有确定性测试 |

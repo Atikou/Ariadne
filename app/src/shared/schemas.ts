@@ -7,6 +7,8 @@ import {
 } from '@ariadne/protocol/public';
 import {
   acpSubagentProviderConfigurationSchema,
+  claudeSubagentProviderConfigurationSchema,
+  codexSubagentProviderConfigurationSchema,
   assistantChatProfileSchema,
   runtimePolicySnapshotSchema
 } from '@ariadne/protocol/settings';
@@ -217,9 +219,11 @@ const agentProviderSettingsPatchSchema = z
   )
   .refine((value) => !(value.apiKey && value.clearApiKey), '不能同时替换和清除 API Key。');
 
-const agentAcpSubagentProviderSettingsSchema = acpSubagentProviderConfigurationSchema.extend({
-  enabled: z.boolean()
-}).strict();
+const agentSubagentProviderSettingsSchema = z.discriminatedUnion('kind', [
+  acpSubagentProviderConfigurationSchema.extend({ enabled: z.boolean() }).strict(),
+  codexSubagentProviderConfigurationSchema.extend({ enabled: z.boolean() }).strict(),
+  claudeSubagentProviderConfigurationSchema.extend({ enabled: z.boolean() }).strict()
+]);
 
 export const agentSettingsOperationSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -241,7 +245,7 @@ export const agentSettingsOperationSchema = z.discriminatedUnion('kind', [
   }).strict(),
   z.object({
     kind: z.literal('subagentProviders.replace'),
-    providers: z.array(agentAcpSubagentProviderSettingsSchema).max(8)
+    providers: z.array(agentSubagentProviderSettingsSchema).max(8)
   }).strict(),
   z.object({ kind: z.literal('runtimePolicy.replace'), policy: runtimePolicySnapshotSchema }).strict()
 ]);
@@ -312,7 +316,7 @@ export const agentSettingsViewSchema = z.object({
   workspaces: z.array(agentWorkspaceSettingsViewSchema).max(32),
   localModelRoots: z.array(absolutePathSchema).max(8),
   providers: z.record(agentProviderIdSchema, agentProviderSettingsViewSchema),
-  subagentProviders: z.array(agentAcpSubagentProviderSettingsSchema).max(8),
+  subagentProviders: z.array(agentSubagentProviderSettingsSchema).max(8),
   runtimePolicy: runtimePolicySnapshotSchema
 }).strict();
 

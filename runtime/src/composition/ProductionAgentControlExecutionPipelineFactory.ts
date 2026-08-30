@@ -7,7 +7,7 @@ import {
 } from '@ariadne/agent-core';
 import {
   agentAdmissionAuthoritySourceSchema,
-  acpSubagentProviderBootstrapSchema,
+  subagentProviderBootstrapSchema,
   type AgentAdmissionAuthoritySource,
   type AgentAdmissionAuthoritySourceManifest,
   type RuntimeBootstrap
@@ -24,10 +24,16 @@ import type {
   ExactAgentModelInferenceRuntime
 } from '../control/ports/AgentModelInference.js';
 import type { AgentProcessSandbox } from '../control/ports/AgentProcessSandbox.js';
+import type { AgentSubagentSessionStore } from '../control/ports/AgentSubagentSessionStore.js';
 import {
   AcpSubagentAgentEngine,
   digestAcpSubagentConfiguration
 } from '../adapters/subagent/AcpSubagentAgentEngine.js';
+import {
+  ClaudeSubagentAgentEngine,
+  CodexSubagentAgentEngine,
+  digestProductSubagentConfiguration
+} from '../adapters/subagent/ProductSubagentAgentEngines.js';
 import {
   Sha256AgentEffectInputDigester
 } from '../adapters/persistence/Sha256AgentEffectInputDigester.js';
@@ -171,6 +177,7 @@ export interface AgentControlExecutionPipelineFactoryInput {
   readonly processSandboxForWorkspace?: (workspaceRoot: string) => AgentProcessSandbox;
   readonly providerTelemetry?: Pick<AgentRuntimeTelemetry, 'recordProviderCall'>;
   readonly attachmentStore?: ConversationAttachmentStore;
+  readonly subagentSessionStore?: AgentSubagentSessionStore;
 }
 
 export interface AgentControlExecutionPipelineFactory {
@@ -298,22 +305,26 @@ implements AgentControlExecutionPipelineFactory {
     );
     await assertCatalogAuthorities(source, catalogs);
     const injectedSubagentProviders = this.options.subagentExecutionProviders ?? [];
-    const acpConfigurations = acpSubagentProviderBootstrapSchema.array().max(8).parse(
+    const subagentConfigurations = subagentProviderBootstrapSchema.array().max(8).parse(
       input.subagentProviders ?? []
     );
     if (
-      acpConfigurations.length > 0
+      subagentConfigurations.length > 0
       && (input.processSandboxForWorkspace === undefined || input.workspaces === undefined)
     ) throw new ProductionAgentControlExecutionPipelineError(
       'AGENT_EXECUTION_PIPELINE_OPTIONS_INVALID',
-      'Configured ACP SubAgent providers require Workspace and process-sandbox services.'
+      'Configured external SubAgent providers require Workspace and process-sandbox services.'
     );
-    const configuredDescriptors = acpConfigurations.map((config) => ({
+    const configuredDescriptors = subagentConfigurations.map((config) => ({
       providerId: config.providerId,
       displayName: config.displayName,
-      configurationDigest: digestAcpSubagentConfiguration(config),
+      configurationDigest: config.kind === 'acp_stdio'
+        ? digestAcpSubagentConfiguration(config)
+        : digestProductSubagentConfiguration(config),
       transport: 'external_process' as const,
-      supportedModes: ['one_shot'] as const,
+      supportedModes: config.kind === 'acp_stdio' && config.sessionPersistence === 'resume'
+        ? ['one_shot', 'continuable'] as const
+        : ['one_shot'] as const,
       supportsStructuredReport: false,
       inheritsParentContext: false,
       usesParentTools: false
@@ -407,15 +418,31 @@ implements AgentControlExecutionPipelineFactory {
     const workspaceRoots = new Map(
       (input.workspaces ?? []).map((workspace) => [workspace.workspaceId, workspace.rootPath])
     );
-    const configuredSubagentProviders = acpConfigurations.map((config) => {
+    const configuredSubagentProviders = subagentConfigurations.map((config) => {
+      const externalEngine = config.kind === 'acp_stdio'
+        ? new AcpSubagentAgentEngine({
+            config,
+            workspaceRoots,
+            sandboxForWorkspace: input.processSandboxForWorkspace!,
+            ...(input.subagentSessionStore === undefined
+              ? {}
+              : { sessionStore: input.subagentSessionStore })
+          })
+        : config.kind === 'codex_app_server'
+          ? new CodexSubagentAgentEngine({
+              config,
+              workspaceRoots,
+              sandboxForWorkspace: input.processSandboxForWorkspace!
+            })
+          : new ClaudeSubagentAgentEngine({
+              config,
+              workspaceRoots,
+              sandboxForWorkspace: input.processSandboxForWorkspace!
+            });
       const externalInference = new AgentInferenceDispatchService(
         input.unitOfWork,
         inputReader,
-        new AcpSubagentAgentEngine({
-          config,
-          workspaceRoots,
-          sandboxForWorkspace: input.processSandboxForWorkspace!
-        }),
+        externalEngine,
         directivePlanner,
         new V3AgentInferenceDispatchCheckpointFactory(),
         undefined,
@@ -431,9 +458,11 @@ implements AgentControlExecutionPipelineFactory {
           (descriptor) => descriptor.providerId === config.providerId
         )!,
         dispatchDelegatedInitial: (request, signal) => delegated.dispatchOwned(request, signal),
-        dispatchFollowUp: async () => {
-          throw new Error('ACP SubAgent providers support one-shot Child Runs only.');
-        }
+        dispatchFollowUp: config.kind === 'acp_stdio' && config.sessionPersistence === 'resume'
+          ? (request, signal) => delegated.dispatchOwned(request, signal)
+          : async () => {
+              throw new Error('External SubAgent provider is pinned as one-shot.');
+            }
       } satisfies AgentSubagentExecutionProvider;
     });
     const dispatcher = new AgentRunExecutionDispatchController(

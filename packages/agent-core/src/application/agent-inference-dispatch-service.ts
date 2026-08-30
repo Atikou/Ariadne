@@ -125,7 +125,7 @@ export interface AgentInferenceDispatchResult {
 
 export type AgentSubagentDelegationCommitter = Pick<
   AgentSubagentDelegationService,
-  'commit'
+  'commit' | 'commitBatch'
 >;
 
 export class AgentInferenceDispatchRecoveryRequiredError extends Error {
@@ -343,7 +343,7 @@ export class AgentInferenceDispatchService {
     let effectPayloads: readonly AgentEffectPayloadCommit[] = [];
     let directivePayloads: readonly AgentDirectivePayloadCommit[] = [];
     let planVersions: readonly AgentPlanVersionCommit[] = [];
-    let subagent: AgentSubagentDelegationPlan | undefined;
+    let subagents: readonly AgentSubagentDelegationPlan[] | undefined;
     try {
       directive = await prepared.decide(signal);
       usageAnchor = prepared.readUsageAnchor?.() ?? undefined;
@@ -411,7 +411,7 @@ export class AgentInferenceDispatchService {
         effectPayloads = plan.effectPayloads;
         directivePayloads = plan.directivePayloads;
         planVersions = plan.planVersions;
-        subagent = plan.subagent;
+        subagents = plan.subagents ?? (plan.subagent === undefined ? undefined : [plan.subagent]);
       } catch {
         result = await uncertainResult(
           request,
@@ -421,7 +421,7 @@ export class AgentInferenceDispatchService {
         effectPayloads = [];
         directivePayloads = [];
         planVersions = [];
-        subagent = undefined;
+        subagents = undefined;
       }
     }
     if (result === undefined) {
@@ -438,7 +438,7 @@ export class AgentInferenceDispatchService {
       occurredAt: finishedAt,
       result
     }), effectPayloads, directivePayloads);
-    const recorded = subagent === undefined
+    const recorded = subagents === undefined
       ? await this.commands.execute({
       kind: 'run.record_inference_attempt_result',
       commandId: resultCommandId,
@@ -452,7 +452,7 @@ export class AgentInferenceDispatchService {
         ...EMPTY_AGENT_CONTROL_COMMIT_FACTS,
         planVersions
       })
-      : await this.commitSubagentDelegation({
+      : await this.commitSubagentDelegations({
           commandId: resultCommandId,
           runId: started.run.runId,
           expectedVersion: resultAuthority.version,
@@ -461,7 +461,7 @@ export class AgentInferenceDispatchService {
           attemptId: startedAttempt.attemptId,
           result: requireSucceededDelegationResult(result),
           parentArtifacts: resultArtifacts,
-          delegation: subagent
+          delegations: subagents
         });
     const recordedTurn = requireTurn(recorded.run, request.turnId);
     const recordedAttempt = requireAttempt(recordedTurn, request.attemptId);
@@ -499,15 +499,15 @@ export class AgentInferenceDispatchService {
     };
   }
 
-  private async commitSubagentDelegation(
-    request: Parameters<AgentSubagentDelegationService['commit']>[0]
+  private async commitSubagentDelegations(
+    request: Parameters<AgentSubagentDelegationService['commitBatch']>[0]
   ): Promise<AgentRunCommandResult> {
     if (this.subagentDelegations === undefined) {
       throw new AgentRunInvariantError(
         'SubAgent delegation has no production commit owner.'
       );
     }
-    const committed = await this.subagentDelegations.commit(request);
+    const committed = await this.subagentDelegations.commitBatch(request);
     return {
       commandId: committed.commandId,
       run: committed.parent,

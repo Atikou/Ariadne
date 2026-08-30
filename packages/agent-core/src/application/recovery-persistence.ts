@@ -154,7 +154,8 @@ export interface AgentPersistencePayloadContext {
     | 'effect_result'
     | 'plan_payload'
     | 'delegation_objective'
-    | 'directive_response';
+    | 'directive_response'
+    | 'subagent_session';
   readonly runId: string;
   /** AAD: exact aggregate/command identity that owns this payload. */
   readonly commandId: string;
@@ -1214,6 +1215,7 @@ function collectDirectiveArtifactReferences(
           }
           break;
         case 'delegate_subagent':
+        case 'delegate_subagents':
           break;
         case 'fail':
           reference = {

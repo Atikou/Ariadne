@@ -82,7 +82,7 @@ Provider 是 smoke 脚本启动的进程外、确定性 HTTPS OpenAI-compatible 
 以下能力已有源码和自动测试，但当前没有完整 v3 product consumer 或真实验收：
 
 - Memory 与 Embedding；
-- SubAgent 批量 Child、外部 continuable/reconnect、Codex/Claude/structured report 与真实窗口场景；one-shot/continuable ordinary Child、运行中非终态 interrupt 和 fresh-process ACP one-shot Provider 已有 production-pipeline/真实子进程 integration evidence；旧 Background Task 第二进程表及其幽灵 trigger contract 已删除；
+- SubAgent structured report、真实 Electron 窗口和 Claude 商业登录态场景；原子批量 Child、one-shot/continuable ordinary Child、运行中非终态 interrupt、ACP 跨进程 resume、Codex app-server 与 Claude Code 严格产品 adapter 已有 production-pipeline/真实子进程 evidence，Codex 另有本机真实登录态验收；旧 Background Task 第二进程表及其幽灵 trigger contract 已删除；
 - Provider-neutral typed request history 与 exact response `text/reasoning/tool_call` 已进入 v3；历史 Tool 输入按 committed digest 从受保护 Effect payload 恢复，OpenAI/Anthropic/本地模型使用原生 Tool history。图片附件由 Conversation 的内容寻址引用持有，推理前按精确 Message owner 复核并只在临时 Provider 请求中展开；仍缺 adapter-private replay state；
 - 确定性因果 semantic compaction、可恢复 Tool result spill、request-envelope-bound Provider usage anchor 与 bounded overflow recovery 已进入 v3；source/summary digest 会跨 SQLite reopen，摘要保持普通用户历史权限且 Tool 全量结果仍由原 Effect payload owner 读取。逐 binding tokenizer 与最终投影硬准入已进入 v3；真实本地 llama.cpp 长上下文跨进程重启门禁已通过，真实远程 Provider 因当前机器无 credential 尚未执行；
 - 不唤醒模型的独立 context injection；运行中 follow-up/steer 和可恢复 token/reasoning stream 已进入生产链路；

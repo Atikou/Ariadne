@@ -16,9 +16,11 @@ import {
 } from './public.js';
 import {
   acpSubagentProviderConfigurationSchema,
+  subagentProviderConfigurationSchema,
   assistantChatProfileSchema,
   runtimePolicySnapshotSchema,
-  type AcpSubagentProviderConfiguration
+  type AcpSubagentProviderConfiguration,
+  type SubagentProviderConfiguration
 } from './settings.js';
 import { agentAdmissionAuthoritySourceSchema } from './host/agent-admission-authority-source.js';
 
@@ -151,8 +153,8 @@ export const modelProviderBootstrapSchema = z.object({
  * One enabled, fresh-process ACP SubAgent backend. Executables are absolute
  * deployment facts; credentials are deliberately not serialized through IPC.
  */
-export const acpSubagentProviderBootstrapSchema =
-  acpSubagentProviderConfigurationSchema;
+export const subagentProviderBootstrapSchema = subagentProviderConfigurationSchema;
+export const acpSubagentProviderBootstrapSchema = acpSubagentProviderConfigurationSchema;
 
 export const runtimeBootstrapSchema = z
   .object({
@@ -165,7 +167,7 @@ export const runtimeBootstrapSchema = z
     dataRoot: canonicalAbsoluteDataRootSchema,
     modelRoots: z.array(z.string().trim().min(1).max(32_768)).max(16),
     modelProviders: z.array(modelProviderBootstrapSchema).max(16).optional(),
-    subagentProviders: z.array(acpSubagentProviderBootstrapSchema).max(8).optional(),
+    subagentProviders: z.array(subagentProviderBootstrapSchema).max(8).optional(),
     routingStrategy: z.enum([
       'local-first',
       'cloud-first',
@@ -489,6 +491,7 @@ export const runtimeToHostMessageSchema = z.discriminatedUnion('type', [
 export type RuntimeBootstrap = z.infer<typeof runtimeBootstrapSchema>;
 export type RuntimeBuildManifest = z.infer<typeof runtimeBuildManifestSchema>;
 export type ModelProviderBootstrap = z.infer<typeof modelProviderBootstrapSchema>;
+export type SubagentProviderBootstrap = SubagentProviderConfiguration;
 export type AcpSubagentProviderBootstrap = AcpSubagentProviderConfiguration;
 export type AgentPermissionsBootstrap = z.infer<typeof agentPermissionsBootstrapSchema>;
 export type RuntimeReady = z.infer<typeof runtimeReadySchema>;

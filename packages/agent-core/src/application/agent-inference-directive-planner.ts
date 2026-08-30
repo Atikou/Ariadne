@@ -94,6 +94,7 @@ export interface AgentInferenceDirectivePlan {
   readonly directivePayloads: readonly AgentDirectivePayloadCommit[];
   readonly planVersions: readonly AgentPlanVersionCommit[];
   readonly subagent?: AgentSubagentDelegationPlan;
+  readonly subagents?: readonly AgentSubagentDelegationPlan[];
 }
 
 /** Deterministic planning boundary; it performs no persistence or Tool I/O. */
@@ -154,8 +155,11 @@ implements AgentInferenceDirectivePlanner {
     }
 
     if (request.directive.kind !== 'invoke_tools') {
-      if (request.directive.kind === 'delegate_subagent') {
-        return this.planSubagentDelegation(request);
+      if (
+        request.directive.kind === 'delegate_subagent'
+        || request.directive.kind === 'delegate_subagents'
+      ) {
+        return this.planSubagentDelegations(request);
       }
       const planned = await this.commitNonToolDirective(request);
       const result = await succeededPlan(planned.directive, planned.payloads);
@@ -330,11 +334,11 @@ implements AgentInferenceDirectivePlanner {
     };
   }
 
-  private async planSubagentDelegation(
+  private async planSubagentDelegations(
     request: PlanAgentInferenceDirectiveRequest
   ): Promise<AgentInferenceDirectivePlan> {
     const source = request.directive;
-    if (source.kind !== 'delegate_subagent') {
+    if (source.kind !== 'delegate_subagent' && source.kind !== 'delegate_subagents') {
       throw new AgentRunInvariantError('SubAgent planning requires a delegation Directive.');
     }
     if (request.messages === undefined) {
@@ -343,44 +347,78 @@ implements AgentInferenceDirectivePlanner {
         'SubAgent delegation requires the exact protected parent Turn input.'
       );
     }
-    const identity = [
-      request.resultCommandId,
-      request.run.runId,
-      request.turn.turnId,
-      request.attempt.attemptId
-    ] as const;
-    const delegationId = await deriveStableAgentId('delegation', ...identity);
-    const childRunId = await deriveStableAgentId('delegated-run', ...identity);
-    const childGrantId = await deriveStableAgentId('delegated-budget', ...identity);
-    const providerId = await this.subagentProviders.select({
-      requestedProviderId: source.subagent.providerId,
-      mode: source.subagent.mode,
-      parentRun: request.run
-    });
-    if (providerId === null) {
-      return deterministicFailure(
-        'AGENT_SUBAGENT_PROVIDER_UNAVAILABLE',
-        'The requested SubAgent provider does not support this delegation mode.'
-      );
+    const requested = source.kind === 'delegate_subagent'
+      ? [source.subagent]
+      : [...source.subagents];
+    const plans: AgentSubagentDelegationPlan[] = [];
+    for (let index = 0; index < requested.length; index += 1) {
+      const subagent = requested[index]!;
+      const identity = [
+        request.resultCommandId,
+        request.run.runId,
+        request.turn.turnId,
+        request.attempt.attemptId,
+        ...(requested.length === 1 ? [] : [String(index + 1)])
+      ] as const;
+      const delegationId = await deriveStableAgentId('delegation', ...identity);
+      const childRunId = await deriveStableAgentId('delegated-run', ...identity);
+      const childGrantId = await deriveStableAgentId('delegated-budget', ...identity);
+      const providerId = await this.subagentProviders.select({
+        requestedProviderId: subagent.providerId,
+        mode: subagent.mode,
+        parentRun: request.run
+      });
+      if (providerId === null) {
+        return deterministicFailure(
+          'AGENT_SUBAGENT_PROVIDER_UNAVAILABLE',
+          'A requested SubAgent provider does not support its delegation mode.'
+        );
+      }
+      assertCanonicalPublicId(providerId, `subagents[${String(index)}].providerId`);
+      const objective: AgentControlJsonValue = {
+        format: 'ariadne.subagent-objective',
+        schemaVersion: 3,
+        description: subagent.description,
+        prompt: subagent.prompt,
+        mode: subagent.mode,
+        providerId
+      };
+      const objectiveDigest = await sha256AgentControlData(objective);
+      plans.push({
+        delegationId,
+        childRunId,
+        childGrantId,
+        description: subagent.description,
+        prompt: subagent.prompt,
+        mode: subagent.mode,
+        providerId,
+        objective,
+        objectiveDigest,
+        sourceMessages: cloneSubagentSourceMessages(request.messages),
+        availableTools: request.availableTools.map((tool, toolIndex) => (
+          cloneAgentAvailableTool(tool, `subagents[${String(index)}].availableTools[${String(toolIndex)}]`)
+        ))
+      });
     }
-    assertCanonicalPublicId(providerId, 'subagent.providerId');
-    const objective: AgentControlJsonValue = {
-      format: 'ariadne.subagent-objective',
-      schemaVersion: 3,
-      description: source.subagent.description,
-      prompt: source.subagent.prompt,
-      mode: source.subagent.mode,
-      providerId
-    };
-    const objectiveDigest = await sha256AgentControlData(objective);
-    const directive: AgentCommittedDirective = {
-      kind: 'delegate_subagent',
-      delegationId,
-      childRunId,
-      objectiveDigest,
-      mode: source.subagent.mode,
-      providerId
-    };
+    const directive: AgentCommittedDirective = plans.length === 1
+      ? {
+          kind: 'delegate_subagent',
+          delegationId: plans[0]!.delegationId,
+          childRunId: plans[0]!.childRunId,
+          objectiveDigest: plans[0]!.objectiveDigest,
+          mode: plans[0]!.mode,
+          providerId: plans[0]!.providerId
+        }
+      : {
+          kind: 'delegate_subagents',
+          delegations: plans.map((plan) => ({
+            delegationId: plan.delegationId,
+            childRunId: plan.childRunId,
+            objectiveDigest: plan.objectiveDigest,
+            mode: plan.mode,
+            providerId: plan.providerId
+          }))
+        };
     return {
       result: {
         status: 'succeeded',
@@ -390,37 +428,7 @@ implements AgentInferenceDirectivePlanner {
       effectPayloads: [],
       directivePayloads: [],
       planVersions: [],
-      subagent: {
-        delegationId,
-        childRunId,
-        childGrantId,
-        description: source.subagent.description,
-        prompt: source.subagent.prompt,
-        mode: source.subagent.mode,
-        providerId,
-        objective,
-        objectiveDigest,
-        sourceMessages: request.messages.map((message) => message.kind === 'text'
-          ? { ...message }
-          : message.kind === 'image'
-            ? {
-                ...message,
-                owner: { ...message.owner },
-                attachment: {
-                  ...message.attachment,
-                  ...(message.attachment.originalDimensions === undefined
-                    ? {}
-                    : { originalDimensions: { ...message.attachment.originalDimensions } })
-                }
-              }
-            : {
-                ...message,
-                result: cloneCanonicalAgentToolInput(message.result)
-              }),
-        availableTools: request.availableTools.map((tool, index) => (
-          cloneAgentAvailableTool(tool, `subagent.availableTools[${String(index)}]`)
-        ))
-      }
+      ...(plans.length === 1 ? { subagent: plans[0]! } : { subagents: plans })
     };
   }
 
@@ -540,6 +548,7 @@ implements AgentInferenceDirectivePlanner {
         };
       }
       case 'delegate_subagent':
+      case 'delegate_subagents':
         throw new AgentRunInvariantError(
           'SubAgent Directives must use the delegation planning branch.'
         );
@@ -610,6 +619,28 @@ implements AgentInferenceDirectivePlanner {
         );
     }
   }
+}
+
+function cloneSubagentSourceMessages(
+  messages: AgentTurnInputModelData['messages']
+): AgentTurnInputModelData['messages'] {
+  return messages.map((message) => message.kind === 'text'
+    ? { ...message }
+    : message.kind === 'image'
+      ? {
+          ...message,
+          owner: { ...message.owner },
+          attachment: {
+            ...message.attachment,
+            ...(message.attachment.originalDimensions === undefined
+              ? {}
+              : { originalDimensions: { ...message.attachment.originalDimensions } })
+          }
+        }
+      : {
+          ...message,
+          result: cloneCanonicalAgentToolInput(message.result)
+        });
 }
 
 async function succeededPlan(

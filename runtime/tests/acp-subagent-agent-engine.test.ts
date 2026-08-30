@@ -1,8 +1,13 @@
+import { readFileSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AgentTurnInput } from '@ariadne/agent-core';
 import { describe, expect, it } from 'vitest';
 
 import { AcpSubagentAgentEngine } from '../src/adapters/subagent/AcpSubagentAgentEngine.js';
+import { AesGcmAgentPersistencePayloadCodec } from '../src/adapters/persistence/AesGcmAgentPersistencePayloadCodec.js';
+import { FileAgentSubagentSessionStore } from '../src/adapters/subagent/FileAgentSubagentSessionStore.js';
 import type {
   AgentProcessRequest,
   AgentProcessSandbox
@@ -94,12 +99,65 @@ describe('AcpSubagentAgentEngine', () => {
     });
     expect(observedNetworkModes).toEqual(['online-approved']);
   });
+
+  it('reconnects one continuable ACP session from protected state in a fresh process', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'ariadne-acp-session-'));
+    const codec = new AesGcmAgentPersistencePayloadCodec('test-key', [{
+      keyId: 'test-key',
+      key: Buffer.alloc(32, 7)
+    }]);
+    try {
+      const store = new FileAgentSubagentSessionStore(root, codec);
+      const options = {
+        config: config(['resume'], 'reject', 'offline', 'resume'),
+        workspaceRoots: new Map([['workspace-acp', WORKSPACE]]),
+        sandboxForWorkspace: () => hostSandboxAdapter(),
+        sessionStore: store,
+        now: () => new Date('2026-08-30T00:00:00.000Z')
+      } as const;
+      const first = new AcpSubagentAgentEngine(options);
+      const firstPrepared = await first.prepare(input({
+        mode: 'continuable',
+        messages: [{ kind: 'text', role: 'user', content: 'first objective' }]
+      }), new AbortController().signal);
+      await expect(firstPrepared.decide(new AbortController().signal)).resolves.toEqual({
+        kind: 'respond',
+        content: 'external:first objective'
+      });
+
+      const second = new AcpSubagentAgentEngine(options);
+      const secondPrepared = await second.prepare(input({
+        mode: 'continuable',
+        messages: [
+          { kind: 'text', role: 'user', content: 'first objective' },
+          { kind: 'text', role: 'assistant', content: 'external:first objective' },
+          { kind: 'text', role: 'user', content: 'follow-up only' }
+        ]
+      }), new AbortController().signal);
+      expect(secondPrepared.modelContext).toMatchObject({
+        sessionPersistence: 'resume',
+        reconnectState: 'persisted_session'
+      });
+      await expect(secondPrepared.decide(new AbortController().signal)).resolves.toEqual({
+        kind: 'respond',
+        content: 'resumed:follow-up only'
+      });
+
+      const sessionDirectory = path.join(root, 'agent-control', 'subagent-sessions');
+      const stored = readFileSync(path.join(sessionDirectory, readdirSync(sessionDirectory)[0]!), 'utf8');
+      expect(stored).not.toContain('ariadne-acp-test-session');
+    } finally {
+      codec.destroy();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 function config(
   args: readonly string[] = [],
   permissionPolicy: 'reject' | 'allow' = 'reject',
-  networkAccess: 'offline' | 'online-approved' = 'offline'
+  networkAccess: 'offline' | 'online-approved' = 'offline',
+  sessionPersistence: 'one_shot' | 'resume' = 'one_shot'
 ) {
   return {
     kind: 'acp_stdio' as const,
@@ -107,6 +165,7 @@ function config(
     displayName: 'External ACP test child',
     command: process.execPath,
     args: [FIXTURE, ...args],
+    sessionPersistence,
     permissionPolicy,
     networkAccess,
     timeoutMs: 30_000,
@@ -117,9 +176,12 @@ function config(
 function input(options: {
   readonly permissionMode?: 'ask' | 'trusted';
   readonly capabilityIds?: readonly string[];
+  readonly mode?: 'one_shot' | 'continuable';
+  readonly messages?: AgentTurnInput['messages'];
 } = {}): AgentTurnInput {
   return {
     run: {
+      runId: 'child-acp',
       binding: {
         workspace: { workspaceId: 'workspace-acp', access: 'read' },
         policy: {
@@ -136,12 +198,12 @@ function input(options: {
           parentRunId: 'parent-acp',
           delegationId: 'delegation-acp',
           objectiveDigest: `sha256:${'a'.repeat(64)}`,
-          mode: 'one_shot',
+          mode: options.mode ?? 'one_shot',
           providerId: 'external.acp'
         }
       }
     },
-    messages: [
+    messages: options.messages ?? [
       { kind: 'text', role: 'system', content: 'parent-only system context' },
       { kind: 'text', role: 'user', content: 'delegated objective only' }
     ],

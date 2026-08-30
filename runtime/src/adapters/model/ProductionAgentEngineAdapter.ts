@@ -884,14 +884,22 @@ function verifyChildResultTextBatch(
   const sourceAttempt = sourceTurn?.attempts.find(
     (candidate) => candidate.attemptId === cause.sourceAttemptId
   );
+  const committed = sourceAttempt?.state.status === 'succeeded'
+    ? sourceAttempt.state.directive.kind === 'delegate_subagent'
+      ? [sourceAttempt.state.directive]
+      : sourceAttempt.state.directive.kind === 'delegate_subagents'
+        ? sourceAttempt.state.directive.delegations
+        : []
+    : [];
   if (
     sourceAttempt?.state.status !== 'succeeded'
-    || sourceAttempt.state.directive.kind !== 'delegate_subagent'
     || sourceAttempt.state.directiveDigest !== cause.sourceDirectiveDigest
-    || cause.delegationIds.length !== 1
-    || cause.childRunIds.length !== 1
-    || sourceAttempt.state.directive.delegationId !== cause.delegationIds[0]
-    || sourceAttempt.state.directive.childRunId !== cause.childRunIds[0]
+    || cause.delegationIds.length !== committed.length
+    || cause.childRunIds.length !== committed.length
+    || committed.some((item, index) => (
+      item.delegationId !== cause.delegationIds[index]
+      || item.childRunId !== cause.childRunIds[index]
+    ))
   ) throw invalidBoundModelHistory();
   const assistant = parseExactObject(assistantContent);
   const result = parseExactObject(resultContent);
@@ -900,30 +908,41 @@ function verifyChildResultTextBatch(
     && !Array.isArray(assistant.directive)
     ? assistant.directive as Record<string, unknown>
     : null;
+  const assistantDelegations = delegated?.kind === 'delegate_subagent'
+    ? [delegated]
+    : delegated?.kind === 'delegate_subagents' && Array.isArray(delegated.delegations)
+      ? delegated.delegations
+      : [];
   if (
     assistant.protocol !== DIRECTIVE_PROTOCOL
-    || delegated?.kind !== 'delegate_subagent'
-    || delegated.delegationId !== cause.delegationIds[0]
-    || delegated.childRunId !== cause.childRunIds[0]
-    || delegated.objectiveDigest !== sourceAttempt.state.directive.objectiveDigest
-    || delegated.mode !== sourceAttempt.state.directive.mode
+    || assistantDelegations.length !== committed.length
+    || assistantDelegations.some((candidate, index) => {
+      const expected = committed[index];
+      return typeof candidate !== 'object'
+        || candidate === null
+        || Array.isArray(candidate)
+        || expected === undefined
+        || candidate.delegationId !== expected.delegationId
+        || candidate.childRunId !== expected.childRunId
+        || candidate.objectiveDigest !== expected.objectiveDigest
+        || candidate.mode !== expected.mode;
+    })
     || result.format !== SUBAGENT_RESULTS_FORMAT
     || result.schemaVersion !== 1
     || !Array.isArray(result.results)
-    || result.results.length !== 1
+    || result.results.length !== committed.length
   ) throw invalidBoundModelHistory();
-  const child = result.results[0];
-  if (
+  if (result.results.some((child, index) => (
     typeof child !== 'object'
     || child === null
     || Array.isArray(child)
-    || child.delegationId !== cause.delegationIds[0]
-    || child.childRunId !== cause.childRunIds[0]
+    || child.delegationId !== cause.delegationIds[index]
+    || child.childRunId !== cause.childRunIds[index]
     || !Number.isSafeInteger(child.childRunVersion)
     || !['completed', 'failed', 'cancelled'].includes(String(child.status))
     || typeof child.content !== 'string'
     || child.content.length === 0
-  ) throw invalidBoundModelHistory();
+  ))) throw invalidBoundModelHistory();
 }
 
 function parseExactObject(content: string): Record<string, unknown> {
@@ -1320,6 +1339,13 @@ function renderProtocolPrompt(
       providerId: 'one advertised subagentProviders.providerId; omit to use the default'
     }
   };
+  const delegateSubagents = {
+    kind: 'delegate_subagents',
+    subagents: [
+      delegateSubagent.subagent,
+      { ...delegateSubagent.subagent, description: 'second independent child objective' }
+    ]
+  };
   const askUser = {
     kind: 'ask_user',
     question: {
@@ -1371,6 +1397,7 @@ function renderProtocolPrompt(
           respond: { kind: 'respond', content: 'non-empty string' },
           ask_user: askUser,
           delegate_subagent: delegateSubagent,
+          delegate_subagents: delegateSubagents,
           propose_plan: proposePlan,
           checkpoint: { kind: 'checkpoint', reason: 'non-empty string' },
           complete: { kind: 'complete', outputRef: 'optional non-empty string' },
@@ -1571,6 +1598,28 @@ function parseDirective(
             ? {}
             : { providerId: stringValue(subagent.providerId) })
         }
+      };
+    }
+    case 'delegate_subagents': {
+      const exact = exactObject(candidate, ['kind', 'subagents']);
+      if (!Array.isArray(exact.subagents)) throw new StrictDirectiveProtocolError();
+      return {
+        kind: 'delegate_subagents',
+        subagents: exact.subagents.map((candidateSubagent) => {
+          const subagent = exactObjectWithOptional(
+            candidateSubagent,
+            ['description', 'prompt', 'mode'],
+            ['providerId']
+          );
+          return {
+            description: stringValue(subagent.description),
+            prompt: stringValue(subagent.prompt),
+            mode: subagentModeValue(subagent.mode),
+            ...(subagent.providerId === undefined
+              ? {}
+              : { providerId: stringValue(subagent.providerId) })
+          };
+        })
       };
     }
     case 'ask_user': {

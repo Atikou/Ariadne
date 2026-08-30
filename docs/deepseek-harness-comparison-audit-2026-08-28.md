@@ -21,7 +21,7 @@ Ariadne 已经不是“只有领域模型、没有产品链路”的半成品。
 - Workspace、Skill catalog 与 agent/plan/chat 模式策略已由 Manifest-owned instruction contributors 全有或全无地装配；最终 Turn input 固定 contributor/version/order/scope/revision 证据，Factory/admission reader 不再各自拼接 prompt；
 - Skill catalog 已从 bootstrap 同步目录冻结改为静态 Provider + 每 Workspace 可取消 snapshot；完整观察更新 last-good，瞬时不完整复用 last-good，权威缺失清除它；package revision 覆盖正文与资源，`skill.load`/`skill.resource.read` 只接受 admission pin，model/user policy 已进入 invocation-neutral snapshot；
 - one-shot/continuable ordinary Child SubAgent 已完成创建、持久等待、direct-parent send、运行中非终态 interrupt、执行、结果回灌与父子投影；
-- fresh-process ACP one-shot SubAgent 已进入 Settings、私有 bootstrap、冻结 Provider Catalog、统一沙箱进程租约与原有 Attempt/Checkpoint/UoW 提交链；
+- fresh-process ACP one-shot/resume、Codex app-server 与 Claude Code one-shot 已进入 Settings、私有 bootstrap、冻结 Provider Catalog、统一沙箱进程租约与原有 Attempt/Checkpoint/UoW 提交链；
 - Skills 按需加载、typed Hooks、Manifest-owned 静态可信 Hook Provider 生命周期、脱敏 Diagnostics 与 Telemetry Provider 已接入；
 - Agent 已拥有 owner-scoped 持久 pipe process 与沙箱内 PTY，而不再只有一次性命令；
 - Process、Agent PTY 与 Electron PTY 已共用 `@ariadne/live-work` 的 owner、状态机、UTF-8 游标、截断、互斥输入、resize/signal、取消/join 和完成通知语义；Agent 侧由 `job_*` 提供通用控制面，终态会先写入带系统来源的 durable inbox 再唤醒消费者。
@@ -86,7 +86,7 @@ Electron ask-user smoke 首次暴露了默认生产工厂漏接 protected Direct
 | 优先级 | 差距 | 当前表现 | 完成标准 |
 | --- | --- | --- | --- |
 | P1 | 长上下文逐 binding 计量与本地真实验收已完成，远程 live 仍受 credential 阻塞 | 完整 Tool result 复用受保护 Effect payload；确定性因果摘要有 source/summary digest、角色与 Tool locator；本地 llama.cpp/Transformers 使用实际 chat-template tokenizer，远程路由明确区分 BPE/conservative；source/primary/recovery 均重新计数并硬准入；真实本地模型已跨两个进程恢复历史、压缩并推理 | 配置 credential 后执行严格远程跨进程 gate；若未来增加模型摘要，须用独立 durable Attempt |
-| P1 | SubAgent ordinary/ACP 产品链已接入，批量与外部可续仍缺 | `one_shot`/`continuable` ordinary Child 与 fresh-process ACP one-shot 共用 Agent Control 权威；Provider 身份、隔离能力和配置摘要进入 schema v7/ledger 55、恢复扫描与 Projection。ACP 只收 cwd/委派目标，默认拒绝权限；即使配置 allow，也只有 trusted Child 冻结能力覆盖的 ToolKind 才放行。配置漂移、缺失 Provider 和伪造回执均 fail closed | 批量 Child；外部 continuable/reconnect；Codex/Claude/structured-report；真实重启/窗口和商业 Agent 场景 |
+| P1 | SubAgent 批量、ACP reconnect 与产品 Provider 已接入 | 单个/2–16 项批量 Directive 以一次事务提交 Parent、预算、Delegation 和全部 Child；ordinary one-shot/continuable、ACP 加密 resume/load、Codex app-server 与 Claude Code one-shot 共用 Agent Control 权威和沙箱。配置漂移、缺失 Provider 和伪造回执均 fail closed | structured report；真实 Electron 场景；Claude 商业登录态 live gate；显式 credential seam |
 | P1 | v3 LLM 请求/响应与图片合同已同构，私有 replay state 和附件回收仍缺 | exact 请求使用 `text/image/tool_call/tool_result`；图片先进入 Conversation 内容寻址存储，再按精确 Message owner 复核并临时序列化为 OpenAI/Anthropic 原生块；历史 Tool 输入按 committed digest 从受保护 Effect payload 恢复；输出使用 `text/reasoning/tool_call`，finish、脱敏 replay evidence 与互斥 cache usage 随精确 Attempt 提交 | 可用的 adapter-private replay state；引用感知附件 GC；真实远程 Provider 图片验收；若提供缩略图字节，必须保持 owner-scoped |
 | P1 | Conversation 基础生命周期已持久，fork 与查询产品仍缺 | title/archive/restore 已进入版本化命令、不可变 Session version/event、Public Projection 和真实 Renderer；旧本地 title/archive 会迁移丢弃，pin/unread 保留设备级。仍没有 durable fork/lineage、全文检索或 bounded event query | fork 记录稳定 Turn 边界与 lineage；查询使用独立可重建索引并记录已观察的权威版本；补跨重启/多窗口和大历史验收 |
 | P1 | 结构化搜索/编辑已进入同一文件权威，产品呈现与文件操作族仍缺 | `workspace.search_text/glob` 不调用 shell，按 realpath containment、symlink 拒绝、默认排除、扫描/字节/结果上限返回结构化路径、Unicode 行列、预览和稳定 version；`workspace.apply_text_edits` 使用同一个 `LocalWorkspaceFileService` 的目标锁、opaque expectedVersion 和原子发布，越界、重叠、外部陈旧版本均 fail closed | 补受保护结果驱动的 read/search/diff render intent；按真实需求增加 move/delete；真实 Agent/Electron 场景证明搜索→编辑→陈旧冲突交互，不回退到 `run_command` |
@@ -178,10 +178,13 @@ deepseek-harness 可继续参考“adapter 私有 replay 只交回同一 owner�
 
 Provider seam 现在还冻结 `configurationDigest`、`inheritsParentContext` 和 `usesParentTools`。Settings schema v5 可声明 ACP executable/args/权限/网络/超时；Main 不把凭据写进 bootstrap，Runtime 通过共享 `AgentProcessSandbox` lease 完成 initialize/new-session/prompt 与 EOF→cancel 的有界回收。外部进程只得到工作目录和委派 prompt；父 system context、父 Tool Catalog、stderr、权限标题和原始异常不会进入结果。ACP permission 默认拒绝；配置为 allow 时，`ask` Child 仍拒绝，只有 `trusted` 且冻结 capability/workspace/network authority 覆盖相应 ToolKind 才可选择 allow。成功 assistant text 仍通过精确 Child Attempt 提交，启动前拒绝形成脱敏 deterministic failure，越过 prompt 后的不明结果进入 uncertain recovery。
 
-剩余问题是：
+新增闭环包括：
 
-- 多 Child 批量调度与结果聚合；
-- 外部 continuable session/reconnect，以及 fork/Codex/Claude Provider；
+- `delegate_subagents` 的 2–16 Child 原子创建、预算切分、全部终态后一次结果聚合；
+- ACP `session/resume`/`session/load` 的全新进程 reconnect，远端 session ID 仅存加密 provider-private store；
+- Codex app-server 与 Claude Code 的独立产品 adapter、Settings 配置、统一进程沙箱和严格结果解析；Codex 已通过本机真实登录态 acceptance。
+
+剩余问题是 fork、structured report、显式 credential seam、真实 Electron 场景和 Claude 商业登录态 live gate。
 - 获取强类型 structured report。
 
 ACP 当前有意不接收 ambient credential，适用于已由自身安全存储认证的 executable；若以后允许显式 credential forwarding，必须在沙箱 broker 上形成独立授权字段，不能扩大全局环境 allowlist。其他外部 Provider 仍必须经相同 capability descriptor、配置摘要和父子权限约束接入，不能回退到旧 `runtime/src/subagent` 工作流。

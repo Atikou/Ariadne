@@ -87,6 +87,10 @@ export type AgentDirective =
       readonly subagent: AgentSubagentDirective;
     }
   | {
+      readonly kind: 'delegate_subagents';
+      readonly subagents: readonly AgentSubagentDirective[];
+    }
+  | {
       readonly kind: 'ask_user';
       readonly question: AgentUserQuestion;
     }
@@ -141,6 +145,16 @@ export type AgentCommittedDirective =
       readonly objectiveDigest: string;
       readonly mode: AgentSubagentMode;
       readonly providerId: string;
+    }
+  | {
+      readonly kind: 'delegate_subagents';
+      readonly delegations: readonly {
+        readonly delegationId: string;
+        readonly childRunId: string;
+        readonly objectiveDigest: string;
+        readonly mode: AgentSubagentMode;
+        readonly providerId: string;
+      }[];
     }
   | {
       readonly kind: 'ask_user';
@@ -244,41 +258,19 @@ export function assertValidAgentDirective(directive: AgentDirective): void {
       return;
     case 'delegate_subagent':
       assertExactObjectKeys(directive, ['kind', 'subagent'], 'directive');
-      if (!isPlainObject(directive.subagent)) {
-        throw new AgentRunInvariantError('directive.subagent must be a plain object.');
-      }
-      assertExactObjectKeys(
-        directive.subagent,
-        [
-          'description',
-          'prompt',
-          'mode',
-          ...(directive.subagent.providerId === undefined ? [] : ['providerId'])
-        ],
-        'directive.subagent'
-      );
-      assertBoundedNonEmpty(
-        directive.subagent.description,
-        'directive.subagent.description',
-        256
-      );
-      assertBoundedNonEmpty(
-        directive.subagent.prompt,
-        'directive.subagent.prompt',
-        MAX_DIRECTIVE_CONTENT_LENGTH
-      );
+      assertSubagentDirective(directive.subagent, 'directive.subagent');
+      return;
+    case 'delegate_subagents':
+      assertExactObjectKeys(directive, ['kind', 'subagents'], 'directive');
       if (
-        directive.subagent.mode !== 'one_shot'
-        && directive.subagent.mode !== 'continuable'
-      ) {
-        throw new AgentRunInvariantError('directive.subagent.mode is invalid.');
-      }
-      if (directive.subagent.providerId !== undefined) {
-        assertCanonicalPublicId(
-          directive.subagent.providerId,
-          'directive.subagent.providerId'
-        );
-      }
+        !Array.isArray(directive.subagents)
+        || directive.subagents.length < 2
+        || directive.subagents.length > 16
+      ) throw new AgentRunInvariantError('directive.subagents has an invalid size.');
+      assertDenseDataArray(directive.subagents, 'directive.subagents');
+      directive.subagents.forEach((subagent, index) => {
+        assertSubagentDirective(subagent, `directive.subagents[${String(index)}]`);
+      });
       return;
     case 'ask_user':
       assertExactObjectKeys(directive, ['kind', 'question'], 'directive');
@@ -351,6 +343,48 @@ export function assertValidCommittedAgentDirective(
         directive.providerId,
         'committedDirective.providerId'
       );
+    } else if (directive.kind === 'delegate_subagents') {
+      assertExactObjectKeys(
+        directive,
+        ['kind', 'delegations'],
+        'committedDirective'
+      );
+      if (
+        !Array.isArray(directive.delegations)
+        || directive.delegations.length < 2
+        || directive.delegations.length > 16
+      ) throw new AgentRunInvariantError('committedDirective.delegations has an invalid size.');
+      assertDenseDataArray(directive.delegations, 'committedDirective.delegations');
+      const childIds = new Set<string>();
+      const delegationIds = new Set<string>();
+      directive.delegations.forEach((delegation, index) => {
+        const label = `committedDirective.delegations[${String(index)}]`;
+        if (!isPlainObject(delegation)) {
+          throw new AgentRunInvariantError(`${label} must be a plain object.`);
+        }
+        assertExactObjectKeys(
+          delegation,
+          ['delegationId', 'childRunId', 'objectiveDigest', 'mode', 'providerId'],
+          label
+        );
+        const candidate = delegation as unknown as Extract<
+          AgentCommittedDirective,
+          { readonly kind: 'delegate_subagents' }
+        >['delegations'][number];
+        assertCanonicalPublicId(candidate.delegationId, `${label}.delegationId`);
+        assertCanonicalPublicId(candidate.childRunId, `${label}.childRunId`);
+        assertSha256Digest(candidate.objectiveDigest, `${label}.objectiveDigest`);
+        if (candidate.mode !== 'one_shot' && candidate.mode !== 'continuable') {
+          throw new AgentRunInvariantError(`${label}.mode is invalid.`);
+        }
+        assertCanonicalPublicId(candidate.providerId, `${label}.providerId`);
+        if (
+          childIds.has(candidate.childRunId)
+          || delegationIds.has(candidate.delegationId)
+        ) throw new AgentRunInvariantError('Batch delegation identities must be unique.');
+        childIds.add(candidate.childRunId);
+        delegationIds.add(candidate.delegationId);
+      });
     } else if (directive.kind === 'ask_user') {
       assertExactObjectKeys(
         directive,
@@ -480,6 +514,31 @@ export function assertValidCommittedAgentDirective(
     assertUniqueValue(toolCallIds, candidate.toolCallId, 'toolCallId');
     assertUniqueValue(idempotencyKeys, candidate.idempotencyKey, 'idempotencyKey');
   });
+}
+
+function assertSubagentDirective(value: unknown, label: string): void {
+  if (!isPlainObject(value)) {
+    throw new AgentRunInvariantError(`${label} must be a plain object.`);
+  }
+  const subagent = value as unknown as AgentSubagentDirective;
+  assertExactObjectKeys(
+    value,
+    [
+      'description',
+      'prompt',
+      'mode',
+      ...(subagent.providerId === undefined ? [] : ['providerId'])
+    ],
+    label
+  );
+  assertBoundedNonEmpty(subagent.description, `${label}.description`, 256);
+  assertBoundedNonEmpty(subagent.prompt, `${label}.prompt`, MAX_DIRECTIVE_CONTENT_LENGTH);
+  if (subagent.mode !== 'one_shot' && subagent.mode !== 'continuable') {
+    throw new AgentRunInvariantError(`${label}.mode is invalid.`);
+  }
+  if (subagent.providerId !== undefined) {
+    assertCanonicalPublicId(subagent.providerId, `${label}.providerId`);
+  }
 }
 
 function assertUserQuestion(question: AgentUserQuestion, field: string): void {

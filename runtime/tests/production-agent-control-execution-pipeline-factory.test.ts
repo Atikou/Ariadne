@@ -346,6 +346,107 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
     }
   });
 
+  it('closes one atomic two-child delegation batch through one parent continuation', async () => {
+    const catalog = trustedCatalog();
+    const responses = [
+      {
+        kind: 'delegate_subagents',
+        subagents: [
+          {
+            description: 'Inspect storage',
+            prompt: 'Inspect storage ownership and report evidence.',
+            mode: 'one_shot'
+          },
+          {
+            description: 'Inspect runtime',
+            prompt: 'Inspect runtime ownership and report evidence.',
+            mode: 'one_shot'
+          }
+        ]
+      },
+      { kind: 'respond', content: 'storage evidence' },
+      { kind: 'respond', content: 'runtime evidence' },
+      { kind: 'respond', content: 'parent used both child reports' }
+    ];
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+      const directive = responses.shift();
+      if (directive === undefined) throw new Error('unexpected_batch_provider_call');
+      return providerResponse({ protocol: 'ariadne.agent-directive.v3', directive });
+    });
+    const source = enabledSource(catalog);
+    source.manifests[0]!.rootBudget.vector.modelTurns = 12;
+    const harness = await createHarness(catalog, source, fetch);
+    try {
+      await harness.runtime.start();
+      await createSession(harness.runtime);
+      const accepted = await harness.runtime.executeOwnedCommand(
+        messageEnvelope('message-subagent-batch-e2e')
+      );
+      const sagaId = requireAcceptedSagaId(accepted);
+      await expect.poll(
+        () => harness.conversation.countPendingHandoffOutbox(),
+        { timeout: 2_000, interval: 5 }
+      ).toBe(0);
+      const saga = await harness.conversation.transaction(
+        (transaction) => transaction.loadSaga(sagaId)
+      );
+      if (saga?.stage.kind !== 'agent_run_linked') {
+        throw new Error('pipeline_subagent_batch_run_not_linked');
+      }
+      await expect(harness.pipeline.executionScheduler.drainOnce()).resolves.toBeDefined();
+      const delegations = await harness.unitOfWork.transaction(async (transaction) =>
+        transaction.listDelegationsByParent?.(saga.stage.runId) ?? []
+      );
+      expect(delegations).toHaveLength(2);
+      await expect(harness.pipeline.runWorkScheduler.drainOnce()).resolves.toBeDefined();
+      await expect(harness.pipeline.runWorkScheduler.drainOnce()).resolves.toBeDefined();
+      const children = await harness.unitOfWork.transaction((transaction) => Promise.all(
+        delegations.map((delegation) => transaction.loadRun(delegation.childRunId))
+      ));
+      expect(children.every((child) => child?.state.status === 'completed')).toBe(true);
+      for (let index = 0; index < children.length; index += 1) {
+        const child = children[index];
+        if (child === null || child.state.status !== 'completed') {
+          throw new Error('pipeline_subagent_batch_child_not_terminal');
+        }
+        const parent = await harness.unitOfWork.transaction(
+          (transaction) => transaction.loadRun(saga.stage.runId)
+        );
+        if (parent === null) throw new Error('pipeline_subagent_batch_parent_missing');
+        await new AgentPlanBudgetChildRunService(harness.unitOfWork).observeChildTerminal({
+          kind: 'control.children.observe_terminal',
+          commandId: `observe-subagent-batch-child-${String(index + 1)}`,
+          runId: parent.runId,
+          expectedVersion: parent.version,
+          occurredAt: child.updatedAt,
+          childRunId: child.runId,
+          childRunVersion: child.version,
+          childStatus: 'completed'
+        });
+      }
+      await expect(harness.pipeline.runWorkScheduler.drainOnce()).resolves.toBeDefined();
+      const completedParent = await harness.unitOfWork.transaction(
+        (transaction) => transaction.loadRun(saga.stage.runId)
+      );
+      expect(completedParent).toMatchObject({
+        state: { status: 'completed' },
+        turns: [
+          { attempts: [{ state: { directive: { kind: 'delegate_subagents' } } }] },
+          {
+            intention: { cause: { kind: 'child_results' } },
+            attempts: [{ state: { directive: { kind: 'respond' } } }]
+          }
+        ]
+      });
+      const continuation = JSON.stringify(requestBody(fetch.mock.calls[3]?.[1]));
+      expect(continuation).toContain('storage evidence');
+      expect(continuation).toContain('runtime evidence');
+      expect(fetch).toHaveBeenCalledTimes(4);
+    } finally {
+      await harness.runtime.shutdown(createShutdownContext(Date.now() + 5_000));
+    }
+  });
+
   it('requires the shared process sandbox before publishing a configured ACP Provider', async () => {
     const catalog = trustedCatalog();
     await withStores(async ({ unitOfWork, conversation }) => {

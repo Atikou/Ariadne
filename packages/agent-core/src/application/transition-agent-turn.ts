@@ -162,17 +162,25 @@ function assertExactChildResultsCause(
 ): void {
   const sourceTurn = run.turns.at(-1);
   const sourceAttempt = sourceTurn?.attempts.at(-1);
+  const delegated = sourceAttempt?.state.status === 'succeeded'
+    ? sourceAttempt.state.directive.kind === 'delegate_subagent'
+      ? [sourceAttempt.state.directive]
+      : sourceAttempt.state.directive.kind === 'delegate_subagents'
+        ? sourceAttempt.state.directive.delegations
+        : []
+    : [];
   if (
     sourceTurn === undefined
     || sourceAttempt?.state.status !== 'succeeded'
-    || sourceAttempt.state.directive.kind !== 'delegate_subagent'
     || sourceTurn.turnId !== cause.sourceTurnId
     || sourceAttempt.attemptId !== cause.sourceAttemptId
     || sourceAttempt.state.directiveDigest !== cause.sourceDirectiveDigest
-    || cause.delegationIds.length !== 1
-    || cause.childRunIds.length !== 1
-    || cause.delegationIds[0] !== sourceAttempt.state.directive.delegationId
-    || cause.childRunIds[0] !== sourceAttempt.state.directive.childRunId
+    || cause.delegationIds.length !== delegated.length
+    || cause.childRunIds.length !== delegated.length
+    || delegated.some((item, index) => (
+      cause.delegationIds[index] !== item.delegationId
+      || cause.childRunIds[index] !== item.childRunId
+    ))
     || run.state.status !== 'running'
   ) {
     throw new AgentRunTransitionError(

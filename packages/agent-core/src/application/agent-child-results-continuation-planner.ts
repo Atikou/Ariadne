@@ -9,7 +9,7 @@ import {
   type AgentRunCommitArtifacts,
   type AgentTurnInputSnapshotV1
 } from './recovery-persistence.js';
-import { canonicalizeAgentControlData } from './control-command-digest.js';
+import { canonicalizeAgentControlData, sha256AgentControlData } from './control-command-digest.js';
 import { deriveStableAgentId } from './stable-id.js';
 import { transitionAgentRun } from './transition-agent-run.js';
 import {
@@ -42,7 +42,6 @@ export class DefaultAgentChildResultsContinuationPlanner {
     const run = input.run;
     if (
       run.state.status !== 'running'
-      || input.results.length !== 1
       || run.turns.length >= run.binding.budget.vector.modelTurns
       || Date.parse(run.updatedAt) >= Date.parse(run.binding.budget.deadlineAt)
     ) throw invalid('SubAgent result continuation is outside its running Budget boundary.');
@@ -51,7 +50,8 @@ export class DefaultAgentChildResultsContinuationPlanner {
     if (
       sourceTurn === undefined
       || sourceAttempt?.state.status !== 'succeeded'
-      || sourceAttempt.state.directive.kind !== 'delegate_subagent'
+      || (sourceAttempt.state.directive.kind !== 'delegate_subagent'
+        && sourceAttempt.state.directive.kind !== 'delegate_subagents')
     ) throw invalid('SubAgent result continuation requires the latest delegation Directive.');
     await assertAgentTurnInputSnapshotMatchesTurn(
       run,
@@ -59,45 +59,61 @@ export class DefaultAgentChildResultsContinuationPlanner {
       sourceTurn.intention.inputDigest,
       input.sourceTurnInput
     );
-    const result = input.results[0];
     const directive = sourceAttempt.state.directive;
+    const delegations = directive.kind === 'delegate_subagent'
+      ? [directive]
+      : directive.delegations;
     if (
-      result === undefined
-      || result.delegationId !== directive.delegationId
-      || result.childRunId !== directive.childRunId
-      || !Number.isSafeInteger(result.childRunVersion)
-      || result.childRunVersion < 1
-      || result.content.length === 0
-      || result.content.length > 1_048_576
-    ) throw invalid('SubAgent terminal evidence differs from its committed Directive.');
+      input.results.length !== delegations.length
+      || input.results.some((result, index) => {
+        const delegation = delegations[index];
+        return delegation === undefined
+          || result.delegationId !== delegation.delegationId
+          || result.childRunId !== delegation.childRunId
+          || !Number.isSafeInteger(result.childRunVersion)
+          || result.childRunVersion < 1
+          || result.content.length === 0
+          || result.content.length > 1_048_576;
+      })
+    ) throw invalid('SubAgent terminal evidence differs from its committed Directive batch.');
     const cause: Extract<AgentTurnCause, { readonly kind: 'child_results' }> = {
       kind: 'child_results',
       sourceTurnId: sourceTurn.turnId,
       sourceAttemptId: sourceAttempt.attemptId,
       sourceDirectiveDigest: sourceAttempt.state.directiveDigest,
-      delegationIds: [result.delegationId],
-      childRunIds: [result.childRunId]
+      delegationIds: input.results.map((result) => result.delegationId),
+      childRunIds: input.results.map((result) => result.childRunId)
     };
     const assistantContent = canonicalizeAgentControlData({
       protocol: 'ariadne.agent-directive.v3',
-      directive: {
-        kind: 'delegate_subagent',
-        delegationId: directive.delegationId,
-        childRunId: directive.childRunId,
-        objectiveDigest: directive.objectiveDigest,
-        mode: directive.mode
-      }
+      directive: directive.kind === 'delegate_subagent'
+        ? {
+            kind: 'delegate_subagent',
+            delegationId: directive.delegationId,
+            childRunId: directive.childRunId,
+            objectiveDigest: directive.objectiveDigest,
+            mode: directive.mode
+          }
+        : {
+            kind: 'delegate_subagents',
+            delegations: directive.delegations.map((delegation) => ({
+              delegationId: delegation.delegationId,
+              childRunId: delegation.childRunId,
+              objectiveDigest: delegation.objectiveDigest,
+              mode: delegation.mode
+            }))
+          }
     });
     const childResultContent = canonicalizeAgentControlData({
       format: 'ariadne.subagent-results',
       schemaVersion: 1,
-      results: [{
+      results: input.results.map((result) => ({
         delegationId: result.delegationId,
         childRunId: result.childRunId,
         childRunVersion: result.childRunVersion,
         status: result.status,
         content: result.content
-      }]
+      }))
     });
     const modelData = canonicalModelData({
       messages: [
@@ -108,15 +124,18 @@ export class DefaultAgentChildResultsContinuationPlanner {
       availableTools: input.sourceTurnInput.availableTools
     });
     const inputDigest = await digestAgentTurnInput(modelData);
+    const resultIdentityDigest = await sha256AgentControlData(input.results.map((result) => ({
+      delegationId: result.delegationId,
+      childRunId: result.childRunId,
+      childRunVersion: result.childRunVersion,
+      status: result.status
+    })));
     const identity = [
       run.runId,
       sourceTurn.turnId,
       sourceAttempt.attemptId,
       sourceAttempt.state.directiveDigest,
-      result.delegationId,
-      result.childRunId,
-      String(result.childRunVersion),
-      result.status
+      resultIdentityDigest
     ] as const;
     const [commandId, turnId, attemptId, providerIdempotencyKey] = await Promise.all([
       deriveStableAgentId('child-results-continuation', ...identity),

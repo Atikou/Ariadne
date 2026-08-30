@@ -45,6 +45,7 @@ export const acpSubagentProviderConfigurationSchema = z.object({
     (value) => !/[\u0000\r\n]/u.test(value),
     'ACP process arguments cannot contain NUL or line breaks.'
   )).max(64),
+  sessionPersistence: z.enum(['one_shot', 'resume']).optional(),
   permissionPolicy: z.enum(['reject', 'allow']),
   networkAccess: z.enum(['offline', 'online-approved']),
   timeoutMs: z.number().int().min(1_000).max(24 * 60 * 60 * 1_000),
@@ -53,6 +54,54 @@ export const acpSubagentProviderConfigurationSchema = z.object({
 
 export type AcpSubagentProviderConfiguration = z.infer<
   typeof acpSubagentProviderConfigurationSchema
+>;
+
+const productSubagentProviderBaseSchema = z.object({
+  providerId: opaqueReferenceSchema.refine(
+    (value) => value !== 'ariadne.in_process',
+    'The built-in SubAgent provider identity is reserved.'
+  ),
+  displayName: z.string().trim().min(1).max(256),
+  command: absolutePathSchema,
+  args: z.array(z.string().max(32_768).refine(
+    (value) => !/[\u0000\r\n]/u.test(value),
+    'Product process arguments cannot contain NUL or line breaks.'
+  )).max(64),
+  networkAccess: z.enum(['offline', 'online-approved']),
+  timeoutMs: z.number().int().min(1_000).max(24 * 60 * 60 * 1_000),
+  disposeGraceMs: z.number().int().min(100).max(60_000)
+});
+
+/** Official Codex app-server backend. Product thread state remains provider-private. */
+export const codexSubagentProviderConfigurationSchema =
+  productSubagentProviderBaseSchema.extend({
+    kind: z.literal('codex_app_server'),
+    model: z.string().trim().min(1).max(256).optional(),
+    permissionPolicy: z.enum(['never', 'approve-for-me', 'danger-full-access'])
+  }).strict();
+
+/** Official Claude Code CLI backend in strict print/JSON mode. */
+export const claudeSubagentProviderConfigurationSchema =
+  productSubagentProviderBaseSchema.extend({
+    kind: z.literal('claude_code'),
+    model: z.string().trim().min(1).max(256).optional(),
+    permissionPolicy: z.enum(['dontAsk', 'acceptEdits', 'plan', 'bypassPermissions'])
+  }).strict();
+
+export const subagentProviderConfigurationSchema = z.discriminatedUnion('kind', [
+  acpSubagentProviderConfigurationSchema,
+  codexSubagentProviderConfigurationSchema,
+  claudeSubagentProviderConfigurationSchema
+]);
+
+export type CodexSubagentProviderConfiguration = z.infer<
+  typeof codexSubagentProviderConfigurationSchema
+>;
+export type ClaudeSubagentProviderConfiguration = z.infer<
+  typeof claudeSubagentProviderConfigurationSchema
+>;
+export type SubagentProviderConfiguration = z.infer<
+  typeof subagentProviderConfigurationSchema
 >;
 
 const mcpServerBaseSchema = z.object({

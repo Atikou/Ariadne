@@ -68,24 +68,28 @@ export class AgentChildResultsContinuationController {
       run.state.status !== 'running'
       || sourceTurn === undefined
       || sourceAttempt?.state.status !== 'succeeded'
-      || sourceAttempt.state.directive.kind !== 'delegate_subagent'
+      || (sourceAttempt.state.directive.kind !== 'delegate_subagent'
+        && sourceAttempt.state.directive.kind !== 'delegate_subagents')
     ) throw invariant('SubAgent continuation requires one settled child batch.');
     const directive = sourceAttempt.state.directive;
-    const exact = children.find((item) => (
-      item.delegation.delegationId === directive.delegationId
-      && item.delegation.childRunId === directive.childRunId
-    ));
-    const child = exact?.run;
-    if (
-      exact === undefined
-      || exact.delegation.terminal === null
-      || child == null
-      || child.version !== exact.delegation.terminal.childRunVersion
-      || child.state.status !== exact.delegation.terminal.childStatus
-      || (child.state.status !== 'completed'
-        && child.state.status !== 'failed'
-        && child.state.status !== 'cancelled')
-    ) throw invariant('SubAgent continuation child terminal evidence is incomplete.');
+    const delegated = directive.kind === 'delegate_subagent'
+      ? [directive]
+      : directive.delegations;
+    const exactChildren = delegated.map((delegation) => children.find((item) => (
+      item.delegation.delegationId === delegation.delegationId
+      && item.delegation.childRunId === delegation.childRunId
+    )));
+    if (exactChildren.some((exact) => {
+      const child = exact?.run;
+      return exact === undefined
+        || exact.delegation.terminal === null
+        || child == null
+        || child.version !== exact.delegation.terminal.childRunVersion
+        || child.state.status !== exact.delegation.terminal.childStatus
+        || (child.state.status !== 'completed'
+          && child.state.status !== 'failed'
+          && child.state.status !== 'cancelled');
+    })) throw invariant('SubAgent continuation child terminal evidence is incomplete.');
     const sourceReference = recovery.turnInputPayloads.find(
       (reference) => reference.turnId === sourceTurn.turnId
     );
@@ -94,21 +98,23 @@ export class AgentChildResultsContinuationController {
       || sourceReference.runId !== run.runId
       || sourceReference.inputDigest !== sourceTurn.intention.inputDigest
     ) throw invariant('SubAgent continuation is missing its protected parent Turn input.');
-    const [sourceTurnInput, content] = await Promise.all([
+    const [sourceTurnInput, contents] = await Promise.all([
       this.payloads.loadTurnInputPayload(sourceReference),
-      this.terminalContent.resolveTerminalAssistantContent(child)
+      Promise.all(exactChildren.map((exact) =>
+        this.terminalContent.resolveTerminalAssistantContent(exact!.run!)
+      ))
     ]);
     signal.throwIfAborted();
     const plan = await this.planner.plan({
       run,
       sourceTurnInput,
-      results: [{
-        delegationId: exact.delegation.delegationId,
-        childRunId: child.runId,
-        childRunVersion: child.version,
-        status: child.state.status,
-        content
-      }]
+      results: exactChildren.map((exact, index) => ({
+        delegationId: exact!.delegation.delegationId,
+        childRunId: exact!.run!.runId,
+        childRunVersion: exact!.run!.version,
+        status: exact!.run!.state.status as 'completed' | 'failed' | 'cancelled',
+        content: contents[index]!
+      }))
     });
     const committed = await this.commands.execute(plan.command, plan.artifacts);
     const turn = committed.run.turns.find(

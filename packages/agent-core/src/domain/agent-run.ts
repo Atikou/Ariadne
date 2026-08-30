@@ -366,20 +366,31 @@ export function assertValidAgentRun(run: AgentRun): void {
       const sourceAttempt = run.turns[sourceTurnIndex]?.attempts.find(
         (candidate: AgentInferenceAttempt) => candidate.attemptId === cause.sourceAttemptId
       );
+      const delegated: readonly {
+        readonly delegationId: string;
+        readonly childRunId: string;
+      }[] = sourceAttempt?.state.status === 'succeeded'
+        ? sourceAttempt.state.directive.kind === 'delegate_subagent'
+          ? [sourceAttempt.state.directive]
+          : sourceAttempt.state.directive.kind === 'delegate_subagents'
+            ? sourceAttempt.state.directive.delegations
+            : []
+        : [];
       if (
         continuationCauses.has(causalKey)
         || sourceTurnIndex < 0
         || sourceTurnIndex >= continuationIndex
         || sourceAttempt?.state.status !== 'succeeded'
-        || sourceAttempt.state.directive.kind !== 'delegate_subagent'
         || sourceAttempt.state.directiveDigest !== cause.sourceDirectiveDigest
-        || cause.delegationIds.length !== 1
-        || cause.childRunIds.length !== 1
-        || cause.delegationIds[0] !== sourceAttempt.state.directive.delegationId
-        || cause.childRunIds[0] !== sourceAttempt.state.directive.childRunId
+        || cause.delegationIds.length !== delegated.length
+        || cause.childRunIds.length !== delegated.length
+        || delegated.some((item, index) => (
+          cause.delegationIds[index] !== item.delegationId
+          || cause.childRunIds[index] !== item.childRunId
+        ))
       ) {
         throw new AgentRunInvariantError(
-          'A child-result continuation must bind one earlier succeeded SubAgent Directive.'
+          'A child-result continuation must bind one exact earlier succeeded SubAgent batch.'
         );
       }
       continuationCauses.add(causalKey);

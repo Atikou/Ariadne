@@ -113,6 +113,56 @@ describe('atomic inference result application', () => {
     expect(setup.unit.commitCount).toBe(3);
   });
 
+  it('atomically commits a model delegation batch with independently budgeted child Runs', async () => {
+    const setup = await admittedSetup({
+      runId: 'run-model-subagent-batch',
+      permissionMode: 'trusted'
+    });
+    const dispatcher = createDispatcher(
+      setup,
+      {
+        decide: vi.fn(async () => ({
+          kind: 'delegate_subagents' as const,
+          subagents: [
+            {
+              description: 'Inspect storage',
+              prompt: 'Inspect storage ownership and report evidence.',
+              mode: 'one_shot' as const
+            },
+            {
+              description: 'Inspect runtime',
+              prompt: 'Inspect runtime ownership and report evidence.',
+              mode: 'one_shot' as const
+            }
+          ]
+        }))
+      },
+      setup.unit,
+      ALLOW_TOOL_ADMISSION_POLICY,
+      new AgentSubagentDelegationService(setup.unit)
+    );
+
+    const result = await dispatcher.dispatch(
+      dispatchRequest('dispatch-model-subagent-batch', setup.runId)
+    );
+    if (
+      result.attempt.state.status !== 'succeeded'
+      || result.attempt.state.directive.kind !== 'delegate_subagents'
+    ) throw new Error('missing delegation batch');
+    const directive = result.attempt.state.directive;
+    expect(directive.delegations).toHaveLength(2);
+    expect(result.run.state).toEqual(expect.objectContaining({
+      status: 'waiting_children',
+      requiredChildRunIds: directive.delegations.map((item) => item.childRunId).sort(),
+      terminalChildRunIds: []
+    }));
+    const children = directive.delegations.map((item) => setup.unit.loadRun(item.childRunId));
+    expect(children).toHaveLength(2);
+    expect(children.every((child) => child?.state.status === 'running')).toBe(true);
+    expect(children.map((child) => child?.binding.budget.vector.modelTurns)).toEqual([6, 6]);
+    expect(setup.unit.commitCount).toBe(3);
+  });
+
   it('rebases the durable start checkpoint over inbox input queued during preparation', async () => {
     const setup = await admittedSetup({
       runId: 'run-inference-preparation-inbox-concurrency',

@@ -360,15 +360,18 @@ function classifyRunningRun(
   }
 
   const directive = attempt.state.directive;
-  if (directive.kind === 'delegate_subagent') {
+  if (directive.kind === 'delegate_subagent' || directive.kind === 'delegate_subagents') {
+    const delegations = directive.kind === 'delegate_subagent'
+      ? [directive]
+      : directive.delegations;
     return {
       ...identity,
       kind: 'continue_child_results',
       sourceTurnId: turn.turnId,
       sourceAttemptId: attempt.attemptId,
       sourceDirectiveDigest: attempt.state.directiveDigest,
-      delegationIds: [directive.delegationId],
-      childRunIds: [directive.childRunId]
+      delegationIds: delegations.map((delegation) => delegation.delegationId),
+      childRunIds: delegations.map((delegation) => delegation.childRunId)
     };
   }
   if (

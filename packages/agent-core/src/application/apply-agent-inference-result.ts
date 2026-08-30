@@ -268,6 +268,7 @@ function applySucceededDirective(
       };
     }
     case 'delegate_subagent':
+    case 'delegate_subagents':
       return {
         state: { status: 'running', checkpointVersion, enteredAt: occurredAt },
         turns,

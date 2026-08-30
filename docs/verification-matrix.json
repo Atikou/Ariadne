@@ -263,7 +263,7 @@
       "realModel": "not_accepted",
       "realWindow": "not_accepted",
       "realMachine": "not_accepted",
-      "notes": "Strict delegation, atomic Parent/Delegation/Budget/Child commit, one-shot and continuable ordinary scheduling, direct-parent send/interrupt, durable terminal observation, protected child-results continuation and Parent/Child public projection are connected. A real fresh-process ACP one-shot fixture covers initialize/session/prompt, parent-context/tool isolation, default permission rejection, frozen-authority-gated allow and bounded process-tree disposal. Batch children, external continuable/reconnect, Codex/Claude, structured reports, live commercial agents and a real Electron SubAgent scenario remain unaccepted."
+      "notes": "Strict single and 2-16 child batch delegation atomically commits Parent/Delegation/Budget/Children and aggregates one protected continuation after all required terminals. Ordinary one-shot/continuable scheduling, direct-parent send/interrupt and public projection are connected. ACP fresh-process resume/load uses an encrypted provider-private session store. Codex app-server and Claude Code one-shot product adapters run through the shared sandbox; Codex has a real local signed-in acceptance. Structured reports, Claude live credentials and a real Electron SubAgent scenario remain unaccepted."
     },
     {
       "module": "agent-initiated-user-question",
