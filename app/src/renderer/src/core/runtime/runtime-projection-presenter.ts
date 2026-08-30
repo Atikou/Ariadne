@@ -1,6 +1,7 @@
 import type {
   AgentPlan,
   CompanionMessage,
+  ConversationMessageReferenceV3,
   ImageAttachmentRefV3,
   ConversationSession,
   ModelSummary,
@@ -22,6 +23,7 @@ import type {
 export type RuntimeMessage = CompanionMessage & {
   deliveryState?: 'pending' | 'failed';
   attachments?: readonly ImageAttachmentRefV3[];
+  reference?: ConversationMessageReferenceV3;
 };
 
 export type RuntimeRun = Omit<RunSummary, 'origin' | 'status'> & {
@@ -104,6 +106,7 @@ export function presentMessage(
     ...(message.runId === undefined ? {} : { runId: message.runId }),
     role: message.role,
     content: message.content,
+    ...(message.reference === undefined ? {} : { reference: { ...message.reference } }),
     ...(message.attachments === undefined
       ? {}
       : { attachments: message.attachments.map((attachment) => ({ ...attachment })) }),

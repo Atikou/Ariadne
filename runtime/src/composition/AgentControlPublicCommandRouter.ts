@@ -42,6 +42,7 @@ import { AgentInboxPublicCommandHandler } from './AgentInboxPublicCommandHandler
 import { AgentSubagentInterruptPublicCommandHandler } from './AgentSubagentInterruptPublicCommandHandler.js';
 import { publicConversationFailure } from './ConversationPublicCommandFailures.js';
 import { ConversationSessionPublicCommandHandler } from './ConversationSessionPublicCommandHandler.js';
+import { ConversationNavigationPublicCommandHandler } from './ConversationNavigationPublicCommandHandler.js';
 import {
   completedPublicError,
   publicRunMutationFailure
@@ -74,6 +75,7 @@ export class AgentControlPublicCommandRouter {
   private readonly agentInbox: AgentInboxPublicCommandHandler;
   private readonly subagentInterrupt: AgentSubagentInterruptPublicCommandHandler;
   private readonly conversationSessions: ConversationSessionPublicCommandHandler;
+  private readonly conversationNavigation: ConversationNavigationPublicCommandHandler;
   private readonly conversationCommandNow: () => Date;
   private readonly attachmentStore: ConversationAttachmentStore | undefined;
 
@@ -109,6 +111,14 @@ export class AgentControlPublicCommandRouter {
       },
       options.authorizedWorkspaceIds
     );
+    this.conversationNavigation = new ConversationNavigationPublicCommandHandler(
+      conversation,
+      {
+        wakeProjectionDrain: callbacks.wakeProjectionDrain,
+        resolveCommandTime: (commandId) => this.resolveConversationCommandTime(commandId)
+      },
+      options.authorizedWorkspaceIds
+    );
     this.attachmentStore = options.attachmentStore;
   }
 
@@ -121,6 +131,10 @@ export class AgentControlPublicCommandRouter {
       case 'conversation.session.archive.v3':
       case 'conversation.session.restore.v3':
         return this.conversationSessions.execute(envelope, envelope.command);
+      case 'conversation.session.fork.v3':
+      case 'conversation.sessions.query.v3':
+      case 'conversation.message.resolve.v3':
+        return this.conversationNavigation.execute(envelope, envelope.command);
       case 'conversation.message.accept.v3':
         return this.executeAcceptConversationMessage(envelope, envelope.command);
       case 'agent.decision.resolve.v3':
@@ -164,6 +178,8 @@ export class AgentControlPublicCommandRouter {
     switch (envelope.command.kind) {
       case 'projection.snapshot.get':
       case 'projection.commits.read':
+      case 'conversation.sessions.query.v3':
+      case 'conversation.message.resolve.v3':
         return { kind: 'not_committed' };
       case 'conversation.session.create.v3':
       case 'conversation.session.rename.v3':
@@ -177,6 +193,17 @@ export class AgentControlPublicCommandRouter {
         const result = await this.executeOwnedCommand(envelope);
         if (result === null || result.settlement !== 'completed') {
           throw new Error('conversation_command_reconciliation_invalid');
+        }
+        return { kind: 'committed', outcome: result.outcome };
+      }
+      case 'conversation.session.fork.v3': {
+        const committed = await this.conversation.readCommittedAuthorityCommand(
+          envelope.commandId
+        );
+        if (committed === null) return { kind: 'not_committed' };
+        const result = await this.executeOwnedCommand(envelope);
+        if (result === null || result.settlement !== 'completed') {
+          throw new Error('conversation_fork_reconciliation_invalid');
         }
         return { kind: 'committed', outcome: result.outcome };
       }

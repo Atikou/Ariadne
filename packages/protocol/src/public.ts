@@ -162,6 +162,16 @@ export const conversationSessionSchema = z
   .strict();
 export type ConversationSession = z.infer<typeof conversationSessionSchema>;
 
+export const conversationMessageReferenceV3Schema = z.object({
+  sessionId: publicProjectionCanonicalIdSchema,
+  messageId: publicProjectionCanonicalIdSchema,
+  messageVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/u)
+}).strict();
+export type ConversationMessageReferenceV3 = z.infer<
+  typeof conversationMessageReferenceV3Schema
+>;
+
 export const companionMessageErrorSchema = z
   .object({
     code: z.string().trim().min(1).max(128),
@@ -815,6 +825,28 @@ export const runtimeCommandSchema = z.discriminatedUnion('kind', [
     workspaceId: publicProjectionCanonicalIdSchema,
     expectedSessionVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
   }).strict(),
+  z.object({
+    kind: z.literal('conversation.session.fork.v3'),
+    contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
+    sessionId: publicProjectionCanonicalIdSchema,
+    sourceSessionId: publicProjectionCanonicalIdSchema,
+    workspaceId: publicProjectionCanonicalIdSchema,
+    expectedSourceSessionVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    boundary: conversationMessageReferenceV3Schema
+  }).strict(),
+  z.object({
+    kind: z.literal('conversation.sessions.query.v3'),
+    contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
+    workspaceId: publicProjectionCanonicalIdSchema,
+    query: z.string().trim().max(512),
+    status: z.enum(['active', 'archived', 'all']).default('active'),
+    limit: z.number().int().min(1).max(50).default(20)
+  }).strict(),
+  z.object({
+    kind: z.literal('conversation.message.resolve.v3'),
+    contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
+    reference: conversationMessageReferenceV3Schema
+  }).strict(),
   conversationMessageAcceptCommandV3Schema,
   z.object({
     kind: z.literal('agent.decision.resolve.v3'),
@@ -906,6 +938,41 @@ export const runtimeResultSchema = z.discriminatedUnion('kind', [
     kind: z.literal('conversation.session.updated.v3'),
     sessionId: publicProjectionCanonicalIdSchema,
     version: z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
+  }).strict(),
+  z.object({
+    kind: z.literal('conversation.session.forked.v3'),
+    sessionId: publicProjectionCanonicalIdSchema,
+    version: z.literal(1),
+    sourceSessionId: publicProjectionCanonicalIdSchema,
+    boundary: conversationMessageReferenceV3Schema
+  }).strict(),
+  z.object({
+    kind: z.literal('conversation.sessions.query_result.v3'),
+    items: z.array(z.object({
+      sessionId: publicProjectionCanonicalIdSchema,
+      workspaceId: publicProjectionCanonicalIdSchema,
+      version: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+      title: z.string().trim().min(1).max(512),
+      status: z.enum(['active', 'archived']),
+      updatedAt: isoDateTimeSchema,
+      lineage: z.object({
+        sourceSessionId: publicProjectionCanonicalIdSchema,
+        boundary: conversationMessageReferenceV3Schema
+      }).strict().nullable(),
+      matches: z.array(z.object({
+        reference: conversationMessageReferenceV3Schema,
+        role: z.enum(['user', 'assistant']),
+        snippet: z.string().max(512)
+      }).strict()).max(3)
+    }).strict()).max(50)
+  }).strict(),
+  z.object({
+    kind: z.literal('conversation.message.resolved.v3'),
+    reference: conversationMessageReferenceV3Schema,
+    workspaceId: publicProjectionCanonicalIdSchema,
+    role: z.enum(['user', 'assistant']),
+    content: z.string().max(100_000),
+    createdAt: isoDateTimeSchema
   }).strict(),
   z.object({
     kind: z.literal('conversation.message.accepted.v3'),

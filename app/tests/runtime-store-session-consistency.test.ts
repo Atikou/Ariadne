@@ -107,4 +107,90 @@ describe('RuntimeStore session presentation', () => {
     });
     expect(initialized).toBe(true);
   });
+
+  it('queries Sessions and forks from a projected immutable message reference', async () => {
+    const reference = {
+      sessionId: 'session-source',
+      messageId: 'message-source',
+      messageVersion: 1,
+      contentDigest: `sha256:${'a'.repeat(64)}`
+    } as const;
+    const observed: string[] = [];
+    const store = new RuntimeStore(successfulRuntimeApi({
+      getStatus: async () => READY,
+      request: async (command) => {
+        observed.push(command.kind);
+        if (command.kind === 'projection.snapshot.get') {
+          return {
+            kind: 'projection.snapshot',
+            snapshot: projectionSnapshot({
+              sessions: [session('session-source')],
+              messages: [{ ...message('message-source', 'session-source'), reference }]
+            })
+          };
+        }
+        if (command.kind === 'projection.commits.read') {
+          return {
+            kind: 'projection.commits',
+            batch: readBatch(
+              command.request.afterCursor,
+              command.request.afterDigest,
+              [],
+              { streamId: command.request.streamId }
+            )
+          };
+        }
+        if (command.kind === 'conversation.sessions.query.v3') {
+          return {
+            kind: 'conversation.sessions.query_result.v3',
+            items: [{
+              sessionId: 'session-source',
+              workspaceId: command.workspaceId,
+              version: 1,
+              title: 'Conversation',
+              status: 'active',
+              updatedAt: '2026-07-31T00:00:00.000Z',
+              lineage: null,
+              matches: [{ reference, role: 'user', snippet: 'needle' }]
+            }]
+          };
+        }
+        if (command.kind === 'conversation.message.resolve.v3') {
+          return {
+            kind: 'conversation.message.resolved.v3',
+            reference: command.reference,
+            workspaceId: 'workspace-primary',
+            role: 'user',
+            content: 'needle',
+            createdAt: '2026-07-31T00:00:00.000Z'
+          };
+        }
+        if (command.kind === 'conversation.session.fork.v3') {
+          expect(command).toMatchObject({
+            sourceSessionId: 'session-source',
+            expectedSourceSessionVersion: 1,
+            boundary: reference
+          });
+          return {
+            kind: 'conversation.session.forked.v3',
+            sessionId: command.sessionId,
+            version: 1,
+            sourceSessionId: command.sourceSessionId,
+            boundary: command.boundary
+          };
+        }
+        throw new Error(`Unexpected command: ${command.kind}`);
+      },
+      onEvent: () => () => undefined
+    }));
+    await store.initialize();
+
+    await expect(store.querySessions('workspace-primary', 'needle', 'all'))
+      .resolves.toMatchObject([{ sessionId: 'session-source', matches: [{ reference }] }]);
+    await expect(store.resolveMessageReference(reference))
+      .resolves.toMatchObject({ content: 'needle', reference });
+    const forkedId = await store.forkSessionFromMessage('session-source', reference);
+    expect(store.getSnapshot().selectedSessionId).toBe(forkedId);
+    expect(observed).toContain('conversation.session.fork.v3');
+  });
 });

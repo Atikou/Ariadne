@@ -1,5 +1,6 @@
 import type {
   CompanionMessageReasoning,
+  ConversationMessageReferenceV3,
   ImageAttachmentRefV3,
   RunSummary
 } from '@ariadne/protocol/public';
@@ -25,6 +26,7 @@ export interface ConversationNode {
   time: string;
   summary: string;
   content?: string;
+  reference?: ConversationMessageReferenceV3;
   attachments?: readonly ImageAttachmentRefV3[];
   runId?: string;
   processingDurationMs?: number;

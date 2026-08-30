@@ -56,6 +56,12 @@ export const publicMessageProjectionV3Schema = z.object({
   sessionId: publicProjectionCanonicalIdSchema,
   runId: publicProjectionCanonicalIdSchema.optional(),
   version: versionSchema,
+  reference: z.object({
+    sessionId: publicProjectionCanonicalIdSchema,
+    messageId: publicProjectionCanonicalIdSchema,
+    messageVersion: versionSchema,
+    contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/u)
+  }).strict().optional(),
   role: z.enum(['user', 'assistant', 'system']),
   content: boundedTextSchema,
   attachments: z.array(imageAttachmentRefV3Schema).min(1).max(4).optional(),

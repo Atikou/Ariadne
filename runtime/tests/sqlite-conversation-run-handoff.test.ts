@@ -314,7 +314,7 @@ describe('SqliteConversationRunHandoffUnitOfWork', () => {
     expect(reopened).toBeDefined();
   });
 
-  it('upgrades a populated v1 store through v2 to v3 without losing its handoff', async () => {
+  it('upgrades a populated v1 store through v2/v3 to v4 without losing its handoff', async () => {
     const root = tempRoot();
     const unit = track(new SqliteConversationRunHandoffUnitOfWork(root));
     await acceptAuthoritatively(unit);
@@ -647,6 +647,13 @@ function downgradeSessionLifecycleSchemaToV1(database: DatabaseSync): void {
   database.exec('PRAGMA legacy_alter_table = ON;');
   database.exec('BEGIN IMMEDIATE;');
   try {
+    database.exec('DROP TRIGGER conversation_navigation_commands_no_update;');
+    database.exec('DROP TRIGGER conversation_navigation_commands_no_delete;');
+    database.exec('DROP TABLE conversation_navigation_commands;');
+    database.exec('DROP TRIGGER conversation_session_lineage_no_update;');
+    database.exec('DROP TRIGGER conversation_session_lineage_no_delete;');
+    database.exec('DROP INDEX idx_conversation_session_lineage_source;');
+    database.exec('DROP TABLE conversation_session_lineage;');
     database.exec('DROP TRIGGER conversation_session_versions_no_update;');
     database.exec('DROP TRIGGER conversation_session_versions_no_delete;');
     database.exec('DROP INDEX idx_conversation_session_versions_workspace;');

@@ -196,6 +196,12 @@ function projectPublicMessage(
       ? { runId: event.runId }
       : {}),
     version: message.version,
+    reference: {
+      sessionId: message.sessionId,
+      messageId: message.messageId,
+      messageVersion: message.version,
+      contentDigest: message.contentDigest
+    },
     role: message.role,
     content: publicMessageContent(message.payload.content),
     ...(message.payload.attachments === undefined

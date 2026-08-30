@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import type { ConversationMessageReferenceV3 } from '@ariadne/protocol/public';
 
 import {
   ConversationAuthorityError,
@@ -61,6 +62,15 @@ import {
 import {
   insertConversationSessionVersion
 } from './conversation/ConversationSessionVersionStore.js';
+import {
+  loadConversationHistoryThroughLineage,
+  SqliteConversationNavigationStore,
+  type ConversationSessionQueryItem,
+  type ForkConversationSessionRequest,
+  type ForkConversationSessionResult,
+  type QueryConversationSessionsRequest,
+  type ResolvedConversationMessageReference
+} from './conversation/SqliteConversationNavigationStore.js';
 import {
   assertMessageContentDigest,
   parseAuthorityCommandRow,
@@ -174,6 +184,7 @@ ConversationRunHandoffOutboxPort,
 ConversationRunHandoffLookup,
 ConversationProjectionReader {
   private readonly database: DatabaseSync;
+  private readonly navigation: SqliteConversationNavigationStore;
   private readonly ownerLease: SqliteOwnerLease;
   private readonly databaseKey: string;
   private lifecycle: 'open' | 'closing' | 'closed' = 'open';
@@ -199,6 +210,7 @@ ConversationProjectionReader {
       throw error;
     }
     this.database = opened.database;
+    this.navigation = new SqliteConversationNavigationStore(opened.database);
     this.ownerLease = opened.ownerLease;
     const resolved = path.resolve(opened.databasePath);
     this.databaseKey = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
@@ -298,17 +310,7 @@ ConversationProjectionReader {
     }
     return this.scheduleOperation((signal) => this.executeDatabaseTransaction(
       'read',
-      () => {
-        signal.throwIfAborted();
-        const row = this.database.prepare(
-          `SELECT message_id, version, session_id, workspace_id, role,
-                  payload_json, content_digest, created_at
-           FROM conversation_message_versions WHERE message_id=? AND version=?`
-        ).get(messageId, version) as MessageVersionRow | undefined;
-        return row === undefined
-          ? null
-          : parseMessageVersionRow(row, `message-version:${messageId}:${String(version)}`);
-      },
+      () => this.navigation.readMessageVersion(messageId, version),
       signal
     ));
   }
@@ -352,14 +354,35 @@ ConversationProjectionReader {
     assertCanonicalId(sessionId, 'session lookup');
     return this.scheduleOperation((signal) => this.executeDatabaseTransaction(
       'read',
-      async () => {
-        const transaction = new SqliteConversationTransaction(this.database);
-        try {
-          return await transaction.loadSession(sessionId);
-        } finally {
-          transaction.close();
-        }
-      },
+      () => this.navigation.readSession(sessionId),
+      signal
+    ));
+  }
+
+  public forkSession(request: ForkConversationSessionRequest): Promise<ForkConversationSessionResult> {
+    return this.scheduleOperation((signal) => this.executeDatabaseTransaction(
+      'write',
+      () => this.navigation.fork(request),
+      signal
+    ));
+  }
+
+  public querySessions(
+    request: QueryConversationSessionsRequest
+  ): Promise<readonly ConversationSessionQueryItem[]> {
+    return this.scheduleOperation((signal) => this.executeDatabaseTransaction(
+      'read',
+      () => this.navigation.query(request),
+      signal
+    ));
+  }
+
+  public resolveMessageReference(
+    reference: ConversationMessageReferenceV3
+  ): Promise<ResolvedConversationMessageReference> {
+    return this.scheduleOperation((signal) => this.executeDatabaseTransaction(
+      'read',
+      () => this.navigation.resolve(reference),
       signal
     ));
   }
@@ -523,34 +546,12 @@ class SqliteConversationTransaction implements ConversationAuthorityTransaction 
     if (!Number.isSafeInteger(messageVersion) || messageVersion < 1) {
       throw storageInvariant('session_message_history_lookup_invalid');
     }
-    const rows = this.database.prepare(
-      `SELECT message.message_id, message.version, message.session_id,
-              message.workspace_id, message.role, message.payload_json,
-              message.content_digest, message.created_at
-       FROM conversation_commands AS command
-       INNER JOIN conversation_message_versions AS message
-         ON message.message_id=command.message_id
-        AND message.version=command.message_version
-       WHERE command.session_id=?
-         AND command.resulting_session_version <= (
-           SELECT objective.resulting_session_version
-           FROM conversation_commands AS objective
-           WHERE objective.session_id=?
-             AND objective.message_id=?
-             AND objective.message_version=?
-         )
-       ORDER BY command.resulting_session_version ASC
-       LIMIT 2048`
-    ).all(
-      sessionId,
+    return loadConversationHistoryThroughLineage(
+      this.database,
       sessionId,
       messageId,
       messageVersion
-    ) as unknown as MessageVersionRow[];
-    return rows.map((row, index) => parseMessageVersionRow(
-      row,
-      `session-history:${sessionId}:${String(index)}`
-    ));
+    );
   }
 
   public async loadCommittedAuthorityCommand(

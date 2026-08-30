@@ -88,11 +88,11 @@ Electron ask-user smoke 首次暴露了默认生产工厂漏接 protected Direct
 | P1 | 长上下文逐 binding 计量与本地真实验收已完成，远程 live 仍受 credential 阻塞 | 完整 Tool result 复用受保护 Effect payload；确定性因果摘要有 source/summary digest、角色与 Tool locator；本地 llama.cpp/Transformers 使用实际 chat-template tokenizer，远程路由明确区分 BPE/conservative；source/primary/recovery 均重新计数并硬准入；真实本地模型已跨两个进程恢复历史、压缩并推理 | 配置 credential 后执行严格远程跨进程 gate；若未来增加模型摘要，须用独立 durable Attempt |
 | P1 | SubAgent 批量、ACP reconnect 与产品 Provider 已接入 | 单个/2–16 项批量 Directive 以一次事务提交 Parent、预算、Delegation 和全部 Child；ordinary one-shot/continuable、ACP 加密 resume/load、Codex app-server 与 Claude Code one-shot 共用 Agent Control 权威和沙箱。配置漂移、缺失 Provider 和伪造回执均 fail closed | structured report；真实 Electron 场景；Claude 商业登录态 live gate；显式 credential seam |
 | P1 | v3 LLM 请求/响应与图片合同已同构，私有 replay state 和附件回收仍缺 | exact 请求使用 `text/image/tool_call/tool_result`；图片先进入 Conversation 内容寻址存储，再按精确 Message owner 复核并临时序列化为 OpenAI/Anthropic 原生块；历史 Tool 输入按 committed digest 从受保护 Effect payload 恢复；输出使用 `text/reasoning/tool_call`，finish、脱敏 replay evidence 与互斥 cache usage 随精确 Attempt 提交 | 可用的 adapter-private replay state；引用感知附件 GC；真实远程 Provider 图片验收；若提供缩略图字节，必须保持 owner-scoped |
-| P1 | Conversation 基础生命周期已持久，fork 与查询产品仍缺 | title/archive/restore 已进入版本化命令、不可变 Session version/event、Public Projection 和真实 Renderer；旧本地 title/archive 会迁移丢弃，pin/unread 保留设备级。仍没有 durable fork/lineage、全文检索或 bounded event query | fork 记录稳定 Turn 边界与 lineage；查询使用独立可重建索引并记录已观察的权威版本；补跨重启/多窗口和大历史验收 |
+| 已关闭 | Conversation fork、lineage、Session query 与稳定引用 | schema v4 用不可变 lineage 绑定 source Session version 和已结算 Message digest；fork 不复制祖先消息，历史按 lineage 递归读取。Session query 直接扫描权威表，不建立第二权威；稳定引用跨 Runtime 重启按 `session/message/version/digest` 精确解析。Public Projection、RuntimeStore、侧栏正文检索和消息“从此分叉”已接入 | 未来大历史量再引入可丢弃索引，但索引必须保留 observed authority version；多窗口压力与分页 event read 可继续扩充，不再属于基础能力缺失 |
 | P1 | 结构化搜索/编辑已进入同一文件权威，产品呈现与文件操作族仍缺 | `workspace.search_text/glob` 不调用 shell，按 realpath containment、symlink 拒绝、默认排除、扫描/字节/结果上限返回结构化路径、Unicode 行列、预览和稳定 version；`workspace.apply_text_edits` 使用同一个 `LocalWorkspaceFileService` 的目标锁、opaque expectedVersion 和原子发布，越界、重叠、外部陈旧版本均 fail closed | 补受保护结果驱动的 read/search/diff render intent；按真实需求增加 move/delete；真实 Agent/Electron 场景证明搜索→编辑→陈旧冲突交互，不回退到 `run_command` |
 | P2 | 人类 Skill consumer 尚未闭环，外部 Hook 包发现有意缺席 | Skill 已有静态 Provider、Workspace scope、可取消 snapshot/last-good、包级 revision、独立 model/user policy 与受限 `skill.resource.read`；Hook 已由 required Manifest service 静态注册可信 Provider、Store 后绑定 handler set、区分 pre/post 失败语义并反向关闭。当前仍没有 Renderer/Main 的 user-invocable command catalog；也没有外部 Hook 包签名/发现/热重载 | 人类目录从同一 invocation-neutral snapshot 过滤且不激活 Agent；只有产品确有外部扩展需求时才设计签名 Provider 包，不能从 Skill 目录自动加载代码 |
 | P2 | Tool 静态语义已固定，受保护结果的结构化产品呈现仍缺 | Catalog revision 17 使 model description/guidance 和公开 kind/label 与 exact Tool identity 同步漂移；Provider request、Projection 和 Renderer 活动标题使用同一 pin。但 activity 仍只有静态标签，没有 owner-scoped 的 read/search/diff/terminal 结果详情；move/delete 也尚未形成结构化能力 | 以受保护 Effect result reader 生成严格 render-intent union，Public Projection 仅携带无正文意图和有界计数；真实 Electron 验收 read/search/diff/terminal 卡片 |
-| P2 | LSP、语义检索和 cross-session reference 没有进入 v3 | 旧 `createAppContext()` 会构造 LSP/Tree-sitter/History recaller，但 v3 Catalog revision 17 只有 literal search/glob，没有 definition/reference/hover、语义索引或 Session reference Tool；当前 Agent 做代码语义导航仍会退回整文件读取或通用命令 | 以可替换 Provider + typed v3 Tool 接入 definition/reference/hover/semantic search；结果有 workspace/version/bounds 和 protected payload；跨会话引用绑定稳定 Session/version，不能把 UI mention 语法塞进 Agent Core |
+| P2 | LSP 与语义检索没有进入 v3；Conversation 稳定引用已关闭 | v3 Catalog revision 17 仍只有 literal search/glob，没有 definition/reference/hover 或语义索引；Conversation owner 已提供跨重启稳定 `Session/Message/version/digest` 引用、精确 resolve 与 fork boundary，UI 不再复制文本模拟分支 | 以可替换 Provider + typed v3 Tool 接入 definition/reference/hover/semantic search；结果有 workspace/version/bounds 和 protected payload；未来 Agent 跨会话 Tool 只消费既有 canonical reference，不重新发明 mention 权威 |
 | P2 | Agent 主动提问的 durable 链与等待恢复已接入，产品交互仍不完整 | `ask_user` 是第一类 Directive；问题/选项进入受保护 payload，Run 持久等待精确 Decision，Public Projection 只发布脱敏 `question`，回答 action 与 `user_question_answer` next-step inbox receipt 原子提交，scheduler/历史重建/Renderer 已接通；真实窗口既覆盖正常选项回答，也覆盖 `waiting/user_question` 时强杀 Runtime、恢复同一 Decision 与同 Run 续跑 | 真实窗口自由文本；真实商业 Provider 生成问题；取消等待问题的产品语义 |
 | P2 | 缺独立 context injection | follow-up/steer 会进入下一 step，但没有“不唤醒模型、只改变后续上下文”的 durable receipt | injection 有独立命令、版本、claim/receipt、重启语义和 UI 状态；不伪装成用户消息 |
 | P2 | 定时/后台触发仍停留在旧 Agent 链 | 生产 `createAppContext()` 仍启动 JSONL Scheduler；`Orchestrator.executeUnattendedTrigger()` 明确创建旧 `scheduled` Run 且“不持久化会话”。它不进入 v3 Conversation/Run/Turn/Attempt、Catalog pin、inbox 或 Public Projection | Schedule 是版本化 durable record；触发向原 Session 投递普通 v3 Turn，沿用当前 authority、预算、取消、miss policy 与恢复；删除旧 unattended Agent loop，不维护第二套通知/Run 语义 |
@@ -221,11 +221,13 @@ revision 14 已替换这层错误的“不可变”语义：构建器从明确�
 
 下一轮拆分应以权威 owner 为单位：schema/migration、row mapper、command receipt、checkpoint、outbox、execution intent、projection source 分别有可测试端口。拆分后同步下调阈值。对旧 `runtime/src/agent`、`runtime/src/subagent`、旧 context/model/scheduler，只在生产引用归零和迁移测试存在后删除，禁止用兼容 wrapper 延长双链路寿命。
 
-### 4.9 Conversation 基础生命周期已收敛，fork 与查询仍缺
+### 4.9 已关闭：Conversation fork、lineage、查询与跨重启稳定引用
 
 Conversation Authority 现已拥有 Session title/status。`rename/archive/restore` 使用精确 Session/Workspace identity 和 expected version；命令 receipt、`conversation.session.updated` event、Session head 与不可变 `conversation_session_versions` 在一个 SQLite 事务中提交。Public Projection 按事件版本读取精确 Session 快照，因此后续重命名不会污染旧事件重放。归档 Session 拒绝新用户消息，但已经运行的 Agent 仍可提交终态结果，避免留下悬挂 Handoff。
 
-Renderer 已删除 title/archive 的本地 owner；本机 schema v3 只保留 pin/unread，并在迁移时丢弃旧 title/archive。侧栏与 Settings 只通过 RuntimeStore 发出 CAS 命令并消费 Projection。剩余差距是 Session query/index 与 fork：全文索引不能成为第二权威，必须记录观察到的 message/session version，可丢弃重建；Fork 应复制稳定 Turn 结束位置之前的不可变引用并记录 parent/boundary，拒绝从正在提交的 Turn 中间静默截断。
+schema v4 新增不可变 `conversation_session_lineage` 和幂等 navigation receipt。Fork 必须同时提供 source Session expected version 与已结算 Message 的 `session/message/version/contentDigest`；一个事务创建 child Session、lineage、普通 Session-created event 与命令回执。Child 不复制 ancestor rows，模型历史沿 lineage 递归读取到固定 boundary，因此父会话后续追加不会污染已存在的分支。循环/深度、Workspace 漂移、未结算 boundary 与命令 payload 漂移均 fail closed。
+
+Session query 直接读取 Conversation 权威表并返回 bounded 匹配与稳定引用，没有建立第二数据库或索引权威。引用解析按四元组精确复核，Runtime 关闭再打开后仍能解析；Public Projection 给已提交消息附带同一引用，RuntimeStore 暴露 query/resolve/fork，侧栏搜索正文并可从任一已投影消息创建分支。SQLite 迁移、幂等/冲突、继承历史、跨重启 resolve、公共命令、Projection 与 Renderer Store 均有直接测试。大历史量未来可加可丢弃索引与分页 event read，但不能改变当前权威边界。
 
 ### 4.10 Credential 需要统一“引用—解析—授权”边界
 
@@ -251,11 +253,11 @@ Factory 已删除 Workspace/Skill 拼接和 `skillCatalog` 输入，admission re
 
 不能再为这条旧链补 adapter。应把 Schedule 重新定义成版本化记录，触发时向原 Conversation Session 提交普通的 v3 用户/系统输入，再由现有 handoff、admission 和 scheduler 执行。miss policy、时区、重复周期、取消和下一次触发时间属于 Schedule owner；Provider/Tool I/O、权限、预算和恢复全部继续属于 Agent Control。迁移完成后删除旧 unattended Orchestrator 分支和其专用通知语义。
 
-### 4.14 语义代码导航与跨会话引用尚未进入当前 Agent 权威
+### 4.14 语义代码导航仍缺；跨会话 canonical reference 已进入 Conversation 权威
 
-旧 Runtime application 会构造 `LspCodeIntelligenceProvider`、Tree-sitter fallback、ProjectIndex 与 HistoryFileRecaller，但这些对象只进入旧 registry/default context。当前 v3 Catalog revision 17 的生产 Tool 集有 Browser、Computer、MCP、Skill、Workspace file/search/live-work 等 33 个名称，literal search/glob 已不再依赖 shell，但仍没有 definition/reference/hover、语义索引或 Session reference。结果是 v3 Agent 做代码语义导航时仍只能组合文字搜索、整文件读取或通用命令；引用另一会话时也只能复制文本，不能绑定稳定 Session/version/boundary。
+旧 Runtime application 会构造 `LspCodeIntelligenceProvider`、Tree-sitter fallback、ProjectIndex 与 HistoryFileRecaller，但这些对象只进入旧 registry/default context。当前 v3 Catalog revision 17 的生产 Tool 集有 Browser、Computer、MCP、Skill、Workspace file/search/live-work 等 33 个名称，literal search/glob 已不再依赖 shell，但仍没有 definition/reference/hover 或语义索引。Conversation owner 已补齐 canonical Session/Message/version/digest reference、resolve 和 fork lineage；当前剩余缺口是把这类引用作为 Agent Tool/admission 输入消费，而不是继续复制文本。
 
-这里应复用现有 Tool authority，而不是复活旧 registry。LSP/search 作为可替换 Provider 暴露 closed typed operations，Tool result 带 Workspace、文件 version、范围与截断信息，正文仍留在受保护 Effect payload。跨会话引用先由 Conversation owner 解析 canonical Session reference，再在 admission 时冻结 observed Session/message version；UI mention 语法只属于 Renderer，不能进入 Agent Core。
+这里应复用现有 Tool authority，而不是复活旧 registry。LSP/search 作为可替换 Provider 暴露 closed typed operations，Tool result 带 Workspace、文件 version、范围与截断信息，正文仍留在受保护 Effect payload。未来跨会话 Agent Tool 必须调用现有 Conversation resolve 并在 admission 时冻结 observed reference；UI mention 语法仍只属于 Renderer，不能进入 Agent Core。
 
 ### 4.15 已关闭：运行中输入 delivery receipt 与 Projection 活性
 
@@ -287,7 +289,7 @@ Runtime command journal 与 Agent inbox 仍是唯一 delivery/执行权威。确
 
 1. 在已完成的 scoped Skill snapshot、固定 package 资源、model/user policy 和可信 Hook Provider lifecycle 上补不激活 Agent 的人类命令 consumer；除非有明确产品需求，不开放外部动态 Hook 包发现。
 2. 在已完成的 exact request/response/image content blocks 与 Electron 图片 smoke 上补 adapter-private replay state，并为现有内容寻址 AttachmentStore 增加引用感知 GC 与真实远程 Provider 验收；不要复用旧 ResourceRegistry 形成第二条多模态权威。
-3. 在已完成的 title/archive/restore 权威上增加稳定边界 fork/lineage、Session reference，再建设可重建的 Session query/index；置顶与未读继续保留为设备偏好。
+3. 已完成稳定边界 fork/lineage、Session reference 与权威 Session query；后续只在真实大历史基准证明需要时增加可丢弃索引和 bounded event pagination，置顶与未读继续保留为设备偏好。
 4. 在已完成的版本化原子文件 service 和 contract-pinned kind/label 上补受保护结果驱动的 read/search/diff/terminal 详情、LSP Provider 与 move/delete；所有变更继续复用同一 freshness/result owner，不复活旧 Tool registry。
 5. 在现有 continuable Child control plane 上补外部 continuable/reconnect、Codex/Claude Provider 和真实 Electron 场景；durable ask-user 再补自由文本窗口、真实商业 Provider 与取消等待语义；之后完成 Goal/Todo/Workflow 产品闭环。
 6. 将旧 unattended Scheduler/Orchestrator 迁移为向原 Session 投递普通 v3 Turn 的 durable Schedule，完成后删除第二套 scheduled Run/notification 语义。

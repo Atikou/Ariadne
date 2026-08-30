@@ -7,6 +7,7 @@ import {
 } from '@ariadne/protocol/public';
 import type {
   ChatRoutingStrategy,
+  ConversationMessageReferenceV3,
   ConversationSession,
   EncodedImageAttachmentV3,
   ModelInferenceOptions,
@@ -97,6 +98,16 @@ export interface SendMessageOptions {
   selectSession?: boolean;
   attachments?: readonly EncodedImageAttachmentV3[];
 }
+
+export type ConversationSessionQueryItem = Extract<
+  RuntimeResult,
+  { readonly kind: 'conversation.sessions.query_result.v3' }
+>['items'][number];
+
+export type ResolvedConversationMessage = Extract<
+  RuntimeResult,
+  { readonly kind: 'conversation.message.resolved.v3' }
+>;
 
 const STOPPED_STATUS: RuntimeStatus = {
   availability: 'stopped',
@@ -237,6 +248,71 @@ export class RuntimeStore {
 
   async restoreSession(session: ConversationSession): Promise<void> {
     await this.mutateSession(session, { kind: 'conversation.session.restore.v3' });
+  }
+
+  async querySessions(
+    workspaceId: string,
+    query: string,
+    status: 'active' | 'archived' | 'all' = 'active',
+    limit = 20
+  ): Promise<readonly ConversationSessionQueryItem[]> {
+    const result = await this.command({
+      kind: 'conversation.sessions.query.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      workspaceId,
+      query,
+      status,
+      limit
+    });
+    if (result.kind !== 'conversation.sessions.query_result.v3') {
+      throw new Error(`runtime_result_invalid:${result.kind}`);
+    }
+    return result.items;
+  }
+
+  async resolveMessageReference(
+    reference: ConversationMessageReferenceV3
+  ): Promise<ResolvedConversationMessage> {
+    const result = await this.command({
+      kind: 'conversation.message.resolve.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      reference
+    });
+    if (result.kind !== 'conversation.message.resolved.v3') {
+      throw new Error(`runtime_result_invalid:${result.kind}`);
+    }
+    return result;
+  }
+
+  async forkSessionFromMessage(
+    sourceSessionId: string,
+    boundary: ConversationMessageReferenceV3
+  ): Promise<string> {
+    const source = this.projection.sessions.getSnapshot().find(
+      (session) => session.sessionId === sourceSessionId
+    );
+    if (source === undefined || boundary.sessionId !== source.sessionId) {
+      throw new Error('conversation_fork_projection_missing');
+    }
+    const sessionId = crypto.randomUUID();
+    const result = await this.command({
+      kind: 'conversation.session.fork.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      sessionId,
+      sourceSessionId: source.sessionId,
+      workspaceId: source.workspaceId,
+      expectedSourceSessionVersion: source.version,
+      boundary
+    });
+    if (
+      result.kind !== 'conversation.session.forked.v3'
+      || result.sessionId !== sessionId
+      || result.sourceSessionId !== source.sessionId
+    ) throw new Error(`runtime_result_invalid:${result.kind}`);
+    this.ui.selectSession(sessionId);
+    this.publish();
+    await this.requestSynchronization(false);
+    return sessionId;
   }
 
   isPlanModeEnabled(sessionId: string | null = this.ui.selectedSessionId): boolean {

@@ -116,6 +116,118 @@ describe('Agent Control v3 public projection lifecycle', () => {
     }
   });
 
+  it('forks, queries, and resolves a stable Conversation reference through the public contract', async () => {
+    const root = createRoot();
+    const unit = new SqliteAgentRunUnitOfWork(root);
+    const conversation = new SqliteConversationRunHandoffUnitOfWork(root);
+    const authority = new ConversationAuthorityService(conversation);
+    await authority.createSession({
+      kind: 'conversation.create_session',
+      commandId: 'navigation-create',
+      eventId: 'navigation-create-event',
+      sessionId: 'navigation-parent',
+      workspaceId: 'navigation-workspace',
+      expectedVersion: null,
+      occurredAt: at(0)
+    });
+    const accepted = await authority.acceptUserMessage({
+      kind: 'conversation.accept_user_message',
+      commandId: 'navigation-accept',
+      eventId: 'navigation-accept-event',
+      sessionId: 'navigation-parent',
+      workspaceId: 'navigation-workspace',
+      expectedSessionVersion: 1,
+      messageId: 'navigation-message',
+      expectedMessageVersion: null,
+      content: 'stable navigation needle',
+      sagaId: 'navigation-saga',
+      handoffCommandId: 'navigation-handoff',
+      handoffOutboxMessageId: 'navigation-outbox',
+      occurredAt: at(1)
+    });
+    const reference = {
+      sessionId: accepted.messageVersion.sessionId,
+      messageId: accepted.messageVersion.messageId,
+      messageVersion: accepted.messageVersion.version,
+      contentDigest: accepted.messageVersion.contentDigest
+    };
+    const projection = new SqlitePublicProjectionStore(root);
+    const control = new ComposedAgentControlRuntime(
+      unit,
+      conversation,
+      projection,
+      undefined,
+      {
+        publishIntervalMs: 60_000,
+        conversationCommandNow: () => new Date(at(2))
+      },
+      projectionLifecyclePipeline()
+    );
+    const close = closeControl(control);
+    try {
+      await control.start();
+      const fork = commandEnvelope({
+        kind: 'conversation.session.fork.v3',
+        contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+        sessionId: 'navigation-child',
+        sourceSessionId: 'navigation-parent',
+        workspaceId: 'navigation-workspace',
+        expectedSourceSessionVersion: 2,
+        boundary: reference
+      }, 'navigation-fork');
+      await expect(control.executeOwnedCommand(fork)).resolves.toMatchObject({
+        outcome: {
+          ok: true,
+          result: {
+            kind: 'conversation.session.forked.v3',
+            sessionId: 'navigation-child',
+            boundary: reference
+          }
+        }
+      });
+      await expect(control.executeOwnedCommand(fork)).resolves.toMatchObject({
+        outcome: { ok: true, result: { sessionId: 'navigation-child' } }
+      });
+      await expect(control.executeOwnedCommand(commandEnvelope({
+        kind: 'conversation.sessions.query.v3',
+        contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+        workspaceId: 'navigation-workspace',
+        query: 'stable navigation',
+        status: 'all',
+        limit: 20
+      }, 'navigation-query'))).resolves.toMatchObject({
+        outcome: {
+          ok: true,
+          result: {
+            kind: 'conversation.sessions.query_result.v3',
+            items: [{ sessionId: 'navigation-parent', matches: [{ reference }] }]
+          }
+        }
+      });
+      await expect(control.executeOwnedCommand(commandEnvelope({
+        kind: 'conversation.message.resolve.v3',
+        contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+        reference
+      }, 'navigation-resolve'))).resolves.toMatchObject({
+        outcome: {
+          ok: true,
+          result: {
+            kind: 'conversation.message.resolved.v3',
+            reference,
+            content: 'stable navigation needle'
+          }
+        }
+      });
+      await expect.poll(() => projection.snapshot()).toMatchObject({
+        sessions: expect.arrayContaining([
+          expect.objectContaining({ sessionId: 'navigation-child', version: 1 })
+        ])
+      });
+    } finally {
+      await close();
+    }
+  });
+
   it('cancels a projected Run through the authoritative v3 command path', async () => {
     const root = createRoot();
     const unit = new SqliteAgentRunUnitOfWork(root);

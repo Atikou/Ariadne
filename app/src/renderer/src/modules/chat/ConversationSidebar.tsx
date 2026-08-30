@@ -37,6 +37,7 @@ interface SessionRowOptions {
 export function ConversationSidebar({ services }: ConversationSidebarProps): React.JSX.Element {
   const runtime = useRuntimeSnapshot(services.runtime);
   const [query, setQuery] = useState('');
+  const [querySessionIds, setQuerySessionIds] = useState<ReadonlySet<string> | null>(null);
   const [workspaces, setWorkspaces] = useState<readonly ConversationWorkspace[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
   const [archiveWorkspaceTarget, setArchiveWorkspaceTarget] = useState<ConversationWorkspace | null>(null);
@@ -70,14 +71,45 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
   }, [services]);
 
   const normalizedQuery = query.trim().toLocaleLowerCase();
+  useEffect(() => {
+    if (!normalizedQuery) {
+      setQuerySessionIds(null);
+      return;
+    }
+    let active = true;
+    const timer = window.setTimeout(() => {
+      const workspaceIds = new Set<string>([PERSONAL_ASSISTANT_WORKSPACE_ID]);
+      for (const workspace of workspaces) {
+        if (services.conversationNavigation.isWorkspaceActive(workspace.workspaceId)) {
+          workspaceIds.add(workspace.workspaceId);
+        }
+      }
+      void Promise.all([...workspaceIds].map((workspaceId) => (
+        services.runtime.querySessions(workspaceId, normalizedQuery, 'active', 50)
+      ))).then((groups) => {
+        if (!active) return;
+        setQuerySessionIds(new Set(groups.flat().map((item) => item.sessionId)));
+      }).catch((error) => {
+        if (!active) return;
+        setActionError(errorMessage(error));
+        setQuerySessionIds(new Set());
+      });
+    }, 150);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [normalizedQuery, presentationRevision, services, workspaces]);
   const visibleSessions = useMemo(
     () => runtime.sessions
       .filter((session) => session.status === 'active')
       .filter((session) => session.workspaceId === PERSONAL_ASSISTANT_WORKSPACE_ID
         || services.conversationNavigation.isWorkspaceActive(session.workspaceId))
-      .filter((session) => !normalizedQuery || session.title
-        .toLocaleLowerCase()
-        .includes(normalizedQuery))
+      .filter((session) => !normalizedQuery
+        || querySessionIds?.has(session.sessionId)
+        || (querySessionIds === null && session.title
+          .toLocaleLowerCase()
+          .includes(normalizedQuery)))
       .sort((left, right) => {
         const pinDifference = Number(
           services.conversationNavigation.isSessionPinned(right.sessionId, right.pinned)
@@ -86,7 +118,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
         );
         return pinDifference || right.updatedAt.localeCompare(left.updatedAt);
       }),
-    [normalizedQuery, presentationRevision, runtime.sessions, services, workspaces]
+    [normalizedQuery, presentationRevision, querySessionIds, runtime.sessions, services, workspaces]
   );
   const visibleWorkspaces = useMemo(
     () => workspaces.filter((workspace) => !normalizedQuery

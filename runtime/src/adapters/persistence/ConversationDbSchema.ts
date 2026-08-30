@@ -8,7 +8,7 @@ import {
   type SqliteOwnerLease
 } from './SqliteOwnerLease.js';
 
-export const CONVERSATION_DB_SCHEMA_VERSION = 3;
+export const CONVERSATION_DB_SCHEMA_VERSION = 4;
 export const CONVERSATION_DB_RELATIVE_PATH = path.join(
   'data',
   'conversation',
@@ -16,7 +16,7 @@ export const CONVERSATION_DB_RELATIVE_PATH = path.join(
 );
 
 const CONVERSATION_SCHEMA_MIGRATION_NAME =
-  'conversation_authority_v3_session_lifecycle';
+  'conversation_authority_v4_lineage_query';
 
 interface SchemaObject {
   readonly type: string;
@@ -83,7 +83,11 @@ function initializeOrValidateConversationSchema(database: DatabaseSync): void {
   const migratedVersion = readUserVersion(database);
   if (migratedVersion === 2) {
     migrateConversationSchemaV2ToV3(database);
-  } else if (migratedVersion > 0 && migratedVersion < CONVERSATION_DB_SCHEMA_VERSION) {
+  }
+  const lineageVersion = readUserVersion(database);
+  if (lineageVersion === 3) {
+    migrateConversationSchemaV3ToV4(database);
+  } else if (lineageVersion > 0 && lineageVersion < CONVERSATION_DB_SCHEMA_VERSION) {
     throw new Error(
       `conversation_offline_migration_required:${String(migratedVersion)}:`
       + String(CONVERSATION_DB_SCHEMA_VERSION)
@@ -100,6 +104,36 @@ function initializeOrValidateConversationSchema(database: DatabaseSync): void {
     createConversationSchema(database);
   }
   assertConversationSchema(database);
+}
+
+function migrateConversationSchemaV3ToV4(database: DatabaseSync): void {
+  const names = new Set(['conversation_session_lineage', 'conversation_navigation_commands']);
+  const canonical = new DatabaseSync(':memory:');
+  let definitions: readonly SchemaObject[];
+  try {
+    createConversationSchemaObjects(canonical);
+    definitions = listSchemaObjects(canonical).filter((object) => names.has(object.tableName));
+  } finally {
+    canonical.close();
+  }
+  database.exec('BEGIN IMMEDIATE;');
+  try {
+    for (const object of definitions.filter((item) => item.type === 'table')) {
+      database.exec(`${object.sql};`);
+    }
+    for (const object of definitions.filter((item) => item.type !== 'table')) {
+      database.exec(`${object.sql};`);
+    }
+    database.prepare('DELETE FROM schema_migrations;').run();
+    database.prepare(
+      'INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)'
+    ).run(4, CONVERSATION_SCHEMA_MIGRATION_NAME, new Date().toISOString());
+    database.exec('PRAGMA user_version = 4;');
+    database.exec('COMMIT;');
+  } catch (error) {
+    if (database.isTransaction) database.exec('ROLLBACK;');
+    throw error;
+  }
 }
 
 function migrateConversationSchemaV2ToV3(database: DatabaseSync): void {
@@ -372,6 +406,64 @@ function createConversationSchemaObjects(database: DatabaseSync): void {
     BEFORE DELETE ON conversation_message_versions
     BEGIN
       SELECT RAISE(ABORT, 'conversation_message_version_immutable');
+    END;
+
+    CREATE TABLE conversation_session_lineage (
+      child_session_id TEXT PRIMARY KEY CHECK(length(child_session_id) BETWEEN 1 AND 256),
+      source_session_id TEXT NOT NULL CHECK(length(source_session_id) BETWEEN 1 AND 256),
+      source_session_version INTEGER NOT NULL CHECK(source_session_version > 0),
+      workspace_id TEXT NOT NULL CHECK(length(workspace_id) BETWEEN 1 AND 256),
+      boundary_message_id TEXT NOT NULL CHECK(length(boundary_message_id) BETWEEN 1 AND 256),
+      boundary_message_version INTEGER NOT NULL CHECK(boundary_message_version > 0),
+      boundary_content_digest TEXT NOT NULL CHECK(
+        length(boundary_content_digest) = 71
+        AND substr(boundary_content_digest, 1, 7) = 'sha256:'
+        AND substr(boundary_content_digest, 8) NOT GLOB '*[^0-9a-f]*'
+      ),
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(child_session_id, workspace_id)
+        REFERENCES conversation_sessions(session_id, workspace_id) ON DELETE RESTRICT,
+      FOREIGN KEY(source_session_id, source_session_version)
+        REFERENCES conversation_session_versions(session_id, version) ON DELETE RESTRICT,
+      FOREIGN KEY(boundary_message_id, boundary_message_version, source_session_id, workspace_id, boundary_content_digest)
+        REFERENCES conversation_message_versions(message_id, version, session_id, workspace_id, content_digest)
+        ON DELETE RESTRICT,
+      CHECK(child_session_id <> source_session_id)
+    );
+    CREATE INDEX idx_conversation_session_lineage_source
+      ON conversation_session_lineage(source_session_id, created_at, child_session_id);
+    CREATE TRIGGER conversation_session_lineage_no_update
+    BEFORE UPDATE ON conversation_session_lineage
+    BEGIN
+      SELECT RAISE(ABORT, 'conversation_session_lineage_immutable');
+    END;
+    CREATE TRIGGER conversation_session_lineage_no_delete
+    BEFORE DELETE ON conversation_session_lineage
+    BEGIN
+      SELECT RAISE(ABORT, 'conversation_session_lineage_immutable');
+    END;
+
+    CREATE TABLE conversation_navigation_commands (
+      command_id TEXT PRIMARY KEY CHECK(length(command_id) BETWEEN 1 AND 256),
+      command_fingerprint TEXT NOT NULL CHECK(
+        length(command_fingerprint) = 71
+        AND substr(command_fingerprint, 1, 7) = 'sha256:'
+        AND substr(command_fingerprint, 8) NOT GLOB '*[^0-9a-f]*'
+      ),
+      child_session_id TEXT NOT NULL UNIQUE CHECK(length(child_session_id) BETWEEN 1 AND 256),
+      result_json TEXT NOT NULL CHECK(json_valid(result_json)),
+      committed_at TEXT NOT NULL,
+      FOREIGN KEY(child_session_id) REFERENCES conversation_sessions(session_id) ON DELETE RESTRICT
+    );
+    CREATE TRIGGER conversation_navigation_commands_no_update
+    BEFORE UPDATE ON conversation_navigation_commands
+    BEGIN
+      SELECT RAISE(ABORT, 'conversation_navigation_command_immutable');
+    END;
+    CREATE TRIGGER conversation_navigation_commands_no_delete
+    BEFORE DELETE ON conversation_navigation_commands
+    BEGIN
+      SELECT RAISE(ABORT, 'conversation_navigation_command_immutable');
     END;
 
     CREATE TABLE conversation_commands (

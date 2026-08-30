@@ -201,6 +201,12 @@ describe('public projection contract v3', () => {
   });
 
   it('defines versioned Conversation authority mutations without hidden defaults', () => {
+    const stableReference = {
+      sessionId: 'session-v3',
+      messageId: 'message-v3',
+      messageVersion: 1,
+      contentDigest: `sha256:${'a'.repeat(64)}`
+    } as const;
     expect(runtimeCommandSchema.parse({
       kind: 'conversation.session.create.v3',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
@@ -229,6 +235,31 @@ describe('public projection contract v3', () => {
       workspaceId: 'workspace-v3',
       expectedSessionVersion: 3
     })).toMatchObject({ kind: 'conversation.session.restore.v3' });
+    expect(runtimeCommandSchema.parse({
+      kind: 'conversation.session.fork.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      sessionId: 'session-fork-v3',
+      sourceSessionId: 'session-v3',
+      workspaceId: 'workspace-v3',
+      expectedSourceSessionVersion: 2,
+      boundary: stableReference
+    })).toMatchObject({ kind: 'conversation.session.fork.v3' });
+    expect(runtimeCommandSchema.parse({
+      kind: 'conversation.sessions.query.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      workspaceId: 'workspace-v3',
+      query: 'needle'
+    })).toMatchObject({ status: 'active', limit: 20 });
+    expect(runtimeCommandSchema.parse({
+      kind: 'conversation.message.resolve.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      reference: stableReference
+    })).toMatchObject({ kind: 'conversation.message.resolve.v3' });
+    expect(runtimeCommandSchema.safeParse({
+      kind: 'conversation.message.resolve.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      reference: { ...stableReference, contentDigest: 'not-a-digest' }
+    }).success).toBe(false);
     expect(runtimeCommandSchema.safeParse({
       kind: 'conversation.session.rename.v3',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
@@ -297,6 +328,21 @@ describe('public projection contract v3', () => {
       sessionId: 'session-v3',
       version: 2
     })).toMatchObject({ kind: 'conversation.session.updated.v3' });
+    expect(runtimeResultSchema.parse({
+      kind: 'conversation.session.forked.v3',
+      sessionId: 'session-fork-v3',
+      version: 1,
+      sourceSessionId: 'session-v3',
+      boundary: stableReference
+    })).toMatchObject({ kind: 'conversation.session.forked.v3' });
+    expect(runtimeResultSchema.parse({
+      kind: 'conversation.message.resolved.v3',
+      reference: stableReference,
+      workspaceId: 'workspace-v3',
+      role: 'user',
+      content: 'hello',
+      createdAt: '2030-01-01T00:00:00.000Z'
+    })).toMatchObject({ kind: 'conversation.message.resolved.v3' });
   });
 
   it('projects only safe image metadata and permits an image-only user Message', () => {

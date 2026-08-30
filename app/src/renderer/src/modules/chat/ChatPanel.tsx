@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { ArrowDown, Check, Copy, Folder, Hand, Image as ImageIcon, Mic, MicOff, Send, Settings2, ShieldAlert, ShieldCheck, Sparkles, X } from 'lucide-react';
+import { ArrowDown, Check, Copy, Folder, GitFork, Hand, Image as ImageIcon, Mic, MicOff, Send, Settings2, ShieldAlert, ShieldCheck, Sparkles, X } from 'lucide-react';
 import type {
   ChatRoutingStrategy,
   EncodedImageAttachmentV3,
@@ -67,6 +67,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   const [draft, setDraft] = useState('');
   const [draftImages, setDraftImages] = useState<readonly DraftImageAttachment[]>([]);
   const [draftImageError, setDraftImageError] = useState<string | null>(null);
+  const [conversationActionError, setConversationActionError] = useState<string | null>(null);
   const [selectedModelId, setSelectedModelId] = useState(AUTO_MODEL_ID);
   const [routingStrategy, setRoutingStrategy] = useState<ChatRoutingStrategy>('local-first');
   const [permissionMode, setPermissionMode] = useState<AgentPermissionMode>('request');
@@ -520,6 +521,19 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                           }
                         : undefined}
                       onCopy={(text) => services.clipboard.writeText({ text })}
+                      onFork={node.reference === undefined ? undefined : async () => {
+                        setConversationActionError(null);
+                        try {
+                          await services.runtime.forkSessionFromMessage(
+                            node.reference!.sessionId,
+                            node.reference!
+                          );
+                        } catch (error) {
+                          setConversationActionError(error instanceof Error
+                            ? error.message
+                            : '无法从这条消息创建分支。');
+                        }
+                      }}
                     />
                   </div>
                 ))}
@@ -692,7 +706,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                 ))}
               </div>
             )}
-            {draftImageError && <p className="composer-image-error" role="alert">{draftImageError}</p>}
+            {(draftImageError || conversationActionError) && <p className="composer-image-error" role="alert">{draftImageError ?? conversationActionError}</p>}
             <textarea
               ref={composerInputRef}
               value={draft}
@@ -908,6 +922,7 @@ function toConversationNode(message: RuntimeMessage): ConversationNode {
       : { attachments: message.attachments.map((attachment) => ({ ...attachment })) }),
     status: message.status,
     ...(message.runId ? { runId: message.runId } : {}),
+    ...(message.reference ? { reference: { ...message.reference } } : {}),
     ...(message.processingDurationMs !== undefined
       ? { processingDurationMs: message.processingDurationMs }
       : {}),
@@ -922,13 +937,15 @@ function ConversationMessage({
   run,
   activities,
   onOpenActivity,
-  onCopy
+  onCopy,
+  onFork
 }: {
   node: ConversationNode;
   run?: RuntimeRun | undefined;
   activities: import('@ariadne/protocol/public').RunActivity[];
   onOpenActivity?: (() => void) | undefined;
   onCopy(text: string): Promise<void>;
+  onFork?: (() => Promise<void>) | undefined;
 }): React.JSX.Element {
   const text = node.content ?? node.summary;
   const isUser = node.kind === 'user';
@@ -982,6 +999,7 @@ function ConversationMessage({
           ? '发送失败'
           : node.time}</time>
       {visibleText && <MessageCopyButton text={visibleText} subject={isUser ? '消息' : '回答'} onCopy={onCopy} />}
+      {onFork && <MessageForkButton onFork={onFork} />}
     </div>
   </div>;
 }
@@ -1000,6 +1018,21 @@ function MessageCopyButton({ text, subject, onCopy }: { text: string; subject: s
       copyResetTimerRef.current = window.setTimeout(() => setCopied(false), 1_600);
     }).catch(() => setCopied(false));
   }}>{copied ? <Check size={14} /> : <Copy size={14} />}</button>;
+}
+
+function MessageForkButton({ onFork }: { onFork(): Promise<void> }): React.JSX.Element {
+  const [forking, setForking] = useState(false);
+  return <button
+    type="button"
+    aria-label={forking ? '正在创建对话分支' : '从此消息创建对话分支'}
+    title="从此消息创建分支"
+    disabled={forking}
+    onClick={(event) => {
+      event.stopPropagation();
+      setForking(true);
+      void onFork().finally(() => setForking(false));
+    }}
+  ><GitFork size={14} /></button>;
 }
 
 async function encodeDraftImages(files: FileList): Promise<readonly DraftImageAttachment[]> {
