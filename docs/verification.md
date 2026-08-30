@@ -35,7 +35,7 @@ corepack.cmd npm run test:electron
 - `audit:runtime-independence` 只证明源码、依赖、入口和入站网络边界独立，不证明产品能力。
 - Capability Manifest 测试验证 Provider 依赖/所有权、缺 Provider 不宣告、Tool Catalog 同源、失败回滚和公开安全诊断；它不代替真实 Provider/窗口验收。
 - Capability Manifest 测试同时验证 Provider 顺序、service ownership、启动期依赖注入、必需/可选依赖、未声明读取拒绝、必需输出缺失拒绝，以及 Skills/live-work/可选 Telemetry 到类型化 Agent Control service bundle 的组装；默认 Factory 不再按字符串查找这些扩展 service。
-- live-work 测试验证真实 Host pipe process、真实沙箱内 Agent PTY 的 write/resize/interrupt/kill、Main PTY registry、owner/cursor/join，以及完成通知的 SQLite inbox-first 提交、系统来源、去重领取和 close → drain → unbind → Store freeze 顺序；SQLite reopen 场景还验证受保护的成功 `process_start`/`terminal_start` 结果在 scheduler 前幂等收敛为 `interrupted`。当前 Electron smoke 不执行 Agent PTY 窗口交互、后台完成自动续跑、正式 Windows Sandbox PTY/signal 或 Main PTY 强杀恢复场景。
+- live-work 测试验证真实 Host pipe process、沙箱内 Agent PTY 的 write/resize/interrupt/kill、Main PTY registry、owner/cursor/join，以及完成通知的 SQLite inbox-first 提交、系统来源、去重领取和 close → drain → unbind → Store freeze 顺序；native Runner smoke 覆盖所有 signal frame，并真实终止一个 30 秒 PowerShell Job。SQLite reopen 验证 Agent Job 收敛为 `interrupted`；Electron smoke 强杀持有活动 Terminal 的 Main，再在新进程窗口中验证 `interrupted/main_process_lost`、不可自动重放提示、显式 restart 和 `restartOf` lineage。
 - `verify:release-contract` 校验安装器、数据库兼容策略、外部 Embedding 资产和本验收矩阵的静态契约。
 
 ## 3. Electron smoke 的准确含义
@@ -84,7 +84,7 @@ Provider 是 smoke 脚本启动的进程外、确定性 HTTPS OpenAI-compatible 
 - Memory 与 Embedding；
 - SubAgent 批量 Child、外部 continuable/reconnect、Codex/Claude/structured report 与真实窗口场景；one-shot/continuable ordinary Child、运行中非终态 interrupt 和 fresh-process ACP one-shot Provider 已有 production-pipeline/真实子进程 integration evidence；旧 Background Task 第二进程表及其幽灵 trigger contract 已删除；
 - Provider-neutral typed request history 与 exact response `text/reasoning/tool_call` 已进入 v3；历史 Tool 输入按 committed digest 从受保护 Effect payload 恢复，OpenAI/Anthropic/本地模型使用原生 Tool history。图片附件由 Conversation 的内容寻址引用持有，推理前按精确 Message owner 复核并只在临时 Provider 请求中展开；仍缺 adapter-private replay state；
-- 确定性因果 semantic compaction、可恢复 Tool result spill、request-envelope-bound Provider usage anchor 与 bounded overflow recovery 已进入 v3；source/summary digest 会跨 SQLite reopen，摘要保持普通用户历史权限且 Tool 全量结果仍由原 Effect payload owner 读取。缺 usage Provider 的本地精确 tokenizer 和 Live Provider 长上下文验收仍未完成；
+- 确定性因果 semantic compaction、可恢复 Tool result spill、request-envelope-bound Provider usage anchor 与 bounded overflow recovery 已进入 v3；source/summary digest 会跨 SQLite reopen，摘要保持普通用户历史权限且 Tool 全量结果仍由原 Effect payload owner 读取。逐 binding tokenizer 与最终投影硬准入已进入 v3；真实本地 llama.cpp 长上下文跨进程重启门禁已通过，真实远程 Provider 因当前机器无 credential 尚未执行；
 - 不唤醒模型的独立 context injection；运行中 follow-up/steer 和可恢复 token/reasoning stream 已进入生产链路；
 - Agent 主动提问的 durable ask-user Directive、受保护问题载荷、回答 receipt、SQLite authority、Projection、scheduler continuation 与 Renderer 已有直接自动测试；确定性进程外 HTTPS Provider 驱动的真实 Electron 操作与 `waiting/user_question` 强杀恢复也已验收。真实商业 Provider、自由文本窗口场景和取消等待问题的产品语义仍未验收；
 - 人类 Skill command catalog，以及若产品需要外部 Hook 包时的签名/发现；scoped complete/incomplete snapshot、last-good、取消/关闭、固定 package 资源读取、model/user invocation policy、Manifest-owned 静态可信 Hook Provider 生命周期、Diagnostics publisher 与受控 Telemetry 已接入。

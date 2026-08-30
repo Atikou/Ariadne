@@ -97,7 +97,7 @@
       ],
       "unit": "verified",
       "integration": "verified",
-      "realModel": "not_accepted",
+      "realModel": "partial",
       "realWindow": "verified",
       "realMachine": "not_accepted",
       "notes": "Exact text/reasoning/tool_call response blocks, strict native Tool assembly/execution, normalized finish, sanitized replay evidence and disjoint cache usage are covered and committed with the exact Attempt. Image attachments use one Conversation-owned content-addressed store, safe Public Projection metadata, exact Message-owner reread and OpenAI/Anthropic native request blocks; the real Electron window covers selection, persistence, visual request and attachment rendering. Reusable adapter-private replay state, reference-aware attachment garbage collection and a live visual Provider remain pending."
@@ -245,7 +245,7 @@
       "realModel": "not_accepted",
       "realWindow": "not_accepted",
       "realMachine": "not_accepted",
-      "notes": "Conversation history, deterministic causal semantic compaction, owner-scoped recoverable Tool-result spill over the existing protected Effect payload authority, request-envelope-bound Provider usage anchors, exact configured capacity and bounded overflow recovery are connected to v3 admission/inference with unit and production-pipeline integration evidence. The compacted prefix becomes a normal user-role checkpoint containing bounded prior user intents, assistant outcomes, image references and Tool input/result evidence; exact source/summary digests and counts survive SQLite reopen, full Tool payloads are not copied, and recovery is dispatched only when its request is actually smaller. Providers without complete usage still use the conservative estimator; per-model local tokenizers, Memory/Embedding consumers, live models and real-window long-context scenarios remain unaccepted."
+      "notes": "Conversation history, deterministic causal semantic compaction, owner-scoped recoverable Tool-result spill over the existing protected Effect payload authority, request-envelope-bound Provider usage anchors, exact configured capacity and bounded overflow recovery are connected to v3 admission/inference. Every exact binding now exposes a route-local tokenizer; embedded llama.cpp/Transformers routes use their actual chat-template tokenizer, while remote BPE/wire estimates remain explicitly conservative. Source, primary and recovery projections are re-counted and hard-admitted before inference. A real Qwen 3.5 GGUF passed a two-process restart gate with 6,819 source tokens, a 1,562-token compacted primary and real inference after restart. Real remote Provider acceptance remains blocked by absent credentials; Memory/Embedding and real-window long-context scenarios remain unaccepted."
     },
     {
       "module": "subagent-child-run-and-acp-provider",

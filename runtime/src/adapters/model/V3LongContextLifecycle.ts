@@ -32,8 +32,8 @@ export interface V3LongContextPlan {
   readonly primaryMessages: readonly ExactAgentModelInferenceMessage[];
   readonly overflowRecoveryMessages: readonly ExactAgentModelInferenceMessage[] | null;
   readonly requestHeaderDigest: string;
-  readonly primaryHeuristicTokens: number;
-  readonly overflowRecoveryHeuristicTokens: number | null;
+  readonly primaryMeteredTokens: number;
+  readonly overflowRecoveryMeteredTokens: number | null;
 }
 
 interface CompactionResult {
@@ -64,6 +64,11 @@ export function planV3LongContext(input: {
   readonly requestHeaderDigest: string;
   /** Frozen Provider request fields outside messages, such as native Tool schemas. */
   readonly fixedOverheadTokens?: number;
+  readonly sourceTokenCount?: {
+    readonly tokens: number;
+    readonly exact: boolean;
+    readonly tokenizer: string;
+  };
   readonly usageBaseline?: V3LongContextUsageBaseline;
 }): V3LongContextPlan {
   assertCapacity(input.capacity);
@@ -81,7 +86,12 @@ export function planV3LongContext(input: {
   const sourceDigest = digestMessages(full);
   const correctionTokens = usageCorrection(input.requestHeaderDigest, input.usageBaseline);
   const fullHeuristicTokens = estimateMessagesTokens(full) + fixedOverheadTokens;
-  const fullTokens = meteredTokens(full, correctionTokens, fixedOverheadTokens);
+  const fullTokens = input.sourceTokenCount === undefined
+    ? meteredTokens(full, correctionTokens, fixedOverheadTokens)
+    : Math.max(
+        1,
+        input.sourceTokenCount.tokens + (input.sourceTokenCount.exact ? 0 : correctionTokens)
+      );
   const pressureLimit = Math.min(
     Math.floor(input.capacity.contextWindowTokens * PRESSURE_RATIO),
     input.capacity.contextWindowTokens - input.capacity.maxOutputTokens
@@ -138,8 +148,8 @@ export function planV3LongContext(input: {
       ? recovery.messages
       : null,
     requestHeaderDigest: input.requestHeaderDigest,
-    primaryHeuristicTokens: primary.heuristicTokens,
-    overflowRecoveryHeuristicTokens: hasDistinctRecovery && recovery !== null
+    primaryMeteredTokens: primary.heuristicTokens,
+    overflowRecoveryMeteredTokens: hasDistinctRecovery && recovery !== null
       ? recovery.heuristicTokens
       : null,
     modelContext: {
@@ -160,8 +170,10 @@ export function planV3LongContext(input: {
       tokenMeter: input.usageBaseline === undefined
         ? {
             protocol: 'ariadne.token-meter.v1',
-            baseline: 'estimated',
+            baseline: input.sourceTokenCount?.exact === true ? 'local_tokenizer' : 'estimated',
             requestHeaderDigest: input.requestHeaderDigest,
+            tokenizer: input.sourceTokenCount?.tokenizer ?? 'ariadne:utf8-envelope-conservative',
+            tokenizerExact: input.sourceTokenCount?.exact ?? false,
             correctionTokens: 0
           }
         : {
@@ -172,6 +184,8 @@ export function planV3LongContext(input: {
             anchorRequestEnvelopeDigest: input.usageBaseline.anchor.requestEnvelopeDigest,
             anchorEstimatedInputTokens: input.usageBaseline.anchor.estimatedInputTokens,
             anchorProviderContextInputTokens: contextInputTokens(input.usageBaseline.anchor),
+            tokenizer: input.sourceTokenCount?.tokenizer ?? 'ariadne:utf8-envelope-conservative',
+            tokenizerExact: input.sourceTokenCount?.exact ?? false,
             correctionTokens
           },
       omittedGroups: primary.omittedGroups,
@@ -278,6 +292,97 @@ function compact(
     heuristicTokens: estimateMessagesTokens(messages) + fixedOverheadTokens,
     semanticCompaction
   };
+}
+
+/**
+ * Re-admits the two concrete Provider projections with the same route-bound
+ * tokenizer used for the source request. Planning remains deterministic and
+ * synchronous; this boundary prevents a heuristic compacted request from
+ * crossing the exact configured input capacity.
+ */
+export function admitV3TokenizedProjections(input: {
+  readonly plan: V3LongContextPlan;
+  readonly capacity: ExactAgentModelContextCapacity;
+  readonly primary: {
+    readonly tokens: number;
+    readonly exact: boolean;
+    readonly tokenizer: string;
+  };
+  readonly recovery: {
+    readonly tokens: number;
+    readonly exact: boolean;
+    readonly tokenizer: string;
+  } | null;
+}): V3LongContextPlan {
+  assertCapacity(input.capacity);
+  assertTokenCount(input.primary);
+  if (input.recovery !== null) assertTokenCount(input.recovery);
+  if (
+    input.recovery !== null
+    && (
+      input.recovery.exact !== input.primary.exact
+      || input.recovery.tokenizer !== input.primary.tokenizer
+    )
+  ) throw new Error('agent_model_projection_tokenizer_mismatch');
+
+  const hardInputLimit = input.capacity.contextWindowTokens - input.capacity.maxOutputTokens;
+  if (hardInputLimit < 1) throw new Error('agent_model_context_capacity_invalid');
+  const primaryFits = input.primary.tokens <= hardInputLimit;
+  const recoveryFits = input.recovery !== null
+    && input.plan.overflowRecoveryMessages !== null
+    && input.recovery.tokens <= hardInputLimit;
+  if (!primaryFits && !recoveryFits) {
+    throw new Error('agent_model_tokenized_projection_exceeds_capacity');
+  }
+
+  const promoteRecovery = !primaryFits;
+  const retainRecovery = !promoteRecovery && recoveryFits;
+  const selectedMessages = promoteRecovery
+    ? input.plan.overflowRecoveryMessages!
+    : input.plan.primaryMessages;
+  const selectedCount = promoteRecovery ? input.recovery! : input.primary;
+  const context = input.plan.modelContext as Readonly<Record<string, AgentJsonValue>>;
+  const tokenMeter = context.tokenMeter as Readonly<Record<string, AgentJsonValue>>;
+  const selectedDigest = digestMessages(selectedMessages);
+
+  return {
+    ...input.plan,
+    primaryMessages: selectedMessages,
+    overflowRecoveryMessages: retainRecovery
+      ? input.plan.overflowRecoveryMessages
+      : null,
+    primaryMeteredTokens: selectedCount.tokens,
+    overflowRecoveryMeteredTokens: retainRecovery ? input.recovery!.tokens : null,
+    modelContext: {
+      ...context,
+      primaryRequestDigest: selectedDigest,
+      overflowRecoveryRequestDigest: retainRecovery
+        ? digestMessages(input.plan.overflowRecoveryMessages!)
+        : null,
+      primaryEstimatedTokens: selectedCount.tokens,
+      overflowRecoveryEstimatedTokens: retainRecovery ? input.recovery!.tokens : null,
+      overflowRecoveryPrepared: retainRecovery,
+      projectionAdmission: promoteRecovery ? 'recovery_promoted' : 'primary_admitted',
+      tokenMeter: {
+        ...tokenMeter,
+        projectionTokenizer: selectedCount.tokenizer,
+        projectionTokenizerExact: selectedCount.exact,
+        primaryTokens: selectedCount.tokens,
+        overflowRecoveryTokens: retainRecovery ? input.recovery!.tokens : null,
+        hardInputLimitTokens: hardInputLimit
+      }
+    }
+  };
+}
+
+function assertTokenCount(value: {
+  readonly tokens: number;
+  readonly exact: boolean;
+  readonly tokenizer: string;
+}): void {
+  if (!Number.isSafeInteger(value.tokens) || value.tokens < 1 || value.tokenizer.length === 0) {
+    throw new Error('agent_model_token_count_invalid');
+  }
 }
 
 function nextSemanticSummaryBudget(current: number): number {

@@ -167,6 +167,33 @@ implements ExactAgentModelInferenceRuntime {
           })
     };
   }
+
+  public async countRequestTokens(
+    request: Parameters<ExactAgentModelInferenceRuntime['countRequestTokens']>[0]
+  ): ReturnType<ExactAgentModelInferenceRuntime['countRequestTokens']> {
+    if (request.binding.providerId !== LOCAL_AGENT_MODEL_PROVIDER_ID) {
+      return this.remote.countRequestTokens(request);
+    }
+    request.signal.throwIfAborted();
+    const client = this.localModels.clients().find(
+      (candidate) => candidate.name === request.binding.modelId
+    );
+    if (client === undefined) throw new Error('agent_local_model_tokenizer_binding_unavailable');
+    const counted = await client.tokenCounter.countRequest({
+      messages: toLocalModelMessages(request.messages),
+      tools: request.tools.map((tool) => ({
+        name: tool.providerToolName,
+        description: tool.description,
+        parameters: structuredClone(tool.inputSchema) as Record<string, unknown>
+      }))
+    });
+    request.signal.throwIfAborted();
+    return {
+      tokens: counted.tokens,
+      exact: counted.exact,
+      tokenizer: counted.tokenizer
+    };
+  }
 }
 
 function toLocalModelMessages(

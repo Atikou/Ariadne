@@ -85,9 +85,7 @@ Electron ask-user smoke 首次暴露了默认生产工厂漏接 protected Direct
 
 | 优先级 | 差距 | 当前表现 | 完成标准 |
 | --- | --- | --- | --- |
-| P0 | 当前已验证工作树尚未固化 | 本地 `main` 比 `origin/main` 超前 5 个提交，当前有 412 个 Git 状态路径；使用仓库固定 npm 11.13.0 时，`verify:source-snapshot` 只因工作树不干净而失败 | 按问题拆分提交；干净检出后 `verify:reproducible` 与 Electron 门禁复现 |
-| P1 | live-work 内核、Agent PTY 与恢复事实已统一，正式环境闭环仍未完成 | Pipe process、沙箱内 Agent PTY 与 Main PTY 已使用同一 registry；Agent 有通用 write/resize/signal 控制面；完成事件 durable inbox-first；Runtime 重启可从受保护 `process_start`/`terminal_start` 结果重建 `interrupted` 事实。旧第二进程表和幽灵 Scheduler contract 已删除 | 正式 Windows Sandbox PTY/signal 验收；Main PTY 强杀恢复；真实 Agent 窗口交互场景 |
-| P1 | 长上下文 spill、语义压缩与 Provider usage anchor 已完成，本地精确计量和真实验收仍缺 | 完整 Tool result 复用受保护 Effect payload；确定性因果摘要有 source/summary digest、角色与 Tool locator，且不执行隐藏模型调用；usage 与精确 request envelope、route/header 和 succeeded Attempt 绑定，下一 Turn 只应用同 header 的保守正向校准 | 缺 usage Provider 的逐模型本地 tokenizer；真实远程/本地模型跨重启验收；若未来增加模型摘要，须用独立 durable Attempt |
+| P1 | 长上下文逐 binding 计量与本地真实验收已完成，远程 live 仍受 credential 阻塞 | 完整 Tool result 复用受保护 Effect payload；确定性因果摘要有 source/summary digest、角色与 Tool locator；本地 llama.cpp/Transformers 使用实际 chat-template tokenizer，远程路由明确区分 BPE/conservative；source/primary/recovery 均重新计数并硬准入；真实本地模型已跨两个进程恢复历史、压缩并推理 | 配置 credential 后执行严格远程跨进程 gate；若未来增加模型摘要，须用独立 durable Attempt |
 | P1 | SubAgent ordinary/ACP 产品链已接入，批量与外部可续仍缺 | `one_shot`/`continuable` ordinary Child 与 fresh-process ACP one-shot 共用 Agent Control 权威；Provider 身份、隔离能力和配置摘要进入 schema v7/ledger 55、恢复扫描与 Projection。ACP 只收 cwd/委派目标，默认拒绝权限；即使配置 allow，也只有 trusted Child 冻结能力覆盖的 ToolKind 才放行。配置漂移、缺失 Provider 和伪造回执均 fail closed | 批量 Child；外部 continuable/reconnect；Codex/Claude/structured-report；真实重启/窗口和商业 Agent 场景 |
 | P1 | v3 LLM 请求/响应与图片合同已同构，私有 replay state 和附件回收仍缺 | exact 请求使用 `text/image/tool_call/tool_result`；图片先进入 Conversation 内容寻址存储，再按精确 Message owner 复核并临时序列化为 OpenAI/Anthropic 原生块；历史 Tool 输入按 committed digest 从受保护 Effect payload 恢复；输出使用 `text/reasoning/tool_call`，finish、脱敏 replay evidence 与互斥 cache usage 随精确 Attempt 提交 | 可用的 adapter-private replay state；引用感知附件 GC；真实远程 Provider 图片验收；若提供缩略图字节，必须保持 owner-scoped |
 | P1 | Conversation 基础生命周期已持久，fork 与查询产品仍缺 | title/archive/restore 已进入版本化命令、不可变 Session version/event、Public Projection 和真实 Renderer；旧本地 title/archive 会迁移丢弃，pin/unread 保留设备级。仍没有 durable fork/lineage、全文检索或 bounded event query | fork 记录稳定 Turn 边界与 lineage；查询使用独立可重建索引并记录已观察的权威版本；补跨重启/多窗口和大历史验收 |
@@ -114,11 +112,7 @@ Agent Tool 契约也已拆清：`workspace.process_start` 与 `workspace.termina
 
 `AgentLiveWorkService.onDone()` 现在绑定到 `AgentLiveWorkCompletionInboxBridge`：终态被编码为 `source.kind=live_work` 的系统输入，先由 Agent UoW 提交，再唤醒 work scheduler 和 projection；投递成功后才把 registry notification 标为 reported，避免 `job_list` 重复提醒。关机由独立 completion lifecycle 执行 close/join → sink drain → unbind，之后才允许 Store freeze。系统通知在模型上下文和公开交互记录中保持 `system` 角色，不能被用户编辑/删除。
 
-因此“三套生命周期”“Agent 只能一次性 pipe 调用”和“完成后无法自动继续”的根因已被替换，但产品闭环还剩三项，而不能把本节标记为完全完成：
-
-1. Host backend 的真实 node-pty write/resize/interrupt/kill 集成已通过，但正式 Windows Sandbox helper/restricted-account 路径尚缺同等级验收，不能用 Host 结果代替安全结论。
-2. `interrupt/terminate/kill` 由沙箱内 PTY worker 转换为前台终端动作；尚缺 native helper 对 foreground process-group 身份和信号效果的独立证明。
-3. live work handle 有意是进程内事实；Agent process/terminal 已能在 Runtime 重启时从受保护 Effect 结果收敛为 durable `interrupted`，但 Main PTY 的 Electron 强杀恢复尚未形成持久事实。旧 Background contracts/output matcher 已删除；Notifications 已迁至独立目录且不拥有进程。
+因此“三套生命周期”“Agent 只能一次性 pipe 调用”和“完成后无法自动继续”的根因已被替换。Windows Sandbox runner 的协议现在正式包含 `interrupt/terminate/kill`；Runner smoke 不只验证帧，还真实终止一个长运行 PowerShell Job。Main Terminal 使用 Main-only 原子 JSON journal，只保存 session 元数据，不保存命令/输出；前一 Main 的 `running` 在新进程初始化时收敛为 `interrupted/main_process_lost`。真实 Electron 强杀/重启场景验证了恢复提示、禁止自动重放、显式 restart 和 `restartOf` lineage。
 
 deepseek-harness 值得参考的是 backend/service/consumer 分离、精确 owner、exclusive send、bounded scrollback，以及 Job registry 先提交终态再发完成通知；Ariadne 没有引入 Cordis，也没有把不可恢复的 OS handle 伪装成可跨重启恢复。
 
@@ -128,8 +122,8 @@ deepseek-harness 值得参考的是 backend/service/consumer 分离、精确 own
 - 一个 owner 同时只能有有界数量的 live work，关闭 owner 会 await quiescence；
 - `read` 使用稳定 consuming cursor，截断有显式证据；
 - 完成事件先持久提交为系统 inbox，再唤醒 scheduler/projection，且关机先排空通知再冻结 Store；
-- `signal` 只作用于 owner 校验通过且声明 signal capability 的 Job；正式 Windows Sandbox 还需验证前台 process-group 效果；
-- Runtime 强杀后的 Agent process/terminal 已由 durable system inbox/Public Projection 明确显示 interrupted；Main PTY 的 Electron 强杀恢复仍需等价验收；
+- `signal` 只作用于 owner 校验通过且声明 signal capability 的 Job；native runner 的 signal frame 与真实终止效果均有 smoke 证据；
+- Runtime 强杀后的 Agent process/terminal 由 durable system inbox/Public Projection 显示 interrupted；Main PTY 强杀则由 Main journal/真实窗口显示 `main_process_lost`，二者都不伪装为 OS handle 可恢复；
 - `BackgroundTaskManager/background_shell_start` 与 `background_completed` 已删除，后台触发不再拥有第二套进程表或幽灵事件契约。
 
 ### 4.2 Capability Manifest service dependency resolver 已完成
@@ -150,7 +144,7 @@ Provider token authority 也已进入同一权威链。OpenAI-compatible 的 usa
 
 digest-only omission manifest 已被替换。当前 `ariadne.semantic-context-compaction.v1` 以纯函数读取被压缩的结构化消息，按原因果顺序生成普通 `user` 历史检查点：区分 user intent、assistant outcome、image reference 与 Tool exchange；Tool 项保留输入/结果 digest、有界 synopsis、状态、effectId 和原 payload locator。完整 source digest、选中输出 digest、源/选中/省略计数与字符数进入 `inference_started` modelContext，并已验证 SQLite reopen。相同输入与预算逐字节相同，内容漂移改变 digest；primary/recovery 预算单调缩小，旧测试中靠空 manifest 制造的伪 recovery 已删除。
 
-这里没有照搬隐藏的摘要模型调用。`AgentEngine.prepare` 仍禁止 Provider I/O；否则摘要请求没有 Attempt、usage、取消和崩溃恢复身份。当前缺口收敛为：没有完整 usage 的 Provider 仍依赖保守 UTF-8 估算，尚无逐模型本地 tokenizer；真实远程/本地模型长上下文仍未验收。未来若需要模型生成的抽象摘要，必须先建立独立持久工作边界，而不是在 prepare 内补调用。
+这里没有照搬隐藏的摘要模型调用。`AgentEngine.prepare` 仍禁止 Provider inference；route tokenizer 只做本地、无生成的确定性计数。嵌入式模型复用实际 llama.cpp/Transformers tokenizer；OpenAI 路由使用模型族对应的本地 BPE 但因 wire template 仍标为 conservative，其他专有协议也不伪称精确。source 规划后，primary/recovery 再由同一路由计数并对硬输入上限准入。真实本地 Qwen 3.5 已在两个独立 Node 进程中完成 6,819-token 源上下文、压缩和第二次推理；远程 live gate 因本机无 Provider credential 明确失败，仍未验收。未来若需要模型生成的抽象摘要，必须先建立独立持久工作边界，而不是在 prepare 内补调用。
 
 真实 Provider 尚未验收是否稳定返回声明格式的 usage，因此这一项只能称为生产接线完成，不能称为 Live Provider 验收完成。
 
@@ -288,17 +282,14 @@ Runtime command journal 与 Agent inbox 仍是唯一 delivery/执行权威。确
 
 ## 6. 建议实施顺序
 
-1. 先把当前通过门禁的工作树按问题拆分提交，干净检出复跑 `verify:reproducible`；保留现有五处 Runtime 强杀、Renderer reload、完整桌面重启和脱敏失败证据门禁，并增加重复运行 soak。
-2. 为现有 Agent PTY 补正式 Windows Sandbox/signal 验收，再完成 Main PTY 强杀恢复与真实窗口场景。
-3. 在已完成的 scoped Skill snapshot、固定 package 资源、model/user policy 和可信 Hook Provider lifecycle 上补不激活 Agent 的人类命令 consumer；除非有明确产品需求，不开放外部动态 Hook 包发现。
-4. 在已完成的 exact request/response/image content blocks 与 Electron 图片 smoke 上补 adapter-private replay state，并为现有内容寻址 AttachmentStore 增加引用感知 GC 与真实远程 Provider 验收；不要复用旧 ResourceRegistry 形成第二条多模态权威。
-5. 在已完成的 title/archive/restore 权威上增加稳定边界 fork/lineage、Session reference，再建设可重建的 Session query/index；置顶与未读继续保留为设备偏好。
-6. 在已完成的版本化原子文件 service 和 contract-pinned kind/label 上补受保护结果驱动的 read/search/diff/terminal 详情、LSP Provider 与 move/delete；所有变更继续复用同一 freshness/result owner，不复活旧 Tool registry。
-7. 为缺 usage Provider 补逐模型 tokenizer，并为现有 protected Effect spill/usage-anchor/因果语义 compaction 增加真实模型验收；若引入模型摘要，先建立独立 durable Attempt，不另建存储权威。
-8. 在现有 continuable Child control plane 上补外部 continuable/reconnect、Codex/Claude Provider 和真实 Electron 场景；durable ask-user 再补自由文本窗口、真实商业 Provider 与取消等待语义；之后评估 Goal/Todo/Workflow 的产品优先级。
-9. 将旧 unattended Scheduler/Orchestrator 迁移为向原 Session 投递普通 v3 Turn 的 durable Schedule，完成后删除第二套 scheduled Run/notification 语义。
-10. 统一 credential reference/resolve/describe/authorization seam；ACP 凭据仍默认隔离。
-11. 继续拆 UoW/Factory 热点、删除无生产引用旧链路并下调门禁阈值。
+1. 在已完成的 scoped Skill snapshot、固定 package 资源、model/user policy 和可信 Hook Provider lifecycle 上补不激活 Agent 的人类命令 consumer；除非有明确产品需求，不开放外部动态 Hook 包发现。
+2. 在已完成的 exact request/response/image content blocks 与 Electron 图片 smoke 上补 adapter-private replay state，并为现有内容寻址 AttachmentStore 增加引用感知 GC 与真实远程 Provider 验收；不要复用旧 ResourceRegistry 形成第二条多模态权威。
+3. 在已完成的 title/archive/restore 权威上增加稳定边界 fork/lineage、Session reference，再建设可重建的 Session query/index；置顶与未读继续保留为设备偏好。
+4. 在已完成的版本化原子文件 service 和 contract-pinned kind/label 上补受保护结果驱动的 read/search/diff/terminal 详情、LSP Provider 与 move/delete；所有变更继续复用同一 freshness/result owner，不复活旧 Tool registry。
+5. 在现有 continuable Child control plane 上补外部 continuable/reconnect、Codex/Claude Provider 和真实 Electron 场景；durable ask-user 再补自由文本窗口、真实商业 Provider 与取消等待语义；之后完成 Goal/Todo/Workflow 产品闭环。
+6. 将旧 unattended Scheduler/Orchestrator 迁移为向原 Session 投递普通 v3 Turn 的 durable Schedule，完成后删除第二套 scheduled Run/notification 语义。
+7. 统一 credential reference/resolve/describe/authorization seam；ACP 凭据仍默认隔离。
+8. 继续拆 UoW/Factory 热点、删除无生产引用旧链路并下调门禁阈值。
 
 ## 7. 统一完成定义
 

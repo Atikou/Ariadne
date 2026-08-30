@@ -41,6 +41,7 @@ import type {
   ExactAgentModelInferenceToolContract
 } from '../../control/ports/AgentModelInference.js';
 import {
+  admitV3TokenizedProjections,
   estimateMessagesTokens,
   planV3LongContext,
   type V3LongContextPlan,
@@ -189,13 +190,40 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
         providerTools
       );
       const usageBaseline = findUsageBaseline(input, requestHeaderDigest);
-      context = planV3LongContext({
+      const sourceTokenCount = await this.models.countRequestTokens({
+        binding: { ...input.run.binding.model },
+        messages: [...pinnedMessages, ...grouped.groups.flatMap((group) => group.messages)],
+        tools: providerTools,
+        signal
+      });
+      const planned = planV3LongContext({
         pinnedMessages,
         groups: grouped.groups,
         capacity,
         requestHeaderDigest,
         fixedOverheadTokens,
+        sourceTokenCount,
         ...(usageBaseline === undefined ? {} : { usageBaseline })
+      });
+      const primaryTokenCount = await this.models.countRequestTokens({
+        binding: { ...input.run.binding.model },
+        messages: planned.primaryMessages,
+        tools: providerTools,
+        signal
+      });
+      const recoveryTokenCount = planned.overflowRecoveryMessages === null
+        ? null
+        : await this.models.countRequestTokens({
+            binding: { ...input.run.binding.model },
+            messages: planned.overflowRecoveryMessages,
+            tools: providerTools,
+            signal
+          });
+      context = admitV3TokenizedProjections({
+        plan: planned,
+        capacity,
+        primary: primaryTokenCount,
+        recovery: recoveryTokenCount
       });
       assertPreparedModelRequest(
         input.run.binding.model.modelId,
@@ -293,7 +321,7 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
     };
     const primaryChunkObserver = createChunkObserver();
     let requestMessages = context.primaryMessages;
-    let heuristicInputTokens = context.primaryHeuristicTokens;
+    let meteredInputTokens = context.primaryMeteredTokens;
     let response = await this.models.inferExact({
       binding: { ...binding },
       messages: requestMessages,
@@ -312,7 +340,7 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
       }
       signal.throwIfAborted();
       requestMessages = context.overflowRecoveryMessages;
-      heuristicInputTokens = context.overflowRecoveryHeuristicTokens!;
+      meteredInputTokens = context.overflowRecoveryMeteredTokens!;
       const recoveryChunkObserver = createChunkObserver();
       response = await this.models.inferExact({
         binding: { ...binding },
@@ -391,7 +419,7 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
                 settingsRevision: binding.settingsRevision,
                 requestHeaderDigest: context.requestHeaderDigest,
                 requestEnvelopeDigest: response.replay.requestEnvelopeDigest,
-                estimatedInputTokens: heuristicInputTokens,
+                estimatedInputTokens: meteredInputTokens,
                 inputTokens: response.usage.inputTokens,
                 outputTokens: response.usage.outputTokens,
                 ...(response.usage.cacheReadInputTokens === undefined

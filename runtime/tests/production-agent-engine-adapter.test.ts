@@ -25,6 +25,7 @@ import type {
 } from '../src/control/ports/AgentModelInference.js';
 import { SqlitePublicProjectionStore } from '../src/adapters/persistence/SqlitePublicProjectionStore.js';
 import { InferenceStreamPublicProjectionPublisher } from '../src/projection/InferenceStreamPublicProjectionPublisher.js';
+import { estimateMessagesTokens } from '../src/adapters/model/V3LongContextLifecycle.js';
 
 const PROTOCOL = 'ariadne.agent-directive.v3';
 
@@ -1428,6 +1429,19 @@ function exactInferenceGateway(
 } {
   return {
     inferExact: vi.fn(infer),
+    countRequestTokens: vi.fn(async (request) => ({
+      tokens: estimateMessagesTokens([
+        ...request.messages,
+        ...(request.tools.length === 0
+          ? []
+          : [{
+              role: 'system' as const,
+              content: [{ type: 'text' as const, text: JSON.stringify({ tools: request.tools }) }]
+            }])
+      ]),
+      exact: false,
+      tokenizer: 'fixture:conservative'
+    })),
     hasExactBinding: () => true,
     resolveBinding: () => null,
     describeContextCapacity: () => ({ ...capacity })

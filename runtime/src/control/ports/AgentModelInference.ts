@@ -94,6 +94,19 @@ export interface ExactAgentModelContextCapacity {
   readonly maxOutputTokens: number;
 }
 
+export interface ExactAgentModelTokenCount {
+  readonly tokens: number;
+  readonly exact: boolean;
+  readonly tokenizer: string;
+}
+
+export interface CountExactAgentModelRequestTokens {
+  readonly binding: AgentRunBinding['model'];
+  readonly messages: readonly ExactAgentModelInferenceMessage[];
+  readonly tools: readonly ExactAgentModelInferenceToolContract[];
+  readonly signal: AbortSignal;
+}
+
 export type ExactAgentModelInferenceResult =
   | {
       readonly status: 'completed';
@@ -141,6 +154,10 @@ extends ExactAgentModelInferenceGateway {
   describeContextCapacity(
     binding: AgentRunBinding['model']
   ): ExactAgentModelContextCapacity | null;
+
+  countRequestTokens(
+    request: CountExactAgentModelRequestTokens
+  ): Promise<ExactAgentModelTokenCount>;
 }
 
 export interface AgentModelSelectionPreference {

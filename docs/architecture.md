@@ -109,7 +109,7 @@ Renderer 的写操作只使用 v3 Session lifecycle/Message、Decision、Cancel 
 | Workspace、first-party Tools、Browser、经授权 MCP | 已进入 Tool Catalog；真实端到端验收仍不完整 |
 | Skills | 静态 Provider 按 Workspace 生成可取消 complete/incomplete snapshot；瞬时失败使用 last-good，权威缺失清除它；package revision 覆盖正文与有界资源，model/user policy 进入 invocation-neutral snapshot；正文与资源只经 admission-pinned `skill.load` / `skill.resource.read` 进入 protected continuation |
 | Hooks | 8 个 typed lifecycle extension point 由 Manifest-owned 静态可信 Provider service 管理；pre 可拒绝、admission 只能收窄，post observer-only；handler set 与 Provider 按反向顺序关闭 |
-| Context | Conversation 历史、压力压缩、复用 protected Effect payload 的可恢复 Tool result spill、request-envelope-bound Provider usage anchor、overflow recovery 已进入 v3；缺 usage Provider 的本地 tokenizer、semantic compaction 与 Live Provider 验收未完成 |
+| Context | Conversation 历史、确定性 semantic compaction、protected Effect result spill、usage anchor、逐 binding tokenizer、最终投影硬准入和 overflow recovery 已进入 v3；真实本地 llama.cpp 跨进程长上下文验收已通过，远程 Live Provider 仍待有 credential 的环境执行 |
 | Memory/Embedding | 有旧实现和测试，但没有完整 v3 生产 consumer |
 | SubAgent | one-shot/continuable ordinary Child Run、list/status/send/interrupt、冻结 execution Provider seam 与 fresh-process ACP one-shot adapter 已接入；外部 continuable/Codex/Claude 尚未接入 |
 | Scheduler | 有旧 cron/interval/file/git 模块基础，没有 v3 产品闭环；旧 Background process/trigger contract 已删除 |
@@ -126,6 +126,7 @@ Runtime status 只读取 bootstrap 冻结 Manifest 中已成功启动 Provider �
 - Agent live-work 完成由专用 bridge 转成 `source.kind=live_work` 的系统 inbox 输入；只有 UoW 提交成功后才唤醒 work scheduler 与 Public Projection。关机 barrier 在 Store freeze 前 close/join live work 并排空 completion sink。
 - Agent 主动提问由 `ask_user` Directive 进入 Agent Control：受保护问题载荷、`waiting/user_question` Decision、公开脱敏展示、回答 action 和 `user_question_answer` inbox receipt 构成同一持久链路；Renderer 不持有等待 Promise，也不能绕过 Decision token 直接恢复 Run。
 - Runtime 启动恢复不依赖已丢失的 registry：它在 scheduler 启动前扫描活跃 Run 的受保护成功 `workspace.process_start`/`workspace.terminal_start` Effect 结果，把仍声明 `running` 且没有终态 inbox 事实的 Job 幂等收敛为 `interrupted`。旧 handle/output 不会被伪装为可恢复资源。
+- Main Terminal 的原子元数据 journal 同样不保存命令或输出；Main 强杀后的旧 `running` 会在下一进程启动时收敛为 `interrupted/main_process_lost`。Renderer 公开恢复提示与显式 restart，新的 session 记录 `restartOf`，禁止自动重放。
 - Startup recovery 是 readiness 屏障；未完成恢复时不接受普通命令。
 - Shutdown 先拒绝新命令、停止并 join producer/scheduler、排空投影，再冻结和释放 Store owner fence。
 - Renderer 不接收密钥、PID、端口、绝对路径或内部异常对象。

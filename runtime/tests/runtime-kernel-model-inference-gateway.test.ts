@@ -25,6 +25,14 @@ describe('RuntimeKernelModelInferenceGateway', () => {
     const client = {
       name: 'local-exact',
       contextWindowTokens: 32_768,
+      tokenCounter: {
+        countRequest: vi.fn(async () => ({
+          tokens: 42,
+          exact: true,
+          method: 'model_tokenizer' as const,
+          tokenizer: 'llama.cpp:local-exact'
+        }))
+      },
       chat
     };
     const localModels = {
@@ -32,6 +40,7 @@ describe('RuntimeKernelModelInferenceGateway', () => {
     } as unknown as LocalModelService;
     const remote: ExactAgentModelInferenceRuntime = {
       inferExact: async () => ({ status: 'binding_unavailable' }),
+      countRequestTokens: async () => ({ tokens: 1, exact: false, tokenizer: 'remote' }),
       hasExactBinding: () => false,
       resolveBinding: () => null,
       describeContextCapacity: () => null
@@ -77,6 +86,11 @@ describe('RuntimeKernelModelInferenceGateway', () => {
       }],
       signal: new AbortController().signal
     };
+    await expect(gateway.countRequestTokens(request)).resolves.toEqual({
+      tokens: 42,
+      exact: true,
+      tokenizer: 'llama.cpp:local-exact'
+    });
 
     await expect(gateway.inferExact(request)).resolves.toMatchObject({
       status: 'completed',

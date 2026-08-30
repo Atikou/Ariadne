@@ -130,6 +130,26 @@ describe('ProductionExactAgentModelInferenceGateway', () => {
     });
   });
 
+  it('counts an OpenAI route with its model-local BPE without claiming wire exactness', async () => {
+    const gateway = gatewayFixture({
+      providers: [provider({ providerId: 'openai', model: 'gpt-5-mini' })],
+      modelId: 'gpt-5-mini',
+      authorityProviderId: 'openai'
+    });
+
+    const counted = await gateway.countRequestTokens({
+      ...request({ providerId: 'openai', modelId: 'gpt-5-mini' }),
+      messages: [textMessage('user', 'A route-bound tokenizer must be local and deterministic.')],
+      tools: []
+    });
+
+    expect(counted.tokens).toBeGreaterThan(1);
+    expect(counted).toMatchObject({
+      exact: false,
+      tokenizer: 'openai:gpt-5-mini:o200k_base:local-wire-conservative'
+    });
+  });
+
   it('serializes verified images into native OpenAI-compatible message content', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => jsonResponse({
       model: 'model-exact',
@@ -675,6 +695,7 @@ function gatewayFixture(overrides: {
   providers?: NonNullable<RuntimeBootstrap['modelProviders']>;
   environment?: Readonly<Record<string, string | undefined>>;
   modelId?: string;
+  authorityProviderId?: string;
   requestTimeoutMs?: number;
   resiliencePolicy?: RuntimeBootstrap['runtimePolicy']['providerResilience'];
   resilienceDependencies?: NonNullable<
@@ -686,7 +707,10 @@ function gatewayFixture(overrides: {
 } = {}): ProductionExactAgentModelInferenceGateway {
   return new ProductionExactAgentModelInferenceGateway({
     modelProviders: overrides.providers ?? [provider()],
-    agentAdmissionAuthoritySource: authority(overrides.modelId ?? 'model-exact'),
+    agentAdmissionAuthoritySource: authority(
+      overrides.modelId ?? 'model-exact',
+      overrides.authorityProviderId ?? 'provider-exact'
+    ),
     credentialEnvironment: overrides.environment ?? { EXACT_KEY: SECRET },
     resiliencePolicy: overrides.resiliencePolicy
       ?? createDefaultRuntimePolicySnapshot().providerResilience,
@@ -722,7 +746,10 @@ function provider(
   };
 }
 
-function authority(modelId: string): RuntimeBootstrap['agentAdmissionAuthoritySource'] {
+function authority(
+  modelId: string,
+  providerId = 'provider-exact'
+): RuntimeBootstrap['agentAdmissionAuthoritySource'] {
   return {
     sourceVersion: 1,
     status: 'enabled',
@@ -738,7 +765,7 @@ function authority(modelId: string): RuntimeBootstrap['agentAdmissionAuthoritySo
         scopeIds: ['workspace-1']
       },
       model: {
-        providerId: 'provider-exact',
+        providerId,
         modelId,
         settingsRevision: 7
       },

@@ -18,6 +18,7 @@ import type {
   ExactAgentModelInferenceResult,
   ExactAgentModelInferenceToolContract
 } from '../../control/ports/AgentModelInference.js';
+import { countRemoteRequestTokens } from './PerModelLocalTokenCounter.js';
 import { readExactAgentProviderStream } from './readExactAgentProviderStream.js';
 import { estimateMessagesTokens } from './V3LongContextLifecycle.js';
 import {
@@ -197,6 +198,29 @@ implements ExactAgentModelInferenceRuntime {
       ),
       classify: classifyExactFailure
     });
+  }
+
+  public async countRequestTokens(
+    request: Parameters<ExactAgentModelInferenceRuntime['countRequestTokens']>[0]
+  ): ReturnType<ExactAgentModelInferenceRuntime['countRequestTokens']> {
+    request.signal.throwIfAborted();
+    const binding = this.bindings.get(bindingKey(
+      request.binding.providerId,
+      request.binding.modelId,
+      request.binding.settingsRevision
+    ));
+    if (binding === undefined) throw new Error('agent_model_tokenizer_binding_unavailable');
+    const result = countRemoteRequestTokens({
+      providerId: binding.providerId,
+      modelId: binding.modelId,
+      protocol: binding.protocol,
+      messages: validateMessages(request.messages, new Set(
+        request.tools.map((tool) => tool.providerToolName)
+      )),
+      tools: validateTools(request.tools)
+    });
+    request.signal.throwIfAborted();
+    return result;
   }
 
   private async inferBindingAttempt(

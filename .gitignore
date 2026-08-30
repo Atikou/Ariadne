@@ -3,6 +3,7 @@ out/
 dist/
 Models/
 runtime/.runtime/
+runtime/data/
 packaging/runtime/node_modules/
 app/.runtime-package/
 runtime/native/**/bin/

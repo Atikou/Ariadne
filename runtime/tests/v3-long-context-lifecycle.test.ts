@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  admitV3TokenizedProjections,
   planV3LongContext,
   type V3ModelContextGroup
 } from '../src/adapters/model/V3LongContextLifecycle.js';
@@ -8,6 +9,71 @@ import {
 const HEADER_DIGEST = `sha256:${'a'.repeat(64)}`;
 
 describe('v3 long-context token authority', () => {
+  it('records a route-bound exact source tokenizer and final projection admission', () => {
+    const planned = planV3LongContext({
+      pinnedMessages: [textMessage('system', 'fixed protocol')],
+      groups: [{ kind: 'conversation', messages: [textMessage('user', 'objective')] }],
+      capacity: { contextWindowTokens: 8_192, maxOutputTokens: 1_024 },
+      requestHeaderDigest: HEADER_DIGEST,
+      sourceTokenCount: {
+        tokens: 321,
+        exact: true,
+        tokenizer: 'embedded:model-a:llama.cpp'
+      }
+    });
+    const admitted = admitV3TokenizedProjections({
+      plan: planned,
+      capacity: { contextWindowTokens: 8_192, maxOutputTokens: 1_024 },
+      primary: { tokens: 123, exact: true, tokenizer: 'embedded:model-a:llama.cpp' },
+      recovery: planned.overflowRecoveryMessages === null
+        ? null
+        : { tokens: 80, exact: true, tokenizer: 'embedded:model-a:llama.cpp' }
+    });
+
+    expect(admitted.modelContext).toMatchObject({
+      sourceEstimatedTokens: 321,
+      primaryEstimatedTokens: 123,
+      projectionAdmission: 'primary_admitted',
+      tokenMeter: {
+        baseline: 'local_tokenizer',
+        tokenizer: 'embedded:model-a:llama.cpp',
+        tokenizerExact: true,
+        projectionTokenizer: 'embedded:model-a:llama.cpp',
+        projectionTokenizerExact: true,
+        primaryTokens: 123,
+        hardInputLimitTokens: 7_168
+      }
+    });
+  });
+
+  it('promotes only a tokenized recovery that fits the hard input limit', () => {
+    const plan = planV3LongContext({
+      pinnedMessages: [textMessage('system', 'fixed protocol')],
+      groups: Array.from({ length: 20 }, (_, index) => ({
+        kind: 'conversation' as const,
+        messages: [textMessage('user', `${String(index)}:${'x'.repeat(800)}`)]
+      })),
+      capacity: { contextWindowTokens: 8_192, maxOutputTokens: 1_024 },
+      requestHeaderDigest: HEADER_DIGEST,
+      sourceTokenCount: { tokens: 10_000, exact: true, tokenizer: 'embedded:test' }
+    });
+    expect(plan.overflowRecoveryMessages).not.toBeNull();
+
+    const admitted = admitV3TokenizedProjections({
+      plan,
+      capacity: { contextWindowTokens: 8_192, maxOutputTokens: 1_024 },
+      primary: { tokens: 7_500, exact: true, tokenizer: 'embedded:test' },
+      recovery: { tokens: 4_000, exact: true, tokenizer: 'embedded:test' }
+    });
+
+    expect(admitted.primaryMessages).toEqual(plan.overflowRecoveryMessages);
+    expect(admitted.overflowRecoveryMessages).toBeNull();
+    expect(admitted.modelContext).toMatchObject({
+      projectionAdmission: 'recovery_promoted',
+      primaryEstimatedTokens: 4_000,
+      overflowRecoveryPrepared: false
+    });
+  });
   it('records the exact semantic compaction input and output evidence', () => {
     const planned = planV3LongContext({
       pinnedMessages: [textMessage('system', 'fixed protocol')],
