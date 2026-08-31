@@ -205,7 +205,22 @@ async function restoreLayout(api: DockviewApi, registry: ModuleRegistry): Promis
 }
 
 function addDefaultLayout(api: DockviewApi, registry: ModuleRegistry): void {
-  for (const definition of registry.list().filter((module) => module.defaultOpen)) addModulePanel(api, definition);
+  const pending = new Map(registry.list()
+    .filter((module) => module.defaultOpen)
+    .map((definition) => [definition.id, definition]));
+  while (pending.size > 0) {
+    const ready = [...pending.values()].filter((definition) => {
+      const reference = definition.defaultPlacement.referenceModuleId;
+      return reference === undefined || api.getPanel(reference) !== undefined;
+    });
+    if (ready.length === 0) {
+      throw new Error(`ui_default_layout_dependency_unresolved:${[...pending.keys()].sort().join(',')}`);
+    }
+    for (const definition of ready) {
+      addModulePanel(api, definition);
+      pending.delete(definition.id);
+    }
+  }
   api.getEdgeGroup('bottom')?.expand();
   for (const definition of registry.list()
     .filter((module) => module.defaultOpen && module.defaultActivationOrder !== undefined)

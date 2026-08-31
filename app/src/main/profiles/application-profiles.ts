@@ -1,9 +1,9 @@
 import type { ApplicationProfileDefinition } from '@shared/application-profile';
 import {
-  DEFAULT_SPEECH_COMPONENT_IDS,
   NO_SPEECH_COMPONENT_IDS,
   SPEECH_COMPONENT_IDS
-} from '../speech/entity/speech-components';
+} from '../speech/entity/speech-component-ids';
+import { speechComponentDefinitions } from '../speech/entity/SpeechComponentCatalog.generated';
 
 const UI_COMPONENT_IDS = Object.freeze([
   'agent.plan', 'agent.status', 'chat.main', 'files.explorer', 'logs',
@@ -11,7 +11,10 @@ const UI_COMPONENT_IDS = Object.freeze([
   'terminal', 'tools.output', 'runtime.health'
 ]);
 
-export const DESKTOP_DEFAULT_PROFILE = profile('desktop-default', DEFAULT_SPEECH_COMPONENT_IDS);
+export const DESKTOP_DEFAULT_PROFILE = profile(
+  'desktop-default',
+  speechComponentDefinitions().map((definition) => definition.id)
+);
 export const DESKTOP_NO_SPEECH_PROFILE = profile('desktop-no-speech', NO_SPEECH_COMPONENT_IDS);
 export const DESKTOP_STT_ONLY_PROFILE = profile('desktop-stt-only', [
   SPEECH_COMPONENT_IDS.core,

@@ -5,7 +5,7 @@ import { compileSpeechEntity } from '../src/main/speech/entity/speech-entity-com
 import {
   NO_SPEECH_COMPONENT_IDS,
   SPEECH_COMPONENT_IDS
-} from '../src/main/speech/entity/speech-components';
+} from '../src/main/speech/entity/speech-component-ids';
 
 describe('Speech Entity compiler', () => {
   it('builds a process-free no-speech entity', async () => {

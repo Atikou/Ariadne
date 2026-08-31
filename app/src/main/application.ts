@@ -258,7 +258,7 @@ export class ApplicationController {
       speech: this.speech,
       getApplicationProfile: () => {
         if (!this.applicationProfile) throw new Error('application_profile_not_compiled');
-        return this.applicationProfile;
+        return JSON.parse(JSON.stringify(this.applicationProfile)) as ApplicationProfileView;
       },
       activateSpeechVoice: (request) => this.activateSpeechVoice(request),
       mainWindow: this.mainWindow,

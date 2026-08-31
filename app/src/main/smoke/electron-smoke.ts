@@ -135,6 +135,9 @@ export async function runElectronSmokeTest(
   outputRoot: string
 ): Promise<boolean> {
   if (!isAbsolute(outputRoot)) throw new Error('ARIADNE_SMOKE_TEST_OUTPUT must be absolute.');
+  if (process.env.ARIADNE_SMOKE_PROFILE_VERIFY === '1') {
+    return verifyApplicationProfileWindow(window, outputRoot);
+  }
   const providerBaseUrl = requireSmokeEnvironment('ARIADNE_SMOKE_PROVIDER_BASE_URL');
   const providerModel = requireSmokeEnvironment('ARIADNE_SMOKE_PROVIDER_MODEL');
   const providerStatePath = requireSmokeEnvironment('ARIADNE_SMOKE_PROVIDER_STATE');
@@ -1191,6 +1194,103 @@ export async function runElectronSmokeTest(
     window.hide();
     if (process.env.ARIADNE_SMOKE_FORCE_MAIN_CRASH_AFTER_RESULT !== '1') app.quit();
   }
+}
+
+async function verifyApplicationProfileWindow(
+  window: BrowserWindow,
+  outputRoot: string
+): Promise<boolean> {
+  await mkdir(outputRoot, { recursive: true });
+  if (window.webContents.isLoading()) await waitForLoad(window);
+  window.setSkipTaskbar(true);
+  window.setPosition(-10_000, -10_000, false);
+  window.showInactive();
+  const consoleMessages: string[] = [];
+  const onConsoleMessage = (
+    _event: Electron.Event<Electron.WebContentsConsoleMessageEventParams>,
+    level: number,
+    message: string
+  ): void => {
+    if (level >= 2) consoleMessages.push(message.slice(0, 1_024));
+  };
+  window.webContents.on('console-message', onConsoleMessage);
+  const expectedProfile = process.env.ARIADNE_APPLICATION_PROFILE ?? 'desktop-default';
+  const observation = await window.webContents.executeJavaScript(`(async () => {
+    let step = 'profile';
+    try {
+    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const waitUntil = async (probe) => {
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline) {
+        const result = await probe();
+        if (result) return result;
+        await delay(50);
+      }
+      throw new Error('profile_window_timeout');
+    };
+    const profile = await window.ariadne.system.getApplicationProfile();
+    step = 'composer';
+    const chatButton = await waitUntil(() => document.querySelector('.activity-bar button[aria-label="对话"]'));
+    chatButton.click();
+    const composer = await waitUntil(() => document.querySelector('[aria-label="消息输入框"]'));
+    step = 'settings';
+    const settingsButton = await waitUntil(() => document.querySelector('.activity-bar button[aria-label="设置"]'));
+    settingsButton.click();
+    await waitUntil(() => document.querySelector('.settings-navigation'));
+    const speechIds = profile.entities.find((entry) => entry.entity === 'speech').componentIds;
+    const mic = document.querySelector('.composer-mic-button');
+    const speechCategory = [...document.querySelectorAll('.settings-navigation-item')]
+      .some((item) => item.textContent?.includes('本地语音'));
+    return {
+      profileId: profile.id,
+      profileDigest: profile.digest,
+      entityDigestsValid: profile.entities.every((entry) => /^sha256:[a-f0-9]{64}$/.test(entry.digest)),
+      composerVisible: Boolean(composer),
+      micVisible: Boolean(mic),
+      speechCategoryVisible: speechCategory,
+      expectsStt: speechIds.includes('speech.stt'),
+      expectsSpeechUi: speechIds.some((id) => id !== 'speech.core')
+    };
+    } catch (error) {
+      return {
+        fatalError: error instanceof Error ? error.message : String(error),
+        step,
+        bodyText: document.body.innerText.slice(0, 4000)
+      };
+    }
+  })()`, true) as {
+    fatalError?: string;
+    step?: string;
+    bodyText?: string;
+    profileId: string;
+    profileDigest: string;
+    entityDigestsValid: boolean;
+    composerVisible: boolean;
+    micVisible: boolean;
+    speechCategoryVisible: boolean;
+    expectsStt: boolean;
+    expectsSpeechUi: boolean;
+  };
+  const screenshotPath = join(outputRoot, 'profile-window.png');
+  const screenshot = await window.webContents.capturePage();
+  await writeFile(screenshotPath, screenshot.toPNG());
+  const passed = observation.profileId === expectedProfile
+    && observation.fatalError === undefined
+    && /^sha256:[a-f0-9]{64}$/u.test(observation.profileDigest)
+    && observation.entityDigestsValid
+    && observation.composerVisible
+    && observation.micVisible === observation.expectsStt
+    && observation.speechCategoryVisible === observation.expectsSpeechUi;
+  await writeFile(join(outputRoot, 'profile-window.json'), JSON.stringify({
+    passed,
+    expectedProfile,
+    ...observation,
+    consoleMessages,
+    screenshot: screenshotPath,
+    completedAt: new Date().toISOString()
+  }, null, 2));
+  window.webContents.off('console-message', onConsoleMessage);
+  return passed;
 }
 
 async function verifyDeliveryRendererReload(
