@@ -26,7 +26,6 @@ import type {
 } from './ProductionAgentControlExecutionPipelineFactory.js';
 import { AgentInboxPublicCommandHandler } from './AgentInboxPublicCommandHandler.js';
 import { AgentSubagentInterruptPublicCommandHandler } from './AgentSubagentInterruptPublicCommandHandler.js';
-import { completedPublicError } from './AgentPublicCommandFailures.js';
 import { HumanSkillPublicCommandHandler } from './HumanSkillPublicCommandHandler.js';
 import type { HumanSkillCatalog } from '../control/ports/HumanSkillCatalog.js';
 import {
@@ -47,6 +46,10 @@ import {
   createAgentRunControlComponent,
   type AgentRunControlComponentHandle
 } from './agent-entity/components/run-control/AgentRunControlComponent.js';
+import {
+  createAgentToolResultDetailComponent,
+  type AgentToolResultDetailComponentHandle
+} from './agent-entity/components/tool-result-detail/AgentToolResultDetailComponent.js';
 
 export interface AgentControlPublicCommandRouterOptions {
   readonly authorizedWorkspaceIds?: readonly string[];
@@ -73,9 +76,9 @@ export interface AgentControlPublicCommandRouterCallbacks {
 export class AgentControlPublicCommandRouter {
   private readonly conversationComponent: AgentConversationComponentHandle;
   private readonly runControlComponent: AgentRunControlComponentHandle;
+  private readonly toolResultDetailComponent: AgentToolResultDetailComponentHandle;
   private readonly agentInbox: AgentInboxPublicCommandHandler;
   private readonly subagentInterrupt: AgentSubagentInterruptPublicCommandHandler;
-  private readonly authorizedWorkspaceIds: ReadonlySet<string>;
   private readonly humanSkills: HumanSkillPublicCommandHandler | undefined;
   private readonly productivity: ProductivityPublicCommandHandler | undefined;
   private readonly ownerTable: AgentPublicCommandOwnerTable;
@@ -104,6 +107,10 @@ export class AgentControlPublicCommandRouter {
       wakeProjectionDrain: callbacks.wakeProjectionDrain,
       decisionCommandNow: options.agentDecisionCommandNow
     });
+    this.toolResultDetailComponent = createAgentToolResultDetailComponent({
+      executionPipeline,
+      authorizedWorkspaceIds: options.authorizedWorkspaceIds
+    });
     this.agentInbox = new AgentInboxPublicCommandHandler(unitOfWork, {
       wakeWorkScheduler: () => this.executionPipeline?.runWorkScheduler.wake(),
       wakeProjectionDrain: callbacks.wakeProjectionDrain
@@ -113,7 +120,6 @@ export class AgentControlPublicCommandRouter {
       executionPipeline,
       callbacks.wakeProjectionDrain
     );
-    this.authorizedWorkspaceIds = new Set(options.authorizedWorkspaceIds ?? []);
     this.humanSkills = options.humanSkillCatalog === undefined
       ? undefined
       : new HumanSkillPublicCommandHandler(
@@ -131,13 +137,11 @@ export class AgentControlPublicCommandRouter {
       createAgentPublicCommandOwners({
         conversation: this.conversationComponent,
         runControl: this.runControlComponent,
+        toolResultDetail: this.toolResultDetailComponent,
         agentInbox: this.agentInbox,
         subagentInterrupt: this.subagentInterrupt,
         humanSkills: this.humanSkills,
         productivity: this.productivity,
-        executeToolResultDetail: (envelope, command) => (
-          this.executeToolResultDetail(envelope, command)
-        ),
         executeProjectionCommand: (envelope) => this.executeProjectionCommand(envelope),
         reconcileConversation: (envelope, invalidErrorCode) => (
           this.conversationComponent.reconcileCommitted(
@@ -198,74 +202,6 @@ export class AgentControlPublicCommandRouter {
       }));
     }
     throw new Error('agent_command_owner_kind_mismatch:projection.query');
-  }
-
-  private async executeToolResultDetail(
-    envelope: RuntimeCommandEnvelope,
-    command: Extract<RuntimeCommandEnvelope['command'], {
-      readonly kind: 'agent.tool_result.detail.get.v3';
-    }>
-  ): Promise<RuntimeApplicationCommandResult> {
-    envelope.signal.throwIfAborted();
-    if (
-      this.authorizedWorkspaceIds.size > 0
-      && !this.authorizedWorkspaceIds.has(command.workspaceId)
-    ) {
-      return completedPublicError(
-        envelope,
-        'workspace_not_authorized',
-        'The Workspace is not authorized by this Runtime bootstrap.',
-        false
-      );
-    }
-    const pipeline = this.executionPipeline;
-    if (pipeline?.protectedEffectResultReader === undefined) {
-      return completedPublicError(
-        envelope,
-        'agent_tool_result_unavailable',
-        'The protected Tool result reader is unavailable.',
-        false
-      );
-    }
-    try {
-      const detail = await pipeline.protectedEffectResultReader.read(command);
-      const presentation = pipeline.toolPresentationResolver.resolveToolPresentation(detail.tool);
-      if (presentation === null || detail.workspaceId !== command.workspaceId) {
-        throw new Error('agent_protected_effect_result_presentation_unavailable');
-      }
-      return {
-        outcome: {
-          ok: true,
-          result: {
-            kind: 'agent.tool_result.detail.v3',
-            runId: command.runId,
-            workspaceId: detail.workspaceId,
-            effectId: detail.effectId,
-            toolCallId: detail.toolCallId,
-            presentation,
-            status: detail.status,
-            digest: detail.digest,
-            totalBytes: detail.totalBytes,
-            cursor: detail.cursor,
-            nextCursor: detail.nextCursor,
-            content: detail.content,
-            complete: detail.complete
-          }
-        },
-        settlement: 'completed'
-      };
-    } catch (error) {
-      envelope.signal.throwIfAborted();
-      if (error instanceof Error && error.message.startsWith('agent_protected_effect_result_')) {
-        return completedPublicError(
-          envelope,
-          'agent_tool_result_unavailable',
-          'The protected Tool result is unavailable for this Run and Workspace.',
-          false
-        );
-      }
-      throw error;
-    }
   }
 
 }

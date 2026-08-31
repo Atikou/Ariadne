@@ -23,6 +23,9 @@ import type {
 import type {
   AgentRunControlComponentHandle
 } from '../components/run-control/AgentRunControlComponent.js';
+import type {
+  AgentToolResultDetailComponentHandle
+} from '../components/tool-result-detail/AgentToolResultDetailComponent.js';
 
 type OwnedPublicCommand<K extends PublicCommandKind> = Extract<
   RuntimeCommandEnvelope['command'],
@@ -32,11 +35,11 @@ type OwnedPublicCommand<K extends PublicCommandKind> = Extract<
 export interface AgentPublicCommandOwnerInputs {
   readonly conversation: AgentConversationComponentHandle;
   readonly runControl: AgentRunControlComponentHandle;
+  readonly toolResultDetail: AgentToolResultDetailComponentHandle;
   readonly agentInbox: AgentInboxPublicCommandHandler;
   readonly subagentInterrupt: AgentSubagentInterruptPublicCommandHandler;
   readonly humanSkills?: HumanSkillPublicCommandHandler;
   readonly productivity?: ProductivityPublicCommandHandler;
-  readonly executeToolResultDetail: CommandExecutor<'agent.tool_result.detail.get.v3'>;
   readonly executeProjectionCommand: (envelope: RuntimeCommandEnvelope) => Promise<RuntimeApplicationCommandResult>;
   readonly reconcileConversation: (
     envelope: RuntimeCommandEnvelope,
@@ -103,7 +106,7 @@ export function createAgentPublicCommandOwners(
         envelope, 'agent_subagent_interrupt_reconciliation_invalid'
       )),
     owner('agent.tool-detail', ['agent.tool_result.detail.get.v3'],
-      input.executeToolResultDetail,
+      (envelope, command) => input.toolResultDetail.execute(envelope, command),
       notCommitted),
     owner('skills.human', [
       'skill.commands.query.v3', 'skill.command.load.v3', 'skill.command.resource.read.v3'
