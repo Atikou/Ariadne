@@ -848,6 +848,26 @@ export const runtimeCommandSchema = z.discriminatedUnion('kind', [
     reference: conversationMessageReferenceV3Schema
   }).strict(),
   z.object({
+    kind: z.literal('skill.commands.query.v3'),
+    contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
+    workspaceId: publicProjectionCanonicalIdSchema
+  }).strict(),
+  z.object({
+    kind: z.literal('skill.command.load.v3'),
+    contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
+    workspaceId: publicProjectionCanonicalIdSchema,
+    name: z.string().regex(/^[a-z][a-z0-9_-]*$/u),
+    revision: z.string().regex(/^sha256:[a-f0-9]{64}$/u)
+  }).strict(),
+  z.object({
+    kind: z.literal('skill.command.resource.read.v3'),
+    contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
+    workspaceId: publicProjectionCanonicalIdSchema,
+    name: z.string().regex(/^[a-z][a-z0-9_-]*$/u),
+    revision: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+    relativePath: z.string().min(1).max(512)
+  }).strict(),
+  z.object({
     kind: z.literal('agent.tool_result.detail.get.v3'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     runId: publicProjectionCanonicalIdSchema,
@@ -982,6 +1002,44 @@ export const runtimeResultSchema = z.discriminatedUnion('kind', [
     role: z.enum(['user', 'assistant']),
     content: z.string().max(100_000),
     createdAt: isoDateTimeSchema
+  }).strict(),
+  z.object({
+    kind: z.literal('skill.commands.query_result.v3'),
+    workspaceId: publicProjectionCanonicalIdSchema,
+    catalogDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+    complete: z.boolean(),
+    source: z.enum(['fresh', 'last_good']),
+    commands: z.array(z.object({
+      name: z.string().regex(/^[a-z][a-z0-9_-]*$/u),
+      description: z.string().min(1).max(2_000),
+      revision: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+      layer: z.enum(['built_in', 'user', 'workspace'])
+    }).strict()).max(1_024)
+  }).strict(),
+  z.object({
+    kind: z.literal('skill.command.loaded.v3'),
+    workspaceId: publicProjectionCanonicalIdSchema,
+    name: z.string().regex(/^[a-z][a-z0-9_-]*$/u),
+    description: z.string().min(1).max(2_000),
+    revision: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+    layer: z.enum(['built_in', 'user', 'workspace']),
+    body: z.string().max(1_000_000),
+    resources: z.array(z.object({
+      relativePath: z.string().min(1).max(512),
+      mediaType: z.string().min(1).max(128),
+      byteLength: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      revision: z.string().regex(/^sha256:[a-f0-9]{64}$/u)
+    }).strict()).max(2_048)
+  }).strict(),
+  z.object({
+    kind: z.literal('skill.command.resource.v3'),
+    workspaceId: publicProjectionCanonicalIdSchema,
+    name: z.string().regex(/^[a-z][a-z0-9_-]*$/u),
+    revision: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+    relativePath: z.string().min(1).max(512),
+    mediaType: z.string().min(1).max(128),
+    encoding: z.enum(['utf8', 'base64']),
+    content: z.string().max(300_000)
   }).strict(),
   z.object({
     kind: z.literal('agent.tool_result.detail.v3'),

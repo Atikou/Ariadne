@@ -13,6 +13,7 @@ export function agentControlRuntimeServicesProvider(): RuntimeCapabilityProvider
       { serviceId: 'agent.instructions.assembly', optional: false },
       { serviceId: 'agent.hooks.lifecycle', optional: false },
       { serviceId: 'agent.live-work', optional: false },
+      { serviceId: 'agent.skills.catalog', optional: false },
       { serviceId: 'agent.telemetry', optional: true }
     ],
     provides: [{ serviceId: AGENT_CONTROL_RUNTIME_SERVICES_ID, optional: false }],
@@ -30,6 +31,9 @@ export function agentControlRuntimeServicesProvider(): RuntimeCapabilityProvider
         liveWorkLifecycle: context.services.required<
           NonNullable<AgentControlRuntimeServices['liveWorkLifecycle']>
         >('agent.live-work'),
+        humanSkillCatalog: context.services.required<
+          NonNullable<AgentControlRuntimeServices['humanSkillCatalog']>
+        >('agent.skills.catalog'),
         ...(context.processSandboxFactory === undefined
           ? {}
           : { processSandboxForWorkspace: context.processSandboxFactory }),

@@ -33,7 +33,8 @@ import {
 import type {
   AgentControlRuntimeFactory,
   AgentControlRuntimeFactoryInput,
-  AgentControlRuntimeLifecycle
+  AgentControlRuntimeLifecycle,
+  AgentControlRuntimeServices
 } from '../ingress/AgentControlLifecycle.js';
 import {
   createShutdownContext,
@@ -160,7 +161,8 @@ implements AgentControlRuntimeLifecycle {
     authorizedWorkspaceIds: readonly string[] = [],
     private readonly observability?: PublicAgentObservability,
     liveWork?: AgentControlLiveWorkService,
-    attachmentStore?: ConversationAttachmentStore
+    attachmentStore?: ConversationAttachmentStore,
+    humanSkillCatalog?: NonNullable<AgentControlRuntimeServices['humanSkillCatalog']>
   ) {
     this.publishIntervalMs = options.publishIntervalMs
       ?? DEFAULT_PUBLIC_PROJECTION_INTERVAL_MS;
@@ -225,7 +227,8 @@ implements AgentControlRuntimeLifecycle {
         conversationCommandNow,
         agentDecisionCommandNow: options.agentDecisionCommandNow,
         agentInboxCommandNow: options.agentInboxCommandNow,
-        attachmentStore
+        attachmentStore,
+        humanSkillCatalog
       }
     );
     if (liveWork !== undefined) {
@@ -607,7 +610,8 @@ implements AgentControlRuntimeFactory {
           input.workspaces?.map((workspace) => workspace.workspaceId) ?? [],
           observability,
           input.runtimeServices?.liveWorkLifecycle,
-          attachmentStore
+          attachmentStore,
+          input.runtimeServices?.humanSkillCatalog
         );
       } catch (error) {
         const cleanupContext = createShutdownContext(Date.now() + 5_000);
@@ -703,7 +707,8 @@ implements AgentControlRuntimeFactory {
         input.workspaces?.map((workspace) => workspace.workspaceId) ?? [],
         observability,
         input.runtimeServices?.liveWorkLifecycle,
-        attachmentStore
+        attachmentStore,
+        input.runtimeServices?.humanSkillCatalog
       );
     } catch (error) {
       const cleanupContext = createShutdownContext(Date.now() + 5_000);

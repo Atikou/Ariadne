@@ -167,6 +167,7 @@ class ProductionSkillCatalogService implements ProductionSkillCatalog {
         workspaceId,
         name,
         revision,
+        'model',
         signal
       ),
       readResource: (workspaceId, name, revision, relativePath, signal) => this.readResource(
@@ -174,9 +175,29 @@ class ProductionSkillCatalogService implements ProductionSkillCatalog {
         name,
         revision,
         relativePath,
+        'model',
         signal
       )
     });
+  }
+
+  public loadForUser(
+    workspaceId: string,
+    name: string,
+    revision: string,
+    signal: AbortSignal
+  ): Promise<ProductionSkillDefinition> {
+    return this.load(workspaceId, name, revision, 'user', signal);
+  }
+
+  public readResourceForUser(
+    workspaceId: string,
+    name: string,
+    revision: string,
+    relativePath: string,
+    signal: AbortSignal
+  ): Promise<ProductionSkillResource> {
+    return this.readResource(workspaceId, name, revision, relativePath, 'user', signal);
   }
 
   public close(): Promise<void> {
@@ -256,6 +277,7 @@ class ProductionSkillCatalogService implements ProductionSkillCatalog {
     workspaceId: string,
     name: string,
     revision: string,
+    actor: 'model' | 'user',
     callerSignal: AbortSignal
   ): Promise<ProductionSkillDefinition> {
     const indexed = this.retained.get(workspaceId)?.get(retainedSkillKey(name, revision));
@@ -270,7 +292,10 @@ class ProductionSkillCatalogService implements ProductionSkillCatalog {
     signal.throwIfAborted();
     if (definition === undefined) throw new Error('skill_source_unavailable');
     assertProductionSkillDefinition(definition, indexed.candidate);
-    if (!definition.invocation.modelInvocable) throw new Error('skill_model_invocation_disabled');
+    if (
+      (actor === 'model' && !definition.invocation.modelInvocable)
+      || (actor === 'user' && !definition.invocation.userInvocable)
+    ) throw new Error(`skill_${actor}_invocation_disabled`);
     return definition;
   }
 
@@ -279,10 +304,11 @@ class ProductionSkillCatalogService implements ProductionSkillCatalog {
     name: string,
     revision: string,
     relativePath: string,
+    actor: 'model' | 'user',
     callerSignal: AbortSignal
   ): Promise<ProductionSkillResource> {
     validateSkillResourcePath(relativePath);
-    const definition = await this.load(workspaceId, name, revision, callerSignal);
+    const definition = await this.load(workspaceId, name, revision, actor, callerSignal);
     const descriptor = definition.resources.find((entry) => entry.relativePath === relativePath);
     if (descriptor === undefined) throw new Error('skill_resource_not_found');
     const indexed = this.retained.get(workspaceId)?.get(retainedSkillKey(name, revision));

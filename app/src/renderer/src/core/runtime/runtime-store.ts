@@ -114,6 +114,21 @@ export type ProtectedToolResultDetail = Extract<
   { readonly kind: 'agent.tool_result.detail.v3' }
 >;
 
+export type HumanSkillCommand = Extract<
+  RuntimeResult,
+  { readonly kind: 'skill.commands.query_result.v3' }
+>['commands'][number];
+
+export type LoadedHumanSkill = Extract<
+  RuntimeResult,
+  { readonly kind: 'skill.command.loaded.v3' }
+>;
+
+export type HumanSkillResource = Extract<
+  RuntimeResult,
+  { readonly kind: 'skill.command.resource.v3' }
+>;
+
 const STOPPED_STATUS: RuntimeStatus = {
   availability: 'stopped',
   capabilities: [],
@@ -342,6 +357,56 @@ export class RuntimeStore {
       || result.workspaceId !== workspaceId
       || result.effectId !== effectId
     ) throw new Error(`runtime_result_invalid:${result.kind}`);
+    return result;
+  }
+
+  async queryHumanSkillCommands(workspaceId: string): Promise<readonly HumanSkillCommand[]> {
+    const result = await this.command({
+      kind: 'skill.commands.query.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      workspaceId
+    });
+    if (result.kind !== 'skill.commands.query_result.v3') {
+      throw new Error(`runtime_result_invalid:${result.kind}`);
+    }
+    return result.commands;
+  }
+
+  async loadHumanSkillCommand(
+    workspaceId: string,
+    name: string,
+    revision: string
+  ): Promise<LoadedHumanSkill> {
+    const result = await this.command({
+      kind: 'skill.command.load.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      workspaceId,
+      name,
+      revision
+    });
+    if (result.kind !== 'skill.command.loaded.v3') {
+      throw new Error(`runtime_result_invalid:${result.kind}`);
+    }
+    return result;
+  }
+
+  async readHumanSkillResource(
+    workspaceId: string,
+    name: string,
+    revision: string,
+    relativePath: string
+  ): Promise<HumanSkillResource> {
+    const result = await this.command({
+      kind: 'skill.command.resource.read.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      workspaceId,
+      name,
+      revision,
+      relativePath
+    });
+    if (result.kind !== 'skill.command.resource.v3') {
+      throw new Error(`runtime_result_invalid:${result.kind}`);
+    }
     return result;
   }
 

@@ -47,6 +47,8 @@ import {
   completedPublicError,
   publicRunMutationFailure
 } from './AgentPublicCommandFailures.js';
+import { HumanSkillPublicCommandHandler } from './HumanSkillPublicCommandHandler.js';
+import type { HumanSkillCatalog } from '../control/ports/HumanSkillCatalog.js';
 
 export interface AgentControlPublicCommandRouterOptions {
   readonly authorizedWorkspaceIds?: readonly string[];
@@ -54,6 +56,7 @@ export interface AgentControlPublicCommandRouterOptions {
   readonly agentDecisionCommandNow?: () => Date;
   readonly agentInboxCommandNow?: () => Date;
   readonly attachmentStore?: ConversationAttachmentStore;
+  readonly humanSkillCatalog?: HumanSkillCatalog;
 }
 
 export interface AgentControlPublicCommandRouterCallbacks {
@@ -79,6 +82,7 @@ export class AgentControlPublicCommandRouter {
   private readonly conversationCommandNow: () => Date;
   private readonly attachmentStore: ConversationAttachmentStore | undefined;
   private readonly authorizedWorkspaceIds: ReadonlySet<string>;
+  private readonly humanSkills: HumanSkillPublicCommandHandler | undefined;
 
   public constructor(
     private readonly unitOfWork: SqliteAgentRunUnitOfWork,
@@ -122,6 +126,12 @@ export class AgentControlPublicCommandRouter {
     );
     this.attachmentStore = options.attachmentStore;
     this.authorizedWorkspaceIds = new Set(options.authorizedWorkspaceIds ?? []);
+    this.humanSkills = options.humanSkillCatalog === undefined
+      ? undefined
+      : new HumanSkillPublicCommandHandler(
+          options.humanSkillCatalog,
+          options.authorizedWorkspaceIds ?? []
+        );
   }
 
   public async executeOwnedCommand(
@@ -137,6 +147,15 @@ export class AgentControlPublicCommandRouter {
       case 'conversation.sessions.query.v3':
       case 'conversation.message.resolve.v3':
         return this.conversationNavigation.execute(envelope, envelope.command);
+      case 'skill.commands.query.v3':
+      case 'skill.command.load.v3':
+      case 'skill.command.resource.read.v3':
+        return this.humanSkills?.execute(envelope, envelope.command) ?? completedPublicError(
+          envelope,
+          'skill_catalog_unavailable',
+          'The human Skill command catalog is unavailable.',
+          false
+        );
       case 'agent.tool_result.detail.get.v3':
         return this.executeToolResultDetail(envelope, envelope.command);
       case 'conversation.message.accept.v3':
@@ -185,6 +204,9 @@ export class AgentControlPublicCommandRouter {
       case 'conversation.sessions.query.v3':
       case 'conversation.message.resolve.v3':
       case 'agent.tool_result.detail.get.v3':
+      case 'skill.commands.query.v3':
+      case 'skill.command.load.v3':
+      case 'skill.command.resource.read.v3':
         return { kind: 'not_committed' };
       case 'conversation.session.create.v3':
       case 'conversation.session.rename.v3':

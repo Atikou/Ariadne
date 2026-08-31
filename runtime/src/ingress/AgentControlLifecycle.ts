@@ -21,6 +21,7 @@ import type { AgentControlLiveWorkService } from '../control/ports/AgentLiveWork
 import type { AgentProcessSandbox } from '../control/ports/AgentProcessSandbox.js';
 import type { AgentInstructionAssemblyService } from '../control/ports/AgentInstructionAssembly.js';
 import type { AgentLifecycleHookService } from '../control/ports/AgentLifecycleHooks.js';
+import type { HumanSkillCatalog } from '../control/ports/HumanSkillCatalog.js';
 
 /** Provider-composed services consumed by Agent Control after Store creation. */
 export interface AgentControlRuntimeServices {
@@ -29,6 +30,7 @@ export interface AgentControlRuntimeServices {
   readonly telemetry?: AgentRuntimeTelemetry;
   readonly liveWorkLifecycle?: AgentControlLiveWorkService;
   readonly processSandboxForWorkspace?: (workspaceRoot: string) => AgentProcessSandbox;
+  readonly humanSkillCatalog?: HumanSkillCatalog;
 }
 
 export interface AgentControlRuntimeLifecycle {

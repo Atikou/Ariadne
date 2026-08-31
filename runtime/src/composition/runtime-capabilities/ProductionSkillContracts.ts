@@ -1,4 +1,5 @@
 import type { TrustedAgentToolRegistrationV1 } from '../../adapters/tool/TrustedAgentToolCatalogCompiler.js';
+import type { HumanSkillCatalog } from '../../control/ports/HumanSkillCatalog.js';
 
 export type ProductionSkillLayer = 'built_in' | 'user' | 'workspace';
 
@@ -79,12 +80,25 @@ export interface ProductionSkillCatalogSnapshot {
   readonly skills: readonly ProductionSkillDescriptor[];
 }
 
-export interface ProductionSkillCatalog {
+export interface ProductionSkillCatalog extends HumanSkillCatalog {
   snapshot(
     workspaceId: string,
     signal: AbortSignal
   ): Promise<ProductionSkillCatalogSnapshot>;
   renderAdmissionCatalog(workspaceId: string, signal: AbortSignal): Promise<string>;
+  loadForUser(
+    workspaceId: string,
+    name: string,
+    revision: string,
+    signal: AbortSignal
+  ): Promise<ProductionSkillDefinition>;
+  readResourceForUser(
+    workspaceId: string,
+    name: string,
+    revision: string,
+    relativePath: string,
+    signal: AbortSignal
+  ): Promise<ProductionSkillResource>;
   createToolRegistrations(): readonly TrustedAgentToolRegistrationV1[];
   close(): Promise<void>;
 }

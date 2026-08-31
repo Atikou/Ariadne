@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { RotateCcw, Search, Waypoints } from 'lucide-react';
 import type { DockviewApi } from 'dockview-react';
+import { PERSONAL_ASSISTANT_WORKSPACE_ID } from '@ariadne/protocol/public';
 import type { ThemePreference } from '@shared/contract';
 import { builtinModuleRegistry } from '@renderer/core/modules/builtin-modules';
 import type { ModuleId, ModuleServices } from '@renderer/core/modules/module-contract';
@@ -135,6 +136,8 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
         registry={builtinModuleRegistry}
         onClose={() => setCommandOpen(false)}
         onOpenModule={handleOpenModule}
+        runtime={services.runtime}
+        workspaceId={runtime.sessions.find((session) => session.sessionId === runtime.selectedSessionId)?.workspaceId ?? PERSONAL_ASSISTANT_WORKSPACE_ID}
       />
       <ConfirmDialog
         open={resetDialogOpen}

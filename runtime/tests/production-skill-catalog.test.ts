@@ -121,6 +121,13 @@ describe('ProductionSkillCatalog', () => {
     }, toolContext())).resolves.toMatchObject({
       status: 'failed', errorCode: 'skill_load_failed', message: 'skill_model_invocation_disabled'
     });
+    await expect(catalog.loadForUser(
+      'workspace-skill', userOnly.name, userOnly.revision, signal
+    )).resolves.toMatchObject({ name: 'user-only', body: expect.stringContaining('USER BODY') });
+    const modelOnly = snapshot.skills.find((skill) => skill.name === 'model-only')!;
+    await expect(catalog.loadForUser(
+      'workspace-skill', modelOnly.name, modelOnly.revision, signal
+    )).rejects.toThrow('skill_user_invocation_disabled');
   });
 
   it('pins package resources, reads only exact relative paths, and rejects resource drift', async () => {
