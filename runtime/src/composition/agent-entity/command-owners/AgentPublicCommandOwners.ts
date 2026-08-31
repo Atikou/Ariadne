@@ -1,8 +1,6 @@
 import type { RuntimeApplicationCommandResult } from '../../../ingress/RuntimeApplication.js';
 import type { RuntimeCommandEnvelope } from '../../../ingress/RuntimeIngress.js';
 import type { RuntimeCommandReconciliation } from '../../../control/ports/RuntimeCommandJournal.js';
-import type { ConversationSessionPublicCommandHandler } from '../../ConversationSessionPublicCommandHandler.js';
-import type { ConversationNavigationPublicCommandHandler } from '../../ConversationNavigationPublicCommandHandler.js';
 import type { AgentInboxPublicCommandHandler } from '../../AgentInboxPublicCommandHandler.js';
 import type { AgentSubagentInterruptPublicCommandHandler } from '../../AgentSubagentInterruptPublicCommandHandler.js';
 import type { HumanSkillPublicCommandHandler } from '../../HumanSkillPublicCommandHandler.js';
@@ -19,6 +17,9 @@ import type {
   AgentPublicCommandOwner,
   PublicCommandKind
 } from './AgentPublicCommandOwnerTable.js';
+import type {
+  AgentConversationComponentHandle
+} from '../components/conversation/AgentConversationComponent.js';
 
 type OwnedPublicCommand<K extends PublicCommandKind> = Extract<
   RuntimeCommandEnvelope['command'],
@@ -26,13 +27,11 @@ type OwnedPublicCommand<K extends PublicCommandKind> = Extract<
 >;
 
 export interface AgentPublicCommandOwnerInputs {
-  readonly conversationSessions: ConversationSessionPublicCommandHandler;
-  readonly conversationNavigation: ConversationNavigationPublicCommandHandler;
+  readonly conversation: AgentConversationComponentHandle;
   readonly agentInbox: AgentInboxPublicCommandHandler;
   readonly subagentInterrupt: AgentSubagentInterruptPublicCommandHandler;
   readonly humanSkills?: HumanSkillPublicCommandHandler;
   readonly productivity?: ProductivityPublicCommandHandler;
-  readonly executeAcceptConversationMessage: CommandExecutor<'conversation.message.accept.v3'>;
   readonly executeResolveAgentDecision: CommandExecutor<'agent.decision.resolve.v3'>;
   readonly reconcileAgentDecision: CommandReconciler<'agent.decision.resolve.v3'>;
   readonly executeCancelAgentRun: CommandExecutor<'agent.run.cancel.v3'>;
@@ -66,19 +65,19 @@ export function createAgentPublicCommandOwners(
     owner('conversation.sessions', [
       'conversation.session.create.v3', 'conversation.session.rename.v3',
       'conversation.session.archive.v3', 'conversation.session.restore.v3'
-    ], (envelope, command) => input.conversationSessions.execute(envelope, command),
+    ], (envelope, command) => input.conversation.executeSession(envelope, command),
     (envelope) => input.reconcileConversation(
       envelope, 'conversation_command_reconciliation_invalid'
     )),
     owner('conversation.navigation', [
       'conversation.session.fork.v3', 'conversation.sessions.query.v3',
       'conversation.message.resolve.v3'
-    ], (envelope, command) => input.conversationNavigation.execute(envelope, command),
+    ], (envelope, command) => input.conversation.executeNavigation(envelope, command),
     (envelope) => isReadOnly(envelope.command.kind)
       ? Promise.resolve({ kind: 'not_committed' })
       : input.reconcileConversation(envelope, 'conversation_fork_reconciliation_invalid')),
     owner('conversation.message', ['conversation.message.accept.v3'],
-      input.executeAcceptConversationMessage,
+      (envelope, command) => input.conversation.executeAcceptMessage(envelope, command),
       (envelope) => input.reconcileConversation(
         envelope, 'conversation_command_reconciliation_invalid'
       )),

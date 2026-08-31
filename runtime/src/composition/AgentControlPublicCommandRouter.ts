@@ -18,12 +18,6 @@ import type {
 } from '../adapters/persistence/SqlitePublicProjectionStore.js';
 import type { SqliteProductivityStore } from '../adapters/persistence/SqliteProductivityStore.js';
 import {
-  deriveConversationAuthorityId
-} from '../conversation/ConversationRunHandoffIds.js';
-import {
-  ConversationAuthorityService
-} from '../control/conversation/ConversationAuthorityService.js';
-import {
   AgentDecisionAuthorityError,
   AgentDecisionAuthorityService
 } from '../control/run/AgentDecisionAuthorityService.js';
@@ -35,15 +29,11 @@ import type {
   RuntimeCommandReconciliation
 } from '../control/ports/RuntimeCommandJournal.js';
 import type { ConversationAttachmentStore } from '../control/ports/ConversationAttachmentStore.js';
-import {
-  AgentControlConversationMessageAdmissionError,
-  type AgentControlExecutionPipeline
+import type {
+  AgentControlExecutionPipeline
 } from './ProductionAgentControlExecutionPipelineFactory.js';
 import { AgentInboxPublicCommandHandler } from './AgentInboxPublicCommandHandler.js';
 import { AgentSubagentInterruptPublicCommandHandler } from './AgentSubagentInterruptPublicCommandHandler.js';
-import { publicConversationFailure } from './ConversationPublicCommandFailures.js';
-import { ConversationSessionPublicCommandHandler } from './ConversationSessionPublicCommandHandler.js';
-import { ConversationNavigationPublicCommandHandler } from './ConversationNavigationPublicCommandHandler.js';
 import {
   completedPublicError,
   publicRunMutationFailure
@@ -60,6 +50,10 @@ import {
 import {
   createAgentPublicCommandOwners
 } from './agent-entity/command-owners/AgentPublicCommandOwners.js';
+import {
+  createAgentConversationComponent,
+  type AgentConversationComponentHandle
+} from './agent-entity/components/conversation/AgentConversationComponent.js';
 
 export interface AgentControlPublicCommandRouterOptions {
   readonly authorizedWorkspaceIds?: readonly string[];
@@ -84,15 +78,11 @@ export interface AgentControlPublicCommandRouterCallbacks {
  * Runtime lifecycle, projection scheduling and store ownership stay outside.
  */
 export class AgentControlPublicCommandRouter {
-  private readonly conversationAuthority: ConversationAuthorityService;
+  private readonly conversationComponent: AgentConversationComponentHandle;
   private readonly agentDecisionAuthority: AgentDecisionAuthorityService;
   private readonly agentCommands: AgentRunCommandService;
   private readonly agentInbox: AgentInboxPublicCommandHandler;
   private readonly subagentInterrupt: AgentSubagentInterruptPublicCommandHandler;
-  private readonly conversationSessions: ConversationSessionPublicCommandHandler;
-  private readonly conversationNavigation: ConversationNavigationPublicCommandHandler;
-  private readonly conversationCommandNow: () => Date;
-  private readonly attachmentStore: ConversationAttachmentStore | undefined;
   private readonly authorizedWorkspaceIds: ReadonlySet<string>;
   private readonly humanSkills: HumanSkillPublicCommandHandler | undefined;
   private readonly productivity: ProductivityPublicCommandHandler | undefined;
@@ -100,13 +90,22 @@ export class AgentControlPublicCommandRouter {
 
   public constructor(
     private readonly unitOfWork: SqliteAgentRunUnitOfWork,
-    private readonly conversation: SqliteConversationRunHandoffUnitOfWork,
+    conversation: SqliteConversationRunHandoffUnitOfWork,
     private readonly publicProjection: SqlitePublicProjectionStore,
     private readonly executionPipeline: AgentControlExecutionPipeline | undefined,
     private readonly callbacks: AgentControlPublicCommandRouterCallbacks,
     options: AgentControlPublicCommandRouterOptions = {}
   ) {
-    this.conversationAuthority = new ConversationAuthorityService(conversation);
+    this.conversationComponent = createAgentConversationComponent({
+      conversation,
+      executionPipeline,
+      wakeProjectionDrain: callbacks.wakeProjectionDrain,
+      options: {
+        authorizedWorkspaceIds: options.authorizedWorkspaceIds,
+        commandNow: options.conversationCommandNow,
+        attachmentStore: options.attachmentStore
+      }
+    });
     this.agentDecisionAuthority = new AgentDecisionAuthorityService(
       unitOfWork,
       options.agentDecisionCommandNow
@@ -121,24 +120,6 @@ export class AgentControlPublicCommandRouter {
       executionPipeline,
       callbacks.wakeProjectionDrain
     );
-    this.conversationCommandNow = options.conversationCommandNow ?? (() => new Date());
-    this.conversationSessions = new ConversationSessionPublicCommandHandler(
-      conversation,
-      {
-        wakeProjectionDrain: callbacks.wakeProjectionDrain,
-        resolveCommandTime: (commandId) => this.resolveConversationCommandTime(commandId)
-      },
-      options.authorizedWorkspaceIds
-    );
-    this.conversationNavigation = new ConversationNavigationPublicCommandHandler(
-      conversation,
-      {
-        wakeProjectionDrain: callbacks.wakeProjectionDrain,
-        resolveCommandTime: (commandId) => this.resolveConversationCommandTime(commandId)
-      },
-      options.authorizedWorkspaceIds
-    );
-    this.attachmentStore = options.attachmentStore;
     this.authorizedWorkspaceIds = new Set(options.authorizedWorkspaceIds ?? []);
     this.humanSkills = options.humanSkillCatalog === undefined
       ? undefined
@@ -155,15 +136,11 @@ export class AgentControlPublicCommandRouter {
         );
     this.ownerTable = compileAgentPublicCommandOwnerTable(
       createAgentPublicCommandOwners({
-        conversationSessions: this.conversationSessions,
-        conversationNavigation: this.conversationNavigation,
+        conversation: this.conversationComponent,
         agentInbox: this.agentInbox,
         subagentInterrupt: this.subagentInterrupt,
         humanSkills: this.humanSkills,
         productivity: this.productivity,
-        executeAcceptConversationMessage: (envelope, command) => (
-          this.executeAcceptConversationMessage(envelope, command)
-        ),
         executeResolveAgentDecision: (envelope, command) => (
           this.executeResolveAgentDecision(envelope, command)
         ),
@@ -178,7 +155,11 @@ export class AgentControlPublicCommandRouter {
         ),
         executeProjectionCommand: (envelope) => this.executeProjectionCommand(envelope),
         reconcileConversation: (envelope, invalidErrorCode) => (
-          this.reconcileConversation(envelope, invalidErrorCode)
+          this.conversationComponent.reconcileCommitted(
+            envelope,
+            () => this.ownerTable.execute(envelope),
+            invalidErrorCode
+          )
         ),
         reconcileByReplay: (envelope, invalidErrorCode) => (
           this.reconcileByReplay(envelope, invalidErrorCode)
@@ -197,21 +178,6 @@ export class AgentControlPublicCommandRouter {
     envelope: RuntimeCommandEnvelope
   ): Promise<RuntimeCommandReconciliation | null> {
     return this.ownerTable.reconcile(envelope);
-  }
-
-  private async reconcileConversation(
-    envelope: RuntimeCommandEnvelope,
-    invalidErrorCode: string
-  ): Promise<RuntimeCommandReconciliation> {
-    const committed = await this.conversation.readCommittedAuthorityCommand(
-      envelope.commandId
-    );
-    if (committed === null) return { kind: 'not_committed' };
-    const result = await this.ownerTable.execute(envelope);
-    if (result === null || result.settlement !== 'completed') {
-      throw new Error(invalidErrorCode);
-    }
-    return { kind: 'committed', outcome: result.outcome };
   }
 
   private async reconcileByReplay(
@@ -263,136 +229,6 @@ export class AgentControlPublicCommandRouter {
       }));
     }
     throw new Error('agent_command_owner_kind_mismatch:projection.query');
-  }
-
-  private async executeAcceptConversationMessage(
-    envelope: RuntimeCommandEnvelope,
-    command: Extract<
-      RuntimeCommandEnvelope['command'],
-      { readonly kind: 'conversation.message.accept.v3' }
-    >
-  ): Promise<RuntimeApplicationCommandResult> {
-    envelope.signal.throwIfAborted();
-    const committedBeforeExecution = await this.conversation
-      .readCommittedAuthorityCommand(envelope.commandId);
-    if (committedBeforeExecution === null) {
-      if (this.executionPipeline === undefined) {
-        return completedPublicError(
-          envelope,
-          'agent_execution_unavailable',
-          'Agent execution is unavailable because its durable Handoff producer is not configured.',
-          false
-        );
-      }
-      this.executionPipeline.runWorkScheduler.assertHealthy();
-      this.executionPipeline.executionScheduler.assertHealthy();
-      this.executionPipeline.handoffProducer.assertHealthy();
-      try {
-        this.executionPipeline.assertConversationMessageAdmission(
-          command.workspaceId
-        );
-      } catch (error) {
-        if (!(error instanceof AgentControlConversationMessageAdmissionError)) {
-          throw error;
-        }
-        return completedPublicError(
-          envelope,
-          'agent_execution_unavailable',
-          'Agent execution is unavailable for this Workspace.',
-          false
-        );
-      }
-    }
-    const [
-      eventId,
-      sagaId,
-      handoffCommandId,
-      handoffOutboxMessageId,
-      occurredAt
-    ] = await Promise.all([
-      deriveConversationAuthorityId('message-accepted-event', envelope.commandId),
-      deriveConversationAuthorityId('handoff-saga', envelope.commandId),
-      deriveConversationAuthorityId('handoff-accept-command', envelope.commandId),
-      deriveConversationAuthorityId('handoff-accept-outbox', envelope.commandId),
-      this.resolveConversationCommandTime(envelope.commandId)
-    ]);
-    envelope.signal.throwIfAborted();
-    let attachments;
-    if (command.attachments !== undefined) {
-      if (this.attachmentStore === undefined) {
-        return completedPublicError(
-          envelope,
-          'conversation_attachment_unavailable',
-          'Image attachments are unavailable in this Runtime.',
-          false
-        );
-      }
-      try {
-        attachments = await this.attachmentStore.saveImages(
-          command.attachments,
-          envelope.signal
-        );
-      } catch {
-        envelope.signal.throwIfAborted();
-        return completedPublicError(
-          envelope,
-          'conversation_attachment_invalid',
-          'One or more image attachments could not be validated and stored.',
-          false
-        );
-      }
-    }
-    envelope.signal.throwIfAborted();
-    const authorityCommand = {
-      kind: 'conversation.accept_user_message',
-      commandId: envelope.commandId,
-      eventId,
-      sessionId: command.sessionId,
-      workspaceId: command.workspaceId,
-      expectedSessionVersion: command.expectedSessionVersion,
-      messageId: command.messageId,
-      expectedMessageVersion: null,
-      content: command.content,
-      ...(attachments === undefined ? {} : { attachments }),
-      execution: command.execution ?? { mode: 'agent' as const },
-      sagaId,
-      handoffCommandId,
-      handoffOutboxMessageId,
-      occurredAt
-    } as const;
-    let result;
-    try {
-      result = await this.conversationAuthority.acceptUserMessage(authorityCommand);
-    } catch (error) {
-      envelope.signal.throwIfAborted();
-      const committed = await this.conversation.readCommittedAuthorityCommand(
-        envelope.commandId
-      );
-      if (committed !== null) {
-        result = await this.conversationAuthority.acceptUserMessage(authorityCommand);
-      } else {
-        const failure = publicConversationFailure(envelope, error);
-        if (failure !== null) return failure;
-        throw error;
-      }
-    }
-    this.executionPipeline?.handoffProducer.wake();
-    this.executionPipeline?.executionScheduler.wake();
-    this.callbacks.wakeProjectionDrain();
-    return {
-      outcome: {
-        ok: true,
-        result: {
-          kind: 'conversation.message.accepted.v3',
-          sessionId: result.session.sessionId,
-          sessionVersion: result.session.version,
-          messageId: result.messageVersion.messageId,
-          messageVersion: 1,
-          sagaId: result.saga.sagaId
-        }
-      },
-      settlement: 'completed'
-    };
   }
 
   private async executeResolveAgentDecision(
@@ -629,15 +465,6 @@ export class AgentControlPublicCommandRouter {
     return { runId, runVersion: mutation.run.version };
   }
 
-  private async resolveConversationCommandTime(commandId: string): Promise<string> {
-    const committed = await this.conversation.readCommittedAuthorityCommand(commandId);
-    if (committed !== null) return committed.receipt.committedAt;
-    const now = this.conversationCommandNow();
-    if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
-      throw new Error('conversation_command_clock_invalid');
-    }
-    return now.toISOString();
-  }
 }
 
 function publicDecisionFailure(
