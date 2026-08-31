@@ -14,6 +14,25 @@ export interface AgentProtectedEffectResultReadResult {
   readonly nextCursor: number;
   readonly content: string;
   readonly complete: boolean;
+  readonly workspaceId: string;
+  readonly tool: AgentPinnedToolIdentity;
+}
+
+export interface AgentProtectedEffectResultAuthorityRecord {
+  readonly runId: string;
+  readonly workspaceId: string;
+  readonly effectId: string;
+  readonly toolCallId: string;
+  readonly status: 'succeeded' | 'failed';
+  readonly tool: AgentPinnedToolIdentity;
+  readonly result: AgentToolJsonValue;
+}
+
+export interface AgentProtectedEffectResultAuthority {
+  loadProtectedEffectResultAuthority(
+    runId: string,
+    effectId: string
+  ): Promise<AgentProtectedEffectResultAuthorityRecord | null>;
 }
 
 /** Owner-scoped access to an already-protected durable Effect result. */

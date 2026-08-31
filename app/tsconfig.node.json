@@ -38,6 +38,7 @@
     "src/renderer/src/modules/chat/MarkdownMessage.tsx",
     "src/renderer/src/modules/chat/conversation-node.ts",
     "src/renderer/src/modules/chat/RunProcessingDisclosure.tsx",
+    "src/renderer/src/modules/tool-output/ToolOutputPanel.tsx",
     "src/renderer/src/modules/settings/local-model-roots.ts",
     "tests/**/*.ts",
     "vitest.config.ts"

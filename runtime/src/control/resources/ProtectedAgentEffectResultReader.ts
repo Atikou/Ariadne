@@ -1,16 +1,9 @@
 import { createHash } from 'node:crypto';
 import type {
-  AgentRunRecoveryPayloadReader,
-  AgentRunRecoveryQuery,
-  RecoverableAgentRun
-} from '@ariadne/agent-core';
-
-import type {
+  AgentProtectedEffectResultAuthority,
   AgentProtectedEffectResultReadResult,
   AgentProtectedEffectResultReader
 } from '../ports/AgentToolExecution.js';
-
-const RECOVERY_PAGE_SIZE = 100;
 
 /**
  * Uses the existing protected Effect payload as the spill object. No second
@@ -19,8 +12,7 @@ const RECOVERY_PAGE_SIZE = 100;
 export class ProtectedAgentEffectResultReader
 implements AgentProtectedEffectResultReader {
   public constructor(
-    private readonly runs: AgentRunRecoveryQuery,
-    private readonly payloads: AgentRunRecoveryPayloadReader
+    private readonly authority: AgentProtectedEffectResultAuthority
   ) {}
 
   public async read(input: {
@@ -31,60 +23,32 @@ implements AgentProtectedEffectResultReader {
     readonly maxBytes: number;
   }): Promise<AgentProtectedEffectResultReadResult> {
     validateInput(input);
-    const recovery = await this.findRun(input.runId);
-    if (recovery === undefined || !recovery.ready || recovery.phase !== 'resumable') {
+    const record = await this.authority.loadProtectedEffectResultAuthority(
+      input.runId,
+      input.effectId
+    );
+    if (record === null) {
       throw new Error('agent_protected_effect_result_run_unavailable');
     }
-    if (recovery.run.binding.workspace.workspaceId !== input.workspaceId) {
+    if (record.workspaceId !== input.workspaceId) {
       throw new Error('agent_protected_effect_result_workspace_mismatch');
     }
-    const effect = recovery.run.effects.find((candidate) => candidate.effectId === input.effectId);
-    const reference = recovery.effectPayloads.find(
-      (candidate) => candidate.effectId === input.effectId
-    );
-    if (
-      effect === undefined
-      || (effect.state.status !== 'succeeded' && effect.state.status !== 'failed')
-      || reference === undefined
-      || !reference.hasResult
-      || reference.inputDigest !== effect.inputDigest
-    ) throw new Error('agent_protected_effect_result_unavailable');
-
-    const result = await this.payloads.loadEffectResult(reference);
-    const canonical = JSON.stringify(result);
+    const canonical = JSON.stringify(record.result);
     const bytes = Buffer.from(canonical, 'utf8');
     const selected = selectUtf8(bytes, input.cursor, input.maxBytes);
     return Object.freeze({
-      effectId: effect.effectId,
-      toolCallId: effect.toolCallId,
-      status: effect.state.status,
+      effectId: record.effectId,
+      toolCallId: record.toolCallId,
+      status: record.status,
       digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
       totalBytes: bytes.byteLength,
       cursor: selected.cursor,
       nextCursor: selected.nextCursor,
       content: selected.content,
-      complete: selected.nextCursor >= bytes.byteLength
+      complete: selected.nextCursor >= bytes.byteLength,
+      workspaceId: record.workspaceId,
+      tool: { ...record.tool }
     });
-  }
-
-  private async findRun(runId: string): Promise<RecoverableAgentRun | undefined> {
-    let after: { readonly createdAt: string; readonly runId: string } | undefined;
-    const cursors = new Set<string>();
-    do {
-      const page = await this.runs.listActiveRuns({
-        limit: RECOVERY_PAGE_SIZE,
-        ...(after === undefined ? {} : { after })
-      });
-      const found = page.items.find((candidate) => candidate.run.runId === runId);
-      if (found !== undefined) return found;
-      after = page.nextCursor;
-      if (after !== undefined) {
-        const key = `${after.createdAt}\0${after.runId}`;
-        if (cursors.has(key)) throw new Error('agent_protected_effect_result_cursor_repeated');
-        cursors.add(key);
-      }
-    } while (after !== undefined);
-    return undefined;
   }
 }
 

@@ -109,6 +109,8 @@
         "runtime/src/composition/first-party-tools/FirstPartyToolArtifactAuthority.ts",
         "runtime/src/composition/first-party-tools/WorkspaceFileAgentTools.ts",
         "runtime/src/composition/first-party-tools/WorkspaceSearchAgentTools.ts",
+        "runtime/src/composition/first-party-tools/WorkspaceLspAgentTools.ts",
+        "runtime/src/adapters/code-intelligence/SandboxWorkspaceLspService.ts",
         "runtime/src/adapters/filesystem/LocalWorkspaceFileService.ts",
         "runtime/src/adapters/filesystem/LocalWorkspaceSearchService.ts",
         "runtime/src/adapters/tool/ImmutableAgentToolCatalog.ts",
@@ -123,7 +125,7 @@
       "realModel": "not_accepted",
       "realWindow": "verified",
       "realMachine": "not_accepted",
-      "notes": "The real window executes pinned workspace read/write v2 tools and proves allow-before-effect, opaque read versions, one atomic create-if-absent and deny-without-effect. Runtime integration covers exact replace-if-version, external stale edits, deletion, concurrent same-version replacement, cancellation and cleanup. Catalog revision 17 pins build-generated exact JavaScript module-closure bytes for ten production Tool roots and 33 Tools. V2 Tool contracts additionally pin bounded model descriptions/guidance and public-static presentation kind/label; the exact inference request and Renderer activity consume the same pin while Public Projection excludes result visibility, inputs and results. Bounded literal search/glob plus Unicode-aware, non-overlapping apply_text_edits remain under the same opaque-version file authority; service and Tool integration tests cover containment, symlink exclusion, byte/file/result bounds, stable search versions, overlap rejection and stale external edits. Runtime and packaging reverify every file and tamper tests fail closed. Missing historical Catalog pins durably retire per Run before fresh I/O in Child-before-Parent order. Historical executable bundles remain intentionally absent, so an old Run is retired rather than resumed. Protected-result-driven read/search/diff/terminal detail intents, signed-helper behavior, move/delete and other Decision families remain pending."
+      "notes": "The real window executes pinned workspace read/write v2 tools and proves allow-before-effect, opaque read versions, one atomic create-if-absent and deny-without-effect. Runtime integration covers exact replace-if-version, external stale edits, atomic no-overwrite move, exact-version delete, concurrent same-version replacement, cancellation and cleanup. Catalog revision 18 pins build-generated exact JavaScript module-closure bytes for eleven production Tool roots and 36 Tools. V2 contracts pin model descriptions/guidance and public-static presentation kind/label. Literal search/glob, Unicode-aware text edits and sandboxed persistent TypeScript LSP definition/reference/hover/document-symbol operations use the same workspace/version authority. Terminal Effects publish only a detailAvailable bit; a Run/Workspace/effect-scoped protected reader serves completed results across restart with UTF-8 paging. Renderer static tests cover dedicated read/search/diff/terminal cards; full Electron search-to-edit detail interaction remains deeper acceptance. Runtime and packaging reverify every file and tamper tests fail closed. Historical executable bundles remain intentionally absent, so an old Run is retired rather than resumed."
     },
     {
       "module": "model-catalog-and-inference-gateway",

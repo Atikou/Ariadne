@@ -105,6 +105,10 @@ describe('Main Agent admission authority source builder', () => {
           'workspace.job_wait',
           'workspace.job_write',
           'workspace.terminal_start',
+          'workspace.apply_text_edits',
+          'workspace.delete_file',
+          'workspace.move_file',
+          'workspace.write_file',
         ])
       );
     }
@@ -118,9 +122,12 @@ describe('Main Agent admission authority source builder', () => {
       'computer.list_directory',
       'computer.open_path',
       'computer.read_text_file',
+      'workspace.code_intelligence',
       'workspace.effect_result_read',
+      'workspace.glob',
       'workspace.list_files',
-      'workspace.read_file'
+      'workspace.read_file',
+      'workspace.search_text'
     ]);
 
     const networkOnly = buildAgentAdmissionAuthoritySource({
@@ -140,9 +147,12 @@ describe('Main Agent admission authority source builder', () => {
       'computer.list_directory',
       'computer.open_path',
       'computer.read_text_file',
+      'workspace.code_intelligence',
       'workspace.effect_result_read',
+      'workspace.glob',
       'workspace.list_files',
-      'workspace.read_file'
+      'workspace.read_file',
+      'workspace.search_text'
     ]);
   });
 

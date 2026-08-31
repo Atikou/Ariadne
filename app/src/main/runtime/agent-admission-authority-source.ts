@@ -131,6 +131,9 @@ function createManifest(input: {
     toolName === 'workspace.list_files'
     || toolName === 'workspace.read_file'
     || toolName === 'workspace.effect_result_read'
+    || toolName === 'workspace.search_text'
+    || toolName === 'workspace.glob'
+    || toolName === 'workspace.code_intelligence'
     || (toolName === 'skill.load' && capabilitySet.has('skills.read'))
     || (
       (
@@ -141,7 +144,15 @@ function createManifest(input: {
       )
       && capabilitySet.has('workspace.shell')
     )
-    || (toolName === 'workspace.write_file' && capabilitySet.has('workspace.write'))
+    || (
+      (
+        toolName === 'workspace.write_file'
+        || toolName === 'workspace.apply_text_edits'
+        || toolName === 'workspace.move_file'
+        || toolName === 'workspace.delete_file'
+      )
+      && capabilitySet.has('workspace.write')
+    )
     || (toolName.startsWith('mcp.') && capabilitySet.has('mcp.use'))
     || (
       toolName.startsWith('browser.')

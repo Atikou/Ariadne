@@ -157,6 +157,7 @@ export interface AgentControlExecutionPipeline {
   readonly executionScheduler: AgentRunExecutionIntentScheduler;
   readonly runWorkScheduler: AgentRunWorkScheduler;
   readonly toolPresentationResolver: AgentToolPresentationResolver;
+  readonly protectedEffectResultReader?: ProtectedAgentEffectResultReader;
   /** Synchronous, pre-write gate for one new Conversation objective. */
   assertConversationMessageAdmission(workspaceId: string): void;
   observeRuntimeStop(occurredAt: string): void;
@@ -293,14 +294,14 @@ implements AgentControlExecutionPipelineFactory {
       lifecycleHooks,
       this.options.liveWorkLifecycle
     );
+    const protectedEffectResultReader = new ProtectedAgentEffectResultReader(
+      input.unitOfWork
+    );
     const catalogs = new ImmutableAgentToolCatalogRegistry(
       this.options.toolCatalogSnapshots,
       lifecycleHooks,
       {
-        protectedEffectResults: new ProtectedAgentEffectResultReader(
-          input.unitOfWork,
-          input.unitOfWork
-        )
+        protectedEffectResults: protectedEffectResultReader
       }
     );
     await assertCatalogAuthorities(source, catalogs);
@@ -577,6 +578,7 @@ implements AgentControlExecutionPipelineFactory {
       executionScheduler,
       runWorkScheduler,
       toolPresentationResolver: catalogs,
+      protectedEffectResultReader,
       assertConversationMessageAdmission: (workspaceId: string): void => {
         const manifest = manifests.get(workspaceId);
         if (manifest === undefined) {

@@ -86,6 +86,10 @@ import {
 } from './SqliteOwnerLease.js';
 import type { ShutdownContext } from '../../control/ports/ShutdownContext.js';
 import type {
+  AgentProtectedEffectResultAuthority,
+  AgentProtectedEffectResultAuthorityRecord
+} from '../../control/ports/AgentToolExecution.js';
+import type {
   AgentRunExecutionIntent,
   AgentRunExecutionIntentClaimRequest,
   AgentRunExecutionIntentLedger,
@@ -331,7 +335,8 @@ AgentRunRecoveryPayloadReader,
 AgentTurnInputPayloadReader,
 AgentDirectivePayloadReader,
 AgentRunOutboxStore,
-AgentRunExecutionIntentLedger {
+AgentRunExecutionIntentLedger,
+AgentProtectedEffectResultAuthority {
   private readonly database: DatabaseSync;
   private readonly executionIntents: SqliteAgentExecutionIntentStore;
   private readonly ownerLease: SqliteOwnerLease;
@@ -549,6 +554,45 @@ AgentRunExecutionIntentLedger {
     return this.scheduleOperation((signal) => this.executeDatabaseTransaction(
       'read',
       () => loadEffectResultPayload(this.database, this.payloadCodec, reference),
+      signal
+    ));
+  }
+
+  public async loadProtectedEffectResultAuthority(
+    runId: string,
+    effectId: string
+  ): Promise<AgentProtectedEffectResultAuthorityRecord | null> {
+    if (runId.length === 0 || effectId.length === 0) {
+      throw new AgentRunInvariantError('Protected Effect result identity is required.');
+    }
+    return this.scheduleOperation((signal) => this.executeDatabaseTransaction(
+      'read',
+      async () => {
+        const runRow = this.database.prepare(
+          `SELECT run_id, version, state_status, aggregate_json, created_at, updated_at
+           FROM agent_v3_runs WHERE run_id=?`
+        ).get(runId) as AgentRunRow | undefined;
+        if (runRow === undefined) return null;
+        const run = parseRunRow(runRow, 'agent_v3_runs:protected_effect_result');
+        const effect = run.effects.find((candidate) => candidate.effectId === effectId);
+        if (
+          effect === undefined
+          || (effect.state.status !== 'succeeded' && effect.state.status !== 'failed')
+        ) return null;
+        const payloadRow = loadEffectPayloadRow(this.database, runId, effectId);
+        if (payloadRow === undefined) return null;
+        const reference = effectPayloadReference(payloadRow);
+        if (!reference.hasResult || reference.inputDigest !== effect.inputDigest) return null;
+        return {
+          runId,
+          workspaceId: run.binding.workspace.workspaceId,
+          effectId,
+          toolCallId: effect.toolCallId,
+          status: effect.state.status,
+          tool: { ...effect.tool },
+          result: await loadEffectResultPayload(this.database, this.payloadCodec, reference)
+        };
+      },
       signal
     ));
   }

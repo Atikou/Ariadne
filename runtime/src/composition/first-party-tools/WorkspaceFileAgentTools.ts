@@ -38,8 +38,127 @@ export function createWorkspaceFileAgentToolRegistrations(
   return [
     readFileRegistration(roots, workspaceFiles),
     applyTextEditsRegistration(roots, workspaceFiles),
-    writeFileRegistration(roots, workspaceFiles)
+    writeFileRegistration(roots, workspaceFiles),
+    moveFileRegistration(roots, workspaceFiles),
+    deleteFileRegistration(roots, workspaceFiles)
   ];
+}
+
+function moveFileRegistration(
+  roots: ReadonlyMap<string, WorkspaceBinding>,
+  workspaceFiles: LocalWorkspaceFileService
+): TrustedAgentToolRegistrationV1 {
+  return registration({
+    implementationModuleUrl: import.meta.url,
+    toolName: 'workspace.move_file',
+    model: {
+      description: 'Move one observed regular UTF-8 file to a new absent Workspace path.',
+      guidance: [
+        'Use the exact version returned by workspace.read_file.',
+        'The destination is never overwritten.'
+      ]
+    },
+    presentation: { kind: 'file_change', label: '移动工作区文件', resultVisibility: 'protected' },
+    capabilityIds: ['workspace.write'],
+    requiredWorkspaceAccess: 'write',
+    sideEffect: 'write',
+    approval: 'required',
+    inputSchema: objectSchema({
+      sourcePath: { type: 'string' },
+      destinationPath: { type: 'string' },
+      expectedVersion: { type: 'string', pattern: '^workspace-file-v1:[a-f0-9]{64}$' }
+    }, ['destinationPath', 'expectedVersion', 'sourcePath']),
+    outputSchema: objectSchema({
+      sourcePath: { type: 'string' },
+      destinationPath: { type: 'string' },
+      operation: { const: 'moved' },
+      byteLength: { type: 'integer', minimum: 0 },
+      previousVersion: { type: 'string', pattern: '^workspace-file-v1:[a-f0-9]{64}$' },
+      version: { type: 'string', pattern: '^workspace-file-v1:[a-f0-9]{64}$' }
+    }, ['byteLength', 'destinationPath', 'operation', 'previousVersion', 'sourcePath', 'version']),
+    validate: validateWorkspaceMoveInput,
+    execute: async (input, context) => {
+      try {
+        const workspace = requireWorkspace(roots, context, 'write');
+        const sourcePath = requiredStringProperty(input, 'sourcePath');
+        const destinationPath = requiredStringProperty(input, 'destinationPath');
+        const expectedVersion = requiredStringProperty(input, 'expectedVersion') as WorkspaceFileVersion;
+        const [source, destination] = await Promise.all([
+          resolveExistingWorkspacePath(workspace.rootPath, sourcePath),
+          resolveWritableWorkspacePath(workspace.rootPath, destinationPath)
+        ]);
+        const result = await workspaceFiles.moveText({
+          sourceAbsolutePath: source,
+          destinationAbsolutePath: destination,
+          expectedVersion,
+          maxBytes: MAX_TEXT_BYTES,
+          signal: context.signal
+        });
+        return succeeded({
+          sourcePath: normalizeRelativePath(sourcePath),
+          destinationPath: normalizeRelativePath(destinationPath),
+          operation: result.operation,
+          byteLength: result.byteLength,
+          previousVersion: expectedVersion,
+          version: result.version
+        });
+      } catch (error) {
+        return failed(workspaceFileErrorCode(error, 'workspace_move_failed'), error);
+      }
+    }
+  });
+}
+
+function deleteFileRegistration(
+  roots: ReadonlyMap<string, WorkspaceBinding>,
+  workspaceFiles: LocalWorkspaceFileService
+): TrustedAgentToolRegistrationV1 {
+  return registration({
+    implementationModuleUrl: import.meta.url,
+    toolName: 'workspace.delete_file',
+    model: {
+      description: 'Delete one observed regular UTF-8 Workspace file using exact version CAS.',
+      guidance: ['Use the exact version returned by workspace.read_file. Directories are rejected.']
+    },
+    presentation: { kind: 'file_change', label: '删除工作区文件', resultVisibility: 'protected' },
+    capabilityIds: ['workspace.write'],
+    requiredWorkspaceAccess: 'write',
+    sideEffect: 'write',
+    approval: 'required',
+    inputSchema: objectSchema({
+      path: { type: 'string' },
+      expectedVersion: { type: 'string', pattern: '^workspace-file-v1:[a-f0-9]{64}$' }
+    }, ['expectedVersion', 'path']),
+    outputSchema: objectSchema({
+      path: { type: 'string' },
+      operation: { const: 'deleted' },
+      byteLength: { type: 'integer', minimum: 0 },
+      previousVersion: { type: 'string', pattern: '^workspace-file-v1:[a-f0-9]{64}$' }
+    }, ['byteLength', 'operation', 'path', 'previousVersion']),
+    validate: validateWorkspaceDeleteInput,
+    execute: async (input, context) => {
+      try {
+        const workspace = requireWorkspace(roots, context, 'write');
+        const relativePath = requiredStringProperty(input, 'path');
+        const expectedVersion = requiredStringProperty(input, 'expectedVersion') as WorkspaceFileVersion;
+        const target = await resolveExistingWorkspacePath(workspace.rootPath, relativePath);
+        const result = await workspaceFiles.deleteText({
+          absolutePath: target,
+          expectedVersion,
+          maxBytes: MAX_TEXT_BYTES,
+          signal: context.signal
+        });
+        return succeeded({
+          path: normalizeRelativePath(relativePath),
+          operation: result.operation,
+          byteLength: result.byteLength,
+          previousVersion: expectedVersion
+        });
+      } catch (error) {
+        return failed(workspaceFileErrorCode(error, 'workspace_delete_failed'), error);
+      }
+    }
+  });
 }
 
 function readFileRegistration(
@@ -144,6 +263,7 @@ function writeFileRegistration(
     outputSchema: objectSchema({
       path: { type: 'string' },
       byteLength: { type: 'integer', minimum: 0 },
+      diff: { type: 'string', maxLength: 70_000 },
       operation: { enum: ['created', 'replaced'] },
       version: {
         type: 'string',
@@ -174,6 +294,11 @@ function writeFileRegistration(
         return succeeded({
           path: normalizeRelativePath(relativePath),
           byteLength: result.byteLength,
+          diff: boundedUnifiedDiff(
+            normalizeRelativePath(relativePath),
+            result.previousContent ?? '',
+            result.content
+          ),
           operation: result.operation,
           version: result.version
         });
@@ -242,6 +367,7 @@ function applyTextEditsRegistration(
       operation: { const: 'edited' },
       appliedEdits: { type: 'integer', minimum: 1 },
       byteLength: { type: 'integer', minimum: 0 },
+      diff: { type: 'string', maxLength: 70_000 },
       previousVersion: { type: 'string', pattern: '^workspace-file-v1:[a-f0-9]{64}$' },
       version: { type: 'string', pattern: '^workspace-file-v1:[a-f0-9]{64}$' }
     }, ['appliedEdits', 'byteLength', 'operation', 'path', 'previousVersion', 'version']),
@@ -266,6 +392,11 @@ function applyTextEditsRegistration(
           operation: result.operation,
           appliedEdits: result.appliedEdits,
           byteLength: result.byteLength,
+          diff: boundedUnifiedDiff(
+            normalizeRelativePath(relativePath),
+            result.previousContent,
+            result.content
+          ),
           previousVersion: expectedVersion,
           version: result.version
         });
@@ -300,6 +431,46 @@ function validateWorkspaceWriteInput(
   return {
     status: 'accepted',
     input: { path, content, mode, expectedVersion }
+  };
+}
+
+function validateWorkspaceMoveInput(
+  input: AgentToolJsonValue
+): AgentToolInputValidationResult {
+  if (
+    !isRecord(input)
+    || hasUnknownKeys(input, ['sourcePath', 'destinationPath', 'expectedVersion'])
+    || typeof input.sourcePath !== 'string'
+    || input.sourcePath.length === 0
+    || typeof input.destinationPath !== 'string'
+    || input.destinationPath.length === 0
+    || typeof input.expectedVersion !== 'string'
+    || !/^workspace-file-v1:[a-f0-9]{64}$/u.test(input.expectedVersion)
+  ) return { status: 'rejected' };
+  return {
+    status: 'accepted',
+    input: {
+      sourcePath: input.sourcePath,
+      destinationPath: input.destinationPath,
+      expectedVersion: input.expectedVersion
+    }
+  };
+}
+
+function validateWorkspaceDeleteInput(
+  input: AgentToolJsonValue
+): AgentToolInputValidationResult {
+  if (
+    !isRecord(input)
+    || hasUnknownKeys(input, ['path', 'expectedVersion'])
+    || typeof input.path !== 'string'
+    || input.path.length === 0
+    || typeof input.expectedVersion !== 'string'
+    || !/^workspace-file-v1:[a-f0-9]{64}$/u.test(input.expectedVersion)
+  ) return { status: 'rejected' };
+  return {
+    status: 'accepted',
+    input: { path: input.path, expectedVersion: input.expectedVersion }
   };
 }
 
@@ -374,4 +545,37 @@ function isWorkspaceTextPosition(
 
 function workspaceFileErrorCode(error: unknown, fallback: string): string {
   return error instanceof LocalWorkspaceFileError ? error.code : fallback;
+}
+
+const MAX_PROTECTED_DIFF_BYTES = 64 * 1024;
+
+function boundedUnifiedDiff(pathValue: string, before: string, after: string): string {
+  const beforeLines = diffLines(before);
+  const afterLines = diffLines(after);
+  const lines = [
+    `--- a/${pathValue}`,
+    `+++ b/${pathValue}`,
+    `@@ -1,${String(beforeLines.length)} +1,${String(afterLines.length)} @@`,
+    ...beforeLines.map((line) => `-${line}`),
+    ...afterLines.map((line) => `+${line}`)
+  ];
+  const selected: string[] = [];
+  let bytes = 0;
+  for (const line of lines) {
+    const next = Buffer.byteLength(`${line}\n`, 'utf8');
+    if (bytes + next > MAX_PROTECTED_DIFF_BYTES) {
+      selected.push('… diff truncated');
+      break;
+    }
+    selected.push(line);
+    bytes += next;
+  }
+  return `${selected.join('\n')}\n`;
+}
+
+function diffLines(content: string): readonly string[] {
+  if (content.length === 0) return [];
+  const lines = content.split(/\r\n|\n|\r/u);
+  if (lines.at(-1) === '') lines.pop();
+  return lines;
 }

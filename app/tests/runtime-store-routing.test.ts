@@ -25,6 +25,60 @@ const READY: RuntimeStatus = {
 const ACTION_TOKEN = `decision-action.v1:${'a'.repeat(64)}`;
 
 describe('RuntimeStore command routing', () => {
+  it('requests one protected Tool result page and validates its ownership tuple', async () => {
+    const commands: RuntimeCommand[] = [];
+    const store = new RuntimeStore(successfulRuntimeApi({
+      getStatus: async () => READY,
+      request: async (command) => {
+        commands.push(command);
+        if (command.kind !== 'agent.tool_result.detail.get.v3') {
+          throw new Error(`Unexpected command: ${command.kind}`);
+        }
+        return {
+          kind: 'agent.tool_result.detail.v3',
+          runId: command.runId,
+          workspaceId: command.workspaceId,
+          effectId: command.effectId,
+          toolCallId: 'call-detail',
+          presentation: { kind: 'file_search', label: '搜索工作区' },
+          status: 'succeeded',
+          digest: `sha256:${'a'.repeat(64)}`,
+          totalBytes: 40,
+          cursor: command.cursor,
+          nextCursor: 20,
+          content: '{"matches":[]}',
+          complete: false
+        };
+      },
+      onEvent: () => () => undefined
+    }));
+
+    await expect(store.loadProtectedToolResultDetail(
+      'run-detail',
+      'workspace-detail',
+      'effect-detail',
+      4,
+      8 * 1024
+    )).resolves.toMatchObject({
+      kind: 'agent.tool_result.detail.v3',
+      runId: 'run-detail',
+      workspaceId: 'workspace-detail',
+      effectId: 'effect-detail',
+      presentation: { kind: 'file_search' },
+      cursor: 4,
+      nextCursor: 20
+    });
+    expect(commands).toEqual([{
+      kind: 'agent.tool_result.detail.get.v3',
+      contractVersion: '3.0',
+      runId: 'run-detail',
+      workspaceId: 'workspace-detail',
+      effectId: 'effect-detail',
+      cursor: 4,
+      maxBytes: 8 * 1024
+    }]);
+  });
+
   it('never routes run mutations through retired command chains', async () => {
     const commands: RuntimeCommand[] = [];
     const store = new RuntimeStore(successApi(commands));

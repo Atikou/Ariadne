@@ -219,6 +219,18 @@ describe('SqliteAgentRunUnitOfWork', () => {
         outputRef: 'resource:final-answer'
       }
     });
+    await expect(unitOfWork.loadProtectedEffectResultAuthority(
+      'run-persisted',
+      'effect-write-result'
+    )).resolves.toMatchObject({
+      runId: 'run-persisted',
+      workspaceId: 'workspace-1',
+      effectId: 'effect-write-result',
+      toolCallId: 'tool-call-write-result',
+      status: 'succeeded',
+      tool: { toolName: 'workspace.write' },
+      result: { status: 'succeeded', outputRef: 'resource:result-file' }
+    });
 
     expect(database.schemaVersion).toBe(AGENT_CONTROL_DB_SCHEMA_VERSION);
     expect(AGENT_CONTROL_LEDGER_REVISION).toBe(55);
@@ -271,6 +283,14 @@ describe('SqliteAgentRunUnitOfWork', () => {
       transaction.loadRun('run-persisted')
     );
     expect(restored).toEqual(completed.run);
+    await expect(reopenedUnitOfWork.loadProtectedEffectResultAuthority(
+      'run-persisted',
+      'effect-write-result'
+    )).resolves.toMatchObject({
+      workspaceId: 'workspace-1',
+      effectId: 'effect-write-result',
+      result: { status: 'succeeded', outputRef: 'resource:result-file' }
+    });
 
     const replay = await new SqliteTestAgentRunCommandService(reopenedUnitOfWork)
       .execute(completeCommand);

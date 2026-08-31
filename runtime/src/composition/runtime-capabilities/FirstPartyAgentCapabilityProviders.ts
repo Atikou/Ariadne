@@ -1,4 +1,5 @@
 import { ProductionMcpAgentClient } from '../../adapters/mcp/ProductionMcpAgentClient.js';
+import { SandboxWorkspaceLspService } from '../../adapters/code-intelligence/SandboxWorkspaceLspService.js';
 import { AgentLiveWorkService } from '../../control/resources/AgentLiveWorkService.js';
 import { AgentProcessLiveWorkProducer } from '../../control/resources/AgentProcessLiveWorkProducer.js';
 import { AgentTerminalLiveWorkProducer } from '../../control/resources/AgentTerminalLiveWorkProducer.js';
@@ -31,20 +32,7 @@ export function firstPartyAgentCapabilityProviders(): readonly RuntimeCapability
       id: 'workspace.tools',
       dependsOn: ['computer.read-tools'],
       publicCapabilities: ['workspace.read', 'workspace.write'],
-      start: (context) => ({
-        publicCapabilities: [
-          'workspace.read',
-          ...(context.bootstrap.workspaces.some((workspace) => workspace.access === 'write')
-            ? ['workspace.write' as const] : [])
-        ],
-        tools: [
-          ...createProtectedResultAgentToolRegistrations(context.workspaceBindings),
-          ...createWorkspaceAgentToolRegistrations(
-            context.workspaceBindings,
-            context.processSandboxFactory
-          )
-        ]
-      })
+      start: createWorkspaceToolCapability
     }),
     defineRuntimeCapabilityProvider({
       id: 'workspace.live-work',
@@ -99,6 +87,35 @@ export function firstPartyAgentCapabilityProviders(): readonly RuntimeCapability
       })
     })
   ]);
+}
+
+function createWorkspaceToolCapability(
+  context: RuntimeCapabilityStartContext
+): RuntimeCapabilityHandle {
+  const lsp = context.processSandboxFactory === undefined
+    ? undefined
+    : new SandboxWorkspaceLspService(context.processSandboxFactory);
+  return {
+    publicCapabilities: [
+      'workspace.read',
+      ...(context.bootstrap.workspaces.some((workspace) => workspace.access === 'write')
+        ? ['workspace.write' as const] : [])
+    ],
+    tools: [
+      ...createProtectedResultAgentToolRegistrations(context.workspaceBindings),
+      ...createWorkspaceAgentToolRegistrations(
+        context.workspaceBindings,
+        context.processSandboxFactory,
+        lsp
+      )
+    ],
+    ...(lsp === undefined ? {} : {
+      close: async (shutdown: ShutdownContext) => {
+        await lsp.close();
+        shutdown.throwIfExpired('workspace_lsp_shutdown_deadline_exceeded');
+      }
+    })
+  };
 }
 
 function createLiveWorkCapability(context: RuntimeCapabilityStartContext): RuntimeCapabilityHandle {

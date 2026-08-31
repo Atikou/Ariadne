@@ -29,16 +29,20 @@ import {
 } from './FirstPartyAgentToolSupport.js';
 import { createWorkspaceFileAgentToolRegistrations } from './WorkspaceFileAgentTools.js';
 import { createWorkspaceSearchAgentToolRegistrations } from './WorkspaceSearchAgentTools.js';
+import type { WorkspaceLspService } from '../../adapters/code-intelligence/SandboxWorkspaceLspService.js';
+import { createWorkspaceLspAgentToolRegistration } from './WorkspaceLspAgentTools.js';
 
 export function createWorkspaceAgentToolRegistrations(
   roots: ReadonlyMap<string, WorkspaceBinding>,
-  processSandboxFactory?: FirstPartyProcessSandboxFactory
+  processSandboxFactory?: FirstPartyProcessSandboxFactory,
+  lsp?: WorkspaceLspService
 ): readonly TrustedAgentToolRegistrationV1[] {
   const workspaceFiles = new LocalWorkspaceFileService();
   return [
     listFilesRegistration(roots),
     ...createWorkspaceFileAgentToolRegistrations(roots, workspaceFiles),
     ...createWorkspaceSearchAgentToolRegistrations(roots, workspaceFiles),
+    createWorkspaceLspAgentToolRegistration(roots, workspaceFiles, lsp),
     runCommandRegistration(roots, processSandboxFactory)
   ];
 }

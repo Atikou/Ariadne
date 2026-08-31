@@ -112,6 +112,7 @@ export const publicToolActivityProjectionV3Schema = z.object({
     label: z.string().trim().min(1).max(128)
   }).strict().optional(),
   status: z.enum(['pending', 'running', 'completed', 'failed']),
+  detailAvailable: z.boolean().default(false),
   occurredAt: publicProjectionCanonicalTimestampSchema,
   startedAt: publicProjectionCanonicalTimestampSchema.optional(),
   completedAt: publicProjectionCanonicalTimestampSchema.optional()

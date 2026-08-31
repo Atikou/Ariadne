@@ -244,6 +244,7 @@ describe('first-party Agent Tool Catalog', () => {
         path: 'created.txt',
         operation: 'created',
         byteLength: 7,
+        diff: expect.stringContaining('+created'),
         version: expect.stringMatching(/^workspace-file-v1:[a-f0-9]{64}$/u)
       }
     });
@@ -336,6 +337,7 @@ describe('first-party Agent Tool Catalog', () => {
         path: 'note.txt',
         operation: 'edited',
         appliedEdits: 2,
+        diff: expect.stringContaining('+alpha 星 beta'),
         previousVersion: observedVersion,
         version: expect.stringMatching(/^workspace-file-v1:[a-f0-9]{64}$/u)
       }
@@ -383,6 +385,86 @@ describe('first-party Agent Tool Catalog', () => {
       errorCode: 'workspace_file_stale_version'
     });
     expect(readFileSync(target, 'utf8')).toBe('external');
+  });
+
+  it('moves and deletes only exact observed file versions and publishes the LSP contract', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-file-lifecycle-workspace-'));
+    temporaryRoots.push(root);
+    writeFileSync(path.join(root, 'source.ts'), 'export const value = 1\n', 'utf8');
+    const catalog = await compileCapabilityCatalog([{
+      workspaceId: 'workspace-file-lifecycle',
+      label: 'File lifecycle workspace',
+      rootPath: root,
+      access: 'write'
+    }]);
+    const byName = (name: string) => catalog.entries.find(
+      (entry) => entry.document.toolName === name
+    );
+    const read = byName('workspace.read_file');
+    const move = byName('workspace.move_file');
+    const remove = byName('workspace.delete_file');
+    const lsp = byName('workspace.code_intelligence');
+    const context = {
+      runId: 'run-file-lifecycle',
+      effectId: 'effect-file-lifecycle',
+      toolCallId: 'call-file-lifecycle',
+      idempotencyKey: 'idempotency-file-lifecycle',
+      capabilityIds: ['workspace.read', 'workspace.write'],
+      scope: ['workspace-file-lifecycle'],
+      signal: new AbortController().signal
+    };
+
+    for (const tool of [move, remove]) {
+      expect(tool?.document).toMatchObject({
+        capabilityIds: ['workspace.write'],
+        sideEffect: 'write',
+        permission: { approval: 'required' },
+        presentation: { kind: 'file_change', resultVisibility: 'protected' }
+      });
+    }
+    expect(lsp?.document).toMatchObject({
+      capabilityIds: ['workspace.read'],
+      sideEffect: 'read',
+      permission: { approval: 'never' },
+      presentation: { kind: 'file_search', resultVisibility: 'protected' }
+    });
+    expect(lsp?.executable.normalizeAndValidate({
+      operation: 'definition',
+      path: 'source.ts'
+    })).toEqual({ status: 'rejected' });
+
+    const observed = await read?.executable.execute({ path: 'source.ts' }, context);
+    const sourceVersion = toolResultVersion(observed);
+    await expect(move?.executable.execute({
+      sourcePath: 'source.ts',
+      destinationPath: 'nested/moved.ts',
+      expectedVersion: sourceVersion
+    }, context)).resolves.toMatchObject({
+      status: 'succeeded',
+      result: {
+        sourcePath: 'source.ts',
+        destinationPath: 'nested/moved.ts',
+        operation: 'moved',
+        previousVersion: sourceVersion
+      }
+    });
+    expect(readFileSync(path.join(root, 'nested', 'moved.ts'), 'utf8'))
+      .toBe('export const value = 1\n');
+
+    const moved = await read?.executable.execute({ path: 'nested/moved.ts' }, context);
+    const movedVersion = toolResultVersion(moved);
+    await expect(remove?.executable.execute({
+      path: 'nested/moved.ts',
+      expectedVersion: movedVersion
+    }, context)).resolves.toMatchObject({
+      status: 'succeeded',
+      result: {
+        path: 'nested/moved.ts',
+        operation: 'deleted',
+        previousVersion: movedVersion
+      }
+    });
+    expect(() => readFileSync(path.join(root, 'nested', 'moved.ts'), 'utf8')).toThrow();
   });
 
   it('keeps browser read tools in the same immutable production catalog', async () => {
@@ -639,6 +721,19 @@ async function compileCapabilityCatalog(
   const catalog = manifest.agentToolCatalogSnapshots[0];
   if (catalog === undefined) throw new Error('test_capability_catalog_missing');
   return catalog;
+}
+
+function toolResultVersion(
+  outcome: Awaited<ReturnType<NonNullable<Awaited<ReturnType<typeof compileCapabilityCatalog>>['entries'][number]>['executable']['execute']>> | undefined
+): string {
+  if (
+    outcome?.status !== 'succeeded'
+    || typeof outcome.result !== 'object'
+    || outcome.result === null
+    || Array.isArray(outcome.result)
+    || typeof outcome.result.version !== 'string'
+  ) throw new Error('workspace_tool_result_version_missing');
+  return outcome.result.version;
 }
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';

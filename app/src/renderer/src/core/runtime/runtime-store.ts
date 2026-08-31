@@ -109,6 +109,11 @@ export type ResolvedConversationMessage = Extract<
   { readonly kind: 'conversation.message.resolved.v3' }
 >;
 
+export type ProtectedToolResultDetail = Extract<
+  RuntimeResult,
+  { readonly kind: 'agent.tool_result.detail.v3' }
+>;
+
 const STOPPED_STATUS: RuntimeStatus = {
   availability: 'stopped',
   capabilities: [],
@@ -313,6 +318,31 @@ export class RuntimeStore {
     this.publish();
     await this.requestSynchronization(false);
     return sessionId;
+  }
+
+  async loadProtectedToolResultDetail(
+    runId: string,
+    workspaceId: string,
+    effectId: string,
+    cursor = 0,
+    maxBytes = 32 * 1024
+  ): Promise<ProtectedToolResultDetail> {
+    const result = await this.command({
+      kind: 'agent.tool_result.detail.get.v3',
+      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      runId,
+      workspaceId,
+      effectId,
+      cursor,
+      maxBytes
+    });
+    if (
+      result.kind !== 'agent.tool_result.detail.v3'
+      || result.runId !== runId
+      || result.workspaceId !== workspaceId
+      || result.effectId !== effectId
+    ) throw new Error(`runtime_result_invalid:${result.kind}`);
+    return result;
   }
 
   isPlanModeEnabled(sessionId: string | null = this.ui.selectedSessionId): boolean {

@@ -78,6 +78,7 @@ export class AgentControlPublicCommandRouter {
   private readonly conversationNavigation: ConversationNavigationPublicCommandHandler;
   private readonly conversationCommandNow: () => Date;
   private readonly attachmentStore: ConversationAttachmentStore | undefined;
+  private readonly authorizedWorkspaceIds: ReadonlySet<string>;
 
   public constructor(
     private readonly unitOfWork: SqliteAgentRunUnitOfWork,
@@ -120,6 +121,7 @@ export class AgentControlPublicCommandRouter {
       options.authorizedWorkspaceIds
     );
     this.attachmentStore = options.attachmentStore;
+    this.authorizedWorkspaceIds = new Set(options.authorizedWorkspaceIds ?? []);
   }
 
   public async executeOwnedCommand(
@@ -135,6 +137,8 @@ export class AgentControlPublicCommandRouter {
       case 'conversation.sessions.query.v3':
       case 'conversation.message.resolve.v3':
         return this.conversationNavigation.execute(envelope, envelope.command);
+      case 'agent.tool_result.detail.get.v3':
+        return this.executeToolResultDetail(envelope, envelope.command);
       case 'conversation.message.accept.v3':
         return this.executeAcceptConversationMessage(envelope, envelope.command);
       case 'agent.decision.resolve.v3':
@@ -180,6 +184,7 @@ export class AgentControlPublicCommandRouter {
       case 'projection.commits.read':
       case 'conversation.sessions.query.v3':
       case 'conversation.message.resolve.v3':
+      case 'agent.tool_result.detail.get.v3':
         return { kind: 'not_committed' };
       case 'conversation.session.create.v3':
       case 'conversation.session.rename.v3':
@@ -521,6 +526,74 @@ export class AgentControlPublicCommandRouter {
       },
       settlement: 'completed'
     };
+  }
+
+  private async executeToolResultDetail(
+    envelope: RuntimeCommandEnvelope,
+    command: Extract<RuntimeCommandEnvelope['command'], {
+      readonly kind: 'agent.tool_result.detail.get.v3';
+    }>
+  ): Promise<RuntimeApplicationCommandResult> {
+    envelope.signal.throwIfAborted();
+    if (
+      this.authorizedWorkspaceIds.size > 0
+      && !this.authorizedWorkspaceIds.has(command.workspaceId)
+    ) {
+      return completedPublicError(
+        envelope,
+        'workspace_not_authorized',
+        'The Workspace is not authorized by this Runtime bootstrap.',
+        false
+      );
+    }
+    const pipeline = this.executionPipeline;
+    if (pipeline?.protectedEffectResultReader === undefined) {
+      return completedPublicError(
+        envelope,
+        'agent_tool_result_unavailable',
+        'The protected Tool result reader is unavailable.',
+        false
+      );
+    }
+    try {
+      const detail = await pipeline.protectedEffectResultReader.read(command);
+      const presentation = pipeline.toolPresentationResolver.resolveToolPresentation(detail.tool);
+      if (presentation === null || detail.workspaceId !== command.workspaceId) {
+        throw new Error('agent_protected_effect_result_presentation_unavailable');
+      }
+      return {
+        outcome: {
+          ok: true,
+          result: {
+            kind: 'agent.tool_result.detail.v3',
+            runId: command.runId,
+            workspaceId: detail.workspaceId,
+            effectId: detail.effectId,
+            toolCallId: detail.toolCallId,
+            presentation,
+            status: detail.status,
+            digest: detail.digest,
+            totalBytes: detail.totalBytes,
+            cursor: detail.cursor,
+            nextCursor: detail.nextCursor,
+            content: detail.content,
+            complete: detail.complete
+          }
+        },
+        settlement: 'completed'
+      };
+    } catch (error) {
+      envelope.signal.throwIfAborted();
+      if (error instanceof Error && error.message.startsWith('agent_protected_effect_result_')) {
+        return completedPublicError(
+          envelope,
+          'agent_tool_result_unavailable',
+          'The protected Tool result is unavailable for this Run and Workspace.',
+          false
+        );
+      }
+      throw error;
+    }
   }
 
   private async loadCommittedCancellation(

@@ -73,6 +73,87 @@ describe('AgentControlPublicCommandRouter SubAgent interruption', () => {
     });
     expect(interruptActiveTurn).not.toHaveBeenCalled();
   });
+
+  it('serves protected Tool detail only through the authorized workspace and pinned presentation', async () => {
+    const read = vi.fn(async () => ({
+      runId: 'run-detail',
+      workspaceId: 'workspace-detail',
+      effectId: 'effect-detail',
+      toolCallId: 'call-detail',
+      status: 'succeeded' as const,
+      tool: {
+        catalogId: 'catalog-detail',
+        revision: 1,
+        digest: `sha256:${'a'.repeat(64)}`,
+        toolName: 'workspace.read_file',
+        toolVersion: '2.0.0',
+        providerId: 'ariadne.runtime',
+        contractDigest: `sha256:${'b'.repeat(64)}`
+      },
+      digest: `sha256:${'c'.repeat(64)}`,
+      totalBytes: 18,
+      cursor: 0,
+      nextCursor: 18,
+      content: '{"content":"ok"}',
+      complete: true
+    }));
+    const pipeline = {
+      protectedEffectResultReader: { read },
+      toolPresentationResolver: {
+        resolveToolPresentation: vi.fn(() => ({ kind: 'file_read', label: '读取工作区文件' }))
+      },
+      runWorkScheduler: { wake: vi.fn(), interruptActiveTurn: vi.fn() }
+    } as unknown as AgentControlExecutionPipeline;
+    const router = new AgentControlPublicCommandRouter(
+      {} as SqliteAgentRunUnitOfWork,
+      {} as SqliteConversationRunHandoffUnitOfWork,
+      {} as SqlitePublicProjectionStore,
+      pipeline,
+      { wakeProjectionDrain: vi.fn(), executeProjectionQuery: vi.fn() },
+      { authorizedWorkspaceIds: ['workspace-detail'] }
+    );
+    const command = {
+      commandId: 'command-tool-detail',
+      correlationId: 'correlation-tool-detail',
+      deadlineAt: '2026-08-28T00:01:00.000Z',
+      signal: new AbortController().signal,
+      command: {
+        kind: 'agent.tool_result.detail.get.v3',
+        contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+        runId: 'run-detail',
+        workspaceId: 'workspace-detail',
+        effectId: 'effect-detail',
+        cursor: 0,
+        maxBytes: 32 * 1024
+      }
+    } as RuntimeCommandEnvelope;
+
+    await expect(router.executeOwnedCommand(command)).resolves.toMatchObject({
+      outcome: {
+        ok: true,
+        result: {
+          kind: 'agent.tool_result.detail.v3',
+          workspaceId: 'workspace-detail',
+          effectId: 'effect-detail',
+          presentation: { kind: 'file_read', label: '读取工作区文件' },
+          content: '{"content":"ok"}',
+          complete: true
+        }
+      },
+      settlement: 'completed'
+    });
+    expect(read).toHaveBeenCalledWith(command.command);
+
+    const denied = {
+      ...command,
+      commandId: 'command-tool-detail-denied',
+      command: { ...command.command, workspaceId: 'workspace-other' }
+    } as RuntimeCommandEnvelope;
+    await expect(router.executeOwnedCommand(denied)).resolves.toMatchObject({
+      outcome: { ok: false, error: { code: 'workspace_not_authorized' } }
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+  });
 });
 
 function routerFor(

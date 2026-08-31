@@ -25,8 +25,8 @@ Immutable Catalog Registry 只用 complete pinned Tool identity 解析展示元�
 
 - 修改模型描述、guidance、kind 或 label 会像修改 schema/实现一样导致 contract/catalog digest 漂移。
 - Provider request、Runtime activity projection 和 Renderer 标题使用同一 immutable pin，不再存在中央 tool-name 映射。
-- 结果正文仍由受保护 Effect result owner 持有。未来 read/search/diff/terminal 详情必须通过 owner-scoped reader 生成严格 render-intent，不得扩大本 ADR 的静态投影字段。
-- 当前第一方 Catalog 升级为 revision 17，33 个 Tool 的实现工件与 V2 合同共同固定。
+- 结果正文仍由受保护 Effect result owner 持有。终态 Effect 只把 `detailAvailable` 和固定 kind/label 发布到 Public Projection；Renderer 点击后必须用 Run/Workspace/effect owner 通过只读命令分页获取，read/search/diff/terminal 详情不得复制进公开投影。
+- 当前第一方 Catalog 升级为 revision 18，36 个 Tool 的实现工件与 V2 合同共同固定。
 
 ## 验证
 

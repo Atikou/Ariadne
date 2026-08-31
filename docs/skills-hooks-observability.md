@@ -15,7 +15,7 @@
 
 完整且无缺失的观察会原子替换该 Workspace 的 last-good。瞬时 Provider 异常或显式 incomplete 只能复用既有 last-good；首次观察不完整时没有可发布 catalog。完整观察确认配置 Skill 缺失会清除 last-good，并拒绝新 Run。目录变化无需重启 Runtime，下一个 admission 会重新观察。
 
-Admission 只把 model-invocable Skill 的名称、描述、revision、snapshot digest 与观察来源写入受保护 system message，不读取正文。invocation-neutral snapshot 同时保留 user-invocable 语义，但当前 Renderer/Main 尚无对应的人类命令目录。模型必须调用同一 immutable Tool Catalog revision 17 中的 `skill.load(name, revision)`。Admission 公布过的 candidate 按 Workspace/name/revision 在 Runtime 生命周期内保留；Tool 调用及结果沿既有 Effect/continuation 持久链路进入后续 Turn。
+Admission 只把 model-invocable Skill 的名称、描述、revision、snapshot digest 与观察来源写入受保护 system message，不读取正文。invocation-neutral snapshot 同时保留 user-invocable 语义，但当前 Renderer/Main 尚无对应的人类命令目录。模型必须调用同一 immutable Tool Catalog revision 18 中的 `skill.load(name, revision)`。Admission 公布过的 candidate 按 Workspace/name/revision 在 Runtime 生命周期内保留；Tool 调用及结果沿既有 Effect/continuation 持久链路进入后续 Turn。
 
 本地 Skill package 最多包含 128 个资源：正文最大 128 KiB、单资源最大 1 MiB、整包最大 4 MiB、目录深度最大 8。加载时重新检查 realpath、containment、symlink、metadata、调用策略和完整 package revision；文件或资源被删除、替换、更新，或请求 revision 未被 admission pin 时 fail closed。
 

@@ -223,7 +223,7 @@ export function presentRunActivities(run: PublicRunProjectionV3): RunActivity[] 
     batchId: `${run.runId}:effects`,
     laneId: 'agent-tools',
     dependsOnActivityIds: [],
-    detailAvailable: false,
+    detailAvailable: activity.detailAvailable,
     changedFileCount: 0
   }));
 }

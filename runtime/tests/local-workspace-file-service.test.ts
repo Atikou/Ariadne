@@ -287,6 +287,93 @@ describe('LocalWorkspaceFileService', () => {
     expect(['edited', 'replaced']).toContain(readFileSync(target, 'utf8'));
     expect(temporaryArtifacts(root)).toEqual([]);
   });
+
+  it('moves exactly the observed file without overwriting an existing destination', async () => {
+    const root = temporaryRoot();
+    const source = path.join(root, 'source.txt');
+    const destination = path.join(root, 'nested', 'destination.txt');
+    writeFileSync(source, 'movable', 'utf8');
+    const service = new LocalWorkspaceFileService();
+    const observed = await service.readText({ absolutePath: source, maxBytes: 1_024, signal });
+
+    await expect(service.moveText({
+      sourceAbsolutePath: source,
+      destinationAbsolutePath: destination,
+      expectedVersion: observed.version,
+      maxBytes: 1_024,
+      signal
+    })).resolves.toMatchObject({
+      operation: 'moved',
+      byteLength: 7,
+      version: expect.stringMatching(/^workspace-file-v1:[a-f0-9]{64}$/u)
+    });
+    expect(readFileSync(destination, 'utf8')).toBe('movable');
+    expect(() => readFileSync(source, 'utf8')).toThrow();
+
+    writeFileSync(source, 'second', 'utf8');
+    const second = await service.readText({ absolutePath: source, maxBytes: 1_024, signal });
+    await expect(service.moveText({
+      sourceAbsolutePath: source,
+      destinationAbsolutePath: destination,
+      expectedVersion: second.version,
+      maxBytes: 1_024,
+      signal
+    })).rejects.toMatchObject<Partial<LocalWorkspaceFileError>>({
+      code: 'workspace_file_already_exists'
+    });
+    expect(readFileSync(source, 'utf8')).toBe('second');
+    expect(readFileSync(destination, 'utf8')).toBe('movable');
+  });
+
+  it('rejects stale moves and leaves both paths unchanged', async () => {
+    const root = temporaryRoot();
+    const source = path.join(root, 'source.txt');
+    const destination = path.join(root, 'destination.txt');
+    writeFileSync(source, 'before', 'utf8');
+    const service = new LocalWorkspaceFileService();
+    const observed = await service.readText({ absolutePath: source, maxBytes: 1_024, signal });
+    writeFileSync(source, 'external', 'utf8');
+
+    await expect(service.moveText({
+      sourceAbsolutePath: source,
+      destinationAbsolutePath: destination,
+      expectedVersion: observed.version,
+      maxBytes: 1_024,
+      signal
+    })).rejects.toMatchObject<Partial<LocalWorkspaceFileError>>({
+      code: 'workspace_file_stale_version'
+    });
+    expect(readFileSync(source, 'utf8')).toBe('external');
+    expect(readdirSync(root)).toEqual(['source.txt']);
+  });
+
+  it('deletes exactly the observed version and restores on stale input', async () => {
+    const root = temporaryRoot();
+    const target = path.join(root, 'delete.txt');
+    writeFileSync(target, 'before', 'utf8');
+    const service = new LocalWorkspaceFileService();
+    const observed = await service.readText({ absolutePath: target, maxBytes: 1_024, signal });
+    writeFileSync(target, 'external', 'utf8');
+
+    await expect(service.deleteText({
+      absolutePath: target,
+      expectedVersion: observed.version,
+      maxBytes: 1_024,
+      signal
+    })).rejects.toMatchObject<Partial<LocalWorkspaceFileError>>({
+      code: 'workspace_file_stale_version'
+    });
+    expect(readFileSync(target, 'utf8')).toBe('external');
+
+    const current = await service.readText({ absolutePath: target, maxBytes: 1_024, signal });
+    await expect(service.deleteText({
+      absolutePath: target,
+      expectedVersion: current.version,
+      maxBytes: 1_024,
+      signal
+    })).resolves.toEqual({ operation: 'deleted', byteLength: 8 });
+    expect(readdirSync(root)).toEqual([]);
+  });
 });
 
 function temporaryRoot(): string {

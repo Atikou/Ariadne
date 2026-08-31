@@ -132,19 +132,19 @@
         },
         {
           "path": "dist/composition/first-party-tools/ProtectedResultAgentTools.js",
-          "byteLength": 4019,
-          "sha256": "sha256:2a00ca40b25bb2d69b2e39567651e6f3f633a031cd6eb0f6543a8b05ec160399"
+          "byteLength": 4114,
+          "sha256": "sha256:30415d5e8770b7f9e5074aefadcd97461e184654fe9c71779527387dc12d2688"
         }
       ],
-      "artifactDigest": "sha256:e55c0367260487152700b1e3a419339c5f742a9e2bb604fad16b138a856414ef"
+      "artifactDigest": "sha256:6cf4518cecd530e7c2e6bb65e638feb101d8903e58d54c44a8f1ebe2539408e5"
     },
     {
       "module": "dist/composition/first-party-tools/WorkspaceAgentTools.js",
       "files": [
         {
           "path": "dist/adapters/filesystem/LocalWorkspaceFileService.js",
-          "byteLength": 12095,
-          "sha256": "sha256:0d2c06678d10134429b5024c0735c527fe316a9ec148cd18321fb9762ab47d83"
+          "byteLength": 16626,
+          "sha256": "sha256:f6a67ea93eb77417dc9a951e383968516b9b08a21f725527ca4181d6982796ee"
         },
         {
           "path": "dist/adapters/filesystem/LocalWorkspaceSearchService.js",
@@ -163,13 +163,18 @@
         },
         {
           "path": "dist/composition/first-party-tools/WorkspaceAgentTools.js",
-          "byteLength": 6971,
-          "sha256": "sha256:5bbbf59fdca46c1bf6577aad7211ec95c252ca68f27bec286c704eb9e7a1fe4e"
+          "byteLength": 7140,
+          "sha256": "sha256:1574883eece0742d9d32d69e92abdc09170e70b9b027e95f4631b41e96597579"
         },
         {
           "path": "dist/composition/first-party-tools/WorkspaceFileAgentTools.js",
-          "byteLength": 14179,
-          "sha256": "sha256:0467e09336a16c70039474bfbb69abb8da1bd67dbd08b9a67ef6c0fbd8328981"
+          "byteLength": 22380,
+          "sha256": "sha256:f68e861cd3c44fc4a338a1bb978dbbcc593d01ceb97d9385494d928e8c31032f"
+        },
+        {
+          "path": "dist/composition/first-party-tools/WorkspaceLspAgentTools.js",
+          "byteLength": 4255,
+          "sha256": "sha256:bea39c022f6b5ee27083fbf05bb5201f78404242430358edb31f3fb2a0f5f68f"
         },
         {
           "path": "dist/composition/first-party-tools/WorkspaceSearchAgentTools.js",
@@ -177,15 +182,15 @@
           "sha256": "sha256:e4bcce2c74e135d12c6ed249e9fc7f7092716198748889674e2dc199735d5a87"
         }
       ],
-      "artifactDigest": "sha256:5a5de0df9b0a40067e6cb583d8c72fcb53ff3d4b7d611dc77070a294de2cf0ed"
+      "artifactDigest": "sha256:4412fb3db9ad806900d77a6459e4d50e092ab78ffb0dc56c372e0521ac1f628c"
     },
     {
       "module": "dist/composition/first-party-tools/WorkspaceFileAgentTools.js",
       "files": [
         {
           "path": "dist/adapters/filesystem/LocalWorkspaceFileService.js",
-          "byteLength": 12095,
-          "sha256": "sha256:0d2c06678d10134429b5024c0735c527fe316a9ec148cd18321fb9762ab47d83"
+          "byteLength": 16626,
+          "sha256": "sha256:f6a67ea93eb77417dc9a951e383968516b9b08a21f725527ca4181d6982796ee"
         },
         {
           "path": "dist/composition/first-party-tools/FirstPartyAgentToolSupport.js",
@@ -199,19 +204,40 @@
         },
         {
           "path": "dist/composition/first-party-tools/WorkspaceFileAgentTools.js",
-          "byteLength": 14179,
-          "sha256": "sha256:0467e09336a16c70039474bfbb69abb8da1bd67dbd08b9a67ef6c0fbd8328981"
+          "byteLength": 22380,
+          "sha256": "sha256:f68e861cd3c44fc4a338a1bb978dbbcc593d01ceb97d9385494d928e8c31032f"
         }
       ],
-      "artifactDigest": "sha256:26983f3e6af0330ef5081dedc4684f80e4a912575dfd6d1106424d52d5b24ecd"
+      "artifactDigest": "sha256:5f3bebf16d72a34bc49b4a645271934b8788d4cd1090597d6a541327bded9b27"
+    },
+    {
+      "module": "dist/composition/first-party-tools/WorkspaceLspAgentTools.js",
+      "files": [
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyAgentToolSupport.js",
+          "byteLength": 8537,
+          "sha256": "sha256:55d49e44c653b376f9eaec03f2d6ad0f2c72d97794218209a2efe3995ca2a351"
+        },
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyToolArtifactAuthority.js",
+          "byteLength": 8521,
+          "sha256": "sha256:ab6f63a72bfbddc338048c153fa257e3f47533253e3ab625d9e7af37480b22c3"
+        },
+        {
+          "path": "dist/composition/first-party-tools/WorkspaceLspAgentTools.js",
+          "byteLength": 4255,
+          "sha256": "sha256:bea39c022f6b5ee27083fbf05bb5201f78404242430358edb31f3fb2a0f5f68f"
+        }
+      ],
+      "artifactDigest": "sha256:263f8e0f2c5a250d86f844b743c51a064f879cbdc15e83fbf04237fa8b183081"
     },
     {
       "module": "dist/composition/first-party-tools/WorkspaceSearchAgentTools.js",
       "files": [
         {
           "path": "dist/adapters/filesystem/LocalWorkspaceFileService.js",
-          "byteLength": 12095,
-          "sha256": "sha256:0d2c06678d10134429b5024c0735c527fe316a9ec148cd18321fb9762ab47d83"
+          "byteLength": 16626,
+          "sha256": "sha256:f6a67ea93eb77417dc9a951e383968516b9b08a21f725527ca4181d6982796ee"
         },
         {
           "path": "dist/adapters/filesystem/LocalWorkspaceSearchService.js",
@@ -234,7 +260,7 @@
           "sha256": "sha256:e4bcce2c74e135d12c6ed249e9fc7f7092716198748889674e2dc199735d5a87"
         }
       ],
-      "artifactDigest": "sha256:20a4e9932cfe1e489ffb282f9bb96c4afd56b96c3f87d685f38264d601e00540"
+      "artifactDigest": "sha256:0ecd1b122119c97689925de53f275fa85e7b9beef2318d476fd1280edef1a165"
     },
     {
       "module": "dist/composition/runtime-capabilities/ProductionSkillLoadTool.js",

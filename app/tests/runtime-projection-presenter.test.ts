@@ -21,7 +21,7 @@ const ACTION: NonNullable<PublicDecisionProjectionV3['action']> = {
 };
 
 describe('runtime projection Decision presenter', () => {
-  it('uses contract-pinned Tool labels and kinds without inventing result detail', () => {
+  it('uses contract-pinned Tool labels and exposes only a protected-detail availability bit', () => {
     const run: PublicRunProjectionV3 = {
       runId: 'run-tool-presentation',
       sessionId: 'session-tool-presentation',
@@ -39,6 +39,7 @@ describe('runtime projection Decision presenter', () => {
           label: '写入工作区文件'
         },
         status: 'completed',
+        detailAvailable: true,
         occurredAt: REQUESTED_AT,
         completedAt: REQUESTED_AT
       }],
@@ -52,7 +53,7 @@ describe('runtime projection Decision presenter', () => {
       toolName: 'workspace.write_file',
       title: '写入工作区文件',
       presentationKind: 'file_change',
-      detailAvailable: false,
+      detailAvailable: true,
       changedFileCount: 0
     })]);
   });

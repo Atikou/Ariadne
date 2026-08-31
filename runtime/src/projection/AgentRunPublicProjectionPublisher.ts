@@ -323,6 +323,7 @@ export function projectAgentRunV3(
             : state.status === 'started'
               ? 'running' as const
               : 'pending' as const,
+        detailAvailable: state.status === 'succeeded' || state.status === 'failed',
         occurredAt,
         ...(state.status === 'started' ? { startedAt: state.startedAt } : {}),
         ...(state.status === 'succeeded' || state.status === 'failed'

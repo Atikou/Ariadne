@@ -847,6 +847,15 @@ export const runtimeCommandSchema = z.discriminatedUnion('kind', [
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     reference: conversationMessageReferenceV3Schema
   }).strict(),
+  z.object({
+    kind: z.literal('agent.tool_result.detail.get.v3'),
+    contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
+    runId: publicProjectionCanonicalIdSchema,
+    workspaceId: publicProjectionCanonicalIdSchema,
+    effectId: publicProjectionCanonicalIdSchema,
+    cursor: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
+    maxBytes: z.number().int().min(1).max(64 * 1024).default(64 * 1024)
+  }).strict(),
   conversationMessageAcceptCommandV3Schema,
   z.object({
     kind: z.literal('agent.decision.resolve.v3'),
@@ -973,6 +982,27 @@ export const runtimeResultSchema = z.discriminatedUnion('kind', [
     role: z.enum(['user', 'assistant']),
     content: z.string().max(100_000),
     createdAt: isoDateTimeSchema
+  }).strict(),
+  z.object({
+    kind: z.literal('agent.tool_result.detail.v3'),
+    runId: publicProjectionCanonicalIdSchema,
+    workspaceId: publicProjectionCanonicalIdSchema,
+    effectId: publicProjectionCanonicalIdSchema,
+    toolCallId: publicProjectionCanonicalIdSchema,
+    presentation: z.object({
+      kind: z.enum([
+        'generic', 'file_read', 'file_search', 'file_change', 'command',
+        'terminal', 'browser', 'skill', 'external'
+      ]),
+      label: z.string().trim().min(1).max(128)
+    }).strict(),
+    status: z.enum(['succeeded', 'failed']),
+    digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+    totalBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    cursor: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    nextCursor: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    content: z.string().max(64 * 1024),
+    complete: z.boolean()
   }).strict(),
   z.object({
     kind: z.literal('conversation.message.accepted.v3'),

@@ -36,6 +36,7 @@ describe('FirstPartyToolArtifactAuthority', () => {
       'dist/composition/first-party-tools/ProtectedResultAgentTools.js',
       'dist/composition/first-party-tools/WorkspaceAgentTools.js',
       'dist/composition/first-party-tools/WorkspaceFileAgentTools.js',
+      'dist/composition/first-party-tools/WorkspaceLspAgentTools.js',
       'dist/composition/first-party-tools/WorkspaceSearchAgentTools.js',
       'dist/composition/runtime-capabilities/ProductionSkillLoadTool.js'
     ]);

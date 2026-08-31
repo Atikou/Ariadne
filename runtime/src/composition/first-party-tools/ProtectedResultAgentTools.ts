@@ -68,7 +68,8 @@ export function createProtectedResultAgentToolRegistrations(
           maxBytes: integerProperty(input, 'maxBytes') ?? DEFAULT_RESULT_READ_BYTES
         });
         context.signal.throwIfAborted();
-        return succeeded({ ...result });
+        const { workspaceId: _workspaceId, tool: _tool, ...publicResult } = result;
+        return succeeded(publicResult);
       } catch (error) {
         return failed('workspace_effect_result_read_failed', error);
       }

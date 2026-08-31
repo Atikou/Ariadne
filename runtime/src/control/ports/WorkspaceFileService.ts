@@ -22,6 +22,8 @@ export interface WorkspaceTextFileWriteOutcome {
   readonly operation: 'created' | 'replaced';
   readonly byteLength: number;
   readonly version: WorkspaceFileVersion;
+  readonly previousContent: string | null;
+  readonly content: string;
 }
 
 /** One-based line and Unicode-code-point column in a stable observed file. */
@@ -42,6 +44,19 @@ export interface WorkspaceTextFileEditOutcome {
   readonly byteLength: number;
   readonly version: WorkspaceFileVersion;
   readonly appliedEdits: number;
+  readonly previousContent: string;
+  readonly content: string;
+}
+
+export interface WorkspaceTextFileMoveOutcome {
+  readonly operation: 'moved';
+  readonly byteLength: number;
+  readonly version: WorkspaceFileVersion;
+}
+
+export interface WorkspaceTextFileDeleteOutcome {
+  readonly operation: 'deleted';
+  readonly byteLength: number;
 }
 
 /** Owns freshness checks and atomic publication for complete UTF-8 files. */
@@ -67,4 +82,19 @@ export interface WorkspaceFileService {
     readonly maxBytes: number;
     readonly signal: AbortSignal;
   }): Promise<WorkspaceTextFileEditOutcome>;
+
+  moveText(input: {
+    readonly sourceAbsolutePath: string;
+    readonly destinationAbsolutePath: string;
+    readonly expectedVersion: WorkspaceFileVersion;
+    readonly maxBytes: number;
+    readonly signal: AbortSignal;
+  }): Promise<WorkspaceTextFileMoveOutcome>;
+
+  deleteText(input: {
+    readonly absolutePath: string;
+    readonly expectedVersion: WorkspaceFileVersion;
+    readonly maxBytes: number;
+    readonly signal: AbortSignal;
+  }): Promise<WorkspaceTextFileDeleteOutcome>;
 }

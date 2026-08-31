@@ -6,6 +6,7 @@ import {
   open,
   rename,
   rm,
+  unlink,
   type FileHandle
 } from 'node:fs/promises';
 import path from 'node:path';
@@ -15,6 +16,8 @@ import type {
   WorkspaceFileVersion,
   WorkspaceTextEdit,
   WorkspaceTextFileEditOutcome,
+  WorkspaceTextFileDeleteOutcome,
+  WorkspaceTextFileMoveOutcome,
   WorkspaceTextFileReadOutcome,
   WorkspaceTextFileWriteIntent,
   WorkspaceTextFileWriteOutcome
@@ -43,6 +46,8 @@ export class LocalWorkspaceFileError extends Error {
 
 interface StableFileObservation extends WorkspaceTextFileReadOutcome {
   readonly mode: number;
+  readonly device: bigint;
+  readonly inode: bigint;
 }
 
 /**
@@ -139,10 +144,117 @@ export class LocalWorkspaceFileService implements WorkspaceFileService {
           operation: 'edited',
           byteLength: written.byteLength,
           version: written.version,
-          appliedEdits: input.edits.length
+          appliedEdits: input.edits.length,
+          previousContent: observed.content,
+          content
         };
       } catch (error) {
         throw normalizeWriteError(error, expected);
+      }
+    });
+  }
+
+  async moveText(input: {
+    readonly sourceAbsolutePath: string;
+    readonly destinationAbsolutePath: string;
+    readonly expectedVersion: WorkspaceFileVersion;
+    readonly maxBytes: number;
+    readonly signal: AbortSignal;
+  }): Promise<WorkspaceTextFileMoveOutcome> {
+    if (input.sourceAbsolutePath === input.destinationAbsolutePath) {
+      throw new LocalWorkspaceFileError('workspace_file_edit_invalid');
+    }
+    return this.withTargetLocks([
+      input.sourceAbsolutePath,
+      input.destinationAbsolutePath
+    ], async () => {
+      const observed = await observeStableTextFile(
+        input.sourceAbsolutePath,
+        input.maxBytes,
+        input.signal
+      );
+      if (observed.version !== input.expectedVersion) {
+        throw new LocalWorkspaceFileError('workspace_file_stale_version');
+      }
+      await mkdir(path.dirname(input.destinationAbsolutePath), { recursive: true });
+      let linked = false;
+      try {
+        await link(input.sourceAbsolutePath, input.destinationAbsolutePath);
+        linked = true;
+        const destination = await observeStableTextFile(
+          input.destinationAbsolutePath,
+          input.maxBytes,
+          input.signal
+        );
+        if (
+          destination.device !== observed.device
+          || destination.inode !== observed.inode
+          || destination.content !== observed.content
+        ) {
+          throw new LocalWorkspaceFileError('workspace_file_stale_version');
+        }
+        await unlink(input.sourceAbsolutePath);
+        linked = false;
+        const published = await observeStableTextFile(
+          input.destinationAbsolutePath,
+          input.maxBytes,
+          input.signal
+        );
+        return {
+          operation: 'moved',
+          byteLength: published.byteLength,
+          version: published.version
+        };
+      } catch (error) {
+        if (linked) await rm(input.destinationAbsolutePath, { force: true }).catch(() => undefined);
+        throw normalizeMoveDeleteError(error);
+      }
+    });
+  }
+
+  async deleteText(input: {
+    readonly absolutePath: string;
+    readonly expectedVersion: WorkspaceFileVersion;
+    readonly maxBytes: number;
+    readonly signal: AbortSignal;
+  }): Promise<WorkspaceTextFileDeleteOutcome> {
+    return this.withTargetLock(input.absolutePath, async () => {
+      const observed = await observeStableTextFile(
+        input.absolutePath,
+        input.maxBytes,
+        input.signal
+      );
+      if (observed.version !== input.expectedVersion) {
+        throw new LocalWorkspaceFileError('workspace_file_stale_version');
+      }
+      const quarantine = path.join(
+        path.dirname(input.absolutePath),
+        `.${path.basename(input.absolutePath)}.ariadne-delete-${randomUUID()}.tmp`
+      );
+      let moved = false;
+      try {
+        await rename(input.absolutePath, quarantine);
+        moved = true;
+        const quarantined = await observeStableTextFile(
+          quarantine,
+          input.maxBytes,
+          input.signal
+        );
+        if (
+          quarantined.device !== observed.device
+          || quarantined.inode !== observed.inode
+          || quarantined.content !== observed.content
+        ) {
+          throw new LocalWorkspaceFileError('workspace_file_stale_version');
+        }
+        await unlink(quarantine);
+        moved = false;
+        return { operation: 'deleted', byteLength: observed.byteLength };
+      } catch (error) {
+        if (moved) {
+          await rename(quarantine, input.absolutePath).catch(() => undefined);
+        }
+        throw normalizeMoveDeleteError(error);
       }
     });
   }
@@ -203,7 +315,9 @@ export class LocalWorkspaceFileService implements WorkspaceFileService {
       return {
         operation: input.expected.kind === 'create_if_absent' ? 'created' : 'replaced',
         byteLength: input.bytes.byteLength,
-        version: published.version
+        version: published.version,
+        previousContent: initial?.content ?? null,
+        content: input.bytes.toString('utf8')
       };
     } finally {
       await handle?.close().catch(() => undefined);
@@ -230,6 +344,17 @@ export class LocalWorkspaceFileService implements WorkspaceFileService {
       release();
       if (this.targetLocks.get(key) === tail) this.targetLocks.delete(key);
     }
+  }
+
+  private async withTargetLocks<T>(
+    targetPaths: readonly string[],
+    operation: () => Promise<T>
+  ): Promise<T> {
+    const paths = [...new Set(targetPaths)].sort();
+    const acquire = (index: number): Promise<T> => index >= paths.length
+      ? operation()
+      : this.withTargetLock(paths[index]!, () => acquire(index + 1));
+    return acquire(0);
   }
 }
 
@@ -356,7 +481,9 @@ async function observeStableTextFile(
       content,
       byteLength: bytes.byteLength,
       version: fileVersion(before, bytes),
-      mode: Number(before.mode & 0o777n)
+      mode: Number(before.mode & 0o777n),
+      device: before.dev,
+      inode: before.ino
     };
   } finally {
     await handle.close();
@@ -421,6 +548,17 @@ function normalizeWriteError(
   if (code === 'ENOENT' && expected.kind === 'replace_if_version') {
     return new LocalWorkspaceFileError('workspace_file_stale_version');
   }
+  if (code === 'EACCES' || code === 'EPERM') {
+    return new LocalWorkspaceFileError('workspace_file_permission_denied');
+  }
+  return new LocalWorkspaceFileError('workspace_file_io_error');
+}
+
+function normalizeMoveDeleteError(error: unknown): Error {
+  if (error instanceof LocalWorkspaceFileError) return error;
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === 'ENOENT') return new LocalWorkspaceFileError('workspace_file_not_found');
+  if (code === 'EEXIST') return new LocalWorkspaceFileError('workspace_file_already_exists');
   if (code === 'EACCES' || code === 'EPERM') {
     return new LocalWorkspaceFileError('workspace_file_permission_denied');
   }

@@ -88,7 +88,7 @@ Provider 是 smoke 脚本启动的进程外、确定性 HTTPS OpenAI-compatible 
 - 不唤醒模型的独立 context injection；运行中 follow-up/steer 和可恢复 token/reasoning stream 已进入生产链路；
 - Agent 主动提问的 durable ask-user Directive、受保护问题载荷、回答 receipt、SQLite authority、Projection、scheduler continuation 与 Renderer 已有直接自动测试；确定性进程外 HTTPS Provider 驱动的真实 Electron 操作与 `waiting/user_question` 强杀恢复也已验收。真实商业 Provider、自由文本窗口场景和取消等待问题的产品语义仍未验收；
 - 人类 Skill command catalog，以及若产品需要外部 Hook 包时的签名/发现；scoped complete/incomplete snapshot、last-good、取消/关闭、固定 package 资源读取、model/user invocation policy、Manifest-owned 静态可信 Hook Provider 生命周期、Diagnostics publisher 与受控 Telemetry 已接入。
-- `workspace.search_text/glob/apply_text_edits` 已进入 Catalog revision 17：服务与 Tool integration 覆盖稳定搜索 version、Unicode 行列、CRLF、重叠/越界拒绝、外部陈旧编辑、realpath containment、symlink 排除和扫描/字节/结果上限。V2 Tool 合同额外固定模型 description/guidance 与可公开静态 kind/label；Provider request 和 Renderer activity 均从同一 exact pin 获取，Public Projection 不包含 result visibility、input 或 result。真实 Electron 搜索→编辑交互与受保护结果驱动的 read/search/diff/terminal 详情尚未验收。
+- `workspace.search_text/glob/apply_text_edits/move_file/delete_file/code_intelligence` 已进入 Catalog revision 18：服务与 Tool integration 覆盖稳定 version、Unicode 行列、CRLF、重叠/越界拒绝、陈旧冲突、目标不覆盖、realpath containment、symlink 排除和扫描/字节/结果上限。真实 bundled TypeScript LSP 进程验收覆盖 definition/reference/hover/document symbols。终态 Effect 仅公开 `detailAvailable`，受保护 reader 可在 Run 已结束和 Runtime 重启后按 owner 分页读取；Renderer 的 read/search/diff/terminal 专用卡已有静态渲染测试。完整 Electron 搜索→编辑→详情交互仍属于更深的产品验收。
 
 这些条目在 [verification-matrix.json](verification-matrix.json) 中只能标记为 `partial` 或 `not_accepted`，不能因为目录、schema 或单元测试存在而标记为产品已验收。
 

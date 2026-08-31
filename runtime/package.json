@@ -56,13 +56,14 @@
     "node-pty": "^1.1.0",
     "sharp": "0.35.3",
     "tree-sitter-wasms": "^0.1.13",
+    "typescript": "5.9.3",
+    "typescript-language-server": "6.0.0",
     "web-tree-sitter": "^0.20.8",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.7.5",
     "tsx": "^4.19.1",
-    "typescript": "^5.9.3",
     "vitest": "^4.1.0"
   }
 }
