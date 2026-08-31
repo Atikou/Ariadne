@@ -6,7 +6,8 @@ import component1 from './components/agent-control-services/component.js';
 import component2 from './components/extensions/component.js';
 import component3 from './components/first-party-tools/component.js';
 import component4 from './components/instructions/component.js';
-import component5 from './components/runtime-kernel/component.js';
+import component5 from './components/protected-result-detail/component.js';
+import component6 from './components/runtime-kernel/component.js';
 
 const COMPONENTS = Object.freeze([
   component0,
@@ -15,6 +16,7 @@ const COMPONENTS = Object.freeze([
   component3,
   component4,
   component5,
+  component6,
 ]);
 
 export function productionRuntimeCapabilityProviders(): readonly RuntimeCapabilityProvider[] {

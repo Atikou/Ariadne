@@ -8,7 +8,6 @@ import { createBrowserAgentToolRegistrations } from '../first-party-tools/Browse
 import { createComputerReadAgentToolRegistrations } from '../first-party-tools/ComputerReadAgentTools.js';
 import { createLiveWorkAgentToolRegistrations } from '../first-party-tools/LiveWorkAgentTools.js';
 import { createMcpAgentToolRegistrations } from '../first-party-tools/McpAgentTools.js';
-import { createProtectedResultAgentToolRegistrations } from '../first-party-tools/ProtectedResultAgentTools.js';
 import { createWorkspaceAgentToolRegistrations } from '../first-party-tools/WorkspaceAgentTools.js';
 import {
   defineRuntimeCapabilityProvider,
@@ -73,7 +72,7 @@ export function firstPartyAgentCapabilityProviders(): readonly RuntimeCapability
     }),
     defineRuntimeCapabilityProvider({
       id: 'agent.tools',
-      dependsOn: ['workspace.live-work', 'browser.tools', 'mcp.tools', 'skills.catalog'],
+      dependsOn: ['agent.control'],
       publicCapabilities: ['agent.tools'],
       start: () => ({ publicCapabilities: ['agent.tools'] })
     }),
@@ -102,7 +101,6 @@ function createWorkspaceToolCapability(
         ? ['workspace.write' as const] : [])
     ],
     tools: [
-      ...createProtectedResultAgentToolRegistrations(context.workspaceBindings),
       ...createWorkspaceAgentToolRegistrations(
         context.workspaceBindings,
         context.processSandboxFactory,
