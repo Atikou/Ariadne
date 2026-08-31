@@ -1,4 +1,3 @@
-import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import {
@@ -82,8 +81,8 @@ import {
 } from './agentControlDbSchema.js';
 import {
   closeOwnedSqliteDatabase,
-  type SqliteOwnerLease
 } from './SqliteOwnerLease.js';
+import { SqliteTransactionOwner } from './SqliteTransactionOwner.js';
 import type { ShutdownContext } from '../../control/ports/ShutdownContext.js';
 import type {
   AgentProtectedEffectResultAuthority,
@@ -246,14 +245,6 @@ interface AgentCommittedMutationRow extends AgentCommandRunRow {
   mutation_count: number;
 }
 
-const databaseTransactionTails = new Map<string, Promise<void>>();
-
-// A pending Promise chain is not a resource-lifetime root: V8 may collect an
-// unreachable chain that can never settle, which would let DatabaseSync's
-// finalizer release the owner lease. Once ingress is frozen, retain the whole
-// UoW at process scope until business close and lease release both succeed.
-const closingAgentRunUnits = new Set<SqliteAgentRunUnitOfWork>();
-
 interface AgentCheckpointRow {
   run_id: string;
   checkpoint_version: number;
@@ -339,13 +330,7 @@ AgentRunExecutionIntentLedger,
 AgentProtectedEffectResultAuthority {
   private readonly database: DatabaseSync;
   private readonly executionIntents: SqliteAgentExecutionIntentStore;
-  private readonly ownerLease: SqliteOwnerLease;
-  private readonly databaseKey: string;
-  private lifecycle: 'open' | 'closing' | 'closed' = 'open';
-  private readonly operationAbortController = new AbortController();
-  private shutdownContext: ShutdownContext | null = null;
-  private lastScheduledOperation: Promise<void> = Promise.resolve();
-  private closePromise: Promise<void> | null = null;
+  private readonly transactionOwner: SqliteTransactionOwner;
 
   public constructor(
     dataRoot: string,
@@ -372,12 +357,19 @@ AgentProtectedEffectResultAuthority {
       }
       throw error;
     }
-    const resolvedPath = path.resolve(databasePath);
-    this.databaseKey = process.platform === 'win32'
-      ? resolvedPath.toLowerCase()
-      : resolvedPath;
     this.database = database;
-    this.ownerLease = ownerLease;
+    this.transactionOwner = new SqliteTransactionOwner(
+      database,
+      databasePath,
+      ownerLease,
+      {
+        shutdownRequestedCode: 'agent_v3_shutdown_requested',
+        closedCode: 'agent_v3_unit_of_work_closed',
+        shutdownConflictCode: 'agent_v3_shutdown_context_conflict',
+        transactionActiveCode: 'agent_v3_transaction_already_active',
+        shutdownDeadlineCode: 'agent_v3_shutdown_deadline_exceeded'
+      }
+    );
   }
 
   public transaction<T>(
@@ -789,39 +781,11 @@ AgentProtectedEffectResultAuthority {
    * checked again immediately before SQLite commit.
    */
   public prepareShutdown(context: ShutdownContext): void {
-    if (this.lifecycle === 'closed') {
-      context.throwIfExpired();
-      return;
-    }
-    if (this.lifecycle === 'open') {
-      this.lifecycle = 'closing';
-      closingAgentRunUnits.add(this);
-      this.shutdownContext = context;
-      this.operationAbortController.abort(new Error('agent_v3_shutdown_requested'));
-    } else if (this.shutdownContext !== context) {
-      throw new Error('agent_v3_shutdown_context_conflict');
-    }
-    context.throwIfExpired();
+    this.transactionOwner.prepareShutdown(context);
   }
 
   public close(context: ShutdownContext): Promise<void> {
-    if (this.lifecycle === 'closed') return Promise.resolve();
-    if (this.closePromise !== null) return this.closePromise;
-
-    try {
-      this.prepareShutdown(context);
-    } catch (error) {
-      return Promise.reject(error);
-    }
-    this.closePromise = this.lastScheduledOperation.then(() => {
-      // Never release the process-owner fence after the absolute deadline. A
-      // late or uncertain drain remains fenced until Main kills this process.
-      context.throwIfExpired();
-      closeOwnedSqliteDatabase(this.database, this.ownerLease);
-      this.lifecycle = 'closed';
-      closingAgentRunUnits.delete(this);
-    });
-    return this.closePromise;
+    return this.transactionOwner.close(context);
   }
 
   private async executeTransaction<T>(
@@ -850,66 +814,14 @@ AgentProtectedEffectResultAuthority {
     operation: () => Promise<T>,
     shutdownSignal: AbortSignal
   ): Promise<T> {
-    throwIfAgentOperationAborted(shutdownSignal);
-    if (this.database.isTransaction) {
-      throw new Error('agent_v3_transaction_already_active');
-    }
-
-    this.database.exec(mode === 'write' ? 'BEGIN IMMEDIATE' : 'BEGIN');
-    try {
-      const result = await operation();
-      throwIfAgentOperationAborted(shutdownSignal);
-      this.database.exec('COMMIT');
-      return result;
-    } catch (error) {
-      if (this.database.isTransaction) this.database.exec('ROLLBACK');
-      throw error;
-    }
+    return this.transactionOwner.transaction(mode, operation, shutdownSignal);
   }
 
   private scheduleOperation<T>(
     operation: (shutdownSignal: AbortSignal) => Promise<T>
   ): Promise<T> {
-    if (this.lifecycle !== 'open') {
-      return Promise.reject(new Error('agent_v3_unit_of_work_closed'));
-    }
-    const shutdownSignal = this.operationAbortController.signal;
-    const result = scheduleDatabaseTransaction(
-      this.databaseKey,
-      () => operation(shutdownSignal)
-    );
-    this.lastScheduledOperation = result.then(
-      () => undefined,
-      () => undefined
-    );
-    return result;
+    return this.transactionOwner.schedule(operation);
   }
-}
-
-function throwIfAgentOperationAborted(signal: AbortSignal): void {
-  if (!signal.aborted) return;
-  throw signal.reason instanceof Error
-    ? signal.reason
-    : new Error('agent_v3_shutdown_requested');
-}
-
-function scheduleDatabaseTransaction<T>(
-  databaseKey: string,
-  operation: () => Promise<T>
-): Promise<T> {
-  const previous = databaseTransactionTails.get(databaseKey) ?? Promise.resolve();
-  const result = previous.then(operation, operation);
-  const tail = result.then(
-    () => undefined,
-    () => undefined
-  );
-  databaseTransactionTails.set(databaseKey, tail);
-  void tail.then(() => {
-    if (databaseTransactionTails.get(databaseKey) === tail) {
-      databaseTransactionTails.delete(databaseKey);
-    }
-  });
-  return result;
 }
 
 interface AgentControlMetadataRow {

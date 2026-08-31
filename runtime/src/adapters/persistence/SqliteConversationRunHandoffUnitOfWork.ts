@@ -1,4 +1,3 @@
-import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { ConversationMessageReferenceV3 } from '@ariadne/protocol/public';
 
@@ -84,8 +83,8 @@ import {
 } from './conversation/rows/ConversationAuthorityRowMapper.js';
 import {
   closeOwnedSqliteDatabase,
-  type SqliteOwnerLease
 } from './SqliteOwnerLease.js';
+import { SqliteTransactionOwner } from './SqliteTransactionOwner.js';
 
 export interface ConversationPersistenceClock {
   now(): Date;
@@ -170,8 +169,6 @@ interface OutboxRow {
 
 const SYSTEM_CLOCK: ConversationPersistenceClock = { now: () => new Date() };
 const MAX_OUTBOX_LEASE_MS = 5 * 60 * 1000;
-const transactionTails = new Map<string, Promise<void>>();
-const closingConversationUnits = new Set<SqliteConversationRunHandoffUnitOfWork>();
 
 /**
  * Sole SQLite write boundary for Conversation authority and Handoff. Each
@@ -185,13 +182,7 @@ ConversationRunHandoffLookup,
 ConversationProjectionReader {
   private readonly database: DatabaseSync;
   private readonly navigation: SqliteConversationNavigationStore;
-  private readonly ownerLease: SqliteOwnerLease;
-  private readonly databaseKey: string;
-  private lifecycle: 'open' | 'closing' | 'closed' = 'open';
-  private readonly abortController = new AbortController();
-  private lastScheduledOperation: Promise<void> = Promise.resolve();
-  private shutdownContext: ConversationShutdownContext | null = null;
-  private closePromise: Promise<void> | null = null;
+  private readonly transactionOwner: SqliteTransactionOwner;
 
   public constructor(
     dataRoot: string,
@@ -211,9 +202,20 @@ ConversationProjectionReader {
     }
     this.database = opened.database;
     this.navigation = new SqliteConversationNavigationStore(opened.database);
-    this.ownerLease = opened.ownerLease;
-    const resolved = path.resolve(opened.databasePath);
-    this.databaseKey = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    this.transactionOwner = new SqliteTransactionOwner(
+      opened.database,
+      opened.databasePath,
+      opened.ownerLease,
+      {
+        shutdownRequestedCode: 'conversation_unit_of_work_shutdown_requested',
+        closedCode: 'conversation_unit_of_work_closed',
+        shutdownConflictCode: 'conversation_shutdown_context_conflict',
+        transactionActiveCode: 'conversation_transaction_already_active',
+        shutdownDeadlineCode: 'conversation_shutdown_deadline_exceeded',
+        beforeWriteCommit: () => this.faultInjector.beforeCommit?.(),
+        afterWriteCommit: () => this.faultInjector.afterCommit?.()
+      }
+    );
   }
 
   public transaction<T>(
@@ -416,39 +418,11 @@ ConversationProjectionReader {
   }
 
   public prepareShutdown(context: ConversationShutdownContext): void {
-    if (this.lifecycle === 'closed') {
-      context.throwIfExpired();
-      return;
-    }
-    if (this.lifecycle === 'open') {
-      this.lifecycle = 'closing';
-      this.shutdownContext = context;
-      closingConversationUnits.add(this);
-      this.abortController.abort(new Error('conversation_unit_of_work_shutdown_requested'));
-    } else if (this.shutdownContext !== context) {
-      throw new Error('conversation_shutdown_context_conflict');
-    }
-    context.throwIfExpired();
+    this.transactionOwner.prepareShutdown(context);
   }
 
   public close(context: ConversationShutdownContext): Promise<void> {
-    if (this.lifecycle === 'closed') return Promise.resolve();
-    if (this.closePromise !== null) return this.closePromise;
-    try {
-      this.prepareShutdown(context);
-    } catch (error) {
-      return Promise.reject(error);
-    }
-    this.closePromise = this.closeAfterDrain(context);
-    return this.closePromise;
-  }
-
-  private async closeAfterDrain(context: ConversationShutdownContext): Promise<void> {
-    await waitForDrain(this.lastScheduledOperation, context);
-    context.throwIfExpired('conversation_shutdown_deadline_exceeded');
-    closeOwnedSqliteDatabase(this.database, this.ownerLease);
-    this.lifecycle = 'closed';
-    closingConversationUnits.delete(this);
+    return this.transactionOwner.close(context);
   }
 
   private async executeDatabaseTransaction<T>(
@@ -456,34 +430,13 @@ ConversationProjectionReader {
     operation: () => T | Promise<T>,
     signal: AbortSignal
   ): Promise<T> {
-    throwIfAborted(signal);
-    if (this.database.isTransaction) {
-      throw new Error('conversation_transaction_already_active');
-    }
-    this.database.exec(mode === 'write' ? 'BEGIN IMMEDIATE;' : 'BEGIN;');
-    try {
-      const result = await operation();
-      throwIfAborted(signal);
-      if (mode === 'write') this.faultInjector.beforeCommit?.();
-      this.database.exec('COMMIT;');
-      if (mode === 'write') this.faultInjector.afterCommit?.();
-      return result;
-    } catch (error) {
-      if (this.database.isTransaction) this.database.exec('ROLLBACK;');
-      throw error;
-    }
+    return this.transactionOwner.transaction(mode, operation, signal);
   }
 
   private scheduleOperation<T>(
     operation: (signal: AbortSignal) => Promise<T>
   ): Promise<T> {
-    if (this.lifecycle !== 'open') {
-      return Promise.reject(new Error('conversation_unit_of_work_closed'));
-    }
-    const signal = this.abortController.signal;
-    const result = scheduleTransaction(this.databaseKey, () => operation(signal));
-    this.lastScheduledOperation = result.then(() => undefined, () => undefined);
-    return result;
+    return this.transactionOwner.schedule(operation);
   }
 }
 
@@ -1959,52 +1912,6 @@ function canonicalNow(clock: ConversationPersistenceClock): string {
     throw new Error('conversation_clock_invalid');
   }
   return value.toISOString();
-}
-
-function scheduleTransaction<T>(databaseKey: string, operation: () => Promise<T>): Promise<T> {
-  const previous = transactionTails.get(databaseKey) ?? Promise.resolve();
-  const result = previous.then(operation, operation);
-  const tail = result.then(() => undefined, () => undefined);
-  transactionTails.set(databaseKey, tail);
-  void tail.then(() => {
-    if (transactionTails.get(databaseKey) === tail) transactionTails.delete(databaseKey);
-  });
-  return result;
-}
-
-async function waitForDrain(
-  drain: Promise<void>,
-  context: ConversationShutdownContext
-): Promise<void> {
-  context.throwIfExpired('conversation_shutdown_deadline_exceeded');
-  const remaining = context.remainingMs();
-  if (remaining <= 0) throw new Error('conversation_shutdown_deadline_exceeded');
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let onAbort: (() => void) | undefined;
-  const deadline = new Promise<never>((_resolve, reject) => {
-    const fail = (): void => reject(new Error('conversation_shutdown_deadline_exceeded'));
-    onAbort = fail;
-    if (context.signal.aborted) {
-      fail();
-      return;
-    }
-    context.signal.addEventListener('abort', fail, { once: true });
-    timer = setTimeout(fail, Math.min(remaining, 2_147_483_647));
-    timer.unref?.();
-  });
-  try {
-    await Promise.race([drain, deadline]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-    if (onAbort !== undefined) context.signal.removeEventListener('abort', onAbort);
-  }
-}
-
-function throwIfAborted(signal: AbortSignal): void {
-  if (!signal.aborted) return;
-  throw signal.reason instanceof Error
-    ? signal.reason
-    : new Error('conversation_unit_of_work_shutdown_requested');
 }
 
 function versionConflict(
