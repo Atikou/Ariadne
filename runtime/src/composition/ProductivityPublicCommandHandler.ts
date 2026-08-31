@@ -5,16 +5,17 @@ import type { RuntimeApplicationCommandResult } from '../ingress/RuntimeApplicat
 import type { RuntimeCommandEnvelope } from '../ingress/RuntimeIngress.js';
 import { completedPublicError } from './AgentPublicCommandFailures.js';
 
-const PRODUCTIVITY_COMMAND_KINDS = new Set<string>([
+export const PRODUCTIVITY_COMMAND_KINDS = Object.freeze([
   'goal.put.v3', 'todo.snapshot.replace.v3', 'productivity.query.v3',
   'workflow.start.v3', 'workflow.advance.v3', 'workflow.cancel.v3',
   'schedule.create.v3', 'schedule.transition.v3', 'schedules.query.v3'
-]);
+] as const);
+const PRODUCTIVITY_COMMAND_KIND_SET = new Set<string>(PRODUCTIVITY_COMMAND_KINDS);
 
 export function isProductivityCommand(
   command: RuntimeCommandEnvelope['command']
 ): command is ProductivityCommand {
-  return PRODUCTIVITY_COMMAND_KINDS.has(command.kind);
+  return PRODUCTIVITY_COMMAND_KIND_SET.has(command.kind);
 }
 
 export function isProductivityQuery(

@@ -51,10 +51,15 @@ import {
 import { HumanSkillPublicCommandHandler } from './HumanSkillPublicCommandHandler.js';
 import type { HumanSkillCatalog } from '../control/ports/HumanSkillCatalog.js';
 import {
-  isProductivityCommand,
-  isProductivityQuery,
   ProductivityPublicCommandHandler
 } from './ProductivityPublicCommandHandler.js';
+import {
+  compileAgentPublicCommandOwnerTable,
+  type AgentPublicCommandOwnerTable
+} from './agent-entity/command-owners/AgentPublicCommandOwnerTable.js';
+import {
+  createAgentPublicCommandOwners
+} from './agent-entity/command-owners/AgentPublicCommandOwners.js';
 
 export interface AgentControlPublicCommandRouterOptions {
   readonly authorizedWorkspaceIds?: readonly string[];
@@ -91,6 +96,7 @@ export class AgentControlPublicCommandRouter {
   private readonly authorizedWorkspaceIds: ReadonlySet<string>;
   private readonly humanSkills: HumanSkillPublicCommandHandler | undefined;
   private readonly productivity: ProductivityPublicCommandHandler | undefined;
+  private readonly ownerTable: AgentPublicCommandOwnerTable;
 
   public constructor(
     private readonly unitOfWork: SqliteAgentRunUnitOfWork,
@@ -147,164 +153,116 @@ export class AgentControlPublicCommandRouter {
           conversation,
           options.authorizedWorkspaceIds ?? []
         );
+    this.ownerTable = compileAgentPublicCommandOwnerTable(
+      createAgentPublicCommandOwners({
+        conversationSessions: this.conversationSessions,
+        conversationNavigation: this.conversationNavigation,
+        agentInbox: this.agentInbox,
+        subagentInterrupt: this.subagentInterrupt,
+        humanSkills: this.humanSkills,
+        productivity: this.productivity,
+        executeAcceptConversationMessage: (envelope, command) => (
+          this.executeAcceptConversationMessage(envelope, command)
+        ),
+        executeResolveAgentDecision: (envelope, command) => (
+          this.executeResolveAgentDecision(envelope, command)
+        ),
+        reconcileAgentDecision: (envelope, command) => (
+          this.reconcileAgentDecision(envelope, command)
+        ),
+        executeCancelAgentRun: (envelope, command) => (
+          this.executeCancelAgentRun(envelope, command)
+        ),
+        executeToolResultDetail: (envelope, command) => (
+          this.executeToolResultDetail(envelope, command)
+        ),
+        executeProjectionCommand: (envelope) => this.executeProjectionCommand(envelope),
+        reconcileConversation: (envelope, invalidErrorCode) => (
+          this.reconcileConversation(envelope, invalidErrorCode)
+        ),
+        reconcileByReplay: (envelope, invalidErrorCode) => (
+          this.reconcileByReplay(envelope, invalidErrorCode)
+        )
+      })
+    );
   }
 
   public async executeOwnedCommand(
     envelope: RuntimeCommandEnvelope
   ): Promise<RuntimeApplicationCommandResult | null> {
-    if (isProductivityCommand(envelope.command)) {
-      return this.productivity?.execute(envelope, envelope.command) ?? completedPublicError(
-        envelope, 'productivity_unavailable',
-        'Goal, Todo, Workflow and Schedule authority is unavailable.', false
-      );
-    }
-    switch (envelope.command.kind) {
-      case 'conversation.session.create.v3':
-      case 'conversation.session.rename.v3':
-      case 'conversation.session.archive.v3':
-      case 'conversation.session.restore.v3':
-        return this.conversationSessions.execute(envelope, envelope.command);
-      case 'conversation.session.fork.v3':
-      case 'conversation.sessions.query.v3':
-      case 'conversation.message.resolve.v3':
-        return this.conversationNavigation.execute(envelope, envelope.command);
-      case 'skill.commands.query.v3':
-      case 'skill.command.load.v3':
-      case 'skill.command.resource.read.v3':
-        return this.humanSkills?.execute(envelope, envelope.command) ?? completedPublicError(
-          envelope,
-          'skill_catalog_unavailable',
-          'The human Skill command catalog is unavailable.',
-          false
-        );
-      case 'agent.tool_result.detail.get.v3':
-        return this.executeToolResultDetail(envelope, envelope.command);
-      case 'conversation.message.accept.v3':
-        return this.executeAcceptConversationMessage(envelope, envelope.command);
-      case 'agent.decision.resolve.v3':
-        return this.executeResolveAgentDecision(envelope, envelope.command);
-      case 'agent.run.cancel.v3':
-        return this.executeCancelAgentRun(envelope, envelope.command);
-      case 'agent.inbox.enqueue.v3':
-      case 'agent.inbox.replace.v3':
-      case 'agent.inbox.remove.v3':
-      case 'agent.subagent.send.v3':
-        return this.agentInbox.execute(envelope, envelope.command);
-      case 'agent.subagent.interrupt.v3':
-        return this.subagentInterrupt.execute(envelope, envelope.command);
-      case 'projection.snapshot.get': {
-        if (
-          envelope.command.contractVersion
-          !== PUBLIC_PROJECTION_CONTRACT_VERSION
-        ) {
-          throw new Error('public_projection_contract_version_mismatch');
-        }
-        return this.callbacks.executeProjectionQuery(envelope, async () => ({
-          kind: 'projection.snapshot' as const,
-          snapshot: await this.publicProjection.snapshot()
-        }));
-      }
-      case 'projection.commits.read': {
-        const request = envelope.command.request;
-        return this.callbacks.executeProjectionQuery(envelope, async () => ({
-          kind: 'projection.commits' as const,
-          batch: await this.publicProjection.read(request)
-        }));
-      }
-      default:
-        return null;
-    }
+    return this.ownerTable.execute(envelope);
   }
 
   public async reconcileUncertainCommand(
     envelope: RuntimeCommandEnvelope
   ): Promise<RuntimeCommandReconciliation | null> {
-    if (isProductivityCommand(envelope.command)) {
-      if (isProductivityQuery(envelope.command)) return { kind: 'not_committed' };
-      const result = await this.productivity?.reconcile(envelope);
-      return result?.outcome.ok
-        ? { kind: 'committed', outcome: result.outcome }
-        : { kind: 'not_committed' };
+    return this.ownerTable.reconcile(envelope);
+  }
+
+  private async reconcileConversation(
+    envelope: RuntimeCommandEnvelope,
+    invalidErrorCode: string
+  ): Promise<RuntimeCommandReconciliation> {
+    const committed = await this.conversation.readCommittedAuthorityCommand(
+      envelope.commandId
+    );
+    if (committed === null) return { kind: 'not_committed' };
+    const result = await this.ownerTable.execute(envelope);
+    if (result === null || result.settlement !== 'completed') {
+      throw new Error(invalidErrorCode);
     }
-    switch (envelope.command.kind) {
-      case 'projection.snapshot.get':
-      case 'projection.commits.read':
-      case 'conversation.sessions.query.v3':
-      case 'conversation.message.resolve.v3':
-      case 'agent.tool_result.detail.get.v3':
-      case 'skill.commands.query.v3':
-      case 'skill.command.load.v3':
-      case 'skill.command.resource.read.v3':
-        return { kind: 'not_committed' };
-      case 'conversation.session.create.v3':
-      case 'conversation.session.rename.v3':
-      case 'conversation.session.archive.v3':
-      case 'conversation.session.restore.v3':
-      case 'conversation.message.accept.v3': {
-        const committed = await this.conversation.readCommittedAuthorityCommand(
-          envelope.commandId
-        );
-        if (committed === null) return { kind: 'not_committed' };
-        const result = await this.executeOwnedCommand(envelope);
-        if (result === null || result.settlement !== 'completed') {
-          throw new Error('conversation_command_reconciliation_invalid');
-        }
-        return { kind: 'committed', outcome: result.outcome };
-      }
-      case 'conversation.session.fork.v3': {
-        const committed = await this.conversation.readCommittedAuthorityCommand(
-          envelope.commandId
-        );
-        if (committed === null) return { kind: 'not_committed' };
-        const result = await this.executeOwnedCommand(envelope);
-        if (result === null || result.settlement !== 'completed') {
-          throw new Error('conversation_fork_reconciliation_invalid');
-        }
-        return { kind: 'committed', outcome: result.outcome };
-      }
-      case 'agent.decision.resolve.v3': {
-        const result = await this.agentDecisionAuthority.reconcile({
-          commandId: envelope.commandId,
-          command: envelope.command,
-          signal: envelope.signal
-        });
-        return result === null
-          ? { kind: 'not_committed' }
-          : { kind: 'committed', outcome: { ok: true, result } };
-      }
-      case 'agent.run.cancel.v3': {
-        const result = await this.executeOwnedCommand(envelope);
-        if (result === null || result.settlement !== 'completed') {
-          throw new Error('agent_run_cancel_reconciliation_invalid');
-        }
-        return result.outcome.ok
-          ? { kind: 'committed', outcome: result.outcome }
-          : { kind: 'not_committed' };
-      }
-      case 'agent.inbox.enqueue.v3':
-      case 'agent.inbox.replace.v3':
-      case 'agent.inbox.remove.v3':
-      case 'agent.subagent.send.v3': {
-        const result = await this.executeOwnedCommand(envelope);
-        if (result === null || result.settlement !== 'completed') {
-          throw new Error('agent_inbox_command_reconciliation_invalid');
-        }
-        return result.outcome.ok
-          ? { kind: 'committed', outcome: result.outcome }
-          : { kind: 'not_committed' };
-      }
-      case 'agent.subagent.interrupt.v3': {
-        const result = await this.executeOwnedCommand(envelope);
-        if (result === null || result.settlement !== 'completed') {
-          throw new Error('agent_subagent_interrupt_reconciliation_invalid');
-        }
-        return result.outcome.ok
-          ? { kind: 'committed', outcome: result.outcome }
-          : { kind: 'not_committed' };
-      }
-      default:
-        return null;
+    return { kind: 'committed', outcome: result.outcome };
+  }
+
+  private async reconcileByReplay(
+    envelope: RuntimeCommandEnvelope,
+    invalidErrorCode: string
+  ): Promise<RuntimeCommandReconciliation> {
+    const result = await this.ownerTable.execute(envelope);
+    if (result === null || result.settlement !== 'completed') {
+      throw new Error(invalidErrorCode);
     }
+    return result.outcome.ok
+      ? { kind: 'committed', outcome: result.outcome }
+      : { kind: 'not_committed' };
+  }
+
+  private async reconcileAgentDecision(
+    envelope: RuntimeCommandEnvelope,
+    command: Extract<RuntimeCommandEnvelope['command'], {
+      readonly kind: 'agent.decision.resolve.v3';
+    }>
+  ): Promise<RuntimeCommandReconciliation> {
+    const result = await this.agentDecisionAuthority.reconcile({
+      commandId: envelope.commandId,
+      command,
+      signal: envelope.signal
+    });
+    return result === null
+      ? { kind: 'not_committed' }
+      : { kind: 'committed', outcome: { ok: true, result } };
+  }
+
+  private async executeProjectionCommand(
+    envelope: RuntimeCommandEnvelope
+  ): Promise<RuntimeApplicationCommandResult> {
+    if (envelope.command.kind === 'projection.snapshot.get') {
+      if (envelope.command.contractVersion !== PUBLIC_PROJECTION_CONTRACT_VERSION) {
+        throw new Error('public_projection_contract_version_mismatch');
+      }
+      return this.callbacks.executeProjectionQuery(envelope, async () => ({
+        kind: 'projection.snapshot' as const,
+        snapshot: await this.publicProjection.snapshot()
+      }));
+    }
+    if (envelope.command.kind === 'projection.commits.read') {
+      const request = envelope.command.request;
+      return this.callbacks.executeProjectionQuery(envelope, async () => ({
+        kind: 'projection.commits' as const,
+        batch: await this.publicProjection.read(request)
+      }));
+    }
+    throw new Error('agent_command_owner_kind_mismatch:projection.query');
   }
 
   private async executeAcceptConversationMessage(
