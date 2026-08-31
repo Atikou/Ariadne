@@ -29,8 +29,8 @@ import {
   DefaultAgentControlRuntimeFactory
 } from '../src/composition/DefaultAgentControlRuntimeFactory.js';
 import {
-  AgentEntityHandle as ComposedAgentControlRuntime
-} from '../src/composition/agent-entity/AgentEntityHandle.js';
+  TestAgentEntityHandle as ComposedAgentControlRuntime
+} from './support/TestAgentEntityHandle.js';
 import {
   composeAgentPersistenceComponentHandle
 } from '../src/composition/agent-entity/components/persistence/AgentPersistenceComponent.js';

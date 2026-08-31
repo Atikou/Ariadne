@@ -9,19 +9,12 @@ import {
 } from '../../adapters/persistence/PublicProjectionDbSchema.js';
 import { PRODUCTIVITY_DB_SCHEMA_VERSION } from '../../adapters/persistence/SqliteProductivityStore.js';
 import type { PublicAgentObservability } from '../../adapters/observability/PublicAgentObservability.js';
-import type {
-  AgentControlRuntimeLifecycle,
-  AgentControlRuntimeServices
-} from '../../ingress/AgentControlLifecycle.js';
+import type { AgentControlRuntimeLifecycle } from '../../ingress/AgentControlLifecycle.js';
 import type { RuntimeApplicationCommandResult } from '../../ingress/RuntimeApplication.js';
 import type { RuntimeCommandEnvelope } from '../../ingress/RuntimeIngress.js';
 import type { ShutdownContext } from '../../ingress/ShutdownContext.js';
 import type { RuntimeCommandReconciliation } from '../../control/ports/RuntimeCommandJournal.js';
-import type { AgentControlLiveWorkService } from '../../control/ports/AgentLiveWork.js';
-import type { RuntimePublicEventSink } from '../../ingress/RuntimePublicEventSink.js';
-import type { ModelCatalogProjectionSource } from '../../projection/ModelCatalogProjectionPorts.js';
 import { AgentControlPublicCommandRouter } from '../AgentControlPublicCommandRouter.js';
-import type { AgentControlExecutionPipeline } from '../ProductionAgentControlExecutionPipelineFactory.js';
 import { V3ScheduleWorker } from '../V3ScheduleWorker.js';
 import { composeAgentEntityCommandManifest } from './AgentEntityCommandAssembly.js';
 import {
@@ -31,17 +24,17 @@ import {
 import type {
   AgentPersistenceComponentHandle
 } from './components/persistence/AgentPersistenceComponent.js';
+import type {
+  AgentEntityHandleOptions,
+  AgentEntityManifest
+} from './AgentEntityManifest.js';
 import {
   createAgentProjectionComponent,
   projectionHealthError,
-  type AgentProjectionComponentHandle,
-  type AgentProjectionComponentOptions
+  type AgentProjectionComponentHandle
 } from './components/projection/AgentProjectionComponent.js';
 
-export interface AgentEntityHandleOptions extends AgentProjectionComponentOptions {
-  readonly agentDecisionCommandNow?: () => Date;
-  readonly agentInboxCommandNow?: () => Date;
-}
+export type { AgentEntityHandleOptions } from './AgentEntityManifest.js';
 
 /** Started Agent Entity handle that owns component lifecycle and public ingress. */
 export class AgentEntityHandle implements AgentControlRuntimeLifecycle {
@@ -57,21 +50,26 @@ export class AgentEntityHandle implements AgentControlRuntimeLifecycle {
   private readonly publicCommands: AgentControlPublicCommandRouter;
   private readonly scheduleWorker: V3ScheduleWorker | undefined;
   private readonly unitOfWork: AgentPersistenceComponentHandle['unitOfWork'];
+  private readonly persistence: AgentPersistenceComponentHandle;
+  private readonly observability?: PublicAgentObservability;
   private lifecycle: 'new' | 'starting' | 'running' | 'failed' | 'stopping' | 'stopped' = 'new';
   private prepareOperation: Promise<void> | null = null;
   private shutdownOperation: Promise<void> | null = null;
 
-  public constructor(
-    private readonly persistence: AgentPersistenceComponentHandle,
-    options: AgentEntityHandleOptions = {},
-    executionPipeline?: AgentControlExecutionPipeline,
-    modelCatalog?: ModelCatalogProjectionSource,
-    projectionWakeEventSink?: RuntimePublicEventSink,
-    authorizedWorkspaceIds: readonly string[] = [],
-    private readonly observability?: PublicAgentObservability,
-    liveWork?: AgentControlLiveWorkService,
-    humanSkillCatalog?: NonNullable<AgentControlRuntimeServices['humanSkillCatalog']>
-  ) {
+  public constructor(manifest: AgentEntityManifest) {
+    const {
+      persistence,
+      options,
+      executionPipeline,
+      modelCatalog,
+      projectionWakeEventSink,
+      authorizedWorkspaceIds,
+      observability,
+      liveWork,
+      humanSkillCatalog
+    } = manifest;
+    this.persistence = persistence;
+    this.observability = observability;
     const { unitOfWork, conversation, productivity, attachmentStore } = persistence;
     this.unitOfWork = unitOfWork;
     this.projection = createAgentProjectionComponent({

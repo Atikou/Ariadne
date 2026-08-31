@@ -23,6 +23,7 @@ import {
   AgentEntityHandle,
   type AgentEntityHandleOptions
 } from './agent-entity/AgentEntityHandle.js';
+import { compileAgentEntityManifest } from './agent-entity/AgentEntityManifest.js';
 import {
   startAgentPersistenceComponent
 } from './agent-entity/components/persistence/AgentPersistenceComponent.js';
@@ -68,17 +69,24 @@ export class DefaultAgentControlRuntimeFactory implements AgentControlRuntimeFac
           ? {}
           : { modelInferenceGateway: input.modelInferenceGateway })
       });
-      return new AgentEntityHandle(
+      return new AgentEntityHandle(compileAgentEntityManifest({
         persistence,
-        this.lifecycleOptions,
-        executionPipeline ?? undefined,
-        input.modelCatalog,
-        input.publicEventSink,
-        input.workspaces?.map((workspace) => workspace.workspaceId) ?? [],
+        options: this.lifecycleOptions,
+        ...(executionPipeline === null || executionPipeline === undefined
+          ? {}
+          : { executionPipeline }),
+        modelCatalog: input.modelCatalog,
+        projectionWakeEventSink: input.publicEventSink,
+        authorizedWorkspaceIds:
+          input.workspaces?.map((workspace) => workspace.workspaceId) ?? [],
         observability,
-        input.runtimeServices?.liveWorkLifecycle,
-        input.runtimeServices?.humanSkillCatalog
-      );
+        ...(input.runtimeServices?.liveWorkLifecycle === undefined
+          ? {}
+          : { liveWork: input.runtimeServices.liveWorkLifecycle }),
+        ...(input.runtimeServices?.humanSkillCatalog === undefined
+          ? {}
+          : { humanSkillCatalog: input.runtimeServices.humanSkillCatalog })
+      }));
     } catch (error) {
       const cleanupContext = createShutdownContext(Date.now() + 5_000);
       let cleanupErrors: readonly unknown[];

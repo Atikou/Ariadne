@@ -10,6 +10,7 @@ const boundaries = [
     maxLines: 150,
     required: [
       './AgentControlRuntimeCompositionSupport.js',
+      './agent-entity/AgentEntityManifest.js',
       './agent-entity/AgentEntityHandle.js',
       './agent-entity/components/persistence/AgentPersistenceComponent.js'
     ],
@@ -43,6 +44,7 @@ const boundaries = [
     maxLines: 250,
     required: [
       './AgentEntityCommandAssembly.js',
+      './AgentEntityManifest.js',
       './components/persistence/AgentPersistenceComponent.js',
       './components/projection/AgentProjectionComponent.js',
       './components/execution/AgentExecutionComponent.js'
@@ -51,6 +53,19 @@ const boundaries = [
       /new\s+SqliteAgentRunUnitOfWork\b/,
       /new\s+SqliteConversationRunHandoffUnitOfWork\b/,
       /createProductionExecutionPipelineFactory/
+    ]
+  },
+  {
+    file: 'runtime/src/composition/agent-entity/AgentEntityManifest.ts',
+    maxLines: 60,
+    required: [
+      './components/persistence/AgentPersistenceComponent.js',
+      './components/projection/AgentProjectionComponent.js'
+    ],
+    forbidden: [
+      /new\s+SqliteAgentRunUnitOfWork\b/,
+      /new\s+SqliteConversationRunHandoffUnitOfWork\b/,
+      /AgentControlPublicCommandRouter/
     ]
   },
   {
