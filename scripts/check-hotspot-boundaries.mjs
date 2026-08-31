@@ -177,7 +177,7 @@ const boundaries = [
       './runtime-capabilities/ProductionRuntimeCapabilityContext.js',
       './runtime-capabilities/ProductionRuntimeCapabilityProviders.js',
       './runtime-capabilities/RuntimeCapabilityManifestCompiler.js',
-      './agent-entity/AgentCoreComponentDefinitions.js'
+      './agent-entity/AgentCoreComponentCatalog.generated.js'
     ],
     forbidden: [
       /defineRuntimeCapabilityProvider/,
@@ -185,16 +185,38 @@ const boundaries = [
     ]
   },
   {
-    file: 'runtime/src/composition/agent-entity/AgentCoreComponentDefinitions.ts',
-    maxLines: 60,
+    file: 'runtime/src/composition/agent-entity/AgentCoreComponentCatalog.generated.ts',
+    maxLines: 50,
     required: [
-      '@ariadne/component-contracts'
+      'scripts/generate-agent-component-catalog.mjs',
+      './components/command-entity/component.js',
+      './components/persistence/component.js'
     ],
     forbidden: [
       /AgentControlPublicCommandRouter/,
       /Sqlite\w+/,
       /createAgent\w+Component/,
       /ProductionAgentControlExecutionPipelineFactory/
+    ]
+  },
+  {
+    file: 'runtime/src/composition/agent-entity/CoreAgentComponentDefinition.ts',
+    maxLines: 30,
+    required: [
+      '@ariadne/component-contracts'
+    ],
+    forbidden: [
+      /AgentControlPublicCommandRouter/,
+      /Sqlite\w+/
+    ]
+  },
+  {
+    file: 'scripts/generate-agent-component-catalog.mjs',
+    maxLines: 90,
+    required: [
+      "'runtime', 'src', 'composition', 'agent-entity', 'components'",
+      "'component.ts'",
+      "process.argv.includes('--check')"
     ]
   },
   {

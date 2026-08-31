@@ -9,7 +9,9 @@ import {
   productionRuntimeCapabilityProviders
 } from './runtime-capabilities/ProductionRuntimeCapabilityProviders.js';
 import { compileRuntimeCapabilityManifest } from './runtime-capabilities/RuntimeCapabilityManifestCompiler.js';
-import { agentCoreComponentDefinitions } from './agent-entity/AgentCoreComponentDefinitions.js';
+import {
+  agentCoreComponentDefinitions
+} from './agent-entity/AgentCoreComponentCatalog.generated.js';
 
 export type { ProductionRuntimeCapabilityManifestInput };
 export { createProductionRuntimeCapabilityStartContext };
