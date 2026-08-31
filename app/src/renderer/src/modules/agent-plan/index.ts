@@ -7,7 +7,7 @@ export const agentPlanModule: FeatureModuleDefinition = {
   description: '查看当前任务的步骤和进度。',
   icon: 'list',
   component: AgentPlanPanel,
-  consumes: ['runtime'],
+  consumes: ['decisions', 'runtime'],
   navigation: { id: 'agent', label: 'Agent', icon: 'bot', order: 20, position: 'primary' },
   defaultOpen: true,
   defaultPlacement: { direction: 'within', referenceModuleId: moduleId('agent.status') },

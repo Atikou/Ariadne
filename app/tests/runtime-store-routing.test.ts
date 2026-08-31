@@ -192,9 +192,9 @@ describe('RuntimeStore command routing', () => {
       actionAvailable: false
     };
 
-    await expect(store.respondToPermission(request, 'allow_once'))
+    await expect(store.decisions.respondToPermission(request, 'allow_once'))
       .rejects.toThrow('projection_decision_action_unavailable:permission');
-    await expect(store.respondToPlan(unavailablePlan(), 'approve'))
+    await expect(store.decisions.respondToPlan(unavailablePlan(), 'approve'))
       .rejects.toThrow('projection_decision_action_unavailable:plan');
 
     expect(commands).toEqual([]);
@@ -253,9 +253,9 @@ describe('RuntimeStore command routing', () => {
     expect(JSON.stringify({ permission, plan, question })).not.toContain(ACTION_TOKEN);
     expect(JSON.stringify({ permission, plan, question })).not.toContain('decision-action');
 
-    await store.respondToPermission(permission, 'allow_once');
-    await store.respondToPlan(plan, 'approve');
-    await store.answerUserQuestion(question, 'local: Local only');
+    await store.decisions.respondToPermission(permission, 'allow_once');
+    await store.decisions.respondToPlan(plan, 'approve');
+    await store.decisions.answerUserQuestion(question, 'local: Local only');
 
     expect(commands.filter((command) => command.kind === 'agent.decision.resolve.v3'))
       .toEqual([
@@ -304,13 +304,13 @@ describe('RuntimeStore command routing', () => {
     ]);
     const current = store.getSnapshot().permissions[0]!;
 
-    await expect(store.respondToPermission({
+    await expect(store.decisions.respondToPermission({
       ...current,
       projectionVersion: current.projectionVersion + 1
     }, 'allow_once')).rejects.toThrow('projection_decision_action_unavailable:permission');
-    await expect(store.respondToPermission(current, 'approve' as never))
+    await expect(store.decisions.respondToPermission(current, 'approve' as never))
       .rejects.toThrow('projection_decision_action_unavailable:permission');
-    await expect(store.respondToPermission({
+    await expect(store.decisions.respondToPermission({
       ...current,
       requestId: 'decision-plan',
       runId: 'run-plan'
@@ -326,7 +326,7 @@ describe('RuntimeStore command routing', () => {
     const store = await initializedDecisionStore([], [permissionDecision()], ACTION_TOKEN);
     const request = store.getSnapshot().permissions[0]!;
 
-    const error = await store.respondToPermission(request, 'allow_once')
+    const error = await store.decisions.respondToPermission(request, 'allow_once')
       .catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(Error);
@@ -356,8 +356,8 @@ describe('RuntimeStore command routing', () => {
       timing: { activeDurationMs: 1 }
     } satisfies RuntimeRun;
 
-    await store.recoverRun(run, 'resume');
-    await store.resumeBudget({ ...run, runId: 'run-budget', status: 'waiting_budget' });
+    await store.decisions.recoverRun(run, 'resume');
+    await store.decisions.resumeBudget({ ...run, runId: 'run-budget', status: 'waiting_budget' });
     expect(commands.filter((command) => command.kind === 'agent.decision.resolve.v3'))
       .toMatchObject([{
         runId: 'run-recovery',

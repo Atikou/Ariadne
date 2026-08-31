@@ -9,6 +9,7 @@ import type { ProductivityFeatureStore } from '../runtime/features/productivity-
 import type { HumanSkillFeatureStore } from '../runtime/features/human-skill-feature-store';
 import type { ToolResultFeatureStore } from '../runtime/features/tool-result-feature-store';
 import type { SessionFeatureStore } from '../runtime/features/session-feature-store';
+import type { DecisionFeatureStore } from '../runtime/features/decision-feature-store';
 
 export type ModuleId = string & { readonly __moduleId: unique symbol };
 export type ModuleIcon =
@@ -48,6 +49,7 @@ export interface ModuleServices {
   agentSettings: AriadneApi['agentSettings'];
   clipboard: AriadneApi['clipboard'];
   conversationNavigation: ConversationNavigationService;
+  decisions: DecisionFeatureStore;
   events: TypedEventBus<AppEventMap>;
   humanSkills: HumanSkillFeatureStore;
   productivity: ProductivityFeatureStore;

@@ -1,7 +1,6 @@
 import { useSyncExternalStore } from 'react';
 
 import {
-  PUBLIC_DECISION_ACTION_CONTRACT_VERSION,
   PUBLIC_PROJECTION_CONTRACT_VERSION,
   PERSONAL_ASSISTANT_WORKSPACE_ID
 } from '@ariadne/protocol/public';
@@ -11,8 +10,6 @@ import type {
   EncodedImageAttachmentV3,
   ModelInferenceOptions,
   ModelSummary,
-  PublicDecisionChoiceV3,
-  PublicDecisionProjectionV3,
   PublicRunProjectionV3,
   RunActivity,
   PublicProjectionReadBatchV3,
@@ -59,6 +56,7 @@ import { ProductivityFeatureStore } from './features/productivity-feature-store'
 import { ToolResultFeatureStore } from './features/tool-result-feature-store';
 import { HumanSkillFeatureStore } from './features/human-skill-feature-store';
 import { SessionFeatureStore } from './features/session-feature-store';
+import { DecisionFeatureStore } from './features/decision-feature-store';
 
 export type { AgentInputDeliveryReceipt } from './agent-input-delivery';
 export type {
@@ -116,6 +114,7 @@ const ACTIVE_PROJECTION_POLL_INTERVAL_MS = 500;
  * routing and local UI overlays.
  */
 export class RuntimeStore {
+  readonly decisions: DecisionFeatureStore;
   readonly humanSkills: HumanSkillFeatureStore;
   readonly productivity: ProductivityFeatureStore;
   readonly sessions: SessionFeatureStore;
@@ -151,6 +150,10 @@ export class RuntimeStore {
     private readonly agentInputDeliveryPersistence?: AriadneApi['agentInputDeliveryOutbox']
   ) {
     const featureGateway = { execute: (command: RuntimeCommand) => this.command(command) };
+    this.decisions = new DecisionFeatureStore(featureGateway, {
+      projectionDecisions: () => this.projection.decisions.getSnapshot(),
+      awaitDecisionSettlement: (decisionId) => this.awaitDecisionProjectionSettlement(decisionId)
+    });
     this.humanSkills = new HumanSkillFeatureStore(featureGateway);
     this.productivity = new ProductivityFeatureStore(featureGateway);
     this.sessions = new SessionFeatureStore(featureGateway, {
@@ -543,91 +546,6 @@ export class RuntimeStore {
     void this.requestSynchronization(false);
   }
 
-  async respondToPermission(
-    request: RuntimePermissionDecision,
-    choice: 'allow_once' | 'deny'
-  ): Promise<void> {
-    if (!request.actionAvailable) {
-      throw new Error('projection_decision_action_unavailable:permission');
-    }
-    await this.resolveProjectedDecision({
-      decisionId: request.requestId,
-      runId: request.runId,
-      expectedVersion: request.projectionVersion,
-      kind: 'permission',
-      choice
-    });
-  }
-
-  async respondToPlan(
-    handoff: RuntimePlanDecision,
-    choice: 'approve' | 'reject'
-  ): Promise<void> {
-    if (!handoff.actionAvailable) {
-      throw new Error('projection_decision_action_unavailable:plan');
-    }
-    await this.resolveProjectedDecision({
-      decisionId: handoff.handoffId,
-      runId: handoff.runId,
-      expectedVersion: handoff.projectionVersion,
-      kind: 'plan',
-      choice
-    });
-  }
-
-  async recoverRun(
-    run: RuntimeRun,
-    decision: 'resume' | 'cancel' | 'mark_failed'
-  ): Promise<void> {
-    if (run.origin !== 'projection') {
-      throw new Error('projection_run_action_unavailable:recovery');
-    }
-    const recovery = this.projection.decisions.getSnapshot().find(
-      (candidate) => candidate.runId === run.runId
-        && candidate.kind === 'recovery'
-        && candidate.status === 'pending'
-    );
-    if (recovery === undefined) {
-      throw new Error('projection_run_action_unavailable:recovery');
-    }
-    await this.resolveProjectedDecision({
-      decisionId: recovery.decisionId,
-      runId: recovery.runId,
-      expectedVersion: recovery.version,
-      kind: 'recovery',
-      choice: decision === 'resume'
-        ? 'retry'
-        : decision === 'cancel'
-          ? 'cancel_run'
-          : 'mark_failed'
-    });
-  }
-
-  async resumeBudget(
-    run: RuntimeRun,
-    budget: NonNullable<RuntimeRun['suggestedBudget']> | undefined = run.suggestedBudget
-  ): Promise<void> {
-    void budget;
-    if (run.origin !== 'projection') {
-      throw new Error('projection_run_action_unavailable:budget_resume');
-    }
-    const budgetDecision = this.projection.decisions.getSnapshot().find(
-      (candidate) => candidate.runId === run.runId
-        && candidate.kind === 'budget'
-        && candidate.status === 'pending'
-    );
-    if (budgetDecision === undefined) {
-      throw new Error('projection_run_action_unavailable:budget_resume');
-    }
-    await this.resolveProjectedDecision({
-      decisionId: budgetDecision.decisionId,
-      runId: budgetDecision.runId,
-      expectedVersion: budgetDecision.version,
-      kind: 'budget',
-      choice: 'resume'
-    });
-  }
-
   private async initializeRuntime(generation: number): Promise<void> {
     if (this.agentInputDeliveryPersistence !== undefined) {
       await this.restorePersistedAgentInputDeliveries(generation);
@@ -818,59 +736,6 @@ export class RuntimeStore {
     if (this.projectionPollTimer === null) return;
     clearTimeout(this.projectionPollTimer);
     this.projectionPollTimer = null;
-  }
-
-  async answerUserQuestion(
-    question: RuntimeUserQuestionDecision,
-    answer: string
-  ): Promise<void> {
-    if (!question.actionAvailable) {
-      throw new Error('projection_decision_action_unavailable:user_question');
-    }
-    await this.resolveProjectedDecision({
-      decisionId: question.decisionId,
-      runId: question.runId,
-      expectedVersion: question.projectionVersion,
-      kind: 'user_question',
-      choice: 'answer',
-      answer
-    });
-  }
-
-  private async resolveProjectedDecision(input: {
-    readonly decisionId: string;
-    readonly runId: string | undefined;
-    readonly expectedVersion: number;
-    readonly kind: 'permission' | 'plan' | 'recovery' | 'budget' | 'user_question';
-    readonly choice: PublicDecisionChoiceV3;
-    readonly answer?: string;
-  }): Promise<void> {
-    const decision = this.projection.decisions.getSnapshot().find(
-      (candidate) => candidate.decisionId === input.decisionId
-    );
-    if (!isExactActionableDecision(decision, input)) {
-      throw new Error(`projection_decision_action_unavailable:${input.kind}`);
-    }
-    const result = await this.command({
-      kind: 'agent.decision.resolve.v3',
-      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
-      runId: decision.runId,
-      decisionId: decision.decisionId,
-      action: {
-        contractVersion: PUBLIC_DECISION_ACTION_CONTRACT_VERSION,
-        actionToken: decision.action.actionToken,
-        choice: input.choice,
-        ...(input.answer === undefined ? {} : { answer: input.answer })
-      }
-    });
-    if (
-      result.kind !== 'agent.decision.resolved.v3'
-      || result.runId !== decision.runId
-      || result.decisionId !== decision.decisionId
-    ) {
-      throw new Error('runtime_result_invalid:agent.decision.resolved.v3');
-    }
-    await this.awaitDecisionProjectionSettlement(decision.decisionId);
   }
 
   private async awaitDecisionProjectionSettlement(decisionId: string): Promise<void> {
@@ -1114,46 +979,6 @@ export function useRuntimeSnapshot(store: RuntimeStore): RuntimeSnapshot {
 
 function compareCodeUnits(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function isExactActionableDecision(
-  decision: PublicDecisionProjectionV3 | undefined,
-  expected: {
-    readonly decisionId: string;
-    readonly runId: string | undefined;
-    readonly expectedVersion: number;
-    readonly kind: 'permission' | 'plan' | 'recovery' | 'budget' | 'user_question';
-    readonly choice: PublicDecisionChoiceV3;
-  }
-): decision is PublicDecisionProjectionV3 & {
-  readonly action: NonNullable<PublicDecisionProjectionV3['action']>;
-} {
-  if (
-    decision === undefined
-    || expected.runId === undefined
-    || decision.decisionId !== expected.decisionId
-    || decision.runId !== expected.runId
-    || decision.version !== expected.expectedVersion
-    || decision.kind !== expected.kind
-    || decision.presentation.kind !== expected.kind
-    || decision.status !== 'pending'
-    || decision.action === undefined
-    || decision.action.contractVersion !== PUBLIC_DECISION_ACTION_CONTRACT_VERSION
-  ) return false;
-  const expectedChoices: readonly PublicDecisionChoiceV3[] = expected.kind === 'permission'
-    ? ['allow_once', 'allow_run', 'deny']
-    : expected.kind === 'plan'
-      ? ['approve', 'reject']
-      : expected.kind === 'recovery'
-        ? ['retry', 'mark_succeeded', 'mark_failed', 'cancel_run']
-        : expected.kind === 'budget'
-          ? ['resume', 'cancel_run']
-          : ['answer'];
-  return decision.action.choices.length === expectedChoices.length
-    && decision.action.choices.every(
-      (choice, index) => choice === expectedChoices[index]
-    )
-    && decision.action.choices.includes(expected.choice);
 }
 
 function sanitizeRuntimeCommandError(

@@ -19,7 +19,7 @@ export function AgentPlanPanel({ moduleId, services }: FeaturePanelProps): React
           </li>)}</ol>
         </div>}
       {!handoff.actionAvailable && <p className="module-empty-state">当前 v3 决策写入通道尚未启用；操作已安全锁定。</p>}
-      {handoff.status === 'pending' && handoff.actionAvailable && <div className="rewrite-action-row"><button type="button" className="rewrite-cancel-button" onClick={() => void services.runtime.respondToPlan(handoff, 'reject')}>拒绝</button><button type="button" className="rewrite-send-button" disabled={handoff.plan !== null && !isApprovable(handoff.plan)} onClick={() => void services.runtime.respondToPlan(handoff, 'approve')}><Check size={13} /> 批准计划</button></div>}
+      {handoff.status === 'pending' && handoff.actionAvailable && <div className="rewrite-action-row"><button type="button" className="rewrite-cancel-button" onClick={() => void services.decisions.respondToPlan(handoff, 'reject')}>拒绝</button><button type="button" className="rewrite-send-button" disabled={handoff.plan !== null && !isApprovable(handoff.plan)} onClick={() => void services.decisions.respondToPlan(handoff, 'approve')}><Check size={13} /> 批准计划</button></div>}
     </article>)}
     {runtime.planHandoffs.length === 0 && <p className="module-empty-state">暂无需要确认的计划。</p>}
   </section>;

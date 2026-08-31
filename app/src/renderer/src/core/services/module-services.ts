@@ -16,6 +16,7 @@ export function createModuleServices(
     agentSettings: api.agentSettings,
     clipboard: api.clipboard,
     conversationNavigation: new ConfiguredConversationNavigationService(api.agentSettings, api.workspace, storage),
+    decisions: runtime.decisions,
     events,
     humanSkills: runtime.humanSkills,
     productivity: runtime.productivity,

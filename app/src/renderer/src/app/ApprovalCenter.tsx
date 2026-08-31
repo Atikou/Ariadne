@@ -7,9 +7,9 @@ import {
   type RuntimePermissionDecision,
   type RuntimePlanDecision,
   type RuntimeUserQuestionDecision,
-  type RuntimeRun,
-  type RuntimeStore
+  type RuntimeRun
 } from '@renderer/core/runtime/runtime-store';
+import type { DecisionFeatureStore } from '@renderer/core/runtime/features/decision-feature-store';
 import { formatRisk } from '@renderer/core/runtime/runtime-labels';
 import { PlanContractView } from '@renderer/modules/agent-plan/PlanContractView';
 
@@ -81,15 +81,15 @@ export function ConversationApprovalCards(
           </header>
           {current.kind === 'permission' && <PermissionRequestApproval
             request={current.request}
-            runtime={services.runtime}
+            decisions={services.decisions}
           />}
           {current.kind === 'plan' && <PlanHandoffApproval
             handoff={current.handoff}
-            runtime={services.runtime}
+            decisions={services.decisions}
           />}
           {current.kind === 'user_question' && <UserQuestionAnswer
             question={current.question}
-            runtime={services.runtime}
+            decisions={services.decisions}
           />}
         </section>;
       })}
@@ -97,9 +97,9 @@ export function ConversationApprovalCards(
   );
 }
 
-function UserQuestionAnswer({ question, runtime }: {
+function UserQuestionAnswer({ question, decisions }: {
   question: RuntimeUserQuestionDecision;
-  runtime: RuntimeStore;
+  decisions: DecisionFeatureStore;
 }): React.JSX.Element {
   const [answer, setAnswer] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -111,7 +111,7 @@ function UserQuestionAnswer({ question, runtime }: {
     setSubmitting(true);
     setError(null);
     try {
-      await runtime.answerUserQuestion(question, normalized);
+      await decisions.answerUserQuestion(question, normalized);
     } catch (responseError) {
       setSubmitting(false);
       setError(runtimeRequestErrorMessage(responseError, '提交回答失败。'));
@@ -156,9 +156,9 @@ function UserQuestionAnswer({ question, runtime }: {
   </div>;
 }
 
-function PermissionRequestApproval({ request, runtime }: {
+function PermissionRequestApproval({ request, decisions }: {
   request: RuntimePermissionDecision;
-  runtime: RuntimeStore;
+  decisions: DecisionFeatureStore;
 }): React.JSX.Element {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -168,7 +168,7 @@ function PermissionRequestApproval({ request, runtime }: {
     setSubmitting(true);
     setError(null);
     try {
-      await runtime.respondToPermission(
+      await decisions.respondToPermission(
         request,
         decision === 'allow' ? 'allow_once' : 'deny'
       );
@@ -203,9 +203,9 @@ function PermissionRequestApproval({ request, runtime }: {
   </div>;
 }
 
-function PlanHandoffApproval({ handoff, runtime }: {
+function PlanHandoffApproval({ handoff, decisions }: {
   handoff: RuntimePlanDecision;
-  runtime: RuntimeStore;
+  decisions: DecisionFeatureStore;
 }): React.JSX.Element {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -222,7 +222,7 @@ function PlanHandoffApproval({ handoff, runtime }: {
     setSubmitting(true);
     setError(null);
     try {
-      await runtime.respondToPlan(handoff, decision);
+      await decisions.respondToPlan(handoff, decision);
     } catch (responseError) {
       setSubmitting(false);
       setError(runtimeRequestErrorMessage(responseError, '提交计划决定失败。'));

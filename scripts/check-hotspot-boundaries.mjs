@@ -427,10 +427,11 @@ const boundaries = [
   },
   {
     file: 'app/src/renderer/src/core/runtime/runtime-store.ts',
-    maxLines: 1205,
+    maxLines: 1030,
     required: [
       'ProjectionCache',
       'ProjectionRuntimeClient',
+      'DecisionFeatureStore',
       'HumanSkillFeatureStore',
       'ProductivityFeatureStore',
       'SessionFeatureStore',
@@ -442,7 +443,9 @@ const boundaries = [
       /async loadProtectedToolResultDetail\(/,
       /async queryHumanSkillCommands\(/,
       /async querySessions\(/,
-      /async forkSessionFromMessage\(/
+      /async forkSessionFromMessage\(/,
+      /async respondToPermission\(/,
+      /async respondToPlan\(/
     ]
   },
   {
@@ -469,6 +472,15 @@ const boundaries = [
     required: [
       'class SessionFeatureStore',
       'SessionFeatureHost'
+    ]
+  },
+  {
+    file: 'app/src/renderer/src/core/runtime/features/decision-feature-store.ts',
+    maxLines: 130,
+    required: [
+      'class DecisionFeatureStore',
+      'DecisionFeatureHost',
+      'isExactActionableDecision'
     ]
   },
   {

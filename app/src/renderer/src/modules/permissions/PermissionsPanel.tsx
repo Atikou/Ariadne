@@ -1,9 +1,9 @@
 import { FolderLock, ShieldCheck } from 'lucide-react';
 import {
   useRuntimeSnapshot,
-  type RuntimePermissionDecision,
-  type RuntimeStore
+  type RuntimePermissionDecision
 } from '@renderer/core/runtime/runtime-store';
+import type { DecisionFeatureStore } from '@renderer/core/runtime/features/decision-feature-store';
 import { formatRisk } from '@renderer/core/runtime/runtime-labels';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import { StatusPill } from '@renderer/shared/ui/StatusPill';
@@ -23,16 +23,16 @@ export function PermissionsPanel({ moduleId, services }: FeaturePanelProps): Rea
       {runtime.permissions.map((request) => <PermissionRequestCard
         key={request.requestId}
         request={request}
-        runtime={services.runtime}
+        decisions={services.decisions}
       />)}
     </div>
     {runtime.permissions.length === 0 && <p className="module-empty-state">暂无权限请求。</p>}
   </section>;
 }
 
-function PermissionRequestCard({ request, runtime }: {
+function PermissionRequestCard({ request, decisions }: {
   request: RuntimePermissionDecision;
-  runtime: RuntimeStore;
+  decisions: DecisionFeatureStore;
 }): React.JSX.Element {
   return <article>
     <span><FolderLock size={16} /></span>
@@ -50,10 +50,10 @@ function PermissionRequestCard({ request, runtime }: {
       </ul>
       {request.status === 'pending' && request.actionAvailable && <div className="rewrite-action-row permission-actions">
         <button type="button" className="rewrite-cancel-button" onClick={() => {
-          void runtime.respondToPermission(request, 'deny');
+          void decisions.respondToPermission(request, 'deny');
         }}>拒绝</button>
         <button type="button" className="rewrite-send-button" onClick={() => {
-          void runtime.respondToPermission(request, 'allow_once');
+          void decisions.respondToPermission(request, 'allow_once');
         }}>
           <ShieldCheck size={13} /> 允许一次
         </button>

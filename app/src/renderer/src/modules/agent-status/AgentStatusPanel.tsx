@@ -104,7 +104,7 @@ export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): Rea
         已累计使用 {run.budgetUsage.modelTurns} 次模型调用、{run.budgetUsage.toolCalls} 次工具调用。
       </p>}
       {run.origin !== 'projection' && <div className="agent-controls">
-        <button type="button" onClick={() => void services.runtime.resumeBudget(run)}>
+        <button type="button" onClick={() => void services.decisions.resumeBudget(run)}>
           <RotateCw size={13} /> 按建议预算继续
         </button>
         <button type="button" onClick={() => void services.runtime.cancelRun(run)}>
@@ -123,10 +123,10 @@ export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): Rea
         : '存在状态不确定的非幂等副作用，需要结束本次运行。')}</p>
       {run.origin !== 'projection' && <div className="agent-controls">
         {run.recoveryStatus === 'recoverable'
-          ? <button type="button" onClick={() => void services.runtime.recoverRun(run, 'resume')}><RotateCw size={13} /> 从检查点继续</button>
+          ? <button type="button" onClick={() => void services.decisions.recoverRun(run, 'resume')}><RotateCw size={13} /> 从检查点继续</button>
           : <>
-              <button type="button" onClick={() => void services.runtime.recoverRun(run, 'mark_failed')}><CircleX size={13} /> 标记失败</button>
-              <button type="button" onClick={() => void services.runtime.recoverRun(run, 'cancel')}><Square size={13} /> 取消任务</button>
+              <button type="button" onClick={() => void services.decisions.recoverRun(run, 'mark_failed')}><CircleX size={13} /> 标记失败</button>
+              <button type="button" onClick={() => void services.decisions.recoverRun(run, 'cancel')}><Square size={13} /> 取消任务</button>
             </>}
       </div>}
     </div>}
