@@ -80,10 +80,26 @@ const boundaries = [
     ]
   },
   {
-    file: 'runtime/src/composition/ProductionAgentControlExecutionPipelineFactory.ts',
-    maxLines: 620,
+    file: 'runtime/src/composition/agent-entity/components/tool-execution/AgentToolExecutionComponent.ts',
+    maxLines: 180,
     required: [
-      './agent-entity/components/subagent/AgentSubagentExecutionComponent.js'
+      '../../../../adapters/tool/ImmutableAgentToolCatalogRegistry.js',
+      '../../../../control/execution/ProductionAgentEffectExecutionInputReader.js',
+      '../../../../control/resources/ProtectedAgentEffectResultReader.js'
+    ],
+    forbidden: [
+      /AgentControlPublicCommandRouter/,
+      /ConversationAgentHandoffProducer/,
+      /AgentRunWorkScheduler/,
+      /AgentInferenceDispatchService/
+    ]
+  },
+  {
+    file: 'runtime/src/composition/ProductionAgentControlExecutionPipelineFactory.ts',
+    maxLines: 510,
+    required: [
+      './agent-entity/components/subagent/AgentSubagentExecutionComponent.js',
+      './agent-entity/components/tool-execution/AgentToolExecutionComponent.js'
     ],
     forbidden: [
       /AcpSubagentAgentEngine/,
@@ -91,7 +107,14 @@ const boundaries = [
       /ClaudeSubagentAgentEngine/,
       /digestAcpSubagentConfiguration/,
       /digestProductSubagentConfiguration/,
-      /subagentProviderBootstrapSchema/
+      /subagentProviderBootstrapSchema/,
+      /ImmutableAgentToolCatalogRegistry/,
+      /new\s+ProtectedAgentEffectResultReader\b/,
+      /new\s+ProductionAgentEffectExecutionInputReader\b/,
+      /new\s+AgentEffectDispatchService\b/,
+      /new\s+V3AgentEffectDispatchCheckpointFactory\b/,
+      /function\s+assertCatalogAuthorities\b/,
+      /function\s+preflightBinding\b/
     ]
   },
   {

@@ -12,7 +12,8 @@ import component7 from './components/run-control/component.js';
 import component8 from './components/skills-human/component.js';
 import component9 from './components/subagent/component.js';
 import component10 from './components/subagent-interrupt/component.js';
-import component11 from './components/tool-result-detail/component.js';
+import component11 from './components/tool-execution/component.js';
+import component12 from './components/tool-result-detail/component.js';
 
 const DEFINITIONS = Object.freeze([
   component0,
@@ -26,7 +27,8 @@ const DEFINITIONS = Object.freeze([
   component8,
   component9,
   component10,
-  component11
+  component11,
+  component12
 ]);
 
 export function agentCoreComponentDefinitions(): readonly ComponentDefinition[] {

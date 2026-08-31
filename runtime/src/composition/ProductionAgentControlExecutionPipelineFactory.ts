@@ -1,14 +1,11 @@
 import {
-  AgentEffectDispatchService,
   AgentInferenceDispatchService,
   AgentSubagentDelegationService,
-  DefaultAgentInferenceDirectivePlanner,
-  type AgentRunBinding
+  DefaultAgentInferenceDirectivePlanner
 } from '@ariadne/agent-core';
 import {
   agentAdmissionAuthoritySourceSchema,
   type AgentAdmissionAuthoritySource,
-  type AgentAdmissionAuthoritySourceManifest,
   type RuntimeBootstrap
 } from '@ariadne/protocol/host';
 
@@ -36,9 +33,6 @@ import type {
 import type { InferenceStreamPublicProjectionPublisher } from '../projection/InferenceStreamPublicProjectionPublisher.js';
 import type { ConversationAttachmentStore } from '../control/ports/ConversationAttachmentStore.js';
 import type { AgentToolPresentationResolver } from '../projection/AgentRunProjectionPorts.js';
-import {
-  ImmutableAgentToolCatalogRegistry
-} from '../adapters/tool/ImmutableAgentToolCatalogRegistry.js';
 import type {
   TrustedAgentToolCatalogSnapshot
 } from '../adapters/tool/TrustedAgentToolCatalogCompiler.js';
@@ -48,9 +42,6 @@ import {
 import {
   ConversationAgentStartFailureProjectionService
 } from '../control/conversation/ConversationAgentStartFailureProjectionService.js';
-import {
-  V3AgentEffectDispatchCheckpointFactory
-} from '../control/execution/AgentEffectDispatchCheckpointFactory.js';
 import {
   AgentEffectContinuationController
 } from '../control/execution/AgentEffectContinuationController.js';
@@ -88,9 +79,6 @@ import {
   AgentStartedWorkRecoveryCoordinator
 } from '../control/execution/AgentStartedWorkRecoveryCoordinator.js';
 import {
-  ProductionAgentEffectExecutionInputReader
-} from '../control/execution/ProductionAgentEffectExecutionInputReader.js';
-import {
   ProductionAgentInferenceExecutionInputReader
 } from '../control/execution/ProductionAgentInferenceExecutionInputReader.js';
 import {
@@ -127,7 +115,7 @@ import type { CredentialResolver } from '../control/ports/CredentialResolver.js'
 import {
   ProductionAgentRunWorkAuthorityVerifier
 } from './ProductionAgentRunWorkAuthorityVerifier.js';
-import { ProtectedAgentEffectResultReader } from '../control/resources/ProtectedAgentEffectResultReader.js';
+import type { ProtectedAgentEffectResultReader } from '../control/resources/ProtectedAgentEffectResultReader.js';
 import { ProductionConversationAttachmentReader } from '../control/conversation/ProductionConversationAttachmentReader.js';
 import {
   LifecycleHookedAgentEngine,
@@ -145,13 +133,14 @@ import {
 import {
   createAgentSubagentExecutionComponent
 } from './agent-entity/components/subagent/AgentSubagentExecutionComponent.js';
+import {
+  createAgentToolExecutionComponent
+} from './agent-entity/components/tool-execution/AgentToolExecutionComponent.js';
 
 export {
   AgentControlConversationMessageAdmissionError,
   ProductionAgentControlExecutionPipelineError
 } from './agent-entity/AgentExecutionPipelineErrors.js';
-
-const PREFLIGHT_DIGEST = `sha256:${'0'.repeat(64)}`;
 
 export interface AgentControlExecutionPipeline {
   readonly handoffProducer: ConversationAgentHandoffProducer;
@@ -267,17 +256,13 @@ implements AgentControlExecutionPipelineFactory {
       lifecycleHooks,
       this.options.liveWorkLifecycle
     );
-    const protectedEffectResultReader = new ProtectedAgentEffectResultReader(
-      input.unitOfWork
-    );
-    const catalogs = new ImmutableAgentToolCatalogRegistry(
-      this.options.toolCatalogSnapshots,
-      lifecycleHooks,
-      {
-        protectedEffectResults: protectedEffectResultReader
-      }
-    );
-    await assertCatalogAuthorities(source, catalogs);
+    const tools = await createAgentToolExecutionComponent({
+      unitOfWork: input.unitOfWork,
+      authoritySource: source,
+      catalogSnapshots: this.options.toolCatalogSnapshots,
+      lifecycleHooks
+    });
+    const catalogs = tools.catalogs;
     const injectedSubagentProviders = this.options.subagentExecutionProviders ?? [];
     const subagents = createAgentSubagentExecutionComponent({
       unitOfWork: input.unitOfWork,
@@ -322,9 +307,7 @@ implements AgentControlExecutionPipelineFactory {
       subagentProviderCatalog.list()
     );
     const admissions = new AgentRunAdmissionController(input.unitOfWork, snapshots);
-    const effectInputReader = new ProductionAgentEffectExecutionInputReader(
-      input.unitOfWork
-    );
+    const effectInputReader = tools.effectInputReader;
     const attachmentReader = input.attachmentStore === undefined
       ? undefined
       : new ProductionConversationAttachmentReader(
@@ -369,14 +352,7 @@ implements AgentControlExecutionPipelineFactory {
       input.unitOfWork,
       inference
     );
-    const effects = new AgentEffectDispatchService(
-      input.unitOfWork,
-      effectInputReader,
-      catalogs,
-      new V3AgentEffectDispatchCheckpointFactory(),
-      undefined,
-      lifecycle
-    );
+    const effects = tools.createEffectDispatch(lifecycle);
     const continuations = new AgentEffectContinuationController(
       input.unitOfWork,
       input.unitOfWork
@@ -477,7 +453,7 @@ implements AgentControlExecutionPipelineFactory {
       executionScheduler,
       runWorkScheduler,
       toolPresentationResolver: catalogs,
-      protectedEffectResultReader,
+      protectedEffectResultReader: tools.protectedEffectResultReader,
       assertConversationMessageAdmission: (workspaceId: string): void => {
         const manifest = manifests.get(workspaceId);
         if (manifest === undefined) {
@@ -492,7 +468,7 @@ implements AgentControlExecutionPipelineFactory {
         ) {
           throw new AgentControlConversationMessageAdmissionError('authority_expired');
         }
-        if (!catalogs.hasExactCatalog(catalogReference(manifest))) {
+        if (!tools.hasExactAuthority(manifest)) {
           throw new AgentControlConversationMessageAdmissionError(
             'tool_catalog_unavailable'
           );
@@ -507,84 +483,4 @@ implements AgentControlExecutionPipelineFactory {
       observeRuntimeStop: (occurredAt: string): void => lifecycle.observeRuntimeStop(occurredAt)
     });
   }
-}
-
-async function assertCatalogAuthorities(
-  source: Extract<AgentAdmissionAuthoritySource, { readonly status: 'enabled' }>,
-  catalogs: ImmutableAgentToolCatalogRegistry
-): Promise<void> {
-  for (const manifest of source.manifests) {
-    const reference = catalogReference(manifest);
-    if (!catalogs.hasExactCatalog(reference)) {
-      throw new ProductionAgentControlExecutionPipelineError(
-        'AGENT_EXECUTION_TOOL_CATALOG_MISSING',
-        'An enabled Agent authority references an unavailable Tool Catalog.'
-      );
-    }
-    const catalog = await catalogs.readToolCatalog(
-      reference,
-      new AbortController().signal
-    );
-    if (catalog === null) {
-      throw new ProductionAgentControlExecutionPipelineError(
-        'AGENT_EXECUTION_TOOL_CATALOG_MISSING',
-        'An enabled Agent authority references an unavailable Tool Catalog.'
-      );
-    }
-    try {
-      catalog.resolveAdmissionTools(preflightBinding(manifest));
-    } catch (cause) {
-      throw new ProductionAgentControlExecutionPipelineError(
-        'AGENT_EXECUTION_TOOL_CATALOG_INVALID',
-        'An enabled Agent authority contradicts its immutable Tool Catalog.',
-        { cause }
-      );
-    }
-  }
-}
-
-function catalogReference(manifest: AgentAdmissionAuthoritySourceManifest) {
-  return {
-    referenceVersion: 1 as const,
-    catalogId: manifest.toolCatalog.catalogId,
-    revision: manifest.toolCatalog.revision,
-    digest: manifest.toolCatalog.digest
-  };
-}
-
-function preflightBinding(
-  manifest: AgentAdmissionAuthoritySourceManifest
-): AgentRunBinding {
-  const runId = 'agent-execution-pipeline-preflight-run';
-  return {
-    bindingVersion: 3,
-    sessionId: 'agent-execution-pipeline-preflight-session',
-    objectiveRef: {
-      kind: 'conversation_message',
-      messageId: 'agent-execution-pipeline-preflight-message',
-      messageVersion: 1,
-      contentDigest: PREFLIGHT_DIGEST
-    },
-    workspace: {
-      ...manifest.workspace,
-      scopeIds: [...manifest.workspace.scopeIds]
-    },
-    model: { ...manifest.model },
-    policy: { ...manifest.policy },
-    capabilities: manifest.capabilityGrant.capabilities.map((capability) => ({
-      capabilityId: capability.capabilityId,
-      scopeIds: [...capability.scopeIds]
-    })),
-    toolCatalog: {
-      ...manifest.toolCatalog,
-      allowedToolNames: [...manifest.toolCatalog.allowedToolNames]
-    },
-    budget: {
-      grantId: manifest.rootBudget.authorityId,
-      runId,
-      vector: { ...manifest.rootBudget.vector },
-      deadlineAt: manifest.rootBudget.deadlinePolicy.deadlineAt,
-      source: { kind: 'root' }
-    }
-  };
 }
