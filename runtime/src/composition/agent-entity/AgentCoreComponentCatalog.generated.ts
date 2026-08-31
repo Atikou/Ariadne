@@ -5,15 +5,16 @@ import component0 from './components/command-entity/component.js';
 import component1 from './components/conversation/component.js';
 import component2 from './components/execution/component.js';
 import component3 from './components/inbox/component.js';
-import component4 from './components/persistence/component.js';
-import component5 from './components/productivity/component.js';
-import component6 from './components/projection/component.js';
-import component7 from './components/run-control/component.js';
-import component8 from './components/skills-human/component.js';
-import component9 from './components/subagent/component.js';
-import component10 from './components/subagent-interrupt/component.js';
-import component11 from './components/tool-execution/component.js';
-import component12 from './components/tool-result-detail/component.js';
+import component4 from './components/inference-loop/component.js';
+import component5 from './components/persistence/component.js';
+import component6 from './components/productivity/component.js';
+import component7 from './components/projection/component.js';
+import component8 from './components/run-control/component.js';
+import component9 from './components/skills-human/component.js';
+import component10 from './components/subagent/component.js';
+import component11 from './components/subagent-interrupt/component.js';
+import component12 from './components/tool-execution/component.js';
+import component13 from './components/tool-result-detail/component.js';
 
 const DEFINITIONS = Object.freeze([
   component0,
@@ -28,7 +29,8 @@ const DEFINITIONS = Object.freeze([
   component9,
   component10,
   component11,
-  component12
+  component12,
+  component13
 ]);
 
 export function agentCoreComponentDefinitions(): readonly ComponentDefinition[] {

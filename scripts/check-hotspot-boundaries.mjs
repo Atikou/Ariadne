@@ -95,9 +95,25 @@ const boundaries = [
     ]
   },
   {
-    file: 'runtime/src/composition/ProductionAgentControlExecutionPipelineFactory.ts',
-    maxLines: 510,
+    file: 'runtime/src/composition/agent-entity/components/inference-loop/AgentInferenceLoopComponent.ts',
+    maxLines: 180,
     required: [
+      '../../../../adapters/model/ProductionAgentEngineAdapter.js',
+      '../../../../control/run/AgentRunAdmissionController.js',
+      '../../../ProductionAgentRunAdmissionSnapshotReader.js'
+    ],
+    forbidden: [
+      /AgentControlPublicCommandRouter/,
+      /ConversationAgentHandoffProducer/,
+      /AgentRunWorkScheduler/,
+      /AgentEffectDispatchService/
+    ]
+  },
+  {
+    file: 'runtime/src/composition/ProductionAgentControlExecutionPipelineFactory.ts',
+    maxLines: 440,
+    required: [
+      './agent-entity/components/inference-loop/AgentInferenceLoopComponent.js',
       './agent-entity/components/subagent/AgentSubagentExecutionComponent.js',
       './agent-entity/components/tool-execution/AgentToolExecutionComponent.js'
     ],
@@ -114,7 +130,13 @@ const boundaries = [
       /new\s+AgentEffectDispatchService\b/,
       /new\s+V3AgentEffectDispatchCheckpointFactory\b/,
       /function\s+assertCatalogAuthorities\b/,
-      /function\s+preflightBinding\b/
+      /function\s+preflightBinding\b/,
+      /new\s+ProductionExactAgentModelInferenceGateway\b/,
+      /new\s+ProductionAgentEngineAdapter\b/,
+      /new\s+AgentRunAdmissionController\b/,
+      /new\s+ProductionAgentRunAdmissionSnapshotReader\b/,
+      /new\s+AgentInferenceDispatchService\b/,
+      /new\s+DefaultAgentInferenceDirectivePlanner\b/
     ]
   },
   {

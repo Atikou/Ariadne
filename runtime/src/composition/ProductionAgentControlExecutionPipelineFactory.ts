@@ -1,19 +1,10 @@
 import {
-  AgentInferenceDispatchService,
-  AgentSubagentDelegationService,
-  DefaultAgentInferenceDirectivePlanner
-} from '@ariadne/agent-core';
-import {
   agentAdmissionAuthoritySourceSchema,
   type AgentAdmissionAuthoritySource,
   type RuntimeBootstrap
 } from '@ariadne/protocol/host';
 
 import {
-  ProductionAgentEngineAdapter
-} from '../adapters/model/ProductionAgentEngineAdapter.js';
-import {
-  ProductionExactAgentModelInferenceGateway,
   type ProductionExactAgentModelInferenceGatewayOptions
 } from '../adapters/model/ProductionExactAgentModelInferenceGateway.js';
 import type {
@@ -21,9 +12,6 @@ import type {
 } from '../control/ports/AgentModelInference.js';
 import type { AgentProcessSandbox } from '../control/ports/AgentProcessSandbox.js';
 import type { AgentSubagentSessionStore } from '../control/ports/AgentSubagentSessionStore.js';
-import {
-  Sha256AgentEffectInputDigester
-} from '../adapters/persistence/Sha256AgentEffectInputDigester.js';
 import type {
   SqliteAgentRunUnitOfWork
 } from '../adapters/persistence/SqliteAgentRunUnitOfWork.js';
@@ -61,9 +49,6 @@ import {
   ProtectedAgentTerminalAssistantContentResolver
 } from './ProtectedAgentTerminalAssistantContentResolver.js';
 import {
-  V3AgentInferenceDispatchCheckpointFactory
-} from '../control/execution/AgentInferenceDispatchCheckpointFactory.js';
-import {
   AgentRunWorkClassifier
 } from '../control/execution/AgentRunWorkClassifier.js';
 import {
@@ -73,17 +58,8 @@ import {
   AgentRetiredToolCatalogTerminalizationCoordinator
 } from '../control/execution/AgentRetiredToolCatalogTerminalizationCoordinator.js';
 import {
-  AgentRunExecutionDispatchController
-} from '../control/execution/AgentRunExecutionDispatchController.js';
-import {
   AgentStartedWorkRecoveryCoordinator
 } from '../control/execution/AgentStartedWorkRecoveryCoordinator.js';
-import {
-  ProductionAgentInferenceExecutionInputReader
-} from '../control/execution/ProductionAgentInferenceExecutionInputReader.js';
-import {
-  AgentRunAdmissionController
-} from '../control/run/AgentRunAdmissionController.js';
 import {
   AgentRunExecutionIntentScheduler,
   type AgentRunExecutionIntentRecoveryReporter,
@@ -94,19 +70,12 @@ import {
   type AgentRunWorkSchedulerOptions
 } from './AgentRunWorkScheduler.js';
 import {
-  type AgentAdmissionAuthorityClock,
-  compileBootstrapAgentAdmissionAuthoritySource
-} from './BootstrapAgentAdmissionAuthorityBundleProvider.js';
-import {
   ConversationAgentHandoffCoordinator
 } from './ConversationAgentHandoffCoordinator.js';
 import {
   ConversationAgentHandoffProducer,
   type ConversationAgentHandoffProducerOptions
 } from './ConversationAgentHandoffProducer.js';
-import {
-  ProductionAgentRunAdmissionSnapshotReader
-} from './ProductionAgentRunAdmissionSnapshotReader.js';
 import type { AgentInstructionAssemblyService } from '../control/ports/AgentInstructionAssembly.js';
 import type { AgentLifecycleHookService } from '../control/ports/AgentLifecycleHooks.js';
 import type { AgentLifecycleHookDeliverySink } from '../control/ports/AgentLifecycleObservability.js';
@@ -116,11 +85,7 @@ import {
   ProductionAgentRunWorkAuthorityVerifier
 } from './ProductionAgentRunWorkAuthorityVerifier.js';
 import type { ProtectedAgentEffectResultReader } from '../control/resources/ProtectedAgentEffectResultReader.js';
-import { ProductionConversationAttachmentReader } from '../control/conversation/ProductionConversationAttachmentReader.js';
-import {
-  LifecycleHookedAgentEngine,
-  ProductionAgentLifecycleBridge
-} from './ProductionAgentLifecycleBridge.js';
+import { ProductionAgentLifecycleBridge } from './ProductionAgentLifecycleBridge.js';
 import {
   AgentSubagentExecutionProviderRouter,
   ordinaryRunSubagentExecutionProvider,
@@ -136,6 +101,9 @@ import {
 import {
   createAgentToolExecutionComponent
 } from './agent-entity/components/tool-execution/AgentToolExecutionComponent.js';
+import {
+  createAgentInferenceLoopComponent
+} from './agent-entity/components/inference-loop/AgentInferenceLoopComponent.js';
 
 export {
   AgentControlConversationMessageAdmissionError,
@@ -273,85 +241,32 @@ implements AgentControlExecutionPipelineFactory {
       sessionStore: input.subagentSessionStore
     });
     const subagentProviderCatalog = subagents.providerCatalog;
-
-    if (input.modelInferenceGateway === undefined && input.runtimePolicy === undefined) {
-      throw new ProductionAgentControlExecutionPipelineError(
-        'AGENT_EXECUTION_PIPELINE_OPTIONS_INVALID',
-        'The exact model gateway requires a frozen Runtime resilience policy.'
-      );
-    }
-    const models = input.modelInferenceGateway
-      ?? new ProductionExactAgentModelInferenceGateway({
-        modelProviders: input.modelProviders,
-        agentAdmissionAuthoritySource: source,
-        credentialEnvironment: this.options.credentialEnvironment,
-        credentialResolver: this.options.credentialResolver,
-        resiliencePolicy: input.runtimePolicy!.providerResilience,
-        ...(input.providerTelemetry === undefined
-          ? {}
-          : { providerTelemetry: input.providerTelemetry }),
-        ...(this.options.fetch === undefined ? {} : { fetch: this.options.fetch })
-      });
-    const authorityClock: AgentAdmissionAuthorityClock = { now: this.now };
-    const authorities = compileBootstrapAgentAdmissionAuthoritySource(
-      source,
-      authorityClock,
-      models
-    );
-    const snapshots = new ProductionAgentRunAdmissionSnapshotReader(
-      input.conversation,
-      authorities,
-      catalogs,
-      this.options.instructionAssembly,
+    const loop = createAgentInferenceLoopComponent({
+      unitOfWork: input.unitOfWork,
+      conversation: input.conversation,
+      authoritySource: source,
+      modelProviders: input.modelProviders,
+      modelInferenceGateway: input.modelInferenceGateway,
+      runtimePolicy: input.runtimePolicy,
+      providerTelemetry: input.providerTelemetry,
+      attachmentStore: input.attachmentStore,
+      inferenceStreamPublisher: input.inferenceStreamPublisher,
+      tools,
+      subagentProviders: subagentProviderCatalog,
+      instructionAssembly: this.options.instructionAssembly,
       lifecycleHooks,
-      subagentProviderCatalog.list()
-    );
-    const admissions = new AgentRunAdmissionController(input.unitOfWork, snapshots);
-    const effectInputReader = tools.effectInputReader;
-    const attachmentReader = input.attachmentStore === undefined
-      ? undefined
-      : new ProductionConversationAttachmentReader(
-          input.conversation,
-          input.attachmentStore
-        );
-    const engine = new LifecycleHookedAgentEngine(
-      new ProductionAgentEngineAdapter(
-        models,
-        catalogs,
-        input.inferenceStreamPublisher,
-        effectInputReader,
-        attachmentReader
-      ),
-      lifecycleHooks
-    );
-    const inputReader = new ProductionAgentInferenceExecutionInputReader(
-      input.unitOfWork,
-      input.unitOfWork
-    );
-    const directivePlanner = new DefaultAgentInferenceDirectivePlanner(
-      new Sha256AgentEffectInputDigester(),
-      catalogs,
-      subagentProviderCatalog
-    );
-    const inference = new AgentInferenceDispatchService(
-      input.unitOfWork,
-      inputReader,
-      engine,
-      directivePlanner,
-      new V3AgentInferenceDispatchCheckpointFactory(),
-      undefined,
-      new AgentSubagentDelegationService(input.unitOfWork),
-      lifecycle
-    );
+      lifecycle,
+      credentialEnvironment: this.options.credentialEnvironment,
+      credentialResolver: this.options.credentialResolver,
+      fetch: this.options.fetch,
+      now: this.now
+    });
+    const inference = loop.inference;
     const configuredSubagentProviders = subagents.createConfiguredProviders({
-      inputReader,
-      directivePlanner,
+      inputReader: loop.inputReader,
+      directivePlanner: loop.directivePlanner,
       lifecycle
     });
-    const dispatcher = new AgentRunExecutionDispatchController(
-      input.unitOfWork,
-      inference
-    );
     const effects = tools.createEffectDispatch(lifecycle);
     const continuations = new AgentEffectContinuationController(
       input.unitOfWork,
@@ -406,7 +321,7 @@ implements AgentControlExecutionPipelineFactory {
         childResultsContinuation,
         retiredToolCatalogTerminalizations,
         authorityVerifier: new ProductionAgentRunWorkAuthorityVerifier(
-          models,
+          loop.modelAvailability,
           catalogs,
           subagentProviderCatalog
         )
@@ -414,7 +329,7 @@ implements AgentControlExecutionPipelineFactory {
     );
     const executionScheduler = new AgentRunExecutionIntentScheduler(
       input.unitOfWork,
-      dispatcher,
+      loop.dispatcher,
       this.options.recoveryReporter,
       {
         ...this.options.executionScheduler,
@@ -428,7 +343,7 @@ implements AgentControlExecutionPipelineFactory {
     const coordinator = new ConversationAgentHandoffCoordinator(
       input.conversation,
       handoffs,
-      admissions,
+      loop.admissions,
       input.unitOfWork,
       {},
       new ConversationAgentStartFailureProjectionService(input.conversation)
@@ -473,8 +388,7 @@ implements AgentControlExecutionPipelineFactory {
             'tool_catalog_unavailable'
           );
         }
-        const binding = models.resolveBinding(manifest.model.settingsRevision);
-        if (binding === null || !models.hasExactBinding(binding)) {
+        if (!loop.hasExactModelAuthority(manifest)) {
           throw new AgentControlConversationMessageAdmissionError(
             'model_binding_unavailable'
           );
