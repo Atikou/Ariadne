@@ -20,7 +20,7 @@ import {
   type RuntimeRun
 } from '@renderer/core/runtime/runtime-store';
 import { formatRuntimeAvailability } from '@renderer/core/runtime/runtime-labels';
-import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
+import { moduleId, type FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import { SelectMenu, type SelectMenuOption } from '@renderer/shared/ui/SelectMenu';
 import { StatusPill } from '@renderer/shared/ui/StatusPill';
 import { getCenteredScrollDelta, isScrollNearBottom } from '@shared/scroll-geometry';
@@ -30,7 +30,6 @@ import { ConversationSidebar } from './ConversationSidebar';
 import { shouldShowFormalAnswer, type ConversationNode } from './conversation-node';
 import { MarkdownMessage } from './MarkdownMessage';
 import { RunProcessingDisclosure } from './RunProcessingDisclosure';
-import { MODULE_IDS } from '@renderer/core/modules/module-ids';
 import { ConversationApprovalCards } from '@renderer/app/ApprovalCenter';
 import { ComposerAddMenu } from './ComposerAddMenu';
 import { deriveChatModelState, type ChatModelState } from './chat-model-state';
@@ -42,6 +41,7 @@ import './AgentInputDelivery.css';
 
 const AUTO_MODEL_ID = '__auto__';
 const AUTO_ROUTING_PREFIX = `${AUTO_MODEL_ID}:`;
+const SESSION_ACTIVITY_MODULE_ID = moduleId('session.activity');
 const routingOptions: readonly SelectMenuOption<ChatRoutingStrategy>[] = [
   { value: 'local-first', label: '本地模型优先' },
   { value: 'cloud-first', label: '远程模型优先' },
@@ -517,7 +517,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                             services.events.emitRetained('session-activity:select-run', {
                               runId: node.runId!
                             });
-                            services.events.emit('module:open', MODULE_IDS.sessionActivity);
+                            services.events.emit('module:open', SESSION_ACTIVITY_MODULE_ID);
                           }
                         : undefined}
                       onCopy={(text) => services.clipboard.writeText({ text })}

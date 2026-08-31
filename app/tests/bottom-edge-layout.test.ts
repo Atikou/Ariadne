@@ -86,12 +86,20 @@ describe('bottom edge workspace layout', () => {
   });
 
   it('selects the tool edge group before returning focus to the main chat workspace', async () => {
-    const workspace = await readFile(join(rendererRoot, 'app', 'Workspace.tsx'), 'utf8');
+    const [workspace, chatModule, statusModule, toolModule] = await Promise.all([
+      readFile(join(rendererRoot, 'app', 'Workspace.tsx'), 'utf8'),
+      readFile(join(rendererRoot, 'modules', 'chat', 'index.ts'), 'utf8'),
+      readFile(join(rendererRoot, 'modules', 'agent-status', 'index.ts'), 'utf8'),
+      readFile(join(rendererRoot, 'modules', 'tool-output', 'index.ts'), 'utf8')
+    ]);
     const moduleTab = await readFile(join(rendererRoot, 'app', 'ModuleTab.tsx'), 'utf8');
 
-    expect(workspace).toMatch(
-      /getEdgeGroup\('bottom'\)\?\.expand\(\)[\s\S]*?getPanel\(MODULE_IDS\.toolOutput\)[\s\S]*?getPanel\(MODULE_IDS\.agentStatus\)[\s\S]*?getPanel\(MODULE_IDS\.chat\)/
-    );
+    expect(workspace).toContain("getEdgeGroup('bottom')?.expand()");
+    expect(workspace).toContain('module.defaultActivationOrder !== undefined');
+    expect(workspace).toContain('api.getPanel(definition.id)?.api.setActive()');
+    expect(toolModule).toContain('defaultActivationOrder: 10');
+    expect(statusModule).toContain('defaultActivationOrder: 20');
+    expect(chatModule).toContain('defaultActivationOrder: 30');
     expect(moduleTab).toContain('onClickCapture');
     expect(moduleTab).toContain('activateEdgeTab');
   });

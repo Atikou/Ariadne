@@ -266,7 +266,11 @@ function assertRetiredProductionChainsAbsent() {
     'background.tasks',
     'workspace.process_list',
     'workspace.process_read',
-    'workspace.process_stop'
+    'workspace.process_stop',
+    'builtinModuleRegistry',
+    'builtin-modules',
+    'MODULE_IDS',
+    'module-ids'
   ];
   const violations = [];
   for (const root of roots) {

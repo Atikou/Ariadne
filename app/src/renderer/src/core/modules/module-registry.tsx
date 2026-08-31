@@ -9,6 +9,15 @@ import {
 import type { IDockviewPanelProps } from 'dockview-react';
 import type { ModuleServices, FeatureModuleDefinition, ModuleId } from './module-contract';
 
+export interface ModuleNavigationAction {
+  readonly id: string;
+  readonly label: string;
+  readonly icon: FeatureModuleDefinition['icon'];
+  readonly order: number;
+  readonly position: 'primary' | 'footer';
+  readonly moduleIds: readonly ModuleId[];
+}
+
 export class ModuleRegistry {
   private readonly definitions = new Map<ModuleId, FeatureModuleDefinition>();
 
@@ -32,6 +41,35 @@ export class ModuleRegistry {
 
   get(id: string): FeatureModuleDefinition | undefined {
     return this.definitions.get(id as ModuleId);
+  }
+
+  navigationActions(): readonly ModuleNavigationAction[] {
+    const actions = new Map<string, ModuleNavigationAction>();
+    for (const definition of this.list()) {
+      const contribution = definition.navigation;
+      if (contribution === undefined) continue;
+      const existing = actions.get(contribution.id);
+      if (existing === undefined) {
+        actions.set(contribution.id, Object.freeze({
+          ...contribution,
+          moduleIds: Object.freeze([definition.id])
+        }));
+        continue;
+      }
+      if (
+        existing.label !== contribution.label
+        || existing.icon !== contribution.icon
+        || existing.order !== contribution.order
+        || existing.position !== contribution.position
+      ) throw new Error(`Module navigation contribution conflict: ${contribution.id}`);
+      actions.set(contribution.id, Object.freeze({
+        ...existing,
+        moduleIds: Object.freeze([...existing.moduleIds, definition.id])
+      }));
+    }
+    return Object.freeze([...actions.values()].sort((left, right) => (
+      left.order - right.order || left.id.localeCompare(right.id)
+    )));
   }
 
   createDockviewComponents(services: ModuleServices): Record<string, FunctionComponent<IDockviewPanelProps>> {

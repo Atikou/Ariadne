@@ -58,6 +58,28 @@ export interface FeaturePanelProps {
   services: ModuleServices;
 }
 
+export interface FeatureDialogProps {
+  moduleId: ModuleId;
+  open: boolean;
+  services: ModuleServices;
+  onClose(): void;
+}
+
+export interface ModuleNavigationContribution {
+  id: string;
+  label: string;
+  icon: ModuleIcon;
+  order: number;
+  position: 'primary' | 'footer';
+}
+
+export type ModulePresentation =
+  | { readonly kind: 'dock' }
+  | {
+      readonly kind: 'dialog';
+      readonly component: ComponentType<FeatureDialogProps>;
+    };
+
 export interface ModuleLifecycleContext {
   moduleId: ModuleId;
   services: ModuleServices;
@@ -76,7 +98,10 @@ export interface FeatureModuleDefinition {
   description: string;
   icon: ModuleIcon;
   component: ComponentType<FeaturePanelProps>;
+  presentation?: ModulePresentation;
+  navigation?: ModuleNavigationContribution;
   defaultOpen: boolean;
+  defaultActivationOrder?: number;
   defaultPlacement: ModulePlacement;
   layoutConstraints: ModuleLayoutConstraints;
   requiredCapabilities: readonly SystemCapability[];

@@ -1,9 +1,8 @@
-import type { FeatureModuleDefinition } from '@renderer/core/modules/module-contract';
-import { MODULE_IDS } from '@renderer/core/modules/module-ids';
+import { moduleId, type FeatureModuleDefinition } from '@renderer/core/modules/module-contract';
 import { SessionActivityPanel } from './SessionActivityPanel';
 
 export const sessionActivityModule: FeatureModuleDefinition = {
-  id: MODULE_IDS.sessionActivity,
+  id: moduleId('session.activity'),
   name: '会话活动',
   description: '查看每轮处理的工具调用图、系统事件与文件变更。',
   icon: 'activity',
@@ -11,7 +10,7 @@ export const sessionActivityModule: FeatureModuleDefinition = {
   defaultOpen: false,
   defaultPlacement: {
     direction: 'within',
-    referenceModuleId: MODULE_IDS.chat
+    referenceModuleId: moduleId('chat.main')
   },
   layoutConstraints: { minimumWidth: 760 },
   requiredCapabilities: []

@@ -1,15 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Settings, X } from 'lucide-react';
-import type { ModuleServices } from '@renderer/core/modules/module-contract';
-import { MODULE_IDS } from '@renderer/core/modules/module-ids';
+import type { FeatureDialogProps } from '@renderer/core/modules/module-contract';
 import { SettingsPanel } from './SettingsPanel';
-
-interface SettingsDialogProps {
-  open: boolean;
-  services: ModuleServices;
-  onClose(): void;
-}
 
 const FOCUSABLE_SELECTOR = [
   'button:not([disabled])',
@@ -20,7 +13,12 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])'
 ].join(',');
 
-export function SettingsDialog({ open, services, onClose }: SettingsDialogProps): React.JSX.Element | null {
+export function SettingsDialog({
+  moduleId,
+  open,
+  services,
+  onClose
+}: FeatureDialogProps): React.JSX.Element | null {
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -82,7 +80,7 @@ export function SettingsDialog({ open, services, onClose }: SettingsDialogProps)
           <button ref={closeButtonRef} type="button" aria-label="关闭设置" title="关闭设置" onClick={onClose}><X size={17} /></button>
         </header>
         <div className="settings-dialog-body">
-          <SettingsPanel moduleId={MODULE_IDS.settings} services={services} />
+          <SettingsPanel moduleId={moduleId} services={services} />
         </div>
       </section>
     </div>,

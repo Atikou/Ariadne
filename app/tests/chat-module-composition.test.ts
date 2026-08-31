@@ -6,11 +6,10 @@ const rendererRoot = join(process.cwd(), 'src', 'renderer', 'src');
 
 describe('Chat module composition', () => {
   it('owns the conversation sidebar instead of registering a separate conversations panel', async () => {
-    const [chat, sidebar, registry, moduleIds] = await Promise.all([
+    const [chat, sidebar, registry] = await Promise.all([
       readFile(join(rendererRoot, 'modules', 'chat', 'ChatPanel.tsx'), 'utf8'),
       readFile(join(rendererRoot, 'modules', 'chat', 'ConversationSidebar.tsx'), 'utf8'),
-      readFile(join(rendererRoot, 'core', 'modules', 'UiComponentCatalog.generated.ts'), 'utf8'),
-      readFile(join(rendererRoot, 'core', 'modules', 'module-ids.ts'), 'utf8')
+      readFile(join(rendererRoot, 'core', 'modules', 'UiComponentCatalog.generated.ts'), 'utf8')
     ]);
 
     expect(chat).toContain('<ConversationSidebar services={services} />');
@@ -34,7 +33,7 @@ describe('Chat module composition', () => {
     expect(chat).toContain('workspaceId: composerWorkspaceId');
     expect(chat).toContain("services.events.subscribe('chat:new-draft-requested'");
     expect(registry).not.toContain('conversationsModule');
-    expect(moduleIds).not.toContain('conversations.list');
+    expect(chat).not.toContain('conversations.list');
   });
 
   it('separates personal-assistant sessions from Agent workspace sessions', async () => {

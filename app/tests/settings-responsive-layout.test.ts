@@ -11,8 +11,9 @@ describe('settings panel responsive layout', () => {
       readFile(join(process.cwd(), 'src', 'renderer', 'src', 'app', 'styles.css'), 'utf8')
     ]);
 
-    expect(app).toContain('id === MODULE_IDS.settings');
-    expect(app).toContain('<SettingsDialog open={settingsOpen}');
+    expect(app).toContain("definition?.presentation?.kind === 'dialog'");
+    expect(app).toContain('<activeDialog.Component');
+    expect(app).not.toContain('MODULE_IDS.settings');
     expect(dialog).toContain('role="dialog"');
     expect(dialog).toContain('aria-modal="true"');
     expect(dialog).toContain("appShell?.setAttribute('inert', '')");

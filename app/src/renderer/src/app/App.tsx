@@ -5,10 +5,8 @@ import { PERSONAL_ASSISTANT_WORKSPACE_ID } from '@ariadne/protocol/public';
 import type { ThemePreference } from '@shared/contract';
 import { uiModuleRegistry } from '@renderer/core/modules/ui-module-registry';
 import type { ModuleId, ModuleServices } from '@renderer/core/modules/module-contract';
-import { MODULE_IDS } from '@renderer/core/modules/module-ids';
 import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
 import { formatRuntimeAvailability } from '@renderer/core/runtime/runtime-labels';
-import { SettingsDialog } from '@renderer/modules/settings/SettingsDialog';
 import { ConfirmDialog } from '@renderer/shared/ui/ActionDialog';
 import { ActivityBar } from './ActivityBar';
 import { CommandPalette } from './CommandPalette';
@@ -23,12 +21,12 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('loading');
   const [commandOpen, setCommandOpen] = useState(false);
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [dialogModuleId, setDialogModuleId] = useState<ModuleId | null>(null);
   const [effectiveTheme, setEffectiveTheme] = useState<EffectiveTheme>(() => (
     window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   ));
   const runtime = useRuntimeSnapshot(services.runtime);
-  const closeSettings = useCallback(() => setSettingsOpen(false), []);
+  const closeDialog = useCallback(() => setDialogModuleId(null), []);
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -64,9 +62,10 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
   }, []);
 
   const handleOpenModule = (id: ModuleId): void => {
-    if (id === MODULE_IDS.settings) {
+    const definition = uiModuleRegistry.get(id);
+    if (definition?.presentation?.kind === 'dialog') {
       setCommandOpen(false);
-      setSettingsOpen(true);
+      setDialogModuleId(id);
       return;
     }
     if (dockviewApi) openModule(dockviewApi, uiModuleRegistry, id);
@@ -76,9 +75,18 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
     for (const id of ids) handleOpenModule(id);
   };
 
-  const visibleOpenModuleIds = settingsOpen
-    ? new Set([...openModuleIds, MODULE_IDS.settings])
-    : openModuleIds;
+  const visibleOpenModuleIds = dialogModuleId === null
+    ? openModuleIds
+    : new Set([...openModuleIds, dialogModuleId]);
+  const dialogDefinition = dialogModuleId === null
+    ? undefined
+    : uiModuleRegistry.get(dialogModuleId);
+  const activeDialog = dialogDefinition?.presentation?.kind === 'dialog'
+    ? {
+        moduleId: dialogDefinition.id,
+        Component: dialogDefinition.presentation.component
+      }
+    : undefined;
 
   useEffect(() => services.events.subscribe('module:open', (id) => {
     const definition = uiModuleRegistry.get(id);
@@ -115,13 +123,21 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
         </div>
       </header>
       <div className="app-main">
-        <ActivityBar openModuleIds={visibleOpenModuleIds} onOpen={handleOpenModules} />
+        <ActivityBar
+          actions={uiModuleRegistry.navigationActions()}
+          openModuleIds={visibleOpenModuleIds}
+          onOpen={handleOpenModules}
+        />
         <div className="workspace-frame">
           <Workspace
             registry={uiModuleRegistry}
             services={services}
             onApiReady={(api) => {
-              api.getPanel(MODULE_IDS.settings)?.api.close();
+              for (const definition of uiModuleRegistry.list()) {
+                if (definition.presentation?.kind === 'dialog') {
+                  api.getPanel(definition.id)?.api.close();
+                }
+              }
               setDockviewApi(api);
             }}
             onOpenModulesChanged={setOpenModuleIds}
@@ -150,7 +166,14 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
           setResetDialogOpen(false);
         }}
       />
-      <SettingsDialog open={settingsOpen} services={services} onClose={closeSettings} />
+      {activeDialog && (
+        <activeDialog.Component
+          moduleId={activeDialog.moduleId}
+          open
+          services={services}
+          onClose={closeDialog}
+        />
+      )}
     </main>
   );
 }

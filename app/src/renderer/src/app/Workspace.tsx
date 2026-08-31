@@ -13,7 +13,6 @@ import type { JsonObject } from '@shared/contract';
 import { DOCKVIEW_POPOUT_PATH } from '@shared/windowing';
 import type { FeatureModuleDefinition, ModuleServices, ModuleId } from '@renderer/core/modules/module-contract';
 import type { ModuleRegistry } from '@renderer/core/modules/module-registry';
-import { MODULE_IDS } from '@renderer/core/modules/module-ids';
 import { ModuleTab } from './ModuleTab';
 import { isScreenPointOutsideWindow, type ScreenPoint } from './module-popout-policy';
 import { applyThemeToWindow, type EffectiveTheme } from './theme-sync';
@@ -208,9 +207,13 @@ async function restoreLayout(api: DockviewApi, registry: ModuleRegistry): Promis
 function addDefaultLayout(api: DockviewApi, registry: ModuleRegistry): void {
   for (const definition of registry.list().filter((module) => module.defaultOpen)) addModulePanel(api, definition);
   api.getEdgeGroup('bottom')?.expand();
-  api.getPanel(MODULE_IDS.toolOutput)?.api.setActive();
-  api.getPanel(MODULE_IDS.agentStatus)?.api.setActive();
-  api.getPanel(MODULE_IDS.chat)?.api.setActive();
+  for (const definition of registry.list()
+    .filter((module) => module.defaultOpen && module.defaultActivationOrder !== undefined)
+    .sort((left, right) => (
+      (left.defaultActivationOrder ?? 0) - (right.defaultActivationOrder ?? 0)
+    ))) {
+    api.getPanel(definition.id)?.api.setActive();
+  }
 }
 
 function addModulePanel(api: DockviewApi, definition: FeatureModuleDefinition): void {

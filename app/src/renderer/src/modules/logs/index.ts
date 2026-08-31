@@ -1,9 +1,8 @@
-import type { FeatureModuleDefinition } from '@renderer/core/modules/module-contract';
-import { MODULE_IDS } from '@renderer/core/modules/module-ids';
+import { moduleId, type FeatureModuleDefinition } from '@renderer/core/modules/module-contract';
 import { LogsPanel } from './LogsPanel';
 
 export const logsModule: FeatureModuleDefinition = {
-  id: MODULE_IDS.logs,
+  id: moduleId('logs'),
   name: '日志',
   description: '查看任务和 Runtime 事件日志。',
   icon: 'activity',
