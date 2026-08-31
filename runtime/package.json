@@ -38,6 +38,7 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",
     "@ariadne/agent-core": "file:../packages/agent-core",
+    "@ariadne/component-contracts": "file:../packages/component-contracts",
     "@ariadne/live-work": "file:../packages/live-work",
     "@ariadne/protocol": "file:../packages/protocol",
     "@lancedb/lancedb": "^0.30.0",

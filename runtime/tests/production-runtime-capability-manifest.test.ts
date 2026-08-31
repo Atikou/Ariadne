@@ -92,6 +92,15 @@ describe('production Runtime Capability Manifest', () => {
       'workspace.read',
       'workspace.write'
     ]);
+    expect(manifest.agentComponentCatalog).toMatchObject({
+      schemaVersion: 1,
+      entity: 'agent'
+    });
+    expect(manifest.agentComponentCatalog.digest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(Object.isFrozen(manifest.agentComponentCatalog.entries)).toBe(true);
+    expect(manifest.agentComponentCatalog.entries.map((entry) => entry.id)).toContain(
+      'agent.control.runtime-services'
+    );
     expect(manifest.agentToolCatalogSnapshots[0]?.entries.map(
       (entry) => entry.document.toolName
     )).toEqual([...FIRST_PARTY_AGENT_TOOL_NAMES]);

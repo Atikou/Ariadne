@@ -10,6 +10,7 @@
   },
   "workspaces": [
     "app",
+    "packages/component-contracts",
     "packages/agent-core",
     "packages/live-work",
     "packages/protocol",
@@ -18,9 +19,9 @@
   "scripts": {
     "dev": "npm run dev --workspace @ariadne/app",
     "start": "npm run start --workspace @ariadne/app",
-    "build": "npm run build --workspace @ariadne/protocol && npm run build --workspace @ariadne/agent-core && npm run build --workspace @ariadne/live-work && npm run build --workspace @ariadne/runtime && npm run build --workspace @ariadne/app",
-    "typecheck": "npm run build --workspace @ariadne/protocol && npm run build --workspace @ariadne/agent-core && npm run build --workspace @ariadne/live-work && npm run typecheck --workspace @ariadne/runtime && npm run typecheck --workspace @ariadne/app",
-    "test": "npm run build --workspace @ariadne/protocol && npm run build --workspace @ariadne/agent-core && npm run build --workspace @ariadne/live-work && npm run build --workspace @ariadne/runtime && npm run test --workspace @ariadne/protocol && npm run test --workspace @ariadne/agent-core && npm run test --workspace @ariadne/live-work && npm run test --workspace @ariadne/runtime && npm run test --workspace @ariadne/app",
+    "build": "npm run build --workspace @ariadne/component-contracts && npm run build --workspace @ariadne/protocol && npm run build --workspace @ariadne/agent-core && npm run build --workspace @ariadne/live-work && npm run build --workspace @ariadne/runtime && npm run build --workspace @ariadne/app",
+    "typecheck": "npm run build --workspace @ariadne/component-contracts && npm run build --workspace @ariadne/protocol && npm run build --workspace @ariadne/agent-core && npm run build --workspace @ariadne/live-work && npm run typecheck --workspace @ariadne/runtime && npm run typecheck --workspace @ariadne/app",
+    "test": "npm run build --workspace @ariadne/component-contracts && npm run build --workspace @ariadne/protocol && npm run build --workspace @ariadne/agent-core && npm run build --workspace @ariadne/live-work && npm run build --workspace @ariadne/runtime && npm run test --workspace @ariadne/component-contracts && npm run test --workspace @ariadne/protocol && npm run test --workspace @ariadne/agent-core && npm run test --workspace @ariadne/live-work && npm run test --workspace @ariadne/runtime && npm run test --workspace @ariadne/app",
     "check:architecture": "node scripts/check-architecture.mjs && node scripts/check-hotspot-boundaries.mjs",
     "verify:source-snapshot": "node scripts/check-source-reproducibility.mjs",
     "verify:reproducible": "npm run verify:source-snapshot && npm run typecheck && npm test && npm run check:architecture && npm run audit:runtime-independence && npm run verify:release-contract",
@@ -30,6 +31,7 @@
     "verify:packaged-runtime": "node scripts/verify-packaged-runtime-assets.mjs",
     "verify:windows-signatures": "node scripts/verify-windows-release-signatures.mjs",
     "verify:protocol": "npm run build --workspace @ariadne/protocol && npm run test --workspace @ariadne/protocol",
+    "verify:component-contracts": "npm run build --workspace @ariadne/component-contracts && npm run test --workspace @ariadne/component-contracts",
     "verify:agent-core": "npm run build --workspace @ariadne/agent-core && npm run test --workspace @ariadne/agent-core",
     "verify:live-work": "npm run build --workspace @ariadne/live-work && npm run test --workspace @ariadne/live-work",
     "verify:runtime": "npm run build --workspace @ariadne/protocol && npm run build --workspace @ariadne/agent-core && npm run build --workspace @ariadne/live-work && npm run build --workspace @ariadne/runtime && npm run test --workspace @ariadne/runtime",

@@ -1,11 +1,19 @@
+import {
+  createDeclaredServiceScope,
+  publishComponentServices,
+  serviceToken
+} from '@ariadne/component-contracts';
 import { runtimeCapabilitySchema } from '@ariadne/protocol/public';
 
 import type { RuntimeCapabilityDefinitionSnapshot } from '../../ingress/RuntimeCapabilityManifest.js';
+import { toAgentComponentDefinition } from './RuntimeCapabilityComponentAdapter.js';
 import type {
   RuntimeCapabilityHandle,
   RuntimeCapabilityServiceScope,
   RuntimeCapabilityStartContext
 } from './RuntimeCapabilityProvider.js';
+
+const kernelOptions = Object.freeze({ errorNamespace: 'runtime_capability' });
 
 /** Bind one Provider to only its declared, already-started service dependencies. */
 export function createRuntimeCapabilityProviderStartContext(
@@ -13,43 +21,22 @@ export function createRuntimeCapabilityProviderStartContext(
   definition: RuntimeCapabilityDefinitionSnapshot,
   services: ReadonlyMap<string, unknown>
 ): RuntimeCapabilityStartContext {
-  for (const dependency of definition.consumes) {
-    if (!dependency.optional && !services.has(dependency.serviceId)) {
-      throw new Error(
-        `runtime_capability_required_service_unavailable:${definition.id}:${dependency.serviceId}`
-      );
-    }
-  }
-  const declared = new Map(definition.consumes.map((dependency) => [
-    dependency.serviceId,
-    dependency
-  ]));
+  const componentDefinition = toAgentComponentDefinition(definition);
+  const componentScope = createDeclaredServiceScope(
+    componentDefinition,
+    services,
+    kernelOptions
+  );
   const scope: RuntimeCapabilityServiceScope = Object.freeze({
-    required: <T>(serviceId: string): T => {
-      const dependency = declared.get(serviceId);
-      if (dependency === undefined || dependency.optional) {
-        throw accessError(definition.id, serviceId);
-      }
-      const service = services.get(serviceId);
-      if (service === undefined) {
-        throw new Error(
-          `runtime_capability_required_service_unavailable:${definition.id}:${serviceId}`
-        );
-      }
-      return service as T;
-    },
-    optional: <T>(serviceId: string): T | undefined => {
-      const dependency = declared.get(serviceId);
-      if (dependency === undefined || !dependency.optional) {
-        throw accessError(definition.id, serviceId);
-      }
-      return services.get(serviceId) as T | undefined;
-    }
+    required: <T>(serviceId: string): T => componentScope.required(serviceToken<T>(serviceId)),
+    optional: <T>(serviceId: string): T | undefined => (
+      componentScope.optional(serviceToken<T>(serviceId))
+    )
   });
   return Object.freeze({ ...base, services: scope });
 }
 
-/** Validate and atomically publish one Provider's actual service outputs. */
+/** Validate Provider-specific output, then atomically publish through the shared Kernel. */
 export function publishRuntimeCapabilityHandleServices(
   definition: RuntimeCapabilityDefinitionSnapshot,
   handle: RuntimeCapabilityHandle,
@@ -73,31 +60,14 @@ export function publishRuntimeCapabilityHandleServices(
       || Array.isArray(handle.services)
     )
   ) throw new Error(`runtime_capability_services_invalid:${id}`);
-  const declared = new Set(definition.provides.map((provision) => provision.serviceId));
-  const pending: Array<readonly [string, unknown]> = [];
-  for (const [serviceId, service] of Object.entries(handle.services ?? {})) {
-    if (!declared.has(serviceId)) {
-      throw new Error(`runtime_capability_service_not_declared:${id}:${serviceId}`);
-    }
-    if (service === undefined) {
-      throw new Error(`runtime_capability_service_undefined:${id}:${serviceId}`);
-    }
-    if (services.has(serviceId)) {
-      throw new Error(`runtime_capability_service_duplicate:${serviceId}`);
-    }
-    pending.push([serviceId, service]);
-  }
-  const outputIds = new Set(pending.map(([serviceId]) => serviceId));
-  for (const provision of definition.provides) {
-    if (!provision.optional && !outputIds.has(provision.serviceId)) {
-      throw new Error(
-        `runtime_capability_required_service_not_provided:${id}:${provision.serviceId}`
-      );
-    }
-  }
-  for (const [serviceId, service] of pending) services.set(serviceId, service);
-}
 
-function accessError(providerId: string, serviceId: string): Error {
-  return new Error(`runtime_capability_service_access_not_declared:${providerId}:${serviceId}`);
+  publishComponentServices(
+    toAgentComponentDefinition(definition),
+    Object.entries(handle.services ?? {}).map(([serviceId, value]) => ({
+      service: serviceToken(serviceId),
+      value
+    })),
+    services,
+    kernelOptions
+  );
 }

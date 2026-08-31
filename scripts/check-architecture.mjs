@@ -385,6 +385,7 @@ function resolveInternalImport(fromFile, specifier) {
 
 function resolveWorkspaceSpecifier(specifier) {
   const workspacePackages = [
+    ['@ariadne/component-contracts', path.join(projectRoot, 'packages', 'component-contracts', 'src')],
     ['@ariadne/protocol', path.join(projectRoot, 'packages', 'protocol', 'src')],
     ['@ariadne/contracts', path.join(projectRoot, 'packages', 'contracts', 'src')],
     ['@ariadne/agent-core', path.join(projectRoot, 'packages', 'agent-core', 'src')],
@@ -507,6 +508,17 @@ function findRuleViolations(importEntries) {
       : classifySpecifier(entry.specifier);
 
     if (
+      source.package === 'component-contracts'
+      && target
+      && target.package !== 'component-contracts'
+    ) {
+      add(
+        'component-contracts-isolation',
+        'Component Kernel 不得依赖 App、Runtime、Protocol 或其他产品包',
+        entry
+      );
+    }
+    if (
       source.package === 'contracts'
       && target
       && target.package !== 'contracts'
@@ -547,6 +559,17 @@ function findRuleViolations(importEntries) {
     ) {
       add('runtime-no-app', 'Runtime 不得依赖 Electron App', entry);
     }
+    if (
+      source.package === 'component-contracts'
+      && isPlatformImport(entry.specifier)
+    ) {
+      add(
+        'component-contracts-no-platform-imports',
+        'Component Kernel 不得导入 Node 或 Electron 平台能力',
+        entry
+      );
+    }
+
     if (
       source.package === 'app'
       && ['runtime', 'agent-core'].includes(target?.package)
@@ -709,6 +732,9 @@ function assertNarrowDependencyExceptions() {
 function classifyFile(file) {
   const normalized = file.replaceAll('\\', '/');
   const segments = normalized.split('/');
+  if (segments[0] === 'packages' && segments[1] === 'component-contracts') {
+    return { package: 'component-contracts', layer: segments[3] ?? 'index' };
+  }
   if (segments[0] === 'packages' && ['protocol', 'contracts'].includes(segments[1])) {
     return {
       package: 'contracts',
@@ -736,6 +762,15 @@ function classifyFile(file) {
 }
 
 function classifySpecifier(specifier) {
+  if (specifier === '@ariadne/component-contracts') {
+    return { package: 'component-contracts', layer: 'index' };
+  }
+  if (specifier.startsWith('@ariadne/component-contracts/')) {
+    return {
+      package: 'component-contracts',
+      layer: specifier.slice('@ariadne/component-contracts/'.length).split('/')[0]
+    };
+  }
   if (specifier === '@ariadne/protocol' || specifier === '@ariadne/contracts') {
     return { package: 'contracts', layer: 'index' };
   }

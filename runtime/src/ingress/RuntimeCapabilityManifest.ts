@@ -1,3 +1,4 @@
+import type { ComponentCatalog } from '@ariadne/component-contracts';
 import type { RuntimeCapability } from '@ariadne/protocol/public';
 
 import type { AgentToolCatalogSnapshot } from '../control/ports/AgentToolExecution.js';
@@ -38,6 +39,7 @@ export interface RuntimeCapabilityProviderSnapshot {
  * cannot register providers or mutate assembly after bootstrap.
  */
 export interface RuntimeCapabilityManifest {
+  readonly agentComponentCatalog: ComponentCatalog;
   readonly publicCapabilities: readonly RuntimeCapability[];
   readonly unwiredPublicCapabilities: readonly RuntimeCapability[];
   readonly agentToolCatalogSnapshots: readonly AgentToolCatalogSnapshot[];

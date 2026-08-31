@@ -1,4 +1,9 @@
 import {
+  compileComponentCatalog,
+  invokeComponentLifecycleReverse,
+  type ComponentCatalog
+} from '@ariadne/component-contracts';
+import {
   FIRST_PARTY_AGENT_TOOL_CATALOG_DIGEST,
   FIRST_PARTY_AGENT_TOOL_CATALOG_ID,
   FIRST_PARTY_AGENT_TOOL_CATALOG_REVISION,
@@ -14,6 +19,7 @@ import type {
   RuntimeCapabilityManifest
 } from '../../ingress/RuntimeCapabilityManifest.js';
 import { createShutdownContext, type ShutdownContext } from '../../ingress/ShutdownContext.js';
+import { toAgentComponentDefinition } from './RuntimeCapabilityComponentAdapter.js';
 import { compileRuntimeCapabilityDefinitionGraph } from './RuntimeCapabilityDefinitionGraph.js';
 import type {
   RuntimeCapabilityHandle,
@@ -35,6 +41,10 @@ export async function compileRuntimeCapabilityManifest(
   providers: readonly RuntimeCapabilityProvider[]
 ): Promise<RuntimeCapabilityManifest> {
   const ordered = compileRuntimeCapabilityDefinitionGraph(providers);
+  const componentCatalog = await compileComponentCatalog(
+    'agent',
+    ordered.map((provider) => toAgentComponentDefinition(provider.definition))
+  );
   const started: StartedProvider[] = [];
   const services = new Map<string, unknown>();
   try {
@@ -47,12 +57,17 @@ export async function compileRuntimeCapabilityManifest(
       publishRuntimeCapabilityHandleServices(provider.definition, handle, services);
       started.push({ definition: provider.definition, handle });
     }
-    return createManifest(started, services);
+    return createManifest(started, services, componentCatalog);
   } catch (error) {
     const cleanupContext = createShutdownContext(Date.now() + 5_000);
     let cleanup: readonly unknown[];
     try {
-      cleanup = await invokeReverse(started, cleanupContext, 'close');
+      cleanup = await invokeComponentLifecycleReverse(
+        started,
+        cleanupContext,
+        'close',
+        (shutdown) => shutdown.throwIfExpired()
+      );
     } finally {
       cleanupContext.dispose();
     }
@@ -64,7 +79,8 @@ export async function compileRuntimeCapabilityManifest(
 
 function createManifest(
   started: readonly StartedProvider[],
-  services: ReadonlyMap<string, unknown>
+  services: ReadonlyMap<string, unknown>,
+  componentCatalog: ComponentCatalog
 ): RuntimeCapabilityManifest {
   const publicCapabilities: RuntimeCapability[] = [];
   const tools: TrustedAgentToolRegistrationV1[] = [];
@@ -104,6 +120,7 @@ function createManifest(
   let prepared = false;
   let closed = false;
   return Object.freeze<RuntimeCapabilityManifest>({
+    agentComponentCatalog: componentCatalog,
     publicCapabilities: Object.freeze([...publicCapabilities].sort(compareCodeUnits)),
     unwiredPublicCapabilities: Object.freeze(runtimeCapabilitySchema.options.filter(
       (capability) => !started.some(
@@ -118,7 +135,12 @@ function createManifest(
         shutdown.throwIfExpired();
         return;
       }
-      const failures = await invokeReverse(started, shutdown, 'prepareShutdown');
+      const failures = await invokeComponentLifecycleReverse(
+        started,
+        shutdown,
+        'prepareShutdown',
+        (context) => context.throwIfExpired()
+      );
       if (failures.length > 0) {
         throw new AggregateError(failures, 'runtime_capability_prepare_shutdown_failed');
       }
@@ -129,30 +151,18 @@ function createManifest(
         shutdown.throwIfExpired();
         return;
       }
-      const failures = await invokeReverse(started, shutdown, 'close');
+      const failures = await invokeComponentLifecycleReverse(
+        started,
+        shutdown,
+        'close',
+        (context) => context.throwIfExpired()
+      );
       if (failures.length > 0) {
         throw new AggregateError(failures, 'runtime_capability_shutdown_failed');
       }
       closed = true;
     }
   });
-}
-
-async function invokeReverse(
-  started: readonly StartedProvider[],
-  context: ShutdownContext,
-  method: 'prepareShutdown' | 'close'
-): Promise<readonly unknown[]> {
-  const failures: unknown[] = [];
-  for (const item of [...started].reverse()) {
-    try {
-      context.throwIfExpired();
-      await item.handle[method]?.(context);
-    } catch (error) {
-      failures.push(error);
-    }
-  }
-  return failures;
 }
 
 function sameValues(left: readonly string[], right: readonly string[]): boolean {
