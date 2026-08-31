@@ -426,6 +426,27 @@ const boundaries = [
     ]
   },
   {
+    file: 'app/src/renderer/src/core/runtime/runtime-store.ts',
+    maxLines: 1415,
+    required: [
+      'ProjectionCache',
+      'ProjectionRuntimeClient',
+      'ProductivityFeatureStore'
+    ],
+    forbidden: [
+      /async queryProductivity\(/,
+      /async createSchedule\(/
+    ]
+  },
+  {
+    file: 'app/src/renderer/src/core/runtime/features/productivity-feature-store.ts',
+    maxLines: 210,
+    required: [
+      'class ProductivityFeatureStore',
+      'RuntimeFeatureCommandGateway'
+    ]
+  },
+  {
     file: 'runtime/src/composition/runtime-capabilities/RuntimeCapabilityProvider.ts',
     maxLines: 80
   },

@@ -49,8 +49,8 @@ describe('RuntimeStore command routing', () => {
       onEvent: () => () => undefined
     }));
 
-    await expect(store.queryProductivity('workspace-1', 'session-1')).resolves.toMatchObject({ goal: null, todos: [] });
-    await expect(store.createSchedule({
+    await expect(store.productivity.query('workspace-1', 'session-1')).resolves.toMatchObject({ goal: null, todos: [] });
+    await expect(store.productivity.createSchedule({
       workspaceId: 'workspace-1', sessionId: 'session-1', scheduleId: 'schedule-1', prompt: 'Continue',
       timing: { kind: 'once', at: '2032-01-01T00:00:00.000Z', missPolicy: 'run_once' }
     })).resolves.toMatchObject({ scheduleId: 'schedule-1', status: 'active' });
