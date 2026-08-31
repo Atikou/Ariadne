@@ -1,8 +1,8 @@
 import {
   PUBLIC_PROJECTION_CONTRACT_VERSION,
-  type RuntimeCommand,
   type RuntimeResult
 } from '@ariadne/protocol/public';
+import type { RuntimeFeatureCommandGateway } from './runtime-feature-command-gateway';
 
 export type ProductivitySnapshot = Extract<
   RuntimeResult,
@@ -14,10 +14,6 @@ export type ProductivitySchedule = Extract<
   RuntimeResult,
   { kind: 'schedules.query_result.v3' }
 >['schedules'][number];
-
-export interface RuntimeFeatureCommandGateway {
-  execute(command: RuntimeCommand): Promise<RuntimeResult>;
-}
 
 export class ProductivityFeatureStore {
   constructor(private readonly gateway: RuntimeFeatureCommandGateway) {}

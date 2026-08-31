@@ -427,15 +427,19 @@ const boundaries = [
   },
   {
     file: 'app/src/renderer/src/core/runtime/runtime-store.ts',
-    maxLines: 1415,
+    maxLines: 1325,
     required: [
       'ProjectionCache',
       'ProjectionRuntimeClient',
-      'ProductivityFeatureStore'
+      'HumanSkillFeatureStore',
+      'ProductivityFeatureStore',
+      'ToolResultFeatureStore'
     ],
     forbidden: [
       /async queryProductivity\(/,
-      /async createSchedule\(/
+      /async createSchedule\(/,
+      /async loadProtectedToolResultDetail\(/,
+      /async queryHumanSkillCommands\(/
     ]
   },
   {
@@ -445,6 +449,16 @@ const boundaries = [
       'class ProductivityFeatureStore',
       'RuntimeFeatureCommandGateway'
     ]
+  },
+  {
+    file: 'app/src/renderer/src/core/runtime/features/human-skill-feature-store.ts',
+    maxLines: 80,
+    required: ['class HumanSkillFeatureStore']
+  },
+  {
+    file: 'app/src/renderer/src/core/runtime/features/tool-result-feature-store.ts',
+    maxLines: 50,
+    required: ['class ToolResultFeatureStore']
   },
   {
     file: 'runtime/src/composition/runtime-capabilities/RuntimeCapabilityProvider.ts',

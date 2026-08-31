@@ -159,7 +159,7 @@ export function App({
         registry={registry}
         onClose={() => setCommandOpen(false)}
         onOpenModule={handleOpenModule}
-        runtime={services.runtime}
+        humanSkills={services.humanSkills}
         workspaceId={runtime.sessions.find((session) => session.sessionId === runtime.selectedSessionId)?.workspaceId ?? PERSONAL_ASSISTANT_WORKSPACE_ID}
       />
       <ConfirmDialog

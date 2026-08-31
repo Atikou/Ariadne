@@ -57,6 +57,8 @@ import {
 } from './runtime-projection-presenter';
 import { RuntimeUiState } from './runtime-ui-state';
 import { ProductivityFeatureStore } from './features/productivity-feature-store';
+import { ToolResultFeatureStore } from './features/tool-result-feature-store';
+import { HumanSkillFeatureStore } from './features/human-skill-feature-store';
 
 export type { AgentInputDeliveryReceipt } from './agent-input-delivery';
 export type {
@@ -110,26 +112,6 @@ export type ResolvedConversationMessage = Extract<
   { readonly kind: 'conversation.message.resolved.v3' }
 >;
 
-export type ProtectedToolResultDetail = Extract<
-  RuntimeResult,
-  { readonly kind: 'agent.tool_result.detail.v3' }
->;
-
-export type HumanSkillCommand = Extract<
-  RuntimeResult,
-  { readonly kind: 'skill.commands.query_result.v3' }
->['commands'][number];
-
-export type LoadedHumanSkill = Extract<
-  RuntimeResult,
-  { readonly kind: 'skill.command.loaded.v3' }
->;
-
-export type HumanSkillResource = Extract<
-  RuntimeResult,
-  { readonly kind: 'skill.command.resource.v3' }
->;
-
 const STOPPED_STATUS: RuntimeStatus = {
   availability: 'stopped',
   capabilities: [],
@@ -144,7 +126,9 @@ const ACTIVE_PROJECTION_POLL_INTERVAL_MS = 500;
  * routing and local UI overlays.
  */
 export class RuntimeStore {
+  readonly humanSkills: HumanSkillFeatureStore;
   readonly productivity: ProductivityFeatureStore;
+  readonly toolResults: ToolResultFeatureStore;
   private readonly projectionClient: ProjectionRuntimeClient;
   private readonly projection = new ProjectionCache();
   private readonly ui = new RuntimeUiState();
@@ -175,9 +159,10 @@ export class RuntimeStore {
     private readonly api: AriadneApi['runtime'],
     private readonly agentInputDeliveryPersistence?: AriadneApi['agentInputDeliveryOutbox']
   ) {
-    this.productivity = new ProductivityFeatureStore({
-      execute: (command) => this.command(command)
-    });
+    const featureGateway = { execute: (command: RuntimeCommand) => this.command(command) };
+    this.humanSkills = new HumanSkillFeatureStore(featureGateway);
+    this.productivity = new ProductivityFeatureStore(featureGateway);
+    this.toolResults = new ToolResultFeatureStore(featureGateway);
     this.agentInputDeliveryPersistenceReady = agentInputDeliveryPersistence === undefined;
     this.projectionClient = new ProjectionRuntimeClient(api);
     this.snapshot = this.createSnapshot(this.projection.getSnapshot());
@@ -338,81 +323,6 @@ export class RuntimeStore {
     this.publish();
     await this.requestSynchronization(false);
     return sessionId;
-  }
-
-  async loadProtectedToolResultDetail(
-    runId: string,
-    workspaceId: string,
-    effectId: string,
-    cursor = 0,
-    maxBytes = 32 * 1024
-  ): Promise<ProtectedToolResultDetail> {
-    const result = await this.command({
-      kind: 'agent.tool_result.detail.get.v3',
-      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
-      runId,
-      workspaceId,
-      effectId,
-      cursor,
-      maxBytes
-    });
-    if (
-      result.kind !== 'agent.tool_result.detail.v3'
-      || result.runId !== runId
-      || result.workspaceId !== workspaceId
-      || result.effectId !== effectId
-    ) throw new Error(`runtime_result_invalid:${result.kind}`);
-    return result;
-  }
-
-  async queryHumanSkillCommands(workspaceId: string): Promise<readonly HumanSkillCommand[]> {
-    const result = await this.command({
-      kind: 'skill.commands.query.v3',
-      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
-      workspaceId
-    });
-    if (result.kind !== 'skill.commands.query_result.v3') {
-      throw new Error(`runtime_result_invalid:${result.kind}`);
-    }
-    return result.commands;
-  }
-
-  async loadHumanSkillCommand(
-    workspaceId: string,
-    name: string,
-    revision: string
-  ): Promise<LoadedHumanSkill> {
-    const result = await this.command({
-      kind: 'skill.command.load.v3',
-      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
-      workspaceId,
-      name,
-      revision
-    });
-    if (result.kind !== 'skill.command.loaded.v3') {
-      throw new Error(`runtime_result_invalid:${result.kind}`);
-    }
-    return result;
-  }
-
-  async readHumanSkillResource(
-    workspaceId: string,
-    name: string,
-    revision: string,
-    relativePath: string
-  ): Promise<HumanSkillResource> {
-    const result = await this.command({
-      kind: 'skill.command.resource.read.v3',
-      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
-      workspaceId,
-      name,
-      revision,
-      relativePath
-    });
-    if (result.kind !== 'skill.command.resource.v3') {
-      throw new Error(`runtime_result_invalid:${result.kind}`);
-    }
-    return result;
   }
 
   isPlanModeEnabled(sessionId: string | null = this.ui.selectedSessionId): boolean {

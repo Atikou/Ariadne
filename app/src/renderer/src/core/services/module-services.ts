@@ -17,12 +17,14 @@ export function createModuleServices(
     clipboard: api.clipboard,
     conversationNavigation: new ConfiguredConversationNavigationService(api.agentSettings, api.workspace, storage),
     events,
+    humanSkills: runtime.humanSkills,
     productivity: runtime.productivity,
     runtime,
     speech: new SpeechCoordinator(api.speech, api.preferences, runtime, events, storage),
     preferences: api.preferences,
     system: api.system,
     terminal: api.terminal,
+    toolResults: runtime.toolResults,
     workspace: api.workspace
   };
 }

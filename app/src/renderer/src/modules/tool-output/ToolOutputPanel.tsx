@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Check, ChevronRight, Clock3, TerminalSquare, Wrench, X } from 'lucide-react';
 import type { RunActivity } from '@ariadne/protocol/public';
-import type { ProtectedToolResultDetail } from '@renderer/core/runtime/runtime-store';
 import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
+import type { ProtectedToolResultDetail } from '@renderer/core/runtime/features/tool-result-feature-store';
 import { formatActivityKind } from '@renderer/core/runtime/runtime-labels';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
 
@@ -41,7 +41,7 @@ export function ToolOutputPanel({ moduleId, services }: FeaturePanelProps): Reac
     setLoadingId(activity.activityId);
     setError(null);
     try {
-      const detail = await services.runtime.loadProtectedToolResultDetail(
+      const detail = await services.toolResults.loadDetail(
         activity.runId,
         selectedSession.workspaceId,
         activity.activityId
@@ -59,7 +59,7 @@ export function ToolOutputPanel({ moduleId, services }: FeaturePanelProps): Reac
     setLoadingId(selected.metadata.effectId);
     setError(null);
     try {
-      const next = await services.runtime.loadProtectedToolResultDetail(
+      const next = await services.toolResults.loadDetail(
         selected.metadata.runId,
         selected.metadata.workspaceId,
         selected.metadata.effectId,

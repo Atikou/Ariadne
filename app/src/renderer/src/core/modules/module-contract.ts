@@ -6,6 +6,8 @@ import type { RuntimeStore } from '../runtime/runtime-store';
 import type { ConversationNavigationService } from '../conversations/conversation-navigation-service';
 import type { SpeechCoordinator } from '../speech/speech-coordinator';
 import type { ProductivityFeatureStore } from '../runtime/features/productivity-feature-store';
+import type { HumanSkillFeatureStore } from '../runtime/features/human-skill-feature-store';
+import type { ToolResultFeatureStore } from '../runtime/features/tool-result-feature-store';
 
 export type ModuleId = string & { readonly __moduleId: unique symbol };
 export type ModuleIcon =
@@ -46,12 +48,14 @@ export interface ModuleServices {
   clipboard: AriadneApi['clipboard'];
   conversationNavigation: ConversationNavigationService;
   events: TypedEventBus<AppEventMap>;
+  humanSkills: HumanSkillFeatureStore;
   productivity: ProductivityFeatureStore;
   runtime: RuntimeStore;
   speech: SpeechCoordinator;
   preferences: AriadneApi['preferences'];
   system: AriadneApi['system'];
   terminal: AriadneApi['terminal'];
+  toolResults: ToolResultFeatureStore;
   workspace: AriadneApi['workspace'];
 }
 

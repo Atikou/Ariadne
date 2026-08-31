@@ -25,6 +25,56 @@ const READY: RuntimeStatus = {
 const ACTION_TOKEN = `decision-action.v1:${'a'.repeat(64)}`;
 
 describe('RuntimeStore command routing', () => {
+  it('routes the human Skill catalog through its independent feature store', async () => {
+    const commands: RuntimeCommand[] = [];
+    const store = new RuntimeStore(successfulRuntimeApi({
+      getStatus: async () => READY,
+      request: async (command) => {
+        commands.push(command);
+        if (command.kind === 'skill.commands.query.v3') {
+          return {
+            kind: 'skill.commands.query_result.v3',
+            workspaceId: 'workspace-1',
+            catalogDigest: `sha256:${'b'.repeat(64)}`,
+            complete: true,
+            source: 'fresh',
+            commands: [{
+              name: 'review',
+              revision: 'sha256:review',
+              description: 'Review the current change.',
+              layer: 'workspace'
+            }]
+          };
+        }
+        if (command.kind === 'skill.command.load.v3') {
+          return {
+            kind: 'skill.command.loaded.v3',
+            workspaceId: 'workspace-1',
+            name: command.name,
+            revision: command.revision,
+            description: 'Review the current change.',
+            layer: 'workspace',
+            body: 'Review it.',
+            resources: []
+          };
+        }
+        throw new Error(`Unexpected command: ${command.kind}`);
+      },
+      onEvent: () => () => undefined
+    }));
+
+    await expect(store.humanSkills.queryCommands('workspace-1')).resolves.toHaveLength(1);
+    await expect(store.humanSkills.loadCommand(
+      'workspace-1',
+      'review',
+      'sha256:review'
+    )).resolves.toMatchObject({ name: 'review', body: 'Review it.' });
+    expect(commands.map((command) => command.kind)).toEqual([
+      'skill.commands.query.v3',
+      'skill.command.load.v3'
+    ]);
+  });
+
   it('routes productivity reads and Schedule mutations only through v3 Runtime commands', async () => {
     const commands: RuntimeCommand[] = [];
     const store = new RuntimeStore(successfulRuntimeApi({
@@ -85,7 +135,7 @@ describe('RuntimeStore command routing', () => {
       onEvent: () => () => undefined
     }));
 
-    await expect(store.loadProtectedToolResultDetail(
+    await expect(store.toolResults.loadDetail(
       'run-detail',
       'workspace-detail',
       'effect-detail',
