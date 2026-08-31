@@ -433,7 +433,7 @@ describe('RuntimeStore v3 chat boundary', () => {
       onEvent: () => () => undefined
     }));
     await store.initialize();
-    store.setPlanModeEnabled(true);
+    store.sessions.setPlanModeEnabled(true, null);
 
     const result = await store.messages.send('First message', {
       workspaceId: 'workspace-primary',

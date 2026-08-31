@@ -1,5 +1,3 @@
-import { useSyncExternalStore } from 'react';
-
 import {
   PUBLIC_PROJECTION_CONTRACT_VERSION
 } from '@ariadne/protocol/public';
@@ -52,6 +50,9 @@ import { SessionFeatureStore } from './features/session-feature-store';
 import { DecisionFeatureStore } from './features/decision-feature-store';
 import { MessageFeatureStore } from './features/message-feature-store';
 import { RunFeatureStore } from './features/run-feature-store';
+import { FeatureSnapshotStore } from './features/feature-snapshot-store';
+import { ModelFeatureStore } from './features/model-feature-store';
+import { DiagnosticsFeatureStore } from './features/diagnostics-feature-store';
 
 export type { AgentInputDeliveryReceipt } from './agent-input-delivery';
 export type {
@@ -100,8 +101,10 @@ const ACTIVE_PROJECTION_POLL_INTERVAL_MS = 500;
  */
 export class RuntimeStore {
   readonly decisions: DecisionFeatureStore;
+  readonly diagnostics: DiagnosticsFeatureStore;
   readonly humanSkills: HumanSkillFeatureStore;
   readonly messages: MessageFeatureStore;
+  readonly models: ModelFeatureStore;
   readonly productivity: ProductivityFeatureStore;
   readonly runs: RunFeatureStore;
   readonly sessions: SessionFeatureStore;
@@ -133,13 +136,29 @@ export class RuntimeStore {
     private readonly api: AriadneApi['runtime'],
     agentInputDeliveryPersistence?: AriadneApi['agentInputDeliveryOutbox']
   ) {
+    const snapshotSource = { getSnapshot: this.getSnapshot, subscribe: this.subscribe };
+    const featureView = <T>(select: (snapshot: RuntimeSnapshot) => T) =>
+      new FeatureSnapshotStore(snapshotSource, select);
     const featureGateway = {
       execute: (command: RuntimeCommand, commandId?: string) => this.command(command, commandId)
     };
     this.decisions = new DecisionFeatureStore(featureGateway, {
       projectionDecisions: () => this.projection.decisions.getSnapshot(),
       awaitDecisionSettlement: (decisionId) => this.awaitDecisionProjectionSettlement(decisionId)
-    });
+    }, featureView((snapshot) => ({
+      permissions: snapshot.permissions,
+      planHandoffs: snapshot.planHandoffs,
+      userQuestions: snapshot.userQuestions
+    })));
+    this.diagnostics = new DiagnosticsFeatureStore(featureView((snapshot) => ({
+      initialized: snapshot.initialized,
+      status: snapshot.status,
+      projectionStreamId: snapshot.projectionStreamId,
+      projectionCursor: snapshot.projectionCursor,
+      projectionIntegrityError: snapshot.projectionIntegrityError,
+      trace: snapshot.trace,
+      lastError: snapshot.lastError
+    })), () => this.refresh());
     this.humanSkills = new HumanSkillFeatureStore(featureGateway);
     this.messages = new MessageFeatureStore(featureGateway, {
       selectedSessionId: () => this.ui.selectedSessionId,
@@ -154,7 +173,11 @@ export class RuntimeStore {
       errorMessage: (error) => runtimeRequestErrorMessage(error),
       publish: () => this.publish(),
       synchronize: () => this.requestSynchronization(false)
-    });
+    }, featureView((snapshot) => ({
+      messages: snapshot.messages,
+      pendingOverlayIds: snapshot.pendingOverlayIds
+    })));
+    this.models = new ModelFeatureStore(featureView((snapshot) => ({ models: snapshot.models })));
     this.productivity = new ProductivityFeatureStore(featureGateway);
     this.runs = new RunFeatureStore(featureGateway, {
       hasCapability: (capability) => this.status.capabilities.includes(capability),
@@ -163,14 +186,24 @@ export class RuntimeStore {
       errorMessage: (error, fallback) => runtimeRequestErrorMessage(error, fallback),
       publish: () => this.publish(),
       synchronize: () => this.requestSynchronization(false)
-    }, agentInputDeliveryPersistence);
+    }, featureView((snapshot) => ({
+      runs: snapshot.runs,
+      activities: snapshot.activities,
+      agentInputDeliveries: snapshot.agentInputDeliveries
+    })), agentInputDeliveryPersistence);
     this.sessions = new SessionFeatureStore(featureGateway, {
       projectionSessions: () => this.projection.sessions.getSnapshot(),
       selectSession: (sessionId) => this.ui.selectSession(sessionId),
       clearSessionSelection: () => this.ui.clearSessionSelection(),
+      isPlanModeEnabled: (sessionId) => this.ui.isPlanModeEnabled(sessionId),
+      setPlanModeEnabled: (enabled, sessionId) => this.ui.setPlanModeEnabled(enabled, sessionId),
       publish: () => this.publish(),
       synchronize: () => this.requestSynchronization(false)
-    });
+    }, featureView((snapshot) => ({
+      sessions: snapshot.sessions,
+      selectedSessionId: snapshot.selectedSessionId,
+      planModeSessionIds: snapshot.planModeSessionIds
+    })));
     this.toolResults = new ToolResultFeatureStore(featureGateway);
     this.projectionClient = new ProjectionRuntimeClient(api);
     this.snapshot = this.createSnapshot(this.projection.getSnapshot());
@@ -238,18 +271,6 @@ export class RuntimeStore {
   async refresh(): Promise<void> {
     if (this.status.availability !== 'ready' || !this.lifecycleReady) return;
     await this.requestSynchronization(false);
-  }
-
-  isPlanModeEnabled(sessionId: string | null = this.ui.selectedSessionId): boolean {
-    return this.ui.isPlanModeEnabled(sessionId);
-  }
-
-  setPlanModeEnabled(
-    enabled: boolean,
-    sessionId: string | null = this.ui.selectedSessionId
-  ): void {
-    this.ui.setPlanModeEnabled(enabled, sessionId);
-    this.publish();
   }
 
   private async initializeRuntime(generation: number): Promise<void> {
@@ -586,10 +607,6 @@ export function runtimeRequestErrorMessage(
     .replace(/decision-action\.v1:[0-9a-f]{64}/giu, '[redacted-decision-action]')
     .trim();
   return (message || fallback).slice(0, 16_384);
-}
-
-export function useRuntimeSnapshot(store: RuntimeStore): RuntimeSnapshot {
-  return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
 }
 
 function compareCodeUnits(left: string, right: string): number {

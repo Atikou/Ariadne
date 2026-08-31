@@ -7,7 +7,7 @@ export const agentStatusModule: FeatureModuleDefinition = {
   description: '查看当前任务、上下文和运行状态。',
   icon: 'bot',
   component: AgentStatusPanel,
-  consumes: ['decisions', 'runs', 'runtime'],
+  consumes: ['decisions', 'diagnostics', 'runs'],
   navigation: { id: 'agent', label: 'Agent', icon: 'bot', order: 20, position: 'primary' },
   defaultOpen: true,
   defaultActivationOrder: 20,

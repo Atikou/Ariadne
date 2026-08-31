@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
-import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
+import { useFeatureSnapshot } from '@renderer/core/runtime/features/feature-snapshot-store';
 import type {
   ProductivitySchedule,
   ProductivitySnapshot
 } from '@renderer/core/runtime/features/productivity-feature-store';
 
 export function ProductivityPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
-  const runtime = useRuntimeSnapshot(services.runtime);
-  const session = runtime.sessions.find((item) => item.sessionId === runtime.selectedSessionId);
+  const sessions = useFeatureSnapshot(services.sessions.view);
+  const session = sessions.sessions.find((item) => item.sessionId === sessions.selectedSessionId);
   const [snapshot, setSnapshot] = useState<ProductivitySnapshot | null>(null);
   const [schedules, setSchedules] = useState<readonly ProductivitySchedule[]>([]);
   const [goalTitle, setGoalTitle] = useState('');

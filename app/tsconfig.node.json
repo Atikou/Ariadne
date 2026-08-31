@@ -27,6 +27,7 @@
     "src/renderer/src/core/conversations/**/*.ts",
     "src/renderer/src/core/events/**/*.ts",
     "src/renderer/src/core/modules/module-contract.ts",
+    "src/renderer/src/core/modules/module-services-contract.ts",
     "src/renderer/src/core/modules/module-registry.tsx",
     "src/renderer/src/core/runtime/**/*.ts",
     "src/renderer/src/core/speech/**/*.ts",

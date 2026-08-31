@@ -15,10 +15,10 @@ import {
 } from '@ariadne/protocol/public';
 import type { AgentPermissionMode, AgentSettingsView } from '@shared/contract';
 import {
-  useRuntimeSnapshot,
   type RuntimeMessage,
   type RuntimeRun
 } from '@renderer/core/runtime/runtime-store';
+import { useFeatureSnapshot } from '@renderer/core/runtime/features/feature-snapshot-store';
 import { formatRuntimeAvailability } from '@renderer/core/runtime/runtime-labels';
 import { moduleId, type FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import { SelectMenu, type SelectMenuOption } from '@renderer/shared/ui/SelectMenu';
@@ -61,7 +61,12 @@ interface DraftImageAttachment extends EncodedImageAttachmentV3 {
 }
 
 export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
-  const runtime = useRuntimeSnapshot(services.runtime);
+  const diagnostics = useFeatureSnapshot(services.diagnostics.view);
+  const messages = useFeatureSnapshot(services.messages.view);
+  const models = useFeatureSnapshot(services.models.view);
+  const runs = useFeatureSnapshot(services.runs.view);
+  const sessions = useFeatureSnapshot(services.sessions.view);
+  const runtime = { ...diagnostics, ...messages, ...models, ...runs, ...sessions };
   const speech = useSpeechSnapshot(services.speech);
   useConversationPresentationRevision(services.conversationNavigation);
   const [draft, setDraft] = useState('');
@@ -100,7 +105,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
     && runtime.status.capabilities.includes('companion.agent-plan')
     && !assistantMode;
   const planModeEnabled = !assistantMode
-    && services.runtime.isPlanModeEnabled(runtime.selectedSessionId);
+    && services.sessions.isPlanModeEnabled(runtime.selectedSessionId);
   const modelState = useMemo(() => deriveChatModelState({
     runtimeAvailability: runtime.status.availability,
     planModeAvailable,
@@ -733,7 +738,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                   {...(assistantMode
                     ? { planModeDisabledReason: '选择一个工作区后才能使用计划模式' }
                     : {})}
-                  onPlanModeChange={(enabled) => services.runtime.setPlanModeEnabled(
+                  onPlanModeChange={(enabled) => services.sessions.setPlanModeEnabled(
                     enabled,
                     runtime.selectedSessionId
                   )}

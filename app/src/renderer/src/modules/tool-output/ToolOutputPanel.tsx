@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Check, ChevronRight, Clock3, TerminalSquare, Wrench, X } from 'lucide-react';
 import type { RunActivity } from '@ariadne/protocol/public';
-import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
+import { useFeatureSnapshot } from '@renderer/core/runtime/features/feature-snapshot-store';
 import type { ProtectedToolResultDetail } from '@renderer/core/runtime/features/tool-result-feature-store';
 import { formatActivityKind } from '@renderer/core/runtime/runtime-labels';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
@@ -12,19 +12,20 @@ interface LoadedDetail {
 }
 
 export function ToolOutputPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
-  const runtime = useRuntimeSnapshot(services.runtime);
+  const runView = useFeatureSnapshot(services.runs.view);
+  const sessions = useFeatureSnapshot(services.sessions.view);
   const [selected, setSelected] = useState<LoadedDetail | null>(null);
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const selectedSession = runtime.sessions.find(
-    (session) => session.sessionId === runtime.selectedSessionId
+  const selectedSession = sessions.sessions.find(
+    (session) => session.sessionId === sessions.selectedSessionId
   );
   const sessionRunIds = new Set(
-    runtime.runs
-      .filter((run) => run.sessionId === runtime.selectedSessionId)
+    runView.runs
+      .filter((run) => run.sessionId === sessions.selectedSessionId)
       .map((run) => run.runId)
   );
-  const activities = runtime.activities
+  const activities = runView.activities
     .filter((activity): activity is Extract<RunActivity, { activityType: 'tool' }> =>
       activity.activityType === 'tool' && sessionRunIds.has(activity.runId))
     .slice(-50)

@@ -6,6 +6,13 @@ import {
   type RuntimeResult
 } from '@ariadne/protocol/public';
 import type { RuntimeFeatureCommandGateway } from './runtime-feature-command-gateway';
+import type { SnapshotSource } from './feature-snapshot-store';
+
+export interface SessionFeatureSnapshot {
+  readonly sessions: readonly ConversationSession[];
+  readonly selectedSessionId: string | null;
+  readonly planModeSessionIds: readonly string[];
+}
 
 export type ConversationSessionQueryItem = Extract<
   RuntimeResult,
@@ -21,6 +28,8 @@ export interface SessionFeatureHost {
   projectionSessions(): readonly PublicSessionProjectionV3[];
   selectSession(sessionId: string): void;
   clearSessionSelection(): void;
+  isPlanModeEnabled(sessionId: string | null): boolean;
+  setPlanModeEnabled(enabled: boolean, sessionId: string | null): void;
   publish(): void;
   synchronize(): Promise<void>;
 }
@@ -28,7 +37,8 @@ export interface SessionFeatureHost {
 export class SessionFeatureStore {
   constructor(
     private readonly gateway: RuntimeFeatureCommandGateway,
-    private readonly host: SessionFeatureHost
+    private readonly host: SessionFeatureHost,
+    readonly view: SnapshotSource<SessionFeatureSnapshot>
   ) {}
 
   async select(sessionId: string): Promise<void> {
@@ -38,6 +48,15 @@ export class SessionFeatureStore {
 
   clearSelection(): void {
     this.host.clearSessionSelection();
+    this.host.publish();
+  }
+
+  isPlanModeEnabled(sessionId: string | null): boolean {
+    return this.host.isPlanModeEnabled(sessionId);
+  }
+
+  setPlanModeEnabled(enabled: boolean, sessionId: string | null): void {
+    this.host.setPlanModeEnabled(enabled, sessionId);
     this.host.publish();
   }
 

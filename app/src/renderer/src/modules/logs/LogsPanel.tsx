@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Info } from 'lucide-react';
-import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
+import { useFeatureSnapshot } from '@renderer/core/runtime/features/feature-snapshot-store';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import { SelectMenu, type SelectMenuOption } from '@renderer/shared/ui/SelectMenu';
 import {
@@ -32,14 +32,14 @@ const levelOptions: readonly SelectMenuOption<LogLevelFilter>[] = [
 ];
 
 export function LogsPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
-  const runtime = useRuntimeSnapshot(services.runtime);
+  const diagnostics = useFeatureSnapshot(services.diagnostics.view);
   const [view, setView] = useState<LogViewFilter>('important');
   const [level, setLevel] = useState<LogLevelFilter>('all');
   const rows = useMemo(() => coalesceTraceLogs(
-    runtime.trace
+    diagnostics.trace
       .filter((entry) => traceMatchesView(entry, view) && traceMatchesLevel(entry, level))
       .slice(-200)
-  ).reverse(), [level, runtime.trace, view]);
+  ).reverse(), [diagnostics.trace, level, view]);
 
   return <section className="logs-panel" aria-labelledby={`${moduleId}-title`}>
     <header className="logs-toolbar">

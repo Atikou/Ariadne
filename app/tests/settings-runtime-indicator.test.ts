@@ -7,7 +7,7 @@ describe('settings runtime indicator', () => {
     const panel = await readFile(join(process.cwd(), 'src', 'renderer', 'src', 'modules', 'settings', 'SettingsPanel.tsx'), 'utf8');
     const styles = await readFile(join(process.cwd(), 'src', 'renderer', 'src', 'app', 'styles.css'), 'utf8');
 
-    expect(panel).toMatch(/availability === 'starting' \|\| runtime\.status\.availability === 'restarting'/);
+    expect(panel).toMatch(/availability === 'starting' \|\| diagnostics\.status\.availability === 'restarting'/);
     expect(panel).toContain('settings-runtime-indicator--${runtimeStateTone}');
     expect(styles).toMatch(/\.settings-runtime-indicator--loading\s*\{[^}]*settings-runtime-sweep \.8s infinite linear alternate[^}]*settings-runtime-turn 1\.6s infinite linear/);
     expect(styles).toContain('@keyframes settings-runtime-sweep');

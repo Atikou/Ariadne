@@ -7,7 +7,7 @@ export const productivityModule: FeatureModuleDefinition = {
   description: '管理同一会话的 Goal、Todo、Workflow 与 Schedule。',
   icon: 'list',
   component: ProductivityPanel,
-  consumes: ['productivity', 'runtime'],
+  consumes: ['productivity', 'sessions'],
   defaultOpen: false,
   defaultPlacement: { direction: 'within', referenceModuleId: moduleId('agent.plan') },
   layoutConstraints: { minimumWidth: 300 },

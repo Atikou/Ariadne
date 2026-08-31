@@ -1,13 +1,13 @@
 import { Check } from 'lucide-react';
-import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
+import { useFeatureSnapshot } from '@renderer/core/runtime/features/feature-snapshot-store';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import { PlanContractView } from './PlanContractView';
 
 export function AgentPlanPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
-  const runtime = useRuntimeSnapshot(services.runtime);
+  const decisions = useFeatureSnapshot(services.decisions.view);
   return <section className="simple-module-panel" aria-labelledby={`${moduleId}-title`}>
     <header className="module-content-header"><div><span>执行计划</span><h1 id={`${moduleId}-title`}>计划确认</h1></div></header>
-    {runtime.planHandoffs.map((handoff) => <article key={handoff.handoffId} className="plan-handoff-card">
+    {decisions.planHandoffs.map((handoff) => <article key={handoff.handoffId} className="plan-handoff-card">
       <h2>{handoff.title}</h2>
       {handoff.plan
         ? <PlanContractView plan={handoff.plan} />
@@ -21,7 +21,7 @@ export function AgentPlanPanel({ moduleId, services }: FeaturePanelProps): React
       {!handoff.actionAvailable && <p className="module-empty-state">当前 v3 决策写入通道尚未启用；操作已安全锁定。</p>}
       {handoff.status === 'pending' && handoff.actionAvailable && <div className="rewrite-action-row"><button type="button" className="rewrite-cancel-button" onClick={() => void services.decisions.respondToPlan(handoff, 'reject')}>拒绝</button><button type="button" className="rewrite-send-button" disabled={handoff.plan !== null && !isApprovable(handoff.plan)} onClick={() => void services.decisions.respondToPlan(handoff, 'approve')}><Check size={13} /> 批准计划</button></div>}
     </article>)}
-    {runtime.planHandoffs.length === 0 && <p className="module-empty-state">暂无需要确认的计划。</p>}
+    {decisions.planHandoffs.length === 0 && <p className="module-empty-state">暂无需要确认的计划。</p>}
   </section>;
 }
 

@@ -5,9 +5,17 @@ import {
 import type { AriadneApi } from '@shared/contract';
 import type { AgentInputDeliveryReceipt } from '../agent-input-delivery';
 import type { RuntimeRun } from '../runtime-projection-presenter';
+import type { RunActivity } from '@ariadne/protocol/public';
 import { AgentInputDeliveryController } from './agent-input-delivery-controller';
 import type { RuntimeFeatureCommandGateway } from './runtime-feature-command-gateway';
 import type { RunFeatureHost } from './run-feature-host';
+import type { SnapshotSource } from './feature-snapshot-store';
+
+export interface RunFeatureSnapshot {
+  readonly runs: readonly RuntimeRun[];
+  readonly activities: readonly RunActivity[];
+  readonly agentInputDeliveries: readonly AgentInputDeliveryReceipt[];
+}
 
 export class RunFeatureStore {
   private readonly deliveries: AgentInputDeliveryController;
@@ -16,6 +24,7 @@ export class RunFeatureStore {
   constructor(
     private readonly gateway: RuntimeFeatureCommandGateway,
     private readonly host: RunFeatureHost,
+    readonly view: SnapshotSource<RunFeatureSnapshot>,
     persistence?: AriadneApi['agentInputDeliveryOutbox']
   ) {
     this.deliveryPersistenceConfigured = persistence !== undefined;

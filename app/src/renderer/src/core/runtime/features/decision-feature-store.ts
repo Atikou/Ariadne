@@ -11,6 +11,13 @@ import type {
   RuntimeUserQuestionDecision
 } from '../runtime-projection-presenter';
 import type { RuntimeFeatureCommandGateway } from './runtime-feature-command-gateway';
+import type { SnapshotSource } from './feature-snapshot-store';
+
+export interface DecisionFeatureSnapshot {
+  readonly permissions: readonly RuntimePermissionDecision[];
+  readonly planHandoffs: readonly RuntimePlanDecision[];
+  readonly userQuestions: readonly RuntimeUserQuestionDecision[];
+}
 
 export interface DecisionFeatureHost {
   projectionDecisions(): readonly PublicDecisionProjectionV3[];
@@ -20,7 +27,8 @@ export interface DecisionFeatureHost {
 export class DecisionFeatureStore {
   constructor(
     private readonly gateway: RuntimeFeatureCommandGateway,
-    private readonly host: DecisionFeatureHost
+    private readonly host: DecisionFeatureHost,
+    readonly view: SnapshotSource<DecisionFeatureSnapshot>
   ) {}
 
   async respondToPermission(request: RuntimePermissionDecision, choice: 'allow_once' | 'deny'): Promise<void> {

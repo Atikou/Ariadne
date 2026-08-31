@@ -7,7 +7,7 @@ export const permissionsModule: FeatureModuleDefinition = {
   description: '处理文件、系统能力和工具权限请求。',
   icon: 'shield',
   component: PermissionsPanel,
-  consumes: ['decisions', 'runtime'],
+  consumes: ['decisions'],
   navigation: { id: 'permissions', label: '权限', icon: 'shield', order: 50, position: 'primary' },
   defaultOpen: false,
   defaultPlacement: { direction: 'right', referenceModuleId: moduleId('chat.main'), initialWidth: 340 },

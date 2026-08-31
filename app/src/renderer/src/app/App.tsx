@@ -5,7 +5,7 @@ import { PERSONAL_ASSISTANT_WORKSPACE_ID } from '@ariadne/protocol/public';
 import type { ThemePreference } from '@shared/contract';
 import type { ModuleRegistry } from '@renderer/core/modules/module-registry';
 import type { ModuleId, ModuleServices } from '@renderer/core/modules/module-contract';
-import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
+import { useFeatureSnapshot } from '@renderer/core/runtime/features/feature-snapshot-store';
 import { formatRuntimeAvailability } from '@renderer/core/runtime/runtime-labels';
 import { ConfirmDialog } from '@renderer/shared/ui/ActionDialog';
 import { ActivityBar } from './ActivityBar';
@@ -31,7 +31,8 @@ export function App({
   const [effectiveTheme, setEffectiveTheme] = useState<EffectiveTheme>(() => (
     window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   ));
-  const runtime = useRuntimeSnapshot(services.runtime);
+  const diagnostics = useFeatureSnapshot(services.diagnostics.view);
+  const sessions = useFeatureSnapshot(services.sessions.view);
   const closeDialog = useCallback(() => setDialogModuleId(null), []);
 
   useEffect(() => {
@@ -114,10 +115,10 @@ export function App({
         </button>
         <div className="titlebar-actions">
           <span
-            className={`runtime-title-status runtime-title-status--${runtime.status.availability}`}
-            data-runtime-availability={runtime.status.availability}
+            className={`runtime-title-status runtime-title-status--${diagnostics.status.availability}`}
+            data-runtime-availability={diagnostics.status.availability}
           >
-            Runtime {formatRuntimeAvailability(runtime.status.availability)}
+            Runtime {formatRuntimeAvailability(diagnostics.status.availability)}
           </span>
           <ModuleMenu
             modules={registry.list()}
@@ -160,7 +161,7 @@ export function App({
         onClose={() => setCommandOpen(false)}
         onOpenModule={handleOpenModule}
         humanSkills={services.humanSkills}
-        workspaceId={runtime.sessions.find((session) => session.sessionId === runtime.selectedSessionId)?.workspaceId ?? PERSONAL_ASSISTANT_WORKSPACE_ID}
+        workspaceId={sessions.sessions.find((session) => session.sessionId === sessions.selectedSessionId)?.workspaceId ?? PERSONAL_ASSISTANT_WORKSPACE_ID}
       />
       <ConfirmDialog
         open={resetDialogOpen}

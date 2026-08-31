@@ -8,6 +8,13 @@ import {
   type RuntimeStatus
 } from '@ariadne/protocol/public';
 import type { RuntimeFeatureCommandGateway } from './runtime-feature-command-gateway';
+import type { RuntimeMessage } from '../runtime-projection-presenter';
+import type { SnapshotSource } from './feature-snapshot-store';
+
+export interface MessageFeatureSnapshot {
+  readonly messages: readonly RuntimeMessage[];
+  readonly pendingOverlayIds: readonly string[];
+}
 
 export interface SendMessageOptions {
   modelId?: string;
@@ -37,7 +44,8 @@ export interface MessageFeatureHost {
 export class MessageFeatureStore {
   constructor(
     private readonly gateway: RuntimeFeatureCommandGateway,
-    private readonly host: MessageFeatureHost
+    private readonly host: MessageFeatureHost,
+    readonly view: SnapshotSource<MessageFeatureSnapshot>
   ) {}
 
   async send(

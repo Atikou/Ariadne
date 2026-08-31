@@ -1,16 +1,16 @@
 import { FolderLock, ShieldCheck } from 'lucide-react';
 import {
-  useRuntimeSnapshot,
   type RuntimePermissionDecision
 } from '@renderer/core/runtime/runtime-store';
+import { useFeatureSnapshot } from '@renderer/core/runtime/features/feature-snapshot-store';
 import type { DecisionFeatureStore } from '@renderer/core/runtime/features/decision-feature-store';
 import { formatRisk } from '@renderer/core/runtime/runtime-labels';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import { StatusPill } from '@renderer/shared/ui/StatusPill';
 
 export function PermissionsPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
-  const runtime = useRuntimeSnapshot(services.runtime);
-  const pending = runtime.permissions.filter((request) => request.status === 'pending');
+  const decisions = useFeatureSnapshot(services.decisions.view);
+  const pending = decisions.permissions.filter((request) => request.status === 'pending');
   const attentionCount = pending.length;
   return <section className="simple-module-panel" aria-labelledby={`${moduleId}-title`}>
     <header className="module-content-header">
@@ -20,13 +20,13 @@ export function PermissionsPanel({ moduleId, services }: FeaturePanelProps): Rea
       </StatusPill>
     </header>
     <div className="permission-list">
-      {runtime.permissions.map((request) => <PermissionRequestCard
+      {decisions.permissions.map((request) => <PermissionRequestCard
         key={request.requestId}
         request={request}
         decisions={services.decisions}
       />)}
     </div>
-    {runtime.permissions.length === 0 && <p className="module-empty-state">暂无权限请求。</p>}
+    {decisions.permissions.length === 0 && <p className="module-empty-state">暂无权限请求。</p>}
   </section>;
 }
 

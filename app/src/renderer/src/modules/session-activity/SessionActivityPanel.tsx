@@ -1,14 +1,15 @@
 import { CheckCircle2, CircleDot, Clock3, LoaderCircle, Wrench, XCircle } from 'lucide-react';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
-import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
+import { useFeatureSnapshot } from '@renderer/core/runtime/features/feature-snapshot-store';
 import { formatRunStatus } from '@renderer/core/runtime/runtime-labels';
 
 /** Projection-native view: tool activity is read from the authoritative Run projection. */
 export function SessionActivityPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
-  const runtime = useRuntimeSnapshot(services.runtime);
-  const runs = runtime.runs.filter((run) => run.sessionId === runtime.selectedSessionId);
+  const runView = useFeatureSnapshot(services.runs.view);
+  const sessions = useFeatureSnapshot(services.sessions.view);
+  const runs = runView.runs.filter((run) => run.sessionId === sessions.selectedSessionId);
   const runIds = new Set(runs.map((run) => run.runId));
-  const activities = runtime.activities
+  const activities = runView.activities
     .filter((activity) => runIds.has(activity.runId))
     .sort((left, right) => left.occurredAt.localeCompare(right.occurredAt));
 

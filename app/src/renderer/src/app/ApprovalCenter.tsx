@@ -3,13 +3,13 @@ import { FolderLock, ListChecks, MessageCircleQuestion, ShieldCheck } from 'luci
 import type { ModuleServices } from '@renderer/core/modules/module-contract';
 import {
   runtimeRequestErrorMessage,
-  useRuntimeSnapshot,
   type RuntimePermissionDecision,
   type RuntimePlanDecision,
   type RuntimeUserQuestionDecision,
   type RuntimeRun
 } from '@renderer/core/runtime/runtime-store';
 import type { DecisionFeatureStore } from '@renderer/core/runtime/features/decision-feature-store';
+import { useFeatureSnapshot } from '@renderer/core/runtime/features/feature-snapshot-store';
 import { formatRisk } from '@renderer/core/runtime/runtime-labels';
 import { PlanContractView } from '@renderer/modules/agent-plan/PlanContractView';
 
@@ -21,13 +21,14 @@ type PendingApproval =
 export function ConversationApprovalCards(
   { services, sessionId }: { services: ModuleServices; sessionId: string | null },
 ): React.JSX.Element | null {
-  const snapshot = useRuntimeSnapshot(services.runtime);
+  const decisions = useFeatureSnapshot(services.decisions.view);
+  const runs = useFeatureSnapshot(services.runs.view);
   const pending = useMemo<PendingApproval[]>(() => {
     if (!sessionId) return [];
     const belongsToSession = (candidateSessionId: string | undefined, runId?: string): boolean =>
-      resolveProjectionApprovalSessionId(candidateSessionId, runId, snapshot.runs) === sessionId;
+      resolveProjectionApprovalSessionId(candidateSessionId, runId, runs.runs) === sessionId;
     return [
-      ...snapshot.permissions
+      ...decisions.permissions
         .filter((request) =>
           request.status === 'pending' && belongsToSession(request.sessionId, request.runId))
         .map((request) => ({
@@ -36,7 +37,7 @@ export function ConversationApprovalCards(
           createdAt: request.createdAt,
           request
         })),
-      ...snapshot.planHandoffs
+      ...decisions.planHandoffs
         .filter((handoff) =>
           handoff.status === 'pending' && belongsToSession(handoff.sessionId, handoff.runId))
         .map((handoff) => ({
@@ -45,7 +46,7 @@ export function ConversationApprovalCards(
           createdAt: handoff.createdAt,
           handoff
         })),
-      ...snapshot.userQuestions
+      ...decisions.userQuestions
         .filter((question) => (
           question.status === 'pending'
           && belongsToSession(question.sessionId, question.runId)
@@ -59,10 +60,10 @@ export function ConversationApprovalCards(
     ].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }, [
     sessionId,
-    snapshot.permissions,
-    snapshot.planHandoffs,
-    snapshot.userQuestions,
-    snapshot.runs,
+    decisions.permissions,
+    decisions.planHandoffs,
+    decisions.userQuestions,
+    runs.runs,
   ]);
 
   if (pending.length === 0) return null;

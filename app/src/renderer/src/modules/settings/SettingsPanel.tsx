@@ -16,7 +16,7 @@ import {
   AGENT_PROVIDER_IDS,
   createDefaultAssistantChatProfile
 } from '@shared/contract';
-import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
+import { useFeatureSnapshot } from '@renderer/core/runtime/features/feature-snapshot-store';
 import { formatRuntimeAvailability } from '@renderer/core/runtime/runtime-labels';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import { workspaceNameFromPath } from '@renderer/core/conversations/conversation-navigation-service';
@@ -51,7 +51,9 @@ const settingsCategories: ReadonlyArray<{
 ];
 
 export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
-  const runtime = useRuntimeSnapshot(services.runtime);
+  const diagnostics = useFeatureSnapshot(services.diagnostics.view);
+  const models = useFeatureSnapshot(services.models.view);
+  const sessions = useFeatureSnapshot(services.sessions.view);
   const speech = useSpeechSnapshot(services.speech);
   const [preferences, setPreferences] = useState<UserPreferences | null>(null);
   const [agentSettings, setAgentSettings] = useState<AgentSettingsView | null>(null);
@@ -110,25 +112,25 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
     });
   }, [services]);
 
-  const modelHealth = useMemo(() => new Map(runtime.models.map((model) => [model.id, model])), [runtime.models]);
-  const runtimeIsLoading = runtime.status.availability === 'starting' || runtime.status.availability === 'restarting';
-  const runtimeStateTone = runtime.status.availability === 'ready'
+  const modelHealth = useMemo(() => new Map(models.models.map((model) => [model.id, model])), [models.models]);
+  const runtimeIsLoading = diagnostics.status.availability === 'starting' || diagnostics.status.availability === 'restarting';
+  const runtimeStateTone = diagnostics.status.availability === 'ready'
     ? 'ready'
     : runtimeIsLoading
       ? 'loading'
-      : runtime.status.availability === 'degraded'
+      : diagnostics.status.availability === 'degraded'
         ? 'degraded'
-        : runtime.status.availability === 'crashed'
+        : diagnostics.status.availability === 'crashed'
           ? 'error'
           : 'inactive';
-  const runtimeStateSymbol = runtime.status.availability === 'ready'
+  const runtimeStateSymbol = diagnostics.status.availability === 'ready'
     ? '✓'
-    : runtime.status.availability === 'degraded' || runtime.status.availability === 'crashed'
+    : diagnostics.status.availability === 'degraded' || diagnostics.status.availability === 'crashed'
       ? '!'
       : '–';
   const runtimeStateLabel = runtimeIsLoading
     ? 'Runtime 正在更新'
-    : `Runtime ${formatRuntimeAvailability(runtime.status.availability)}`;
+    : `Runtime ${formatRuntimeAvailability(diagnostics.status.availability)}`;
 
   const savePreferences = (next: UserPreferences): void => {
     const generation = ++preferenceUpdateGeneration.current;
@@ -384,7 +386,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
   };
 
   const restoreSession = async (
-    session: (typeof runtime.sessions)[number]
+    session: (typeof sessions.sessions)[number]
   ): Promise<void> => {
     if (restoringSessionId) return;
     setRestoringSessionId(session.sessionId);
@@ -401,7 +403,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
   const archivedWorkspaces = agentSettings?.workspaces.filter(
     (workspace) => workspace.archivedAt
   ) ?? [];
-  const archivedSessions = runtime.sessions.filter(
+  const archivedSessions = sessions.sessions.filter(
     (session) => session.status === 'archived'
   );
 
@@ -436,7 +438,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
       {activeCategory === 'agent' && <section className="settings-section" aria-labelledby={`${moduleId}-model-settings`}>
         <div className="settings-section-heading">
           <div className="settings-section-title"><span className="settings-section-icon"><KeyRound size={16} /></span><div className="settings-section-copy"><h2 id={`${moduleId}-model-settings`}>Agent 与模型</h2><p>配置本地模型目录和远程 Provider；工作区通过 Chat 侧栏的“打开工作区”管理。</p></div></div>
-          <span className={`settings-runtime-state settings-runtime-state--${runtimeStateTone}`} data-runtime-availability={runtime.status.availability} role="status" aria-live="polite">
+          <span className={`settings-runtime-state settings-runtime-state--${runtimeStateTone}`} data-runtime-availability={diagnostics.status.availability} role="status" aria-live="polite">
             <span className={`settings-runtime-indicator settings-runtime-indicator--${runtimeStateTone}`} aria-hidden="true">{runtimeIsLoading ? null : runtimeStateSymbol}</span>
             <span>{runtimeStateLabel}</span>
           </span>

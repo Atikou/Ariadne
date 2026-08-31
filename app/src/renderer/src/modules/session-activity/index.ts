@@ -7,7 +7,7 @@ export const sessionActivityModule: FeatureModuleDefinition = {
   description: '查看每轮处理的工具调用图、系统事件与文件变更。',
   icon: 'activity',
   component: SessionActivityPanel,
-  consumes: ['runtime'],
+  consumes: ['runs', 'sessions'],
   defaultOpen: false,
   defaultPlacement: {
     direction: 'within',

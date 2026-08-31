@@ -7,7 +7,7 @@ export const toolOutputModule: FeatureModuleDefinition = {
   description: '查看工具调用结果和结构化输出。',
   icon: 'tool',
   component: ToolOutputPanel,
-  consumes: ['runtime', 'toolResults'],
+  consumes: ['runs', 'sessions', 'toolResults'],
   navigation: { id: 'tools', label: '工具输出', icon: 'tool', order: 40, position: 'primary' },
   defaultOpen: true,
   defaultActivationOrder: 10,

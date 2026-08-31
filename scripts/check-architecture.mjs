@@ -56,6 +56,7 @@ const contractLayerAllowList = new Map([
 const options = parseOptions(process.argv.slice(2));
 assertNarrowDependencyExceptions();
 assertRetiredProductionChainsAbsent();
+assertUiPanelsUseFeatureStores();
 if (options.help) {
   printHelp();
   process.exit(0);
@@ -284,6 +285,21 @@ function assertRetiredProductionChainsAbsent() {
   if (violations.length === 0) return;
   throw new Error(
     `Retired production command chain detected:\n${violations.join('\n')}`
+  );
+}
+
+function assertUiPanelsUseFeatureStores() {
+  const modulesRoot = path.join(projectRoot, 'app', 'src', 'renderer', 'src', 'modules');
+  const violations = [];
+  for (const file of walk(modulesRoot)) {
+    const source = readFileSync(file, 'utf8');
+    if (source.includes('services.runtime') || source.includes('useRuntimeSnapshot')) {
+      violations.push(relative(file));
+    }
+  }
+  if (violations.length === 0) return;
+  throw new Error(
+    `UI component bypasses declared Feature Stores:\n${violations.join('\n')}`
   );
 }
 

@@ -400,6 +400,15 @@ const boundaries = [
     ]
   },
   {
+    file: 'app/src/renderer/src/core/modules/module-services-contract.ts',
+    maxLines: 55,
+    required: [
+      'interface ModuleServices',
+      'DiagnosticsFeatureStore',
+      'ModelFeatureStore'
+    ]
+  },
+  {
     file: 'app/src/renderer/src/core/modules/module-registry.tsx',
     maxLines: 260,
     required: [
@@ -427,7 +436,7 @@ const boundaries = [
   },
   {
     file: 'app/src/renderer/src/core/runtime/runtime-store.ts',
-    maxLines: 615,
+    maxLines: 635,
     required: [
       'ProjectionCache',
       'ProjectionRuntimeClient',
@@ -473,7 +482,7 @@ const boundaries = [
   },
   {
     file: 'app/src/renderer/src/core/runtime/features/session-feature-store.ts',
-    maxLines: 165,
+    maxLines: 180,
     required: [
       'class SessionFeatureStore',
       'SessionFeatureHost'
@@ -481,7 +490,7 @@ const boundaries = [
   },
   {
     file: 'app/src/renderer/src/core/runtime/features/decision-feature-store.ts',
-    maxLines: 130,
+    maxLines: 140,
     required: [
       'class DecisionFeatureStore',
       'DecisionFeatureHost',
@@ -510,6 +519,14 @@ const boundaries = [
     required: [
       'class AgentInputDeliveryController',
       'shouldReconcile'
+    ]
+  },
+  {
+    file: 'app/src/renderer/src/core/runtime/features/feature-snapshot-store.ts',
+    maxLines: 40,
+    required: [
+      'class FeatureSnapshotStore',
+      'useFeatureSnapshot'
     ]
   },
   {

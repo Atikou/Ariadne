@@ -7,10 +7,15 @@ import type { ConversationWorkspace } from '@renderer/core/conversations/convers
 import { useConversationPresentationRevision } from '@renderer/core/conversations/use-conversation-presentation';
 import { formatRunStatus } from '@renderer/core/runtime/runtime-labels';
 import {
-  useRuntimeSnapshot,
-  type RuntimeRun,
-  type RuntimeSnapshot
+  type RuntimeRun
 } from '@renderer/core/runtime/runtime-store';
+import {
+  useFeatureSnapshot
+} from '@renderer/core/runtime/features/feature-snapshot-store';
+import type { DecisionFeatureSnapshot } from '@renderer/core/runtime/features/decision-feature-store';
+import type { DiagnosticsFeatureSnapshot } from '@renderer/core/runtime/features/diagnostics-feature-store';
+import type { RunFeatureSnapshot } from '@renderer/core/runtime/features/run-feature-store';
+import type { SessionFeatureSnapshot } from '@renderer/core/runtime/features/session-feature-store';
 import { ConfirmDialog, TextPromptDialog } from '@renderer/shared/ui/ActionDialog';
 
 interface ConversationSidebarProps {
@@ -35,7 +40,11 @@ interface SessionRowOptions {
 }
 
 export function ConversationSidebar({ services }: ConversationSidebarProps): React.JSX.Element {
-  const runtime = useRuntimeSnapshot(services.runtime);
+  const decisions = useFeatureSnapshot(services.decisions.view);
+  const diagnostics = useFeatureSnapshot(services.diagnostics.view);
+  const runs = useFeatureSnapshot(services.runs.view);
+  const sessions = useFeatureSnapshot(services.sessions.view);
+  const runtime = { ...decisions, ...diagnostics, ...runs, ...sessions };
   const [query, setQuery] = useState('');
   const [querySessionIds, setQuerySessionIds] = useState<ReadonlySet<string> | null>(null);
   const [workspaces, setWorkspaces] = useState<readonly ConversationWorkspace[]>([]);
@@ -55,7 +64,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
     const applyCatalog = (catalog: readonly ConversationWorkspace[]): void => {
       if (!active) return;
       setWorkspaces(catalog);
-      void services.runtime.refresh().catch(() => undefined);
+      void services.diagnostics.refresh().catch(() => undefined);
     };
     const applySelection = (workspaceId: string | null): void => {
       if (active) setSelectedWorkspaceId(workspaceId);
@@ -631,7 +640,12 @@ function latestSessionRun(runs: readonly RuntimeRun[], sessionId: string): Runti
     ?? null;
 }
 
-function pendingApprovalSessionIds(snapshot: RuntimeSnapshot): Set<string> {
+type SidebarSnapshot = DecisionFeatureSnapshot
+  & Pick<DiagnosticsFeatureSnapshot, 'status'>
+  & RunFeatureSnapshot
+  & SessionFeatureSnapshot;
+
+function pendingApprovalSessionIds(snapshot: SidebarSnapshot): Set<string> {
   const runSessions = new Map(snapshot.runs.flatMap((run) => (
     run.sessionId === undefined ? [] : [[run.runId, run.sessionId] as const]
   )));
