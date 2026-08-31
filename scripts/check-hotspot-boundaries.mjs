@@ -387,6 +387,45 @@ const boundaries = [
     ]
   },
   {
+    file: 'app/src/renderer/src/core/modules/module-contract.ts',
+    maxLines: 140,
+    required: [
+      'ModuleServiceId',
+      'ModuleNavigationContribution',
+      'ModulePresentation'
+    ],
+    forbidden: [
+      /MODULE_IDS/,
+      /builtinModuleRegistry/
+    ]
+  },
+  {
+    file: 'app/src/renderer/src/core/modules/module-registry.tsx',
+    maxLines: 260,
+    required: [
+      'createDeclaredModuleServices',
+      'requiredCapabilities',
+      'navigationActions'
+    ],
+    forbidden: [
+      /MODULE_IDS/,
+      /builtinModuleRegistry/
+    ]
+  },
+  {
+    file: 'app/src/renderer/src/app/App.tsx',
+    maxLines: 210,
+    required: [
+      'registry.navigationActions()',
+      'registry.servicesFor'
+    ],
+    forbidden: [
+      /MODULE_IDS/,
+      /SettingsDialog/,
+      /builtinModuleRegistry/
+    ]
+  },
+  {
     file: 'runtime/src/composition/runtime-capabilities/RuntimeCapabilityProvider.ts',
     maxLines: 80
   },

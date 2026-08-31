@@ -2,9 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import {
   moduleId,
-  type FeatureModuleDefinition
+  type FeatureModuleDefinition,
+  type ModuleServices
 } from '../src/renderer/src/core/modules/module-contract.js';
-import { ModuleRegistry } from '../src/renderer/src/core/modules/module-registry.js';
+import {
+  createDeclaredModuleServices,
+  ModuleRegistry
+} from '../src/renderer/src/core/modules/module-registry.js';
 
 const gatedModule: FeatureModuleDefinition = {
   id: moduleId('test.voice'),
@@ -12,6 +16,7 @@ const gatedModule: FeatureModuleDefinition = {
   description: 'Capability-gated test component.',
   icon: 'message',
   component: () => null,
+  consumes: [],
   defaultOpen: false,
   defaultPlacement: {},
   layoutConstraints: { minimumWidth: 100 },
@@ -33,5 +38,23 @@ describe('UI ModuleRegistry', () => {
       availability: 'degraded'
     }]);
     expect(registry.list().map((definition) => definition.id)).toEqual(['test.voice']);
+  });
+
+  it('rejects access to services not declared by the component', () => {
+    const runtime = {} as ModuleServices['runtime'];
+    const definition = {
+      ...gatedModule,
+      id: moduleId('test.runtime'),
+      consumes: ['runtime'] as const,
+      requiredCapabilities: []
+    };
+    const scope = createDeclaredModuleServices(
+      definition,
+      { runtime } as ModuleServices
+    );
+    expect(scope.runtime).toBe(runtime);
+    expect(() => scope.speech).toThrow(
+      'Module test.runtime cannot access undeclared service speech.'
+    );
   });
 });

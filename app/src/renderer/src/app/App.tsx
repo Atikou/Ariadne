@@ -90,7 +90,8 @@ export function App({
   const activeDialog = dialogDefinition?.presentation?.kind === 'dialog'
     ? {
         moduleId: dialogDefinition.id,
-        Component: dialogDefinition.presentation.component
+        Component: dialogDefinition.presentation.component,
+        services: registry.servicesFor(dialogDefinition.id, services)
       }
     : undefined;
 
@@ -176,7 +177,7 @@ export function App({
         <activeDialog.Component
           moduleId={activeDialog.moduleId}
           open
-          services={services}
+          services={activeDialog.services}
           onClose={closeDialog}
         />
       )}

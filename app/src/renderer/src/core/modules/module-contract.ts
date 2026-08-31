@@ -53,6 +53,8 @@ export interface ModuleServices {
   workspace: AriadneApi['workspace'];
 }
 
+export type ModuleServiceId = keyof ModuleServices;
+
 export interface FeaturePanelProps {
   moduleId: ModuleId;
   services: ModuleServices;
@@ -98,6 +100,7 @@ export interface FeatureModuleDefinition {
   description: string;
   icon: ModuleIcon;
   component: ComponentType<FeaturePanelProps>;
+  consumes: readonly ModuleServiceId[];
   presentation?: ModulePresentation;
   navigation?: ModuleNavigationContribution;
   defaultOpen: boolean;

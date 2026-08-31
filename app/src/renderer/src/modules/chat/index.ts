@@ -7,6 +7,10 @@ export const chatModule: FeatureModuleDefinition = {
   description: '与 Agent 交互的主工作区。',
   icon: 'message',
   component: ChatPanel,
+  consumes: [
+    'agentSettings', 'clipboard', 'conversationNavigation', 'events',
+    'runtime', 'speech', 'system'
+  ],
   navigation: { id: 'chat', label: '对话', icon: 'message', order: 10, position: 'primary' },
   defaultOpen: true,
   defaultActivationOrder: 30,

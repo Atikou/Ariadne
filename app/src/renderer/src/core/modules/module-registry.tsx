@@ -54,6 +54,12 @@ export class ModuleRegistry {
     return this.definitions.get(id as ModuleId);
   }
 
+  servicesFor(id: ModuleId, services: ModuleServices): ModuleServices {
+    const definition = this.definitions.get(id);
+    if (definition === undefined) throw new Error(`Unknown module: ${id}`);
+    return createDeclaredModuleServices(definition, services);
+  }
+
   navigationActions(): readonly ModuleNavigationAction[] {
     const actions = new Map<string, ModuleNavigationAction>();
     for (const definition of this.list()) {
@@ -95,6 +101,7 @@ function createPanelAdapter(
   services: ModuleServices
 ): FunctionComponent<IDockviewPanelProps> {
   const FeaturePanel = definition.component;
+  const declaredServices = createDeclaredModuleServices(definition, services);
 
   return function ModulePanelAdapter({ api, containerApi }) {
     const hostRef = useRef<HTMLDivElement>(null);
@@ -123,7 +130,7 @@ function createPanelAdapter(
     }, [api, containerApi]);
 
     useEffect(() => {
-      const context = { moduleId: definition.id, services };
+      const context = { moduleId: definition.id, services: declaredServices };
       let disposed = false;
       let created = false;
       let isActive = false;
@@ -160,11 +167,32 @@ function createPanelAdapter(
     return (
       <div ref={hostRef} className="module-panel-host">
         <ModulePanelErrorBoundary moduleId={definition.id} moduleName={definition.name}>
-          <FeaturePanel moduleId={definition.id} services={services} />
+          <FeaturePanel moduleId={definition.id} services={declaredServices} />
         </ModulePanelErrorBoundary>
       </div>
     );
   };
+}
+
+export function createDeclaredModuleServices(
+  definition: FeatureModuleDefinition,
+  services: ModuleServices
+): ModuleServices {
+  const declared = new Set(definition.consumes);
+  if (declared.size !== definition.consumes.length) {
+    throw new Error(`Module ${definition.id} declares duplicate services.`);
+  }
+  const scoped = Object.fromEntries(
+    definition.consumes.map((serviceId) => [serviceId, services[serviceId]])
+  );
+  return new Proxy(Object.freeze(scoped), {
+    get: (target, property) => {
+      if (typeof property !== 'string' || declared.has(property as keyof ModuleServices)) {
+        return Reflect.get(target, property);
+      }
+      throw new Error(`Module ${definition.id} cannot access undeclared service ${property}.`);
+    }
+  }) as unknown as ModuleServices;
 }
 
 interface ModulePanelErrorBoundaryProps {
