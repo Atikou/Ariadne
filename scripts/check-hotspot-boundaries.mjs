@@ -7,13 +7,14 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const boundaries = [
   {
     file: 'runtime/src/composition/DefaultAgentControlRuntimeFactory.ts',
-    maxLines: 500,
+    maxLines: 420,
     required: [
       './AgentControlPublicCommandRouter.js',
       './AgentControlRuntimeCompositionSupport.js',
       './agent-entity/AgentEntityCommandAssembly.js',
       './agent-entity/components/persistence/AgentPersistenceComponent.js',
-      './agent-entity/components/projection/AgentProjectionComponent.js'
+      './agent-entity/components/projection/AgentProjectionComponent.js',
+      './agent-entity/components/execution/AgentExecutionComponent.js'
     ],
     forbidden: [
       /\bexecuteCancelAgentRun\b/,
@@ -28,7 +29,23 @@ const boundaries = [
       /new\s+AgentRunPublicProjectionPublisher\b/,
       /new\s+ConversationPublicProjectionPublisher\b/,
       /new\s+ModelCatalogPublicProjectionPublisher\b/,
-      /\bPublicProjectionWakePublisher\b/
+      /\bPublicProjectionWakePublisher\b/,
+      /AgentLiveWorkCompletionLifecycle/,
+      /\.runWorkScheduler\.start\(/,
+      /\.executionScheduler\.start\(/,
+      /\.handoffProducer\.start\(/
+    ]
+  },
+  {
+    file: 'runtime/src/composition/agent-entity/components/execution/AgentExecutionComponent.ts',
+    maxLines: 140,
+    required: [
+      '../../../../control/execution/AgentLiveWorkCompletionLifecycle.js'
+    ],
+    forbidden: [
+      /AgentControlPublicCommandRouter/,
+      /AgentProjectionComponent/,
+      /SqlitePublicProjectionStore/
     ]
   },
   {

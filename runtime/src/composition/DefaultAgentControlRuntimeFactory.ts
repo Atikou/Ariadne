@@ -33,9 +33,6 @@ import type { RuntimeCommandEnvelope } from '../ingress/RuntimeIngress.js';
 import type {
   RuntimeCommandReconciliation
 } from '../control/ports/RuntimeCommandJournal.js';
-import {
-  AgentLiveWorkCompletionLifecycle
-} from '../control/execution/AgentLiveWorkCompletionLifecycle.js';
 import type { AgentControlLiveWorkService } from '../control/ports/AgentLiveWork.js';
 import type { RuntimePublicEventSink } from '../ingress/RuntimePublicEventSink.js';
 import { PublicProjectionWakeCommitSink } from './PublicProjectionWakeCommitSink.js';
@@ -71,6 +68,10 @@ import {
   type AgentProjectionComponentHandle,
   type AgentProjectionComponentOptions
 } from './agent-entity/components/projection/AgentProjectionComponent.js';
+import {
+  createAgentExecutionComponent,
+  type AgentExecutionComponentHandle
+} from './agent-entity/components/execution/AgentExecutionComponent.js';
 
 export interface AgentControlPublicProjectionLifecycleOptions
 extends AgentProjectionComponentOptions {
@@ -93,7 +94,7 @@ implements AgentControlRuntimeLifecycle {
   private lifecycle: 'new' | 'starting' | 'running' | 'failed' | 'stopping' | 'stopped' = 'new';
   private prepareOperation: Promise<void> | null = null;
   private shutdownOperation: Promise<void> | null = null;
-  private readonly liveWorkCompletion?: AgentLiveWorkCompletionLifecycle;
+  private readonly execution: AgentExecutionComponentHandle;
   private readonly scheduleWorker: V3ScheduleWorker | undefined;
   private readonly unitOfWork: AgentPersistenceComponentHandle['unitOfWork'];
   private readonly conversation: AgentPersistenceComponentHandle['conversation'];
@@ -103,7 +104,7 @@ implements AgentControlRuntimeLifecycle {
   public constructor(
     private readonly persistence: AgentPersistenceComponentHandle,
     options: AgentControlPublicProjectionLifecycleOptions = {},
-    private readonly executionPipeline?: AgentControlExecutionPipeline,
+    executionPipeline?: AgentControlExecutionPipeline,
     modelCatalog?: ModelCatalogProjectionSource,
     projectionWakeEventSink?: RuntimePublicEventSink,
     authorizedWorkspaceIds: readonly string[] = [],
@@ -129,6 +130,13 @@ implements AgentControlRuntimeLifecycle {
       modelCatalog,
       wakeEventSink: projectionWakeEventSink
     });
+    this.execution = createAgentExecutionComponent({
+      unitOfWork,
+      conversation,
+      pipeline: executionPipeline,
+      liveWork,
+      wakeProjectionDrain: () => this.projection.wake()
+    });
     const commandManifest = composeAgentEntityCommandManifest({
       unitOfWork,
       conversation,
@@ -151,12 +159,6 @@ implements AgentControlRuntimeLifecycle {
           conversation,
           (envelope) => this.publicCommands.executeOwnedCommand(envelope)
         );
-    if (liveWork !== undefined) {
-      this.liveWorkCompletion = new AgentLiveWorkCompletionLifecycle(liveWork, unitOfWork, {
-        wakeWorkScheduler: () => executionPipeline?.runWorkScheduler.wake(),
-        wakeProjectionDrain: () => this.projection.wake()
-      });
-    }
   }
 
   public async start(): Promise<void> {
@@ -165,38 +167,7 @@ implements AgentControlRuntimeLifecycle {
     }
     this.lifecycle = 'starting';
     try {
-      if (this.executionPipeline === undefined) {
-        if (await this.conversation.countPendingHandoffOutbox() !== 0) {
-          throw new Error('conversation_agent_handoff_producer_required');
-        }
-        const executionRecovery = await this.unitOfWork.listExecutionIntentRecovery({
-          limit: 1
-        });
-        if (executionRecovery.items.length !== 0) {
-          throw new Error('agent_execution_scheduler_required');
-        }
-        const activeRuns = await this.unitOfWork.listActiveRuns({ limit: 1 });
-        if (activeRuns.items.length !== 0) {
-          throw new Error('agent_run_work_scheduler_required');
-        }
-      } else {
-        // Recover durable interruption facts before any scheduler can consume
-        // the affected Run or cross a fresh Provider/Tool boundary.
-        await this.liveWorkCompletion?.reconcileStartup();
-        // Crossed initial-inference dispatch fences must fail before any other
-        // producer is allowed to perform Provider or Tool I/O.
-        await this.executionPipeline.executionScheduler.preflightStartupRecovery();
-        // Replay already committed terminal Child facts before authority
-        // retirement scans Parent Runs. This closes a crash window where the
-        // Child terminal event was durable but its Parent observation was not.
-        await this.projection.drainPending();
-        await this.executionPipeline.runWorkScheduler.start();
-        this.executionPipeline.runWorkScheduler.assertHealthy();
-        await this.executionPipeline.executionScheduler.start();
-        this.executionPipeline.executionScheduler.assertHealthy();
-        await this.executionPipeline.handoffProducer.start();
-        this.executionPipeline.handoffProducer.assertHealthy();
-      }
+      await this.execution.start(() => this.projection.drainPending());
       await this.projection.drainPending();
       if (await this.unitOfWork.countUnpublishedOutbox() !== 0) {
         throw new Error('agent_control_startup_projection_not_at_fixed_point');
@@ -211,10 +182,7 @@ implements AgentControlRuntimeLifecycle {
   }
 
   public assertHealthy(): void {
-    this.liveWorkCompletion?.assertHealthy();
-    this.executionPipeline?.runWorkScheduler.assertHealthy();
-    this.executionPipeline?.executionScheduler.assertHealthy();
-    this.executionPipeline?.handoffProducer.assertHealthy();
+    this.execution.assertHealthy();
     this.projection.assertHealthy();
     if (this.lifecycle !== 'running') {
       throw new Error('agent_control_public_projection_not_running');
@@ -263,46 +231,7 @@ implements AgentControlRuntimeLifecycle {
     } catch (error) {
       failures.push(error);
     }
-    if (this.executionPipeline !== undefined) {
-      this.executionPipeline.observeRuntimeStop?.(new Date().toISOString());
-      // Stop both I/O schedulers before awaiting either one. This prevents a
-      // long join in one producer from leaving the other producer live.
-      const schedulerStops: Promise<void>[] = [];
-      try {
-        context.throwIfExpired();
-        schedulerStops.push(
-          this.executionPipeline.runWorkScheduler.prepareShutdown(context)
-        );
-      } catch (error) {
-        failures.push(error);
-      }
-      try {
-        context.throwIfExpired();
-        schedulerStops.push(
-          this.executionPipeline.executionScheduler.prepareShutdown(context)
-        );
-      } catch (error) {
-        failures.push(error);
-      }
-      const schedulerResults = await Promise.allSettled(schedulerStops);
-      for (const result of schedulerResults) {
-        if (result.status === 'rejected') failures.push(result.reason);
-      }
-      try {
-        context.throwIfExpired();
-        await this.executionPipeline.handoffProducer.prepareShutdown(context);
-        context.throwIfExpired();
-      } catch (error) {
-        failures.push(error);
-      }
-    }
-    try {
-      context.throwIfExpired();
-      await this.liveWorkCompletion?.prepareShutdown(context.remainingMs());
-      context.throwIfExpired();
-    } catch (error) {
-      failures.push(error);
-    }
+    failures.push(...await this.execution.prepareShutdown(context));
     let projectionBarrierReady = true;
     try {
       context.throwIfExpired();
