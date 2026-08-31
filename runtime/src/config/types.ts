@@ -174,17 +174,6 @@ export type ModelClientConfig = z.infer<typeof ModelClientConfigSchema>;
 export type ApiModelClientConfig = z.infer<typeof ApiModelClientConfigSchema>;
 export type EmbeddedModelClientConfig = z.infer<typeof EmbeddedModelClientConfigSchema>;
 
-export const SchedulerConfigSchema = z.object({
-  /** goal 子串匹配时通知 payload 不要求确认（无人值守白名单）。 */
-  unattendedGoalPatterns: z.array(z.string()).default([]),
-  gitPollIntervalMs: z.number().int().positive().default(5000),
-  cronMissPolicy: z.enum(["skip", "run_once"]).default("skip"),
-  /** 启动时注册 daily_summary cron（可选，如 `0 9 * * *`）。 */
-  dailySummaryCron: z.string().optional(),
-  dailySummaryGoal: z.string().optional(),
-});
-export type SchedulerConfig = z.infer<typeof SchedulerConfigSchema>;
-
 const ToolPermissionSchema = z.enum(["read", "write", "shell", "network", "dangerous"]);
 
 export const SandboxConfigSchema = z
@@ -563,7 +552,6 @@ export const AppConfigSchema = z.object({
   hooks: HookConfigSchema,
   providerResilience: ProviderResilienceConfigSchema,
   telemetry: TelemetryConfigSchema,
-  scheduler: SchedulerConfigSchema.optional(),
   security: SecurityConfigSchema.optional(),
 });
 export type AppConfig = z.infer<typeof AppConfigSchema>;

@@ -25,6 +25,38 @@ const READY: RuntimeStatus = {
 const ACTION_TOKEN = `decision-action.v1:${'a'.repeat(64)}`;
 
 describe('RuntimeStore command routing', () => {
+  it('routes productivity reads and Schedule mutations only through v3 Runtime commands', async () => {
+    const commands: RuntimeCommand[] = [];
+    const store = new RuntimeStore(successfulRuntimeApi({
+      getStatus: async () => READY,
+      request: async (command) => {
+        commands.push(command);
+        if (command.kind === 'productivity.query.v3') {
+          return { kind: 'productivity.query_result.v3', goal: null, todoRevision: null, todos: [], workflows: [] };
+        }
+        if (command.kind === 'schedule.create.v3') {
+          return {
+            kind: 'schedule.updated.v3',
+            schedule: {
+              scheduleId: command.scheduleId, workspaceId: command.workspaceId, sessionId: command.sessionId,
+              version: 1, status: 'active', prompt: command.prompt, timing: command.timing,
+              nextFireAt: '2032-01-01T00:00:00.000Z', fireCount: 0
+            }
+          };
+        }
+        throw new Error(`Unexpected command: ${command.kind}`);
+      },
+      onEvent: () => () => undefined
+    }));
+
+    await expect(store.queryProductivity('workspace-1', 'session-1')).resolves.toMatchObject({ goal: null, todos: [] });
+    await expect(store.createSchedule({
+      workspaceId: 'workspace-1', sessionId: 'session-1', scheduleId: 'schedule-1', prompt: 'Continue',
+      timing: { kind: 'once', at: '2032-01-01T00:00:00.000Z', missPolicy: 'run_once' }
+    })).resolves.toMatchObject({ scheduleId: 'schedule-1', status: 'active' });
+    expect(commands.map((command) => command.kind)).toEqual(['productivity.query.v3', 'schedule.create.v3']);
+  });
+
   it('requests one protected Tool result page and validates its ownership tuple', async () => {
     const commands: RuntimeCommand[] = [];
     const store = new RuntimeStore(successfulRuntimeApi({

@@ -112,7 +112,7 @@ Renderer 的写操作只使用 v3 Session lifecycle/Message、Decision、Cancel 
 | Context | Conversation 历史、确定性 semantic compaction、protected Effect result spill、usage anchor、逐 binding tokenizer、最终投影硬准入和 overflow recovery 已进入 v3；真实本地 llama.cpp 跨进程长上下文验收已通过，远程 Live Provider 仍待有 credential 的环境执行 |
 | Memory/Embedding | 有旧实现和测试，但没有完整 v3 生产 consumer |
 | SubAgent | 单个/批量 Child、one-shot/continuable ordinary Run、list/status/send/interrupt、ACP resume、Codex app-server 与 Claude Code one-shot 已接入；structured report、真实窗口与 Claude live credential gate 待验收 |
-| Scheduler | 有旧 cron/interval/file/git 模块基础，没有 v3 产品闭环；旧 Background process/trigger contract 已删除 |
+| Scheduler | v3 productivity authority 持有 once/interval/cron、稳定 occurrence 与原 Session Turn 投递；旧 JSONL 仅供显式迁移，event trigger 不自动映射 |
 | Diagnostics/Telemetry | lifecycle diagnostics 已持久、脱敏、可重放；Telemetry 只在 exporter 启动成功后宣告 |
 | Provider Resilience | 冻结 policy 已进入 exact v3 transport；按 Provider/model/settings 隔离并发、速率、首语义输出前重试和熔断，429/5xx/timeout 与有界 Retry-After 有确定性测试 |
 

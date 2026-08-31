@@ -170,7 +170,7 @@ kbd { padding: 2px 5px; color: var(--text-3); background: var(--bg-1); border: 1
   --dv-spacing-padding: 0px;
   --dv-border-radius: var(--radius-md);
   --dv-tab-margin: 0;
-  --dv-tab-border-radius: 6px;
+  --dv-tab-border-radius: var(--radius-sm);
   --module-tab-surface: var(--bg-2);
   --module-tab-strip: color-mix(in srgb, var(--bg-1) 88%, var(--bg-0));
   --dv-sash-color: transparent;
@@ -292,7 +292,7 @@ kbd { padding: 2px 5px; color: var(--text-3); background: var(--bg-1); border: 1
   overflow: hidden;
   border: 1px solid transparent;
   border-bottom: 0;
-  border-radius: 6px 6px 0 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
 }
 .ariadne-dockview-theme .dv-tab.dv-inactive-tab {
@@ -310,7 +310,7 @@ kbd { padding: 2px 5px; color: var(--text-3); background: var(--bg-1); border: 1
   background: var(--module-tab-surface) !important;
   border-color: var(--border-subtle);
   border-bottom-color: transparent;
-  border-radius: 6px 6px 0 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   box-shadow: inset 0 -2px 0 var(--accent);
 }
 .ariadne-dockview-theme .dv-tab:focus::after,
@@ -321,19 +321,19 @@ kbd { padding: 2px 5px; color: var(--text-3); background: var(--bg-1); border: 1
   height: auto;
   margin: 1px 3px 1px 0;
   border: 1px solid transparent;
-  border-radius: 6px 0 0 6px;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
 }
 .ariadne-dockview-theme .dv-groupview-header-right .dv-tab {
   height: auto;
   margin: 1px 0 1px 3px;
   border: 1px solid transparent;
-  border-radius: 0 6px 6px 0;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 .ariadne-dockview-theme .dv-groupview-header-bottom .dv-tabs-container.dv-horizontal { align-items: stretch; padding: 0 7px; }
-.ariadne-dockview-theme .dv-groupview-header-bottom .dv-tab { border: 1px solid transparent; border-top: 0; border-radius: 0 0 6px 6px; }
-.ariadne-dockview-theme .dv-groupview-header-bottom .dv-tab.dv-active-tab { border-color: var(--border-subtle); border-top-color: transparent; border-radius: 0 0 6px 6px; box-shadow: inset 0 2px 0 var(--accent); }
-.ariadne-dockview-theme .dv-groupview-header-left .dv-tab.dv-active-tab { border-color: var(--border-subtle); border-right-color: transparent; border-radius: 6px 0 0 6px; box-shadow: inset -2px 0 0 var(--accent); }
-.ariadne-dockview-theme .dv-groupview-header-right .dv-tab.dv-active-tab { border-color: var(--border-subtle); border-left-color: transparent; border-radius: 0 6px 6px 0; box-shadow: inset 2px 0 0 var(--accent); }
+.ariadne-dockview-theme .dv-groupview-header-bottom .dv-tab { border: 1px solid transparent; border-top: 0; border-radius: 0 0 var(--radius-sm) var(--radius-sm); }
+.ariadne-dockview-theme .dv-groupview-header-bottom .dv-tab.dv-active-tab { border-color: var(--border-subtle); border-top-color: transparent; border-radius: 0 0 var(--radius-sm) var(--radius-sm); box-shadow: inset 0 2px 0 var(--accent); }
+.ariadne-dockview-theme .dv-groupview-header-left .dv-tab.dv-active-tab { border-color: var(--border-subtle); border-right-color: transparent; border-radius: var(--radius-sm) 0 0 var(--radius-sm); box-shadow: inset -2px 0 0 var(--accent); }
+.ariadne-dockview-theme .dv-groupview-header-right .dv-tab.dv-active-tab { border-color: var(--border-subtle); border-left-color: transparent; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; box-shadow: inset 2px 0 0 var(--accent); }
 .ariadne-dockview-theme .dv-tab:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
   outline-offset: -3px;
@@ -345,7 +345,7 @@ kbd { padding: 2px 5px; color: var(--text-3); background: var(--bg-1); border: 1
 .dv-active-tab .module-tab > svg:first-child { color: var(--accent); }
 .module-tab-actions { display: flex; flex: 0 0 auto; align-items: center; opacity: 0; pointer-events: none; transition: opacity 100ms ease; }
 .module-tab:hover .module-tab-actions, .dv-active-tab .module-tab-actions { opacity: 1; pointer-events: auto; }
-.module-tab button { display: grid; width: 20px; height: 20px; padding: 0; place-items: center; color: var(--text-3); background: transparent; border: 0; border-radius: 4px; cursor: pointer; }
+.module-tab button { display: grid; width: 20px; height: 20px; padding: 0; place-items: center; color: var(--text-3); background: transparent; border: 0; border-radius: var(--radius-sm); cursor: pointer; }
 .dv-active-tab .module-tab-actions button:first-child { width: 0; opacity: 0; pointer-events: none; }
 .dv-active-tab:hover .module-tab-actions button:first-child,
 .dv-active-tab:focus-within .module-tab-actions button:first-child { width: 20px; opacity: 1; pointer-events: auto; }
@@ -942,6 +942,7 @@ kbd { padding: 2px 5px; color: var(--text-3); background: var(--bg-1); border: 1
 .command-palette > label { display: flex; align-items: center; gap: 9px; height: 45px; padding: 0 13px; color: var(--text-3); border-bottom: 1px solid var(--border-subtle); }.command-palette input { width: 100%; color: var(--text-1); background: transparent; border: 0; outline: 0; font-size: 14px; }
 .command-results { max-height: 340px; overflow: auto; padding: 7px; }.command-results > span { display: block; padding: 5px 7px; color: var(--text-3); font-size: 10px; font-weight: 700; letter-spacing: .1em; }.command-results button { display: grid; grid-template-columns: 28px minmax(0, 1fr) 16px; align-items: center; gap: 7px; width: 100%; padding: 7px; text-align: left; color: var(--text-2); background: transparent; border: 0; border-radius: var(--radius-md); cursor: pointer; }.command-results button:hover { color: var(--text-1); background: var(--bg-hover); }.command-results strong, .command-results small { display: block; }.command-results strong { margin-bottom: 2px; font-size: 12px; }.command-results small { color: var(--text-3); font-size: 10px; }
 .command-skill-preview { margin: 7px; padding: 10px; color: var(--text-2); background: var(--bg-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }.command-skill-preview pre { max-height: 180px; margin: 8px 0; overflow: auto; white-space: pre-wrap; font: 11px/1.55 var(--font-mono); }
+.productivity-panel { gap: 10px; overflow: auto; }.productivity-card { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--bg-2); }.productivity-card h2 { margin: 0; font-size: 13px; }.productivity-card input { min-width: 0; padding: 7px 9px; color: var(--text-1); background: var(--bg-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }.productivity-card button { width: fit-content; }.productivity-card li { margin: 5px 0; }.productivity-card li small { margin-left: 8px; color: var(--text-3); }.productivity-inline { display: flex; align-items: center; gap: 7px; }.productivity-inline > input,.productivity-inline > span { flex: 1; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes blink { 50% { opacity: 0; } }

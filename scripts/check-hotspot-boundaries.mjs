@@ -7,8 +7,11 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const boundaries = [
   {
     file: 'runtime/src/composition/DefaultAgentControlRuntimeFactory.ts',
-    maxLines: 850,
-    required: ['./AgentControlPublicCommandRouter.js'],
+    maxLines: 830,
+    required: [
+      './AgentControlPublicCommandRouter.js',
+      './AgentControlRuntimeCompositionSupport.js'
+    ],
     forbidden: [
       /\bexecuteCancelAgentRun\b/,
       /\bexecuteAcceptConversationMessage\b/,
@@ -73,8 +76,9 @@ const boundaries = [
   },
   {
     file: 'runtime/src/adapters/persistence/SqliteAgentRunUnitOfWork.ts',
-    maxLines: 5_200,
+    maxLines: 5_000,
     required: [
+      './SqliteTransactionOwner.js',
       './agent-control/outbox/SqliteAgentRunOutboxStore.js',
       './agent-control/execution-intent/SqliteAgentExecutionIntentStore.js'
     ],
@@ -103,8 +107,9 @@ const boundaries = [
   },
   {
     file: 'runtime/src/adapters/persistence/SqliteConversationRunHandoffUnitOfWork.ts',
-    maxLines: 2_100,
+    maxLines: 2_025,
     required: [
+      './SqliteTransactionOwner.js',
       './conversation/projection/SqliteConversationProjectionReader.js',
       './conversation/rows/ConversationAuthorityRowMapper.js'
     ],

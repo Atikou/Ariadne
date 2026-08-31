@@ -41,7 +41,6 @@ import { LspCodeIntelligenceProvider } from "../context/LspCodeIntelligenceProvi
 import { TreeSitterWasmIntelligenceProvider } from "../context/TreeSitterWasmIntelligenceProvider.js";
 import { ProjectSemanticIndexer } from "../context/ProjectSemanticIndexer.js";
 import { HistoryFileRecaller } from "../context/HistoryFileRecaller.js";
-import { Scheduler } from "../scheduler/index.js";
 import { SubAgentCoordinator } from "../subagent/index.js";
 import { SubAgentWorkflow } from "../subagent/SubAgentWorkflow.js";
 import { SubAgentWorkflowStateCenter } from "../subagent/SubAgentWorkflowStateCenter.js";
@@ -124,7 +123,6 @@ export class AppContext {
   readonly trace: TraceLogger;
   readonly traceCatalog: TraceCatalog;
   readonly notificationQueue: NotificationQueue;
-  readonly scheduler: Scheduler;
   readonly processSandbox: ProcessSandbox;
   readonly directChat: ReturnType<typeof createDirectChatFn>;
   readonly planner: AppModelRoutingRuntime["planner"];
@@ -192,7 +190,6 @@ export class AppContext {
     trace: TraceLogger;
     traceCatalog: TraceCatalog;
     notificationQueue: NotificationQueue;
-    scheduler: Scheduler;
     processSandbox: ProcessSandbox;
     directChat: ReturnType<typeof createDirectChatFn>;
     planner: AppModelRoutingRuntime["planner"];
@@ -258,7 +255,6 @@ export class AppContext {
     this.trace = opts.trace;
     this.traceCatalog = opts.traceCatalog;
     this.notificationQueue = opts.notificationQueue;
-    this.scheduler = opts.scheduler;
     this.processSandbox = opts.processSandbox;
     this.directChat = opts.directChat;
     this.planner = opts.planner;
@@ -556,19 +552,6 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     path.join(dataDir, "notifications", "notifications.jsonl"),
   );
 
-  const schedCfg = config.scheduler;
-  const scheduler = new Scheduler(
-    path.join(dataDir, "scheduler", "triggers.jsonl"),
-    notificationQueue,
-    trace,
-    {
-      workspaceRoot,
-      unattendedGoalPatterns: schedCfg?.unattendedGoalPatterns ?? [],
-      gitPollIntervalMs: schedCfg?.gitPollIntervalMs ?? 5000,
-      defaultCronMissPolicy: schedCfg?.cronMissPolicy ?? "skip",
-    },
-  );
-
   const directChat = createDirectChatFn(() => [...clientMap.values()], {
     strategy: config.routing.strategy,
     fallback: config.routing.fallback,
@@ -797,23 +780,6 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
       : {}),
   });
 
-  scheduler.setFireHandler((ctx) => {
-    if (ctx.unattended) {
-      void orchestrator.executeUnattendedTrigger({
-        triggerId: ctx.triggerId,
-        goal: ctx.goal,
-        sessionId: ctx.sessionId,
-      });
-      return undefined;
-    } else {
-      return orchestrator.createScheduledRun({
-        triggerId: ctx.triggerId,
-        goal: ctx.goal,
-        sessionId: ctx.sessionId,
-      });
-    }
-  });
-
   const recoveredResumeClaims = pausedRunStore.recoverInterruptedClaims();
   if (recoveredResumeClaims > 0) {
     trace.write({
@@ -865,7 +831,6 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     getActiveRunIds: () => agentRunRegistry.listRunning().map((r) => r.runId),
   });
   const runtime = new AppRuntimeController({
-    scheduler,
     dataLifecycle,
     autoCleanupEnabled: lifecyclePolicy.cleanup.autoEnabled,
     autoCleanupIntervalMs: lifecyclePolicy.cleanup.autoIntervalHours * 60 * 60 * 1000,
@@ -884,7 +849,6 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     trace,
     traceCatalog,
     notificationQueue,
-    scheduler,
     processSandbox,
     directChat,
     planner,
@@ -948,19 +912,6 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
       `[startupRecovery] interruptedRuns=${startupRecovery.interruptedRuns} preservedPausedRuns=${startupRecovery.preservedPausedRuns} recoveredSubAgentScopes=${startupRecovery.recoveredSubAgentScopes} preservedActiveSubAgentScopes=${startupRecovery.preservedActiveSubAgentScopes} quarantinedSubAgentScopeEntries=${startupRecovery.quarantinedSubAgentScopeEntries} pendingNotifications=${startupRecovery.pendingNotifications}`,
     );
   }
-  if (schedCfg?.dailySummaryCron && schedCfg.dailySummaryGoal) {
-    const hasDaily = scheduler.list().some((t) => t.name === "__daily_summary__");
-    if (!hasDaily) {
-      scheduler.register({
-        name: "__daily_summary__",
-        kind: "cron",
-        goal: schedCfg.dailySummaryGoal,
-        cron: schedCfg.dailySummaryCron,
-        cronMissPolicy: schedCfg.cronMissPolicy ?? "skip",
-      });
-    }
-  }
-
   return app;
 }
 

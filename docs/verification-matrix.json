@@ -159,7 +159,7 @@
       "realModel": "not_applicable",
       "realWindow": "partial",
       "realMachine": "not_accepted",
-      "notes": "Runtime pipe process, sandbox-hosted Agent PTY and Electron Main PTY producers share exact-owner lifecycle, UTF-8 cursor, bounded output, exclusive input, resize/signal/wait, completion and shutdown semantics. Agent completion is durably committed as system-originated unified inbox input before scheduler/projection wake; successful delivery suppresses duplicate job_list notification, and shutdown closes live work then drains/unbinds the sink before Store freeze. SQLite reopen proves protected running process_start and terminal_start results converge idempotently to interrupted before schedulers start. Real Host pipe and node-pty integrations are accepted. Formal Windows Sandbox PTY/signal acceptance, Main PTY hard-restart recovery and a real-window Agent terminal scenario remain pending."
+      "notes": "Runtime pipe process, sandbox-hosted Agent PTY and Electron Main PTY producers share exact-owner lifecycle, UTF-8 cursor, bounded output, exclusive input, resize/signal/wait, completion and shutdown semantics. Native Windows Sandbox interrupt/terminate/kill passed a real long-running PowerShell Job smoke. Main persists metadata-only terminal journals; hard loss converges running sessions to interrupted/main_process_lost and the real window offers explicit restart with restartOf instead of replay. Agent completion is durably committed to the unified inbox before scheduler/projection wake."
     },
     {
       "module": "public-projection-and-renderer-cache",
@@ -200,6 +200,8 @@
         "runtime/src/composition/runtime-capabilities/ProductionSkillCatalog.ts",
         "runtime/src/composition/runtime-capabilities/ProductionLocalSkillPackage.ts",
         "runtime/src/composition/runtime-capabilities/ProductionSkillLoadTool.ts",
+        "runtime/src/composition/HumanSkillPublicCommandHandler.ts",
+        "app/src/renderer/src/app/CommandPalette.tsx",
         "runtime/src/adapters/observability/PublicAgentObservability.ts",
         "runtime/src/adapters/observability/ProductionTelemetryService.ts"
       ],
@@ -208,7 +210,7 @@
       "realModel": "not_accepted",
       "realWindow": "not_accepted",
       "realMachine": "not_accepted",
-      "notes": "Scoped Skill metadata/package-revision admission, independent model/user invocation policy, exact skill.load and bounded skill.resource.read, Manifest-owned static trusted Hook Provider binding/reverse-close, durable redacted diagnostics, and optional allowlisted OTLP are connected. Human-facing Skill command discovery, real-model Skill selection and a live OTLP collector remain acceptance work; external dynamic Hook package discovery is intentionally not exposed."
+      "notes": "Scoped Skill metadata/package-revision admission, independent model/user invocation policy, exact skill.load and bounded skill.resource.read are connected. The human command palette filters the same snapshot by userInvocable, loads exact revisions and never starts an Agent. Manifest-owned static trusted Hooks, durable redacted diagnostics and optional allowlisted OTLP are connected. Real-model Skill selection, a live OTLP collector and external signed Hook packages remain acceptance work."
     },
     {
       "module": "runtime-capability-manifest",
@@ -289,16 +291,34 @@
       "notes": "Agent ask_user is a first-class Directive and durable Decision, not a Renderer callback or legacy Tool route. Protected question/options, exact ref/digest, waiting state, opaque public answer action, atomic answer receipt plus next_step inbox enqueue, scheduler continuation, protected transcript reconstruction and SQLite v6-to-v7 migration have direct tests. A process-external deterministic HTTPS Provider drives a real Electron card selection through Public Projection, exact Decision resolution, claimed answer inbox input and same-Run terminal continuation. The same real-window gate now kills Runtime while the Run is waiting for the user, restarts it, recovers the exact Decision, claims the answer and completes the same Run. A live commercial Provider, a real-window free-text answer scenario and cancellation semantics for a waiting question remain unaccepted."
     },
     {
-      "module": "legacy-scheduler",
+      "module": "productivity-goal-workflow-scheduler-v3",
       "source": [
-        "runtime/src/scheduler"
+        "runtime/src/adapters/persistence/SqliteProductivityStore.ts",
+        "runtime/src/composition/ProductivityPublicCommandHandler.ts",
+        "runtime/src/composition/V3ScheduleWorker.ts",
+        "runtime/src/cli/migrate-scheduler-v3.ts",
+        "app/src/renderer/src/modules/productivity"
       ],
       "unit": "verified",
-      "integration": "partial",
+      "integration": "verified",
+      "realModel": "not_applicable",
+      "realWindow": "not_accepted",
+      "realMachine": "not_accepted",
+      "notes": "Goal CAS, full Todo snapshots, bounded Workflow concurrency/transitions/deadline/cancel/quiescence/structured results and versioned Schedule commands share one productivity authority. Stable occurrence/command/message ids recover across restart and submit ordinary conversation.message.accept.v3 turns. Production no longer constructs the old JSONL Scheduler; a read-only journal decoder is used only by scheduler:migrate:v3 to explicitly import safe once/interval/cron records into an existing Session. Real-window interaction remains acceptance work."
+    },
+    {
+      "module": "main-credential-authority",
+      "source": [
+        "app/src/main/runtime/credential-authority.ts",
+        "runtime/src/composition/HostCredentialResolver.ts",
+        "runtime/src/adapters/model/ProductionExactAgentModelInferenceGateway.ts"
+      ],
+      "unit": "verified",
+      "integration": "verified",
       "realModel": "not_accepted",
       "realWindow": "not_accepted",
       "realMachine": "not_accepted",
-      "notes": "The former BackgroundTaskManager, background_shell_start Tool, output matcher, background_completed trigger and second process registry were deleted. The remaining legacy Scheduler supports cron/interval/file/git triggers in isolation, but has no v3 public commands, projection, Renderer consumer or restart acceptance."
+      "notes": "Model bootstrap carries opaque refs only; Main resolves one secret per inference operation and hot key-only updates do not restart Runtime. MCP OAuth uses the same Main authority proxy, ACP remains external and does not inherit ambient credentials. Describe returns only configured/source/writable. Real remote Provider acceptance still requires a configured credential."
     },
     {
       "module": "diagnostics-telemetry-and-provider-resilience",

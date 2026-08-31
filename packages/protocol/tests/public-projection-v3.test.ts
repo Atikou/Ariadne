@@ -871,6 +871,41 @@ describe('public projection contract v3', () => {
   });
 });
 
+describe('productivity v3 public contract', () => {
+  it('accepts bounded Goal and Schedule commands and their public results', () => {
+    expect(runtimeCommandSchema.parse({
+      kind: 'goal.put.v3', contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      workspaceId: 'workspace-1', sessionId: 'session-1', goalId: 'goal-1', expectedVersion: null,
+      title: 'Ship v3', phase: 'implementation', status: 'active', roundCap: 12
+    }).kind).toBe('goal.put.v3');
+    expect(runtimeCommandSchema.parse({
+      kind: 'schedule.create.v3', contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      workspaceId: 'workspace-1', sessionId: 'session-1', scheduleId: 'schedule-1',
+      prompt: 'Continue ordinary turn',
+      timing: { kind: 'cron', expression: '0 9 * * *', timezone: 'Asia/Shanghai', missPolicy: 'run_once' }
+    }).kind).toBe('schedule.create.v3');
+    expect(runtimeResultSchema.parse({
+      kind: 'schedule.updated.v3',
+      schedule: {
+        scheduleId: 'schedule-1', workspaceId: 'workspace-1', sessionId: 'session-1', version: 1,
+        status: 'active', prompt: 'Continue ordinary turn',
+        timing: { kind: 'cron', expression: '0 9 * * *', timezone: 'Asia/Shanghai', missPolicy: 'run_once' },
+        nextFireAt: TIME, fireCount: 0
+      }
+    }).kind).toBe('schedule.updated.v3');
+  });
+
+  it('rejects unbounded Workflow concurrency and transition budgets', () => {
+    const command = {
+      kind: 'workflow.start.v3', contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      workspaceId: 'workspace-1', sessionId: 'session-1', workflowId: 'workflow-1', goalId: 'goal-1',
+      expectedGoalVersion: 1, expectedTodoRevision: 1, todoIds: ['todo-1'],
+      maxConcurrency: 17, maxTransitions: 10_001, deadlineAt: TIME
+    };
+    expect(runtimeCommandSchema.safeParse(command).success).toBe(false);
+  });
+});
+
 function sessionCommit(title: string) {
   return {
     contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,

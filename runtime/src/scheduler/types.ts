@@ -24,9 +24,6 @@ export type SchedulerEventType = z.infer<typeof SchedulerEventTypeSchema>;
 export const CronMissPolicySchema = z.enum(["skip", "run_once"]);
 export type CronMissPolicy = z.infer<typeof CronMissPolicySchema>;
 
-export const SchedulerTransitionActionSchema = z.enum(["pause", "resume", "cancel"]);
-export type SchedulerTransitionAction = z.infer<typeof SchedulerTransitionActionSchema>;
-
 const NonBlankTextSchema = z.string().trim().min(1);
 const IsoDateTimeSchema = z.string().datetime({ offset: true });
 const CronExpressionSchema = NonBlankTextSchema.refine(isValidCronExpression, {
@@ -51,55 +48,6 @@ export const EventFilterSchema = z.union([
   FileChangedEventFilterSchema,
   GitChangedEventFilterSchema,
 ]);
-
-const CreateTriggerBaseShape = {
-  name: NonBlankTextSchema,
-  goal: NonBlankTextSchema,
-};
-
-const OnceTriggerInputSchema = z.object({
-  ...CreateTriggerBaseShape,
-  kind: z.literal("once"),
-  at: IsoDateTimeSchema,
-  missPolicy: MissPolicySchema.optional(),
-}).strict();
-
-const IntervalTriggerInputSchema = z.object({
-  ...CreateTriggerBaseShape,
-  kind: z.literal("interval"),
-  intervalMs: z.number().int().min(MIN_INTERVAL_MS),
-}).strict();
-
-const CronTriggerInputSchema = z.object({
-  ...CreateTriggerBaseShape,
-  kind: z.literal("cron"),
-  cron: CronExpressionSchema,
-  timezone: TimeZoneSchema.optional(),
-  cronMissPolicy: CronMissPolicySchema.optional(),
-}).strict();
-
-const FileChangedTriggerInputSchema = z.object({
-  ...CreateTriggerBaseShape,
-  kind: z.literal("event"),
-  eventType: z.literal("file_changed"),
-  eventFilter: FileChangedEventFilterSchema.optional(),
-}).strict();
-
-const GitChangedTriggerInputSchema = z.object({
-  ...CreateTriggerBaseShape,
-  kind: z.literal("event"),
-  eventType: z.literal("git_changed"),
-  eventFilter: GitChangedEventFilterSchema.optional(),
-}).strict();
-
-export const CreateTriggerInputSchema = z.union([
-  OnceTriggerInputSchema,
-  IntervalTriggerInputSchema,
-  CronTriggerInputSchema,
-  FileChangedTriggerInputSchema,
-  GitChangedTriggerInputSchema,
-]);
-export type CreateTriggerInput = z.infer<typeof CreateTriggerInputSchema>;
 
 const TriggerRecordBaseShape = {
   id: NonBlankTextSchema,
@@ -177,11 +125,6 @@ export const TriggerJournalLineSchema = z.union([
   TriggerJournalDeleteSchema,
 ]);
 export type TriggerJournalLine = z.infer<typeof TriggerJournalLineSchema>;
-
-export type TriggerTransitionResult =
-  | { kind: "updated"; trigger: TriggerRecord }
-  | { kind: "not_found" }
-  | { kind: "conflict"; trigger: TriggerRecord };
 
 function isValidCronExpression(value: string): boolean {
   try {

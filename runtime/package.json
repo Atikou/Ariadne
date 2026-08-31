@@ -31,6 +31,7 @@
     "sandbox:setup": "tsx src/cli/sandbox.ts setup",
     "agent-control:migrate:v5-v6": "tsx src/cli/migrate-agent-control-v5-v6.ts",
     "agent-control:migrate:v6-v7": "tsx src/cli/migrate-agent-control-v6-v7.ts",
+    "scheduler:migrate:v3": "tsx src/cli/migrate-scheduler-v3.ts",
     "storage:status": "tsx src/cli/storage.ts status",
     "storage:cleanup": "tsx src/cli/storage.ts cleanup"
   },

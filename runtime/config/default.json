@@ -184,13 +184,6 @@
     "strategy": "local-first",
     "fallback": true
   },
-  "scheduler": {
-    "unattendedGoalPatterns": [],
-    "gitPollIntervalMs": 5000,
-    "cronMissPolicy": "skip",
-    "dailySummaryCron": "0 9 * * *",
-    "dailySummaryGoal": "生成昨日工作区变更与未消费通知的简要摘要（只读分析，不执行写操作）"
-  },
   "security": {
     "sandbox": {
       "mode": "workspace-write",

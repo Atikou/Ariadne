@@ -27,9 +27,15 @@ export function productionRuntimeCapabilityProviders(): readonly RuntimeCapabili
     defineRuntimeCapabilityProvider({
       id: 'agent.control',
       dependsOn: ['runtime.kernel'],
-      publicCapabilities: ['agent.runs', 'agent.inbox', 'agent.permissions', 'agent.plans'],
+      publicCapabilities: [
+        'agent.runs', 'agent.inbox', 'agent.permissions', 'agent.plans',
+        'scheduler', 'productivity.workflow'
+      ],
       start: () => ({
-        publicCapabilities: ['agent.runs', 'agent.inbox', 'agent.permissions', 'agent.plans']
+        publicCapabilities: [
+          'agent.runs', 'agent.inbox', 'agent.permissions', 'agent.plans',
+          'scheduler', 'productivity.workflow'
+        ]
       })
     }),
     ...firstPartyAgentCapabilityProviders(),

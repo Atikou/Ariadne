@@ -258,6 +258,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
     expect(runtime.storageSchemas).toEqual({
       agentControl: runtime.schemaVersion,
       conversation: 4,
+      productivity: 1,
       publicProjection: 2
     });
     await expect(runtime.executeOwnedCommand({

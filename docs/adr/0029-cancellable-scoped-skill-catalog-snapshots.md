@@ -26,4 +26,4 @@ Manifest 仍只装配受审计的静态 Skill Provider，但 discovery 改为每
 - IDE、Git、Shell 或外部进程修改目录后，下一个 admission 会观察新快照，无需 Runtime 重启或第二套 watcher authority。
 - 瞬时 Provider 故障不会使已验证的 catalog 突然消失；权威删除也不会被陈旧 last-good 掩盖。
 - 运行中的 Run 不会静默加载新 revision；旧源发生漂移时 Tool 明确失败。
-- 不开放任意 JavaScript Provider 注册或热重载。Skill 资源包与 model/user invocation policy 已由 [ADR-0030](0030-pinned-skill-package-resources-and-invocation-policy.md) 补齐；人类命令 consumer 和可信 Hook handler 注册仍是独立后续能力。
+- 不开放任意 JavaScript Provider 注册或热重载。Skill 资源包与 model/user invocation policy 已由 [ADR-0030](0030-pinned-skill-package-resources-and-invocation-policy.md) 补齐；人类命令 consumer 与可信 Hook handler 已消费同一份受限快照。

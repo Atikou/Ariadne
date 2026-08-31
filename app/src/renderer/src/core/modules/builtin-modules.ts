@@ -1,4 +1,5 @@
 import { agentPlanModule } from '@renderer/modules/agent-plan';
+import { productivityModule } from '@renderer/modules/productivity';
 import { agentStatusModule } from '@renderer/modules/agent-status';
 import { chatModule } from '@renderer/modules/chat';
 import { sessionActivityModule } from '@renderer/modules/session-activity';
@@ -15,6 +16,7 @@ export const builtinModuleRegistry = new ModuleRegistry([
   sessionActivityModule,
   agentStatusModule,
   agentPlanModule,
+  productivityModule,
   toolOutputModule,
   terminalModule,
   logsModule,

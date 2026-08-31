@@ -16,6 +16,7 @@ import type {
 import type {
   SqlitePublicProjectionStore
 } from '../adapters/persistence/SqlitePublicProjectionStore.js';
+import type { SqliteProductivityStore } from '../adapters/persistence/SqliteProductivityStore.js';
 import {
   deriveConversationAuthorityId
 } from '../conversation/ConversationRunHandoffIds.js';
@@ -49,6 +50,11 @@ import {
 } from './AgentPublicCommandFailures.js';
 import { HumanSkillPublicCommandHandler } from './HumanSkillPublicCommandHandler.js';
 import type { HumanSkillCatalog } from '../control/ports/HumanSkillCatalog.js';
+import {
+  isProductivityCommand,
+  isProductivityQuery,
+  ProductivityPublicCommandHandler
+} from './ProductivityPublicCommandHandler.js';
 
 export interface AgentControlPublicCommandRouterOptions {
   readonly authorizedWorkspaceIds?: readonly string[];
@@ -57,6 +63,7 @@ export interface AgentControlPublicCommandRouterOptions {
   readonly agentInboxCommandNow?: () => Date;
   readonly attachmentStore?: ConversationAttachmentStore;
   readonly humanSkillCatalog?: HumanSkillCatalog;
+  readonly productivityStore?: SqliteProductivityStore;
 }
 
 export interface AgentControlPublicCommandRouterCallbacks {
@@ -83,6 +90,7 @@ export class AgentControlPublicCommandRouter {
   private readonly attachmentStore: ConversationAttachmentStore | undefined;
   private readonly authorizedWorkspaceIds: ReadonlySet<string>;
   private readonly humanSkills: HumanSkillPublicCommandHandler | undefined;
+  private readonly productivity: ProductivityPublicCommandHandler | undefined;
 
   public constructor(
     private readonly unitOfWork: SqliteAgentRunUnitOfWork,
@@ -132,11 +140,24 @@ export class AgentControlPublicCommandRouter {
           options.humanSkillCatalog,
           options.authorizedWorkspaceIds ?? []
         );
+    this.productivity = options.productivityStore === undefined
+      ? undefined
+      : new ProductivityPublicCommandHandler(
+          options.productivityStore,
+          conversation,
+          options.authorizedWorkspaceIds ?? []
+        );
   }
 
   public async executeOwnedCommand(
     envelope: RuntimeCommandEnvelope
   ): Promise<RuntimeApplicationCommandResult | null> {
+    if (isProductivityCommand(envelope.command)) {
+      return this.productivity?.execute(envelope, envelope.command) ?? completedPublicError(
+        envelope, 'productivity_unavailable',
+        'Goal, Todo, Workflow and Schedule authority is unavailable.', false
+      );
+    }
     switch (envelope.command.kind) {
       case 'conversation.session.create.v3':
       case 'conversation.session.rename.v3':
@@ -198,6 +219,13 @@ export class AgentControlPublicCommandRouter {
   public async reconcileUncertainCommand(
     envelope: RuntimeCommandEnvelope
   ): Promise<RuntimeCommandReconciliation | null> {
+    if (isProductivityCommand(envelope.command)) {
+      if (isProductivityQuery(envelope.command)) return { kind: 'not_committed' };
+      const result = await this.productivity?.reconcile(envelope);
+      return result?.outcome.ok
+        ? { kind: 'committed', outcome: result.outcome }
+        : { kind: 'not_committed' };
+    }
     switch (envelope.command.kind) {
       case 'projection.snapshot.get':
       case 'projection.commits.read':

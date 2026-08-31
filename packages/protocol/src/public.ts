@@ -17,10 +17,12 @@ import {
   publicProjectionSnapshotV3Schema
 } from './public/projection-v3.js';
 import { encodedImageAttachmentsV3Schema } from './public/attachments-v3.js';
+import { productivityCommandSchemas, productivityResultSchemas } from './public/productivity-v3.js';
 export * from './public/projection-v3.js';
 export * from './public/inference-stream-v3.js';
 export * from './public/attachments-v3.js';
 export * from './public/decision-action-v1.js';
+export * from './public/productivity-v3.js';
 export type { JsonValue } from './common.js';
 export { ARIADNE_RUNTIME_PROTOCOL_VERSION } from './common.js';
 
@@ -54,6 +56,7 @@ export const runtimeCapabilitySchema = z.enum([
   'telemetry.export',
   'live.work',
   'scheduler',
+  'productivity.workflow',
   'resources',
   'memory.manage',
   'mcp.tools',
@@ -788,6 +791,7 @@ const conversationMessageAcceptCommandV3Schema = z.object({
 });
 
 export const runtimeCommandSchema = z.discriminatedUnion('kind', [
+  ...productivityCommandSchemas,
   emptyCommand('runtime.status.get'),
   z.object({
     kind: z.literal('projection.snapshot.get'),
@@ -949,6 +953,7 @@ export const runtimeCommandSchema = z.discriminatedUnion('kind', [
 export type RuntimeCommand = z.infer<typeof runtimeCommandSchema>;
 
 export const runtimeResultSchema = z.discriminatedUnion('kind', [
+  ...productivityResultSchemas,
   z.object({ kind: z.literal('runtime.status'), status: runtimeStatusSchema }).strict(),
   z.object({
     kind: z.literal('projection.snapshot'),

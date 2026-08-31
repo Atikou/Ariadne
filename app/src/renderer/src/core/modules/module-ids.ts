@@ -5,6 +5,7 @@ export const MODULE_IDS = {
   sessionActivity: moduleId('session.activity'),
   agentStatus: moduleId('agent.status'),
   agentPlan: moduleId('agent.plan'),
+  productivity: moduleId('productivity.control'),
   toolOutput: moduleId('tools.output'),
   terminal: moduleId('terminal'),
   logs: moduleId('logs'),

@@ -1,8 +1,3 @@
-export interface RuntimeScheduler {
-  start(): void;
-  stop(): void;
-}
-
 export interface AutoCleanupRunner {
   runAutoSafeCleanup():
     | { autoSkipped: true; reason: string }
@@ -10,7 +5,6 @@ export interface AutoCleanupRunner {
 }
 
 export interface AppRuntimeControllerOptions {
-  scheduler: RuntimeScheduler;
   dataLifecycle: AutoCleanupRunner;
   autoCleanupEnabled: boolean;
   autoCleanupIntervalMs: number;
@@ -37,7 +31,6 @@ export class AppRuntimeController {
     if (this.started) return;
     this.started = true;
     this.options.managedRuntime?.start();
-    this.options.scheduler.start();
     if (!this.options.autoCleanupEnabled) return;
 
     const run = (): void => {
@@ -67,7 +60,6 @@ export class AppRuntimeController {
     if (this.cleanupInterval) clearInterval(this.cleanupInterval);
     this.initialCleanupTimer = undefined;
     this.cleanupInterval = undefined;
-    this.options.scheduler.stop();
     await this.options.managedRuntime?.stop();
   }
 

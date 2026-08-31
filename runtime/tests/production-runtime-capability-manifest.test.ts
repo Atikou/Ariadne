@@ -87,6 +87,8 @@ describe('production Runtime Capability Manifest', () => {
       'models.local',
       'models.remote',
       'observability.diagnostics',
+      'productivity.workflow',
+      'scheduler',
       'workspace.read',
       'workspace.write'
     ]);
@@ -103,8 +105,7 @@ describe('production Runtime Capability Manifest', () => {
     expect(manifest.unwiredPublicCapabilities).toEqual([
       'agent.proposals',
       'memory.manage',
-      'resources',
-      'scheduler'
+      'resources'
     ]);
     const runtimeServices = resolveAgentControlRuntimeServices(manifest);
     expect(Object.isFrozen(runtimeServices)).toBe(true);
@@ -146,6 +147,7 @@ describe('production Runtime Capability Manifest', () => {
       { serviceId: 'agent.instructions.assembly', optional: false },
       { serviceId: 'agent.hooks.lifecycle', optional: false },
       { serviceId: 'agent.live-work', optional: false },
+      { serviceId: 'agent.skills.catalog', optional: false },
       { serviceId: 'agent.telemetry', optional: true }
     ]);
     expect(diagnostics.find(

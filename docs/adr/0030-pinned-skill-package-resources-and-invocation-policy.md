@@ -24,5 +24,5 @@ ADR-0029 让 Skill 目录进入可取消、按 Workspace 分层的快照，但 r
 
 - Skill 可以携带 reference、script 和 asset，而不形成第二条任意文件读取路径。
 - 资源变化会使旧 pin fail closed；Provider 的两次重读消除 load 与 resource read 之间的 TOCTOU 漂移。
-- Runtime 已保留 user-invocable 目录语义，但 Renderer/Main 尚未提供人类 Skill command catalog；在该 consumer 接入前，不得宣称 user invocation 已形成完整产品入口。
+- Renderer 命令面板现通过独立 Public command 从同一 snapshot 过滤 `userInvocable`，按精确 revision 加载正文/资源且不启动 Agent；人类 Skill consumer 已形成产品入口。
 - 可信 Hook handler 的静态注册/关闭已由 [ADR-0031](0031-manifest-owned-trusted-hook-provider-lifecycle.md) 管理，且不通过 Skill package 自动加载。

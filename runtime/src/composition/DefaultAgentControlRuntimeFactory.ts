@@ -26,6 +26,10 @@ import {
 import {
   SqlitePublicProjectionStore
 } from '../adapters/persistence/SqlitePublicProjectionStore.js';
+import {
+  PRODUCTIVITY_DB_SCHEMA_VERSION,
+  SqliteProductivityStore
+} from '../adapters/persistence/SqliteProductivityStore.js';
 import type {
   AgentControlRuntimeFactory,
   AgentControlRuntimeFactoryInput,
@@ -100,6 +104,7 @@ import {
 import { LocalConversationAttachmentStore } from '../adapters/attachment/LocalConversationAttachmentStore.js';
 import { FileAgentSubagentSessionStore } from '../adapters/subagent/FileAgentSubagentSessionStore.js';
 import type { ConversationAttachmentStore } from '../control/ports/ConversationAttachmentStore.js';
+import { V3ScheduleWorker } from './V3ScheduleWorker.js';
 
 const DEFAULT_PUBLIC_PROJECTION_INTERVAL_MS = 50;
 const EMPTY_MODEL_CATALOG: ModelCatalogProjectionSource = Object.freeze({
@@ -126,7 +131,8 @@ implements AgentControlRuntimeLifecycle {
   public readonly storageSchemas = Object.freeze({
     agentControl: AGENT_CONTROL_DB_SCHEMA_VERSION,
     conversation: CONVERSATION_DB_SCHEMA_VERSION,
-    publicProjection: PUBLIC_PROJECTION_DB_SCHEMA_VERSION
+    publicProjection: PUBLIC_PROJECTION_DB_SCHEMA_VERSION,
+    productivity: PRODUCTIVITY_DB_SCHEMA_VERSION
   });
   private readonly agentPublisher: AgentRunPublicProjectionPublisher;
   private readonly conversationPublisher: ConversationPublicProjectionPublisher;
@@ -142,6 +148,7 @@ implements AgentControlRuntimeLifecycle {
   private prepareOperation: Promise<void> | null = null;
   private shutdownOperation: Promise<void> | null = null;
   private readonly liveWorkCompletion?: AgentLiveWorkCompletionLifecycle;
+  private readonly scheduleWorker: V3ScheduleWorker | undefined;
 
   public constructor(
     private readonly unitOfWork: SqliteAgentRunUnitOfWork,
@@ -156,7 +163,8 @@ implements AgentControlRuntimeLifecycle {
     private readonly observability?: PublicAgentObservability,
     liveWork?: AgentControlLiveWorkService,
     attachmentStore?: ConversationAttachmentStore,
-    humanSkillCatalog?: NonNullable<AgentControlRuntimeServices['humanSkillCatalog']>
+    humanSkillCatalog?: NonNullable<AgentControlRuntimeServices['humanSkillCatalog']>,
+    private readonly productivity?: SqliteProductivityStore
   ) {
     this.publishIntervalMs = options.publishIntervalMs
       ?? DEFAULT_PUBLIC_PROJECTION_INTERVAL_MS;
@@ -222,9 +230,17 @@ implements AgentControlRuntimeLifecycle {
         agentDecisionCommandNow: options.agentDecisionCommandNow,
         agentInboxCommandNow: options.agentInboxCommandNow,
         attachmentStore,
-        humanSkillCatalog
+        humanSkillCatalog,
+        productivityStore: productivity
       }
     );
+    this.scheduleWorker = productivity === undefined
+      ? undefined
+      : new V3ScheduleWorker(
+          productivity,
+          conversation,
+          (envelope) => this.publicCommands.executeOwnedCommand(envelope)
+        );
     if (liveWork !== undefined) {
       this.liveWorkCompletion = new AgentLiveWorkCompletionLifecycle(liveWork, unitOfWork, {
         wakeWorkScheduler: () => executionPipeline?.runWorkScheduler.wake(),
@@ -276,6 +292,7 @@ implements AgentControlRuntimeLifecycle {
         throw new Error('agent_control_startup_projection_not_at_fixed_point');
       }
       this.lifecycle = 'running';
+      await this.scheduleWorker?.start();
       this.timer = setInterval(() => this.publishOnTimer(), this.publishIntervalMs);
       this.timer.unref?.();
     } catch (error) {
@@ -397,6 +414,11 @@ implements AgentControlRuntimeLifecycle {
     drainBeforeFreeze: boolean
   ): Promise<void> {
     const failures: unknown[] = [];
+    try {
+      await this.scheduleWorker?.stop();
+    } catch (error) {
+      failures.push(error);
+    }
     if (this.executionPipeline !== undefined) {
       this.executionPipeline.observeRuntimeStop?.(new Date().toISOString());
       // Stop both I/O schedulers before awaiting either one. This prevents a
@@ -464,6 +486,11 @@ implements AgentControlRuntimeLifecycle {
     } catch (error) {
       failures.push(error);
     }
+    try {
+      this.productivity?.prepareShutdown(context);
+    } catch (error) {
+      failures.push(error);
+    }
     if (failures.length > 0) {
       throw failures.length === 1
         ? failures[0]
@@ -490,6 +517,7 @@ implements AgentControlRuntimeLifecycle {
     // authority store keeps its owner fence until the process is terminated.
     try {
       await this.publicProjection.close(context);
+      await this.productivity?.close(context);
       await this.conversation.close(context);
       await this.unitOfWork.close(context);
     } catch (error) {
@@ -555,6 +583,7 @@ implements AgentControlRuntimeFactory {
       let unitOfWork: SqliteAgentRunUnitOfWork | undefined;
       let conversation: SqliteConversationRunHandoffUnitOfWork | undefined;
       let publicProjection: SqlitePublicProjectionStore | undefined;
+      let productivity: SqliteProductivityStore | undefined;
       let observability: PublicAgentObservability | undefined;
       try {
         const persistenceCodec = new StrictJsonAgentPersistencePayloadCodec();
@@ -567,6 +596,7 @@ implements AgentControlRuntimeFactory {
           persistenceCodec
         );
         conversation = new SqliteConversationRunHandoffUnitOfWork(input.dataRoot);
+        productivity = new SqliteProductivityStore(input.dataRoot);
         publicProjection = new SqlitePublicProjectionStore(input.dataRoot);
         const inferenceStreams = new InferenceStreamPublicProjectionPublisher(publicProjection);
         await inferenceStreams.reconcileOpenStreams(
@@ -605,13 +635,19 @@ implements AgentControlRuntimeFactory {
           observability,
           input.runtimeServices?.liveWorkLifecycle,
           attachmentStore,
-          input.runtimeServices?.humanSkillCatalog
+          input.runtimeServices?.humanSkillCatalog,
+          productivity
         );
       } catch (error) {
         const cleanupContext = createShutdownContext(Date.now() + 5_000);
         const cleanupErrors: unknown[] = [];
         try {
           await publicProjection?.close(cleanupContext);
+        } catch (failure) {
+          cleanupErrors.push(failure);
+        }
+        try {
+          await productivity?.close(cleanupContext);
         } catch (failure) {
           cleanupErrors.push(failure);
         }
@@ -649,6 +685,7 @@ implements AgentControlRuntimeFactory {
     let unitOfWork: SqliteAgentRunUnitOfWork | undefined;
     let conversation: SqliteConversationRunHandoffUnitOfWork | undefined;
     let publicProjection: SqlitePublicProjectionStore | undefined;
+    let productivity: SqliteProductivityStore | undefined;
     let observability: PublicAgentObservability | undefined;
     try {
       codec = new AesGcmAgentPersistencePayloadCodec(
@@ -663,6 +700,7 @@ implements AgentControlRuntimeFactory {
         requiredCodecId: AES_GCM_AGENT_PERSISTENCE_CODEC_ID
       });
       conversation = new SqliteConversationRunHandoffUnitOfWork(input.dataRoot);
+      productivity = new SqliteProductivityStore(input.dataRoot);
       publicProjection = new SqlitePublicProjectionStore(input.dataRoot);
       const inferenceStreams = new InferenceStreamPublicProjectionPublisher(publicProjection);
       await inferenceStreams.reconcileOpenStreams(
@@ -702,12 +740,14 @@ implements AgentControlRuntimeFactory {
         observability,
         input.runtimeServices?.liveWorkLifecycle,
         attachmentStore,
-        input.runtimeServices?.humanSkillCatalog
+        input.runtimeServices?.humanSkillCatalog,
+        productivity
       );
     } catch (error) {
       const cleanupContext = createShutdownContext(Date.now() + 5_000);
       try {
         await publicProjection?.close(cleanupContext).catch(() => undefined);
+        await productivity?.close(cleanupContext).catch(() => undefined);
         await conversation?.close(cleanupContext).catch(() => undefined);
         await unitOfWork?.close(cleanupContext).catch(() => undefined);
       } finally {

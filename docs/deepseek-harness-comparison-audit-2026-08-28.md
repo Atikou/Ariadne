@@ -90,13 +90,13 @@ Electron ask-user smoke 首次暴露了默认生产工厂漏接 protected Direct
 | P1 | v3 LLM 请求/响应与图片合同已同构，私有 replay state 和附件回收仍缺 | exact 请求使用 `text/image/tool_call/tool_result`；图片先进入 Conversation 内容寻址存储，再按精确 Message owner 复核并临时序列化为 OpenAI/Anthropic 原生块；历史 Tool 输入按 committed digest 从受保护 Effect payload 恢复；输出使用 `text/reasoning/tool_call`，finish、脱敏 replay evidence 与互斥 cache usage 随精确 Attempt 提交 | 可用的 adapter-private replay state；引用感知附件 GC；真实远程 Provider 图片验收；若提供缩略图字节，必须保持 owner-scoped |
 | 已关闭 | Conversation fork、lineage、Session query 与稳定引用 | schema v4 用不可变 lineage 绑定 source Session version 和已结算 Message digest；fork 不复制祖先消息，历史按 lineage 递归读取。Session query 直接扫描权威表，不建立第二权威；稳定引用跨 Runtime 重启按 `session/message/version/digest` 精确解析。Public Projection、RuntimeStore、侧栏正文检索和消息“从此分叉”已接入 | 未来大历史量再引入可丢弃索引，但索引必须保留 observed authority version；多窗口压力与分页 event read 可继续扩充，不再属于基础能力缺失 |
 | 已关闭 | Tool 结果呈现、LSP 与文件生命周期 | `workspace.search_text/glob/apply_text_edits/move_file/delete_file/code_intelligence` 共用 workspace containment 与 opaque version；move 不覆盖目标，delete 只删除精确观察版本。bundled TypeScript LSP 作为沙箱内持久进程提供 definition/reference/hover/document symbols。终态只公开 `detailAvailable`，正文按 Run/Workspace/effect 从受保护结果分页读取，Renderer 有 read/search/diff/terminal 专用卡 | 真实 Electron 搜索→编辑→详情可继续作为深度验收；其他语言 LSP 和语义索引按真实需求增加，不再属于本轮基础缺口 |
-| P2 | 人类 Skill consumer 尚未闭环，外部 Hook 包发现有意缺席 | Skill 已有静态 Provider、Workspace scope、可取消 snapshot/last-good、包级 revision、独立 model/user policy 与受限 `skill.resource.read`；Hook 已由 required Manifest service 静态注册可信 Provider、Store 后绑定 handler set、区分 pre/post 失败语义并反向关闭。当前仍没有 Renderer/Main 的 user-invocable command catalog；也没有外部 Hook 包签名/发现/热重载 | 人类目录从同一 invocation-neutral snapshot 过滤且不激活 Agent；只有产品确有外部扩展需求时才设计签名 Provider 包，不能从 Skill 目录自动加载代码 |
+| 已关闭 | 人类 Skill consumer | Renderer 命令面板通过公共命令读取与模型完全相同的 invocation-neutral snapshot，只过滤 `userInvocable`，按精确 revision 加载正文/资源且不启动 Agent | 外部 Hook 包签名/发现仍属有意不开放的独立扩展需求，不能从 Skill 目录自动加载代码 |
 | P2 | Agent 主动提问的 durable 链与等待恢复已接入，产品交互仍不完整 | `ask_user` 是第一类 Directive；问题/选项进入受保护 payload，Run 持久等待精确 Decision，Public Projection 只发布脱敏 `question`，回答 action 与 `user_question_answer` next-step inbox receipt 原子提交，scheduler/历史重建/Renderer 已接通；真实窗口既覆盖正常选项回答，也覆盖 `waiting/user_question` 时强杀 Runtime、恢复同一 Decision 与同 Run 续跑 | 真实窗口自由文本；真实商业 Provider 生成问题；取消等待问题的产品语义 |
 | P2 | 缺独立 context injection | follow-up/steer 会进入下一 step，但没有“不唤醒模型、只改变后续上下文”的 durable receipt | injection 有独立命令、版本、claim/receipt、重启语义和 UI 状态；不伪装成用户消息 |
-| P2 | 定时/后台触发仍停留在旧 Agent 链 | 生产 `createAppContext()` 仍启动 JSONL Scheduler；`Orchestrator.executeUnattendedTrigger()` 明确创建旧 `scheduled` Run 且“不持久化会话”。它不进入 v3 Conversation/Run/Turn/Attempt、Catalog pin、inbox 或 Public Projection | Schedule 是版本化 durable record；触发向原 Session 投递普通 v3 Turn，沿用当前 authority、预算、取消、miss policy 与恢复；删除旧 unattended Agent loop，不维护第二套通知/Run 语义 |
-| P2 | Credential authority 仍然分裂 | exact 模型从 Runtime 启动时注入的环境读取；MCP OAuth 由 Electron Main Vault 持有；ACP 默认依赖外部程序自己的凭据。三者没有统一 `resolve/describe/update` seam、来源说明或变更通知 | 配置只保存 opaque ref；每次操作在 owner 边界解析一次；UI 只能读取 configured/source/writable；热更新不重启 Runtime，受保护值不进入 bootstrap、日志或 Projection |
-| P2 | 缺 same-session Goal、durable Todo 与批量 Workflow | v3 有单 Run objective、不可变 Plan/approval 和 Child Run，但没有跨多个 continuation round 的目标 CAS/phase、可回放 Todo 投影，也没有受限脚本驱动的批量 Child 编排与结果聚合 | Goal/Todo 以 Conversation/Agent Control 的版本化事件为唯一权威；Workflow 有预算、并发、取消、子任务 quiescence 和结构化结果，不开放任意宿主代码执行 |
-| P2 | 热点门禁只阻止继续变坏 | `SqliteAgentRunUnitOfWork` 仍约 5k 行，Conversation handoff UoW 和默认 Factory 仍接近上限 | 继续按事务 owner/row mapper/projector/compiler 拆分；阈值随拆分结果下调，而不是永久抬高 |
+| 已关闭 | Scheduler v3 迁移 | Schedule 是 productivity SQLite 的版本化记录；稳定 occurrence/command/message ID 向原 Session 投递普通 v3 Turn并跨重启重试。生产 composition 不再构造旧 JSONL Scheduler，离线只读 decoder 仅供 `scheduler:migrate:v3` 显式导入 | 事件型旧 trigger 因不能安全映射而显式跳过；迁移源保留用于人工审计 |
+| 已关闭 | 统一 Credential authority | Main Credential Authority 提供 `resolve/describe/update`；模型 bootstrap 只带 `model:<provider>` ref，每次推理解析一次并支持无重启轮换；MCP OAuth 经同一 authority 代理；ACP 仅描述为 external provider 且不继承 secret | 未来显式 ACP credential forwarding 仍必须新增独立 capability grant |
+| 已关闭 | same-session Goal、durable Todo 与受限 Workflow | productivity authority 持有 Goal CAS/phase/round cap、完整 Todo snapshot revision 和严格 command replay；Workflow 限定既有 Todo 子任务，具有并发、转换预算、deadline、取消后 quiescence 与结构化结果，不执行任意宿主代码；Renderer 提供完整操作入口 | 若未来让 Workflow 直接调度 SubAgent Provider，必须复用父 Run capability/budget，而不能在此 authority 新建 Agent loop |
+| 已关闭 | 事务 owner 热点第一阶段 | SQLite 串行化、事务、deadline 和 process lease 已从两个 UoW 抽为共享 owner；执行装配从 Factory 拆出。实测约为 Agent UoW 4961、Conversation UoW 2000、Factory 820 行，门禁收紧为 5000/2025/830 | row mapper/projector/compiler 的后续拆分仍可继续，但本轮不再处于旧上限边缘 |
 | P2 | 旧实现仍增加认知负担 | `runtime/src/agent`、`runtime/src/subagent`、旧 model/context/scheduler 中仍有非 v3 实现 | 逐项证明无生产引用后删除；文档只描述唯一生产路径；架构门禁禁止重新引用 |
 | P2 | 产品矩阵仍缺真实 Provider/安装包证据 | 确定性 Electron fixture 很强，但不是 Live Provider、本地模型、真实 Browser/MCP/SubAgent 或签名安装包 | 分层 gate：确定性必跑、Live Provider 可选、发布签名/干净机安装 fail-closed |
 
@@ -227,29 +227,23 @@ schema v4 新增不可变 `conversation_session_lineage` 和幂等 navigation re
 
 Session query 直接读取 Conversation 权威表并返回 bounded 匹配与稳定引用，没有建立第二数据库或索引权威。引用解析按四元组精确复核，Runtime 关闭再打开后仍能解析；Public Projection 给已提交消息附带同一引用，RuntimeStore 暴露 query/resolve/fork，侧栏搜索正文并可从任一已投影消息创建分支。SQLite 迁移、幂等/冲突、继承历史、跨重启 resolve、公共命令、Projection 与 Renderer Store 均有直接测试。大历史量未来可加可丢弃索引与分页 event read，但不能改变当前权威边界。
 
-### 4.10 Credential 需要统一“引用—解析—授权”边界
+### 4.10 已关闭：Credential 统一“引用—解析—授权”边界
 
-Ariadne 已避免把模型密钥放入公开 Runtime bootstrap，并为 MCP OAuth 建立 Main Vault，这是正确的安全基础；问题是消费者仍各自拥有解析方式。exact Provider 使用 `credentialEnvironmentVariable` 从 Runtime 环境取值，MCP Remote Service 通过 Main Vault 管理 OAuth，ACP 则有意不接收 ambient credential。它们缺少统一的 configured/source/writable 描述、按操作解析和变更通知，所以轮换模型密钥通常依赖 Runtime 重启，Settings 也无法在不读取密钥值的前提下统一呈现状态。
+`MainCredentialAuthority` 现在是统一 seam。Provider bootstrap 只携带 `model:<provider>`，Runtime 的 Host resolver 在一次 `inferExact` 边界解析一次，重试复用该操作值，下一次推理会观察轮换后的 key。MCP Remote Service 也只依赖该 authority 的 OAuth 方法；ACP 描述为 external/unmanaged，默认不能 resolve。Renderer/公开状态只接触 configured/source/writable，secret 不进入 bootstrap、日志或 Projection。仅修改 API key 的 Settings 事务为 hot-applied，不重启 Runtime。
 
-应建立只传 opaque reference 的 credential service。模型请求、MCP operation 和未来 Tool provider 每次操作解析一次，不跨操作缓存；UI 只得到是否已配置、来源和是否可写。授权流程必须独立于读取接口，单 key 同时只允许一次交互，并在持久提交后才报告成功。ACP 继续默认不继承父凭据；显式转交必须成为单独的 capability grant，而不是扩大全局环境变量白名单。
+### 4.11 已关闭：长期 Goal、Todo 与受限 Workflow
 
-### 4.11 Plan/Child 不等于长期 Goal、Todo 与 Workflow
-
-Agent Control 已有单 Run objective、不可变 Plan version、approval、预算和 durable Child，这些解决的是一次执行的安全与恢复。它们没有表达“同一 Session 目标经过多个轮次继续推进”的 phase/revision/round cap，也没有模型与 UI 共用的 durable Todo 列表。批量 Child 目前也只能由模型多次发起，而不能由受限 Workflow 按并发预算、pipeline/parallel 关系、取消和结构化结果统一编排。
-
-这三项应建立在现有权威上，而不是引入第二套 Agent loop：Goal 变更使用 CAS 并区分 active/paused/blocked/complete；Todo 采用完整快照事件和严格 replay；Workflow 只能调用已经过父级能力裁剪的 SubAgent provider，在隔离 worker 中执行受限编排语言，终止时必须等待所有 Child quiescence。它们属于产品增强，不应阻断当前单 Run Agent 的发布，但也不能因已有 Plan/SubAgent 就从差距清单删除。
+独立 productivity authority 以 session/workspace owner 约束 Goal、Todo、Workflow 和 Schedule。Goal 使用 CAS 并区分 active/paused/blocked/complete；Todo 只接受完整快照、稳定 id 和 revision；Workflow 只能推进该快照中的子任务，受并发、转换预算和 deadline 限制，失败/取消会把所有 remaining child 收敛到静止终态并生成结构化 result。它不执行脚本或任意宿主代码，也没有第二套 Agent loop。Renderer 的“目标与工作流”模块可创建、推进、失败或取消这些权威记录。
 
 ### 4.12 已关闭：system prompt 已进入 Manifest-owned instruction assembly
 
 Capability Manifest 现在同时管理 Workspace instruction、Skill catalog 与 execution-mode policy contributor。每个 contributor 有稳定 id/version/order、适用 mode 和 Workspace/Run/mode scope；`ProductionAgentInstructionAssembly` 接收精确 Run/Session/Workspace/mode subject 和 `AbortSignal`，校验重复 identity/order、scope 矛盾、block/总量/数量上限，并只返回 `complete: true` 的不可变快照。任一 contributor 失败会使 admission 以 `AGENT_ADMISSION_INSTRUCTIONS_INVALID` 关闭，不会发布半份 prompt。
 
-Factory 已删除 Workspace/Skill 拼接和 `skillCatalog` 输入，admission reader 也不再拥有 plan/chat 文案。最终 system block 带 contributor/version/block/order/scope/SHA-256 revision 标记进入受保护 Turn input，因此旧 Run 的解释不依赖运行期重新解析。Provider 接线与快照编译器分别为 154/201 行，没有把缩减后的 Factory 复杂度转移到新的巨型入口。Skill contributor 消费 ADR-0029 的 scoped snapshot，package 资源与 invocation policy 由 ADR-0030 固定，Hook ownership 由 ADR-0031 固定；Skills/Hooks 差距只剩人类命令 consumer，以及若未来需要外部扩展时的签名/发现设计。
+Factory 已删除 Workspace/Skill 拼接和 `skillCatalog` 输入，admission reader 也不再拥有 plan/chat 文案。最终 system block 带 contributor/version/block/order/scope/SHA-256 revision 标记进入受保护 Turn input，因此旧 Run 的解释不依赖运行期重新解析。Provider 接线和快照编译器保持分文件维护。Skill contributor 消费 ADR-0029 的 scoped snapshot，package 资源与 invocation policy 由 ADR-0030 固定，Hook ownership 由 ADR-0031 固定；人类命令 consumer 已从同一 snapshot 接入，剩余只有若未来需要外部扩展时的签名/发现设计。
 
-### 4.13 Scheduled work 仍属于旧 Agent loop，必须迁移而不是桥接
+### 4.13 已关闭：Scheduled work 进入普通 v3 Turn
 
-`createAppContext()` 当前仍实例化 JSONL `Scheduler`、旧 `NotificationQueue`、旧 Tool registry、ContextManager 与 Orchestrator。`Orchestrator.executeUnattendedTrigger()` 的注释明确说明它创建旧 `scheduled` Run 且“不持久化会话”。这条路径没有 v3 Conversation Message、冻结 Catalog、Run/Turn/Attempt、durable inbox、Decision、Public Projection 或 started-work recovery；它不是 v3 的一个小缺口，而是第二套 Agent 产品语义仍在生产 composition 中存活的直接证据。
-
-不能再为这条旧链补 adapter。应把 Schedule 重新定义成版本化记录，触发时向原 Conversation Session 提交普通的 v3 用户/系统输入，再由现有 handoff、admission 和 scheduler 执行。miss policy、时区、重复周期、取消和下一次触发时间属于 Schedule owner；Provider/Tool I/O、权限、预算和恢复全部继续属于 Agent Control。迁移完成后删除旧 unattended Orchestrator 分支和其专用通知语义。
+Schedule 现在是 productivity SQLite 的版本化记录，owner 计算 once/interval/cron 的下一次时间，并先提交稳定 occurrence，再用稳定 command/message ID 调用 `conversation.message.accept.v3`。进程在提交前后崩溃都会重试同一个身份，由 Conversation command receipt 去重；后续 handoff、admission、权限、预算、Tool Catalog 与 Projection 全部沿用现有 v3 链。生产 `createAppContext()` 已不再构造旧 Scheduler；只读 `LegacySchedulerJournalReader` 仅由显式 `scheduler:migrate:v3` 使用，要求指定已经存在的 workspace/session，事件型 trigger 安全跳过。
 
 ### 4.14 已关闭：TypeScript/JavaScript 语义代码导航；跨会话 canonical reference 已进入 Conversation 权威
 
@@ -285,12 +279,12 @@ Runtime command journal 与 Agent inbox 仍是唯一 delivery/执行权威。确
 
 ## 6. 建议实施顺序
 
-1. 在已完成的 scoped Skill snapshot、固定 package 资源、model/user policy 和可信 Hook Provider lifecycle 上补不激活 Agent 的人类命令 consumer；除非有明确产品需求，不开放外部动态 Hook 包发现。
+1. scoped Skill snapshot、固定 package 资源、model/user policy、可信 Hook Provider lifecycle 与不激活 Agent 的人类命令 consumer 已闭环；除非有明确产品需求，不开放外部动态 Hook 包发现。
 2. 在已完成的 exact request/response/image content blocks 与 Electron 图片 smoke 上补 adapter-private replay state，并为现有内容寻址 AttachmentStore 增加引用感知 GC 与真实远程 Provider 验收；不要复用旧 ResourceRegistry 形成第二条多模态权威。
 3. 已完成稳定边界 fork/lineage、Session reference 与权威 Session query；后续只在真实大历史基准证明需要时增加可丢弃索引和 bounded event pagination，置顶与未读继续保留为设备偏好。
 4. 在已完成的版本化原子文件 service 和 contract-pinned kind/label 上补受保护结果驱动的 read/search/diff/terminal 详情、LSP Provider 与 move/delete；所有变更继续复用同一 freshness/result owner，不复活旧 Tool registry。
-5. 在现有 continuable Child control plane 上补外部 continuable/reconnect、Codex/Claude Provider 和真实 Electron 场景；durable ask-user 再补自由文本窗口、真实商业 Provider 与取消等待语义；之后完成 Goal/Todo/Workflow 产品闭环。
-6. 将旧 unattended Scheduler/Orchestrator 迁移为向原 Session 投递普通 v3 Turn 的 durable Schedule，完成后删除第二套 scheduled Run/notification 语义。
+5. 外部 continuable/reconnect、Codex/Claude Provider、Goal/Todo/受限 Workflow 已接入；后续只保留 structured SubAgent report、Claude 商业登录态和真实 Electron SubAgent 深度验收。
+6. 旧 unattended Scheduler/Orchestrator 已迁移为向原 Session 投递普通 v3 Turn 的 durable Schedule，第二套 scheduled Run/notification 语义与可执行旧 Scheduler 已删除。
 7. 统一 credential reference/resolve/describe/authorization seam；ACP 凭据仍默认隔离。
 8. 继续拆 UoW/Factory 热点、删除无生产引用旧链路并下调门禁阈值。
 

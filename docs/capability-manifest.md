@@ -69,7 +69,7 @@ static Provider definitions
 
 ## 5. 可审计状态
 
-`diagnosticSnapshot()` 只输出 definition、`started` 状态、公开能力和 Tool names，不包含端点、凭据、绝对路径或 Tool payload。`unwiredPublicCapabilities` 自动列出 Protocol 已定义、但没有任何生产 Provider 声明所有权的能力；当前为旧 Proposal、Scheduler、Resource 和 Memory 公共面。旧 Trace 与 Background Task 公共枚举已删除，不能继续作为幽灵能力出现在文档中。
+`diagnosticSnapshot()` 只输出 definition、`started` 状态、公开能力和 Tool names，不包含端点、凭据、绝对路径或 Tool payload。`unwiredPublicCapabilities` 自动列出 Protocol 已定义、但没有任何生产 Provider 声明所有权的能力；旧 Proposal、Resource 和 Memory 公共面仍未接线。Scheduler 已由 v3 productivity public command owner 接管；旧 Trace 与 Background Task 公共枚举已删除，不能继续作为幽灵能力出现在文档中。
 
 配置关闭与未接线是两个不同状态：已启动 Provider 可以因权限或配置不满足而输出空的公开能力；缺少 Provider 则不会出现在诊断快照，也不会出现在 Runtime status。
 
