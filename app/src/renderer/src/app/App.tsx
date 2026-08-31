@@ -3,7 +3,7 @@ import { RotateCcw, Search, Waypoints } from 'lucide-react';
 import type { DockviewApi } from 'dockview-react';
 import { PERSONAL_ASSISTANT_WORKSPACE_ID } from '@ariadne/protocol/public';
 import type { ThemePreference } from '@shared/contract';
-import { uiModuleRegistry } from '@renderer/core/modules/ui-module-registry';
+import type { ModuleRegistry } from '@renderer/core/modules/module-registry';
 import type { ModuleId, ModuleServices } from '@renderer/core/modules/module-contract';
 import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
 import { formatRuntimeAvailability } from '@renderer/core/runtime/runtime-labels';
@@ -15,7 +15,13 @@ import { ModuleMenu } from './ModuleMenu';
 import { applyThemeToDocument, resolveEffectiveTheme, type EffectiveTheme } from './theme-sync';
 import { openModule, resetWorkspace, Workspace, type SaveStatus } from './Workspace';
 
-export function App({ services }: { services: ModuleServices }): React.JSX.Element {
+export function App({
+  services,
+  registry
+}: {
+  services: ModuleServices;
+  registry: ModuleRegistry;
+}): React.JSX.Element {
   const [dockviewApi, setDockviewApi] = useState<DockviewApi | null>(null);
   const [openModuleIds, setOpenModuleIds] = useState<ReadonlySet<string>>(new Set());
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('loading');
@@ -62,13 +68,13 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
   }, []);
 
   const handleOpenModule = (id: ModuleId): void => {
-    const definition = uiModuleRegistry.get(id);
+    const definition = registry.get(id);
     if (definition?.presentation?.kind === 'dialog') {
       setCommandOpen(false);
       setDialogModuleId(id);
       return;
     }
-    if (dockviewApi) openModule(dockviewApi, uiModuleRegistry, id);
+    if (dockviewApi) openModule(dockviewApi, registry, id);
   };
 
   const handleOpenModules = (ids: readonly ModuleId[]): void => {
@@ -80,7 +86,7 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
     : new Set([...openModuleIds, dialogModuleId]);
   const dialogDefinition = dialogModuleId === null
     ? undefined
-    : uiModuleRegistry.get(dialogModuleId);
+    : registry.get(dialogModuleId);
   const activeDialog = dialogDefinition?.presentation?.kind === 'dialog'
     ? {
         moduleId: dialogDefinition.id,
@@ -89,7 +95,7 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
     : undefined;
 
   useEffect(() => services.events.subscribe('module:open', (id) => {
-    const definition = uiModuleRegistry.get(id);
+    const definition = registry.get(id);
     if (definition) handleOpenModule(definition.id);
   }), [services, dockviewApi]);
 
@@ -113,7 +119,7 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
             Runtime {formatRuntimeAvailability(runtime.status.availability)}
           </span>
           <ModuleMenu
-            modules={uiModuleRegistry.list()}
+            modules={registry.list()}
             openModuleIds={visibleOpenModuleIds}
             onOpenModule={handleOpenModule}
           />
@@ -124,16 +130,16 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
       </header>
       <div className="app-main">
         <ActivityBar
-          actions={uiModuleRegistry.navigationActions()}
+          actions={registry.navigationActions()}
           openModuleIds={visibleOpenModuleIds}
           onOpen={handleOpenModules}
         />
         <div className="workspace-frame">
           <Workspace
-            registry={uiModuleRegistry}
+            registry={registry}
             services={services}
             onApiReady={(api) => {
-              for (const definition of uiModuleRegistry.list()) {
+              for (const definition of registry.list()) {
                 if (definition.presentation?.kind === 'dialog') {
                   api.getPanel(definition.id)?.api.close();
                 }
@@ -149,7 +155,7 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
       <GlobalStatusBar services={services} saveStatus={saveStatus} />
       <CommandPalette
         open={commandOpen}
-        registry={uiModuleRegistry}
+        registry={registry}
         onClose={() => setCommandOpen(false)}
         onOpenModule={handleOpenModule}
         runtime={services.runtime}
@@ -162,7 +168,7 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
         confirmLabel="重置布局"
         onClose={() => setResetDialogOpen(false)}
         onConfirm={() => {
-          if (dockviewApi) resetWorkspace(dockviewApi, uiModuleRegistry);
+          if (dockviewApi) resetWorkspace(dockviewApi, registry);
           setResetDialogOpen(false);
         }}
       />

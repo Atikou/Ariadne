@@ -1,4 +1,9 @@
+import type { CapabilityStatus } from '@shared/contract';
 import { uiComponentDefinitions } from './UiComponentCatalog.generated';
 import { ModuleRegistry } from './module-registry';
 
-export const uiModuleRegistry = new ModuleRegistry(uiComponentDefinitions());
+export function createUiModuleRegistry(
+  capabilityStatuses: readonly CapabilityStatus[]
+): ModuleRegistry {
+  return new ModuleRegistry(uiComponentDefinitions(), capabilityStatuses);
+}

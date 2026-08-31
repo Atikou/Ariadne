@@ -7,6 +7,7 @@ import {
   type ReactNode
 } from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
+import type { CapabilityStatus } from '@shared/contract';
 import type { ModuleServices, FeatureModuleDefinition, ModuleId } from './module-contract';
 
 export interface ModuleNavigationAction {
@@ -21,15 +22,25 @@ export interface ModuleNavigationAction {
 export class ModuleRegistry {
   private readonly definitions = new Map<ModuleId, FeatureModuleDefinition>();
 
-  constructor(modules: readonly FeatureModuleDefinition[]) {
+  constructor(
+    modules: readonly FeatureModuleDefinition[],
+    capabilityStatuses: readonly CapabilityStatus[] = []
+  ) {
+    const availableCapabilities = new Set(capabilityStatuses
+      .filter((status) => status.availability !== 'unavailable')
+      .map((status) => status.capability));
+    const allDefinitions = new Map<ModuleId, FeatureModuleDefinition>();
     for (const definition of modules) {
-      if (this.definitions.has(definition.id)) throw new Error(`Duplicate module id: ${definition.id}`);
-      this.definitions.set(definition.id, definition);
+      if (allDefinitions.has(definition.id)) throw new Error(`Duplicate module id: ${definition.id}`);
+      allDefinitions.set(definition.id, definition);
+      if (definition.requiredCapabilities.every((capability) => (
+        availableCapabilities.has(capability)
+      ))) this.definitions.set(definition.id, definition);
     }
 
     for (const definition of modules) {
       const reference = definition.defaultPlacement.referenceModuleId;
-      if (reference && !this.definitions.has(reference)) {
+      if (reference && !allDefinitions.has(reference)) {
         throw new Error(`Module ${definition.id} references unknown module ${reference}`);
       }
     }
