@@ -51,7 +51,7 @@ export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): Rea
         <button type="button" disabled={interruptingSubagentId !== null} onClick={() => {
           setSubagentSendError(null);
           setInterruptingSubagentId(subagent.runId);
-          void services.runtime.interruptSubagent(run, subagent).catch((error: unknown) => {
+          void services.runs.interruptSubagent(run, subagent).catch((error: unknown) => {
             setSubagentSendError({
               runId: subagent.runId,
               message: error instanceof Error ? error.message : 'SubAgent 中断失败'
@@ -68,7 +68,7 @@ export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): Rea
         if (content.length === 0 || sendingSubagentId !== null) return;
         setSubagentSendError(null);
         setSendingSubagentId(subagent.runId);
-        void services.runtime.sendSubagentInput(run, subagent, content).then(() => {
+        void services.runs.sendSubagentInput(run, subagent, content).then(() => {
           setSubagentDrafts((current) => ({ ...current, [subagent.runId]: '' }));
         }).catch((error: unknown) => {
           setSubagentSendError({
@@ -107,7 +107,7 @@ export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): Rea
         <button type="button" onClick={() => void services.decisions.resumeBudget(run)}>
           <RotateCw size={13} /> 按建议预算继续
         </button>
-        <button type="button" onClick={() => void services.runtime.cancelRun(run)}>
+        <button type="button" onClick={() => void services.runs.requestCancellation(run)}>
           <Square size={13} /> 停止任务
         </button>
       </div>}
@@ -130,6 +130,6 @@ export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): Rea
             </>}
       </div>}
     </div>}
-    {run && run.origin !== 'projection' && !['completed', 'failed', 'cancelled', 'interrupted', 'waiting_budget', 'cancelling'].includes(run.status) && <footer className="agent-controls"><button type="button" onClick={() => void services.runtime.cancelRun(run)}><Square size={13} /> 取消任务</button></footer>}
+    {run && run.origin !== 'projection' && !['completed', 'failed', 'cancelled', 'interrupted', 'waiting_budget', 'cancelling'].includes(run.status) && <footer className="agent-controls"><button type="button" onClick={() => void services.runs.requestCancellation(run)}><Square size={13} /> 取消任务</button></footer>}
   </section>;
 }

@@ -22,6 +22,7 @@ export function createModuleServices(
     messages: runtime.messages,
     productivity: runtime.productivity,
     runtime,
+    runs: runtime.runs,
     sessions: runtime.sessions,
     speech: new SpeechCoordinator(api.speech, api.preferences, runtime, events, storage),
     preferences: api.preferences,

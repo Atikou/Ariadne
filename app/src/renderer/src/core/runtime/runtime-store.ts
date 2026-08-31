@@ -26,10 +26,7 @@ import {
   ProjectionRuntimeClient
 } from './projection/projection-runtime-client';
 import { PublicResultError, unwrapPublicResult } from './public-result';
-import {
-  AgentInputDeliveryTracker,
-  type AgentInputDeliveryReceipt
-} from './agent-input-delivery';
+import type { AgentInputDeliveryReceipt } from './agent-input-delivery';
 import {
   presentDiagnostic,
   presentInferenceStreamMessage,
@@ -54,6 +51,7 @@ import { HumanSkillFeatureStore } from './features/human-skill-feature-store';
 import { SessionFeatureStore } from './features/session-feature-store';
 import { DecisionFeatureStore } from './features/decision-feature-store';
 import { MessageFeatureStore } from './features/message-feature-store';
+import { RunFeatureStore } from './features/run-feature-store';
 
 export type { AgentInputDeliveryReceipt } from './agent-input-delivery';
 export type {
@@ -105,12 +103,12 @@ export class RuntimeStore {
   readonly humanSkills: HumanSkillFeatureStore;
   readonly messages: MessageFeatureStore;
   readonly productivity: ProductivityFeatureStore;
+  readonly runs: RunFeatureStore;
   readonly sessions: SessionFeatureStore;
   readonly toolResults: ToolResultFeatureStore;
   private readonly projectionClient: ProjectionRuntimeClient;
   private readonly projection = new ProjectionCache();
   private readonly ui = new RuntimeUiState();
-  private readonly agentInputDeliveries = new AgentInputDeliveryTracker();
   private readonly listeners = new Set<() => void>();
   private readonly removeProjectionListener: () => void;
   private initialized = false;
@@ -130,14 +128,14 @@ export class RuntimeStore {
   private snapshotRequired = true;
   private lifecycleReady = false;
   private projectionPollTimer: ReturnType<typeof setTimeout> | null = null;
-  private agentInputDeliveryPersistenceReady: boolean;
-  private agentInputDeliveryPersistenceError: string | null = null;
 
   constructor(
     private readonly api: AriadneApi['runtime'],
-    private readonly agentInputDeliveryPersistence?: AriadneApi['agentInputDeliveryOutbox']
+    agentInputDeliveryPersistence?: AriadneApi['agentInputDeliveryOutbox']
   ) {
-    const featureGateway = { execute: (command: RuntimeCommand) => this.command(command) };
+    const featureGateway = {
+      execute: (command: RuntimeCommand, commandId?: string) => this.command(command, commandId)
+    };
     this.decisions = new DecisionFeatureStore(featureGateway, {
       projectionDecisions: () => this.projection.decisions.getSnapshot(),
       awaitDecisionSettlement: (decisionId) => this.awaitDecisionProjectionSettlement(decisionId)
@@ -158,6 +156,14 @@ export class RuntimeStore {
       synchronize: () => this.requestSynchronization(false)
     });
     this.productivity = new ProductivityFeatureStore(featureGateway);
+    this.runs = new RunFeatureStore(featureGateway, {
+      hasCapability: (capability) => this.status.capabilities.includes(capability),
+      projectionRuns: () => this.projection.runs.getSnapshot(),
+      isLifecycleGenerationCurrent: (generation) => generation === this.lifecycleGeneration,
+      errorMessage: (error, fallback) => runtimeRequestErrorMessage(error, fallback),
+      publish: () => this.publish(),
+      synchronize: () => this.requestSynchronization(false)
+    }, agentInputDeliveryPersistence);
     this.sessions = new SessionFeatureStore(featureGateway, {
       projectionSessions: () => this.projection.sessions.getSnapshot(),
       selectSession: (sessionId) => this.ui.selectSession(sessionId),
@@ -166,7 +172,6 @@ export class RuntimeStore {
       synchronize: () => this.requestSynchronization(false)
     });
     this.toolResults = new ToolResultFeatureStore(featureGateway);
-    this.agentInputDeliveryPersistenceReady = agentInputDeliveryPersistence === undefined;
     this.projectionClient = new ProjectionRuntimeClient(api);
     this.snapshot = this.createSnapshot(this.projection.getSnapshot());
     this.removeProjectionListener = this.projection.subscribe(() => {
@@ -175,12 +180,9 @@ export class RuntimeStore {
         this.lastProjectionResetEpoch = projection.resetEpoch;
         this.ui.clearPendingOverlay();
       }
-      const settledCommandIds = this.agentInputDeliveries.observeProjection(projection.runs);
+      this.runs.observeProjection();
       this.publish(projection);
       this.updateProjectionPolling(projection);
-      for (const commandId of settledCommandIds) {
-        void this.settlePersistedAgentInputDelivery(commandId);
-      }
     });
   }
 
@@ -250,221 +252,9 @@ export class RuntimeStore {
     this.publish();
   }
 
-  async cancelRun(run: Pick<RuntimeRun, 'runId' | 'origin'>): Promise<void> {
-    if (run.origin !== 'projection') {
-      throw new Error('projection_run_action_unavailable:origin');
-    }
-    const authoritative = this.projection.runs.getSnapshot().find(
-      (candidate) => candidate.runId === run.runId
-    );
-    if (authoritative === undefined) {
-      throw new Error('projection_run_action_unavailable:missing');
-    }
-    const result = await this.command({
-      kind: 'agent.run.cancel.v3',
-      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
-      runId: run.runId,
-      expectedVersion: authoritative.version,
-      occurredAt: new Date().toISOString(),
-      reason: 'user_requested'
-    });
-    if (
-      result.kind !== 'agent.run.cancelled.v3'
-      || result.runId !== run.runId
-    ) throw new Error(`runtime_result_invalid:${result.kind}`);
-    void this.requestSynchronization(false);
-  }
-
-  async enqueueAgentInput(
-    run: RuntimeRun,
-    content: string,
-    delivery: 'next_turn' | 'next_step'
-  ): Promise<AgentInputDeliveryReceipt> {
-    if (!this.status.capabilities.includes('agent.inbox')) {
-      throw new Error('runtime_capability_missing:agent.inbox');
-    }
-    if (run.origin !== 'projection' || run.sessionId === undefined) {
-      throw new Error('projection_run_action_unavailable:inbox');
-    }
-    const inputId = crypto.randomUUID();
-    const commandId = crypto.randomUUID();
-    const command = {
-      kind: 'agent.inbox.enqueue.v3',
-      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
-      runId: run.runId,
-      sessionId: run.sessionId,
-      inputId,
-      delivery,
-      content
-    } satisfies Extract<RuntimeCommand, { kind: 'agent.inbox.enqueue.v3' }>;
-    if (!this.agentInputDeliveryPersistenceReady) {
-      const receipt = this.agentInputDeliveries.begin(
-        commandId,
-        command,
-        new Date().toISOString()
-      );
-      const failed = this.agentInputDeliveries.fail(
-        commandId,
-        this.agentInputDeliveryPersistenceError
-          ?? '无法安全保存待发送输入，输入未发送。',
-        new Date().toISOString()
-      );
-      this.publish();
-      return { ...receipt, ...failed };
-    }
-    try {
-      const staged = await this.agentInputDeliveryPersistence?.stage({ commandId, command });
-      this.agentInputDeliveries.begin(
-        commandId,
-        command,
-        staged?.createdAt ?? new Date().toISOString()
-      );
-    } catch (error) {
-      this.agentInputDeliveries.begin(commandId, command, new Date().toISOString());
-      const failed = this.agentInputDeliveries.fail(
-        commandId,
-        runtimeRequestErrorMessage(error, '无法安全保存待发送输入，输入未发送。'),
-        new Date().toISOString()
-      );
-      this.publish();
-      return failed;
-    }
-    this.publish();
-    return this.dispatchAgentInputDelivery(commandId, false);
-  }
-
-  async reconcileAgentInputDelivery(commandId: string): Promise<AgentInputDeliveryReceipt> {
-    this.agentInputDeliveries.beginReconciliation(commandId, new Date().toISOString());
-    this.publish();
-    return this.dispatchAgentInputDelivery(commandId, true);
-  }
-
-  dismissAgentInputDelivery(commandId: string): void {
-    this.agentInputDeliveries.dismiss(commandId);
-    this.publish();
-  }
-
-  async sendSubagentInput(
-    parent: RuntimeRun,
-    child: RuntimeRun,
-    content: string
-  ): Promise<string> {
-    if (!this.status.capabilities.includes('agent.subagents')) {
-      throw new Error('runtime_capability_missing:agent.subagents');
-    }
-    if (
-      parent.origin !== 'projection'
-      || child.origin !== 'projection'
-      || parent.sessionId === undefined
-      || child.sessionId !== parent.sessionId
-      || child.parentRunId !== parent.runId
-      || child.subagentMode !== 'continuable'
-    ) {
-      throw new Error('projection_run_action_unavailable:subagent');
-    }
-    const inputId = crypto.randomUUID();
-    const result = await this.command({
-      kind: 'agent.subagent.send.v3',
-      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
-      parentRunId: parent.runId,
-      childRunId: child.runId,
-      sessionId: parent.sessionId,
-      inputId,
-      content
-    });
-    if (
-      result.kind !== 'agent.subagent.input.sent.v3'
-      || result.parentRunId !== parent.runId
-      || result.childRunId !== child.runId
-      || result.inputId !== inputId
-    ) throw new Error(`runtime_result_invalid:${result.kind}`);
-    void this.requestSynchronization(false);
-    return inputId;
-  }
-
-  async interruptSubagent(parent: RuntimeRun, child: RuntimeRun): Promise<void> {
-    if (!this.status.capabilities.includes('agent.subagents')) {
-      throw new Error('runtime_capability_missing:agent.subagents');
-    }
-    if (
-      parent.origin !== 'projection'
-      || child.origin !== 'projection'
-      || parent.sessionId === undefined
-      || child.sessionId !== parent.sessionId
-      || child.parentRunId !== parent.runId
-      || child.subagentMode !== 'continuable'
-    ) throw new Error('projection_run_action_unavailable:subagent');
-    const result = await this.command({
-      kind: 'agent.subagent.interrupt.v3',
-      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
-      parentRunId: parent.runId,
-      childRunId: child.runId,
-      sessionId: parent.sessionId,
-      expectedChildVersion: child.aggregateVersion,
-      occurredAt: new Date().toISOString(),
-      reason: 'user_requested'
-    });
-    if (
-      result.kind !== 'agent.subagent.interrupted.v3'
-      || result.parentRunId !== parent.runId
-      || result.childRunId !== child.runId
-    ) throw new Error(`runtime_result_invalid:${result.kind}`);
-    void this.requestSynchronization(false);
-  }
-
-  async replaceAgentInput(
-    run: RuntimeRun,
-    inputId: string,
-    expectedInputVersion: number,
-    content: string
-  ): Promise<void> {
-    if (!this.status.capabilities.includes('agent.inbox')) {
-      throw new Error('runtime_capability_missing:agent.inbox');
-    }
-    if (run.origin !== 'projection') {
-      throw new Error('projection_run_action_unavailable:inbox');
-    }
-    const result = await this.command({
-      kind: 'agent.inbox.replace.v3',
-      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
-      runId: run.runId,
-      inputId,
-      expectedInputVersion,
-      content
-    });
-    if (result.kind !== 'agent.inbox.replaced.v3' || result.inputId !== inputId) {
-      throw new Error(`runtime_result_invalid:${result.kind}`);
-    }
-    void this.requestSynchronization(false);
-  }
-
-  async removeAgentInput(
-    run: RuntimeRun,
-    inputId: string,
-    expectedInputVersion: number
-  ): Promise<void> {
-    if (!this.status.capabilities.includes('agent.inbox')) {
-      throw new Error('runtime_capability_missing:agent.inbox');
-    }
-    if (run.origin !== 'projection') {
-      throw new Error('projection_run_action_unavailable:inbox');
-    }
-    const result = await this.command({
-      kind: 'agent.inbox.remove.v3',
-      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
-      runId: run.runId,
-      inputId,
-      expectedInputVersion
-    });
-    if (result.kind !== 'agent.inbox.removed.v3' || result.inputId !== inputId) {
-      throw new Error(`runtime_result_invalid:${result.kind}`);
-    }
-    void this.requestSynchronization(false);
-  }
-
   private async initializeRuntime(generation: number): Promise<void> {
-    if (this.agentInputDeliveryPersistence !== undefined) {
-      await this.restorePersistedAgentInputDeliveries(generation);
+    if (this.runs.deliveryPersistenceConfigured) {
+      await this.runs.restoreDeliveryPersistence(generation);
       if (generation !== this.lifecycleGeneration) return;
     }
     try {
@@ -747,104 +537,13 @@ export class RuntimeStore {
         return question === null ? [] : [question];
       }),
       trace: projection.diagnostics.map(presentDiagnostic),
-      agentInputDeliveries: this.agentInputDeliveries.snapshot(),
+      agentInputDeliveries: this.runs.deliverySnapshot(),
       lastError: projection.integrityError
-        ?? this.agentInputDeliveryPersistenceError
+        ?? this.runs.deliveryPersistenceError
         ?? this.requestError
     };
   }
 
-  private async dispatchAgentInputDelivery(
-    commandId: string,
-    reconciliationAttempt: boolean
-  ): Promise<AgentInputDeliveryReceipt> {
-    const command = this.agentInputDeliveries.command(commandId);
-    try {
-      const result = await this.command(command, commandId);
-      if (
-        result.kind !== 'agent.inbox.enqueued.v3'
-        || result.runId !== command.runId
-        || result.inputId !== command.inputId
-      ) throw new Error(`runtime_result_invalid:${result.kind}`);
-      const receipt = this.agentInputDeliveries.accept(
-        commandId,
-        new Date().toISOString()
-      );
-      this.publish();
-      void this.settlePersistedAgentInputDelivery(commandId);
-      void this.requestSynchronization(false);
-      return receipt;
-    } catch (error) {
-      const message = runtimeRequestErrorMessage(error, 'Agent 输入提交失败。');
-      const shouldReconcile = shouldReconcileAgentInputDelivery(
-        error,
-        commandId,
-        reconciliationAttempt
-      );
-      const persistenceSettled = shouldReconcile
-        ? false
-        : await this.settlePersistedAgentInputDelivery(commandId);
-      const receipt = shouldReconcile || !persistenceSettled
-        ? this.agentInputDeliveries.requireReconciliation(
-            commandId,
-            persistenceSettled
-              ? message
-              : `${message} 本地发送记录尚未安全结算，请重新确认。`,
-            new Date().toISOString()
-          )
-        : this.agentInputDeliveries.fail(
-            commandId,
-            message,
-            new Date().toISOString()
-          );
-      this.publish();
-      return receipt;
-    }
-  }
-
-  private async restorePersistedAgentInputDeliveries(generation: number): Promise<void> {
-    if (this.agentInputDeliveryPersistence === undefined) return;
-    try {
-      const records = await this.agentInputDeliveryPersistence.list();
-      if (generation !== this.lifecycleGeneration) return;
-      const now = new Date().toISOString();
-      for (const record of records) {
-        this.agentInputDeliveries.restore(
-          record.commandId,
-          record.command,
-          record.createdAt,
-          now
-        );
-      }
-      this.agentInputDeliveryPersistenceReady = true;
-      this.agentInputDeliveryPersistenceError = null;
-      this.publish();
-    } catch (error) {
-      if (generation !== this.lifecycleGeneration) return;
-      this.agentInputDeliveryPersistenceReady = false;
-      this.agentInputDeliveryPersistenceError = runtimeRequestErrorMessage(
-        error,
-        '未结算输入的安全恢复记录不可用。'
-      );
-      this.publish();
-    }
-  }
-
-  private async settlePersistedAgentInputDelivery(commandId: string): Promise<boolean> {
-    if (this.agentInputDeliveryPersistence === undefined) return true;
-    try {
-      await this.agentInputDeliveryPersistence.settle({ commandId });
-      this.agentInputDeliveryPersistenceError = null;
-      return true;
-    } catch (error) {
-      this.agentInputDeliveryPersistenceError = runtimeRequestErrorMessage(
-        error,
-        '未结算输入的安全恢复记录无法更新。'
-      );
-      this.publish();
-      return false;
-    }
-  }
 }
 
 function mergeInteractionMessages(
@@ -909,33 +608,4 @@ function isTerminalPublicRun(run: PublicRunProjectionV3): boolean {
   return run.status === 'completed'
     || run.status === 'failed'
     || run.status === 'cancelled';
-}
-
-const RECONCILABLE_AGENT_INPUT_ERROR_CODES = new Set([
-  'command_outcome_uncertain',
-  'runtime_request_timeout',
-  'runtime_request_cancelled',
-  'runtime_request_send_failed'
-]);
-
-const DEFERRED_RECONCILIATION_ERROR_CODES = new Set([
-  'runtime_unavailable',
-  'runtime_initializing',
-  'runtime_shutting_down',
-  'runtime_stopped',
-  'runtime_exited'
-]);
-
-function shouldReconcileAgentInputDelivery(
-  error: unknown,
-  commandId: string,
-  reconciliationAttempt: boolean
-): boolean {
-  if (!(error instanceof PublicResultError)) return false;
-  const { code, correlationId } = error.publicError;
-  if (
-    correlationId === commandId
-    && RECONCILABLE_AGENT_INPUT_ERROR_CODES.has(code)
-  ) return true;
-  return reconciliationAttempt && DEFERRED_RECONCILIATION_ERROR_CODES.has(code);
 }

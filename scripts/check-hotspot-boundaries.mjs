@@ -427,7 +427,7 @@ const boundaries = [
   },
   {
     file: 'app/src/renderer/src/core/runtime/runtime-store.ts',
-    maxLines: 945,
+    maxLines: 615,
     required: [
       'ProjectionCache',
       'ProjectionRuntimeClient',
@@ -435,6 +435,7 @@ const boundaries = [
       'HumanSkillFeatureStore',
       'MessageFeatureStore',
       'ProductivityFeatureStore',
+      'RunFeatureStore',
       'SessionFeatureStore',
       'ToolResultFeatureStore'
     ],
@@ -447,7 +448,9 @@ const boundaries = [
       /async forkSessionFromMessage\(/,
       /async respondToPermission\(/,
       /async respondToPlan\(/,
-      /async sendMessage\(/
+      /async sendMessage\(/,
+      /async enqueueAgentInput\(/,
+      /async sendSubagentInput\(/
     ]
   },
   {
@@ -491,6 +494,22 @@ const boundaries = [
     required: [
       'class MessageFeatureStore',
       'MessageFeatureHost'
+    ]
+  },
+  {
+    file: 'app/src/renderer/src/core/runtime/features/run-feature-store.ts',
+    maxLines: 170,
+    required: [
+      'class RunFeatureStore',
+      'AgentInputDeliveryController'
+    ]
+  },
+  {
+    file: 'app/src/renderer/src/core/runtime/features/agent-input-delivery-controller.ts',
+    maxLines: 200,
+    required: [
+      'class AgentInputDeliveryController',
+      'shouldReconcile'
     ]
   },
   {

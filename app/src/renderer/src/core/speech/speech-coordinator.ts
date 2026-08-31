@@ -229,10 +229,10 @@ export class SpeechCoordinator {
   private async enqueueLatestVoiceInput(run: RuntimeRun, content: string): Promise<void> {
     const queued = run.inbox.find((input) => input.state === 'queued' && input.source === undefined);
     if (queued) {
-      await this.runtime.replaceAgentInput(run, queued.inputId, queued.version, content);
+      await this.runtime.runs.replaceInput(run, queued.inputId, queued.version, content);
       return;
     }
-    const receipt = await this.runtime.enqueueAgentInput(run, content, 'next_turn');
+    const receipt = await this.runtime.runs.enqueueInput(run, content, 'next_turn');
     if (receipt.state === 'failed') {
       throw new Error(receipt.error ?? 'Agent 输入提交失败。');
     }

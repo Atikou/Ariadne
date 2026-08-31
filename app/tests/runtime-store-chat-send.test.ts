@@ -700,15 +700,15 @@ describe('RuntimeStore v3 chat boundary', () => {
     await store.initialize();
     const projectedRun = store.getSnapshot().runs[0]!;
 
-    const deliveryReceipt = await store.enqueueAgentInput(
+    const deliveryReceipt = await store.runs.enqueueInput(
       projectedRun,
       'Steer before the next step.',
       'next_step'
     );
     const inputId = deliveryReceipt.inputId;
     expect(deliveryReceipt.state).toBe('accepted');
-    await store.replaceAgentInput(projectedRun, inputId, 1, 'Revised steering.');
-    await store.removeAgentInput(projectedRun, inputId, 2);
+    await store.runs.replaceInput(projectedRun, inputId, 1, 'Revised steering.');
+    await store.runs.removeInput(projectedRun, inputId, 2);
 
     expect(commands.filter((command) => command.kind.startsWith('agent.inbox.')))
       .toMatchObject([{
@@ -804,7 +804,7 @@ describe('RuntimeStore v3 chat boundary', () => {
     const store = new RuntimeStore(api);
     await store.initialize();
 
-    const first = await store.enqueueAgentInput(
+    const first = await store.runs.enqueueInput(
       store.getSnapshot().runs[0]!,
       'Keep the same logical command.',
       'next_turn'
@@ -812,7 +812,7 @@ describe('RuntimeStore v3 chat boundary', () => {
     expect(first).toMatchObject({ state: 'reconcile', attempt: 1 });
     expect(store.getSnapshot().agentInputDeliveries).toEqual([first]);
 
-    const reconciled = await store.reconcileAgentInputDelivery(first.commandId);
+    const reconciled = await store.runs.reconcileInputDelivery(first.commandId);
     expect(reconciled).toMatchObject({
       commandId: first.commandId,
       inputId: first.inputId,
@@ -897,7 +897,7 @@ describe('RuntimeStore v3 chat boundary', () => {
       attempt: 1
     });
 
-    const reconciled = await store.reconcileAgentInputDelivery(restored.commandId);
+    const reconciled = await store.runs.reconcileInputDelivery(restored.commandId);
     expect(reconciled).toMatchObject({ state: 'accepted', attempt: 2 });
     expect(sent).toEqual([{
       command: restoredCommand,
@@ -973,7 +973,7 @@ describe('RuntimeStore v3 chat boundary', () => {
       throw new Error('projected_subagent_fixture_missing');
     }
 
-    const inputId = await store.sendSubagentInput(
+    const inputId = await store.runs.sendSubagentInput(
       presentedParent,
       presentedChild,
       'Continue with the second bounded check.'
@@ -1053,7 +1053,7 @@ describe('RuntimeStore v3 chat boundary', () => {
       throw new Error('projected_interrupt_subagent_fixture_missing');
     }
 
-    await store.interruptSubagent(presentedParent, presentedChild);
+    await store.runs.interruptSubagent(presentedParent, presentedChild);
 
     expect(commands.find((command) => command.kind === 'agent.subagent.interrupt.v3'))
       .toMatchObject({
@@ -1104,7 +1104,7 @@ describe('RuntimeStore v3 chat boundary', () => {
     }));
     await store.initialize();
 
-    await store.cancelRun(store.getSnapshot().runs[0]!);
+    await store.runs.requestCancellation(store.getSnapshot().runs[0]!);
 
     expect(commands.map((command) => command.kind)).toContain('agent.run.cancel.v3');
   });

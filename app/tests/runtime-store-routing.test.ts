@@ -165,11 +165,11 @@ describe('RuntimeStore command routing', () => {
     const commands: RuntimeCommand[] = [];
     const store = new RuntimeStore(successApi(commands));
 
-    await expect(store.cancelRun({ runId: 'companion-run', origin: 'companion' }))
+    await expect(store.runs.requestCancellation({ runId: 'companion-run', origin: 'companion' }))
       .rejects.toThrow('projection_run_action_unavailable:origin');
-    await expect(store.cancelRun({ runId: 'agent-run', origin: 'agent' }))
+    await expect(store.runs.requestCancellation({ runId: 'agent-run', origin: 'agent' }))
       .rejects.toThrow('projection_run_action_unavailable:origin');
-    await expect(store.cancelRun({ runId: 'projection-run', origin: 'projection' }))
+    await expect(store.runs.requestCancellation({ runId: 'projection-run', origin: 'projection' }))
       .rejects.toThrow('projection_run_action_unavailable:missing');
     expect(commands).toEqual([]);
   });

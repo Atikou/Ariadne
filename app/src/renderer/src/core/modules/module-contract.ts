@@ -11,6 +11,7 @@ import type { ToolResultFeatureStore } from '../runtime/features/tool-result-fea
 import type { SessionFeatureStore } from '../runtime/features/session-feature-store';
 import type { DecisionFeatureStore } from '../runtime/features/decision-feature-store';
 import type { MessageFeatureStore } from '../runtime/features/message-feature-store';
+import type { RunFeatureStore } from '../runtime/features/run-feature-store';
 
 export type ModuleId = string & { readonly __moduleId: unique symbol };
 export type ModuleIcon =
@@ -56,6 +57,7 @@ export interface ModuleServices {
   messages: MessageFeatureStore;
   productivity: ProductivityFeatureStore;
   runtime: RuntimeStore;
+  runs: RunFeatureStore;
   sessions: SessionFeatureStore;
   speech: SpeechCoordinator;
   preferences: AriadneApi['preferences'];

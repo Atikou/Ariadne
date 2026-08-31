@@ -406,7 +406,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
     setFollowingLatest(true);
     try {
       if (activeRun && inboxAvailable) {
-        await services.runtime.enqueueAgentInput(activeRun, message, delivery);
+        await services.runs.enqueueInput(activeRun, message, delivery);
       } else if (activeRun) {
         throw new Error('runtime_capability_missing:agent.inbox');
       } else {
@@ -580,7 +580,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                       <button
                         type="button"
                         disabled={runtime.status.availability !== 'ready'}
-                        onClick={() => void services.runtime.reconcileAgentInputDelivery(
+                        onClick={() => void services.runs.reconcileInputDelivery(
                           receipt.commandId
                         )}
                       >重新确认</button>
@@ -592,7 +592,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                           setDraft((current) => current.trim().length === 0
                             ? receipt.content
                             : `${current}\n${receipt.content}`);
-                          services.runtime.dismissAgentInputDelivery(receipt.commandId);
+                          services.runs.dismissInputDelivery(receipt.commandId);
                           requestAnimationFrame(() => composerInputRef.current?.focus());
                         }}
                       >恢复输入</button>
@@ -600,7 +600,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                     {receipt.state === 'accepted' && (
                       <button
                         type="button"
-                        onClick={() => services.runtime.dismissAgentInputDelivery(
+                        onClick={() => services.runs.dismissInputDelivery(
                           receipt.commandId
                         )}
                       >关闭</button>
@@ -632,7 +632,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                               event.preventDefault();
                               const replacement = editingInbox;
                               setEditingInbox(null);
-                              void services.runtime.replaceAgentInput(
+                              void services.runs.replaceInput(
                                 activeRun,
                                 replacement.inputId,
                                 replacement.version,
@@ -647,7 +647,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                       version: input.version,
                       content: input.content
                     })}>编辑</button>
-                    <button type="button" onClick={() => void services.runtime.removeAgentInput(
+                    <button type="button" onClick={() => void services.runs.removeInput(
                       activeRun,
                       input.inputId,
                       input.version
@@ -816,7 +816,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                     ? !runActionAvailable
                     : !hasDraftInput || !canChat)}
                   onClick={() => running && activeRun && !hasDraftInput
-                    ? void services.runtime.cancelRun(activeRun)
+                    ? void services.runs.requestCancellation(activeRun)
                     : void send('next_turn')}
                   aria-label={running && !hasDraftInput ? '取消 Agent 任务' : running ? '排到下一轮' : '发送消息'}
                 >
