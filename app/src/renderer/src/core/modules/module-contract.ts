@@ -8,6 +8,7 @@ import type { SpeechCoordinator } from '../speech/speech-coordinator';
 import type { ProductivityFeatureStore } from '../runtime/features/productivity-feature-store';
 import type { HumanSkillFeatureStore } from '../runtime/features/human-skill-feature-store';
 import type { ToolResultFeatureStore } from '../runtime/features/tool-result-feature-store';
+import type { SessionFeatureStore } from '../runtime/features/session-feature-store';
 
 export type ModuleId = string & { readonly __moduleId: unique symbol };
 export type ModuleIcon =
@@ -51,6 +52,7 @@ export interface ModuleServices {
   humanSkills: HumanSkillFeatureStore;
   productivity: ProductivityFeatureStore;
   runtime: RuntimeStore;
+  sessions: SessionFeatureStore;
   speech: SpeechCoordinator;
   preferences: AriadneApi['preferences'];
   system: AriadneApi['system'];

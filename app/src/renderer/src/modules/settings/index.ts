@@ -6,7 +6,7 @@ export const settingsModule: FeatureModuleDefinition = {
   id: moduleId('settings'), name: '设置', description: '模型、API Key、主题和桌面偏好。', icon: 'settings', component: SettingsPanel,
   consumes: [
     'agentSettings', 'conversationNavigation', 'events', 'preferences',
-    'runtime', 'speech', 'system'
+    'runtime', 'sessions', 'speech', 'system'
   ],
   presentation: { kind: 'dialog', component: SettingsDialog },
   navigation: { id: 'settings', label: '设置', icon: 'settings', order: 100, position: 'footer' },

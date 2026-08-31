@@ -85,7 +85,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
         }
       }
       void Promise.all([...workspaceIds].map((workspaceId) => (
-        services.runtime.querySessions(workspaceId, normalizedQuery, 'active', 50)
+        services.sessions.query(workspaceId, normalizedQuery, 'active', 50)
       ))).then((groups) => {
         if (!active) return;
         setQuerySessionIds(new Set(groups.flat().map((item) => item.sessionId)));
@@ -148,7 +148,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
     setActionError(null);
     try {
       await services.conversationNavigation.selectWorkspace(workspaceId);
-      services.runtime.clearSessionSelection();
+      services.sessions.clearSelection();
       return true;
     } catch (error) {
       setActionError(errorMessage(error));
@@ -174,7 +174,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
     } else {
       void services.conversationNavigation.selectWorkspace(session.workspaceId);
     }
-    void services.runtime.selectSession(session.sessionId).catch((error) => {
+    void services.sessions.select(session.sessionId).catch((error) => {
       setActionError(errorMessage(error));
     });
   };
@@ -186,7 +186,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
         ?? services.conversationNavigation.getSelectedWorkspaceId();
       if (workspaceId) await services.conversationNavigation.selectWorkspace(workspaceId);
       else services.conversationNavigation.selectAssistant();
-      services.runtime.clearSessionSelection();
+      services.sessions.clearSelection();
       services.events.emit('chat:new-draft-requested', { workspaceId });
     } catch (error) {
       setActionError(errorMessage(error));
@@ -200,7 +200,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
     try {
       const opened = await services.conversationNavigation.openWorkspace();
       if (!opened) return;
-      services.runtime.clearSessionSelection();
+      services.sessions.clearSelection();
       services.events.emit('chat:new-draft-requested', { workspaceId: opened.workspaceId });
     } catch (error) {
       setActionError(errorMessage(error));
@@ -215,7 +215,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
     try {
       await services.conversationNavigation.archiveWorkspace(workspace.workspaceId);
       if (selectedWorkspaceId === workspace.workspaceId) {
-        services.runtime.clearSessionSelection();
+        services.sessions.clearSelection();
       }
     } catch (error) {
       setActionError(errorMessage(error));
@@ -226,7 +226,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
     setRenameSessionTarget(null);
     setActionError(null);
     try {
-      await services.runtime.renameSession(session, title);
+      await services.sessions.rename(session, title);
     } catch (error) {
       setActionError(errorMessage(error));
     }
@@ -236,8 +236,8 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
     setArchiveSessionTarget(null);
     setActionError(null);
     try {
-      await services.runtime.archiveSession(session);
-      if (runtime.selectedSessionId === session.sessionId) services.runtime.clearSessionSelection();
+      await services.sessions.archive(session);
+      if (runtime.selectedSessionId === session.sessionId) services.sessions.clearSelection();
     } catch (error) {
       setActionError(errorMessage(error));
     }
@@ -364,7 +364,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
               aria-label="个人助手会话"
               onClick={() => {
                 services.conversationNavigation.selectAssistant();
-                services.runtime.clearSessionSelection();
+                services.sessions.clearSelection();
                 setCollapsedWorkspaceIds((current) => {
                   const next = new Set(current);
                   if (next.has(PERSONAL_ASSISTANT_WORKSPACE_ID)) next.delete(PERSONAL_ASSISTANT_WORKSPACE_ID);

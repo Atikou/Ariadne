@@ -25,7 +25,7 @@ describe('conversation-scoped approval cards', () => {
     expect(cards).toContain('respondToPlan');
 
     expect(chat).toContain('onApprovalNavigation');
-    expect(chat).toContain('selectSession(sessionId)');
+    expect(chat).toContain('services.sessions.select(sessionId)');
     expect(chat).toContain('<ConversationApprovalCards');
     expect(chat).toContain('sessionId={runtime.selectedSessionId}');
 

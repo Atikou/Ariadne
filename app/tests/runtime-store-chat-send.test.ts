@@ -72,7 +72,7 @@ describe('RuntimeStore v3 chat boundary', () => {
       onEvent: () => () => undefined
     }));
     await store.initialize();
-    await store.selectSession('session-image');
+    await store.sessions.select('session-image');
 
     await store.sendMessage('', {
       modelId: 'vision-model',
@@ -126,7 +126,7 @@ describe('RuntimeStore v3 chat boundary', () => {
       onEvent: () => () => undefined
     }));
     await store.initialize();
-    await store.selectSession('session-image');
+    await store.sessions.select('session-image');
 
     expect(store.getSnapshot().messages[0]?.attachments).toEqual([attachment]);
     expect(JSON.stringify(store.getSnapshot().messages)).not.toContain('data:image');
@@ -202,7 +202,7 @@ describe('RuntimeStore v3 chat boundary', () => {
 
     const partial = createStore([]);
     await partial.initialize();
-    await partial.selectSession('session-a');
+    await partial.sessions.select('session-a');
     expect(partial.getSnapshot().messages).toMatchObject([{
       messageId: stream.inferenceStreamId,
       content: '部分公开回答',
@@ -212,7 +212,7 @@ describe('RuntimeStore v3 chat boundary', () => {
 
     const completed = createStore([terminal]);
     await completed.initialize();
-    await completed.selectSession('session-a');
+    await completed.sessions.select('session-a');
     expect(completed.getSnapshot().messages).toMatchObject([{
       messageId: terminal.messageId,
       content: '最终权威回答',
@@ -303,9 +303,9 @@ describe('RuntimeStore v3 chat boundary', () => {
     await store.initialize();
     const lifecycleSession = store.getSnapshot().sessions[0]!;
 
-    await store.renameSession(lifecycleSession, ' Durable title ');
-    await store.archiveSession(lifecycleSession);
-    await store.restoreSession(lifecycleSession);
+    await store.sessions.rename(lifecycleSession, ' Durable title ');
+    await store.sessions.archive(lifecycleSession);
+    await store.sessions.restore(lifecycleSession);
 
     expect(observed.filter((command) => command.kind.startsWith('conversation.session.')))
       .toEqual([
@@ -360,7 +360,7 @@ describe('RuntimeStore v3 chat boundary', () => {
       onEvent: () => () => undefined
     }));
     await store.initialize();
-    await store.selectSession('session-a');
+    await store.sessions.select('session-a');
 
     const sending = store.sendMessage('Hello projection');
     await vi.waitFor(() => expect(resolveAccept).not.toBeNull());
@@ -488,7 +488,7 @@ describe('RuntimeStore v3 chat boundary', () => {
       onEvent: () => () => undefined
     }));
     await store.initialize();
-    await store.selectSession('session-a');
+    await store.sessions.select('session-a');
     await store.sendMessage('Plan this');
     await vi.waitFor(() => expect(store.getSnapshot().projectionCursor).toBe(1));
     expect(store.getSnapshot().pendingOverlayIds).toEqual([]);
@@ -537,7 +537,7 @@ describe('RuntimeStore v3 chat boundary', () => {
       onEvent: () => () => undefined
     }));
     await store.initialize();
-    await store.selectSession('session-a');
+    await store.sessions.select('session-a');
     await store.sendMessage('Pending overlay');
     expect(store.getSnapshot().messages).toHaveLength(2);
 
@@ -629,7 +629,7 @@ describe('RuntimeStore v3 chat boundary', () => {
     }));
 
     await store.initialize();
-    await store.selectSession('session-a');
+    await store.sessions.select('session-a');
     expect(store.getSnapshot().messages.map((message) => message.messageId)).toEqual([
       'message-objective',
       'message-intermediate-assistant',

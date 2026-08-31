@@ -48,7 +48,7 @@ describe('RuntimeStore session presentation', () => {
     }));
     await store.initialize();
 
-    await store.selectSession('session-b');
+    await store.sessions.select('session-b');
 
     expect(store.getSnapshot()).toMatchObject({
       selectedSessionId: 'session-b',
@@ -185,11 +185,11 @@ describe('RuntimeStore session presentation', () => {
     }));
     await store.initialize();
 
-    await expect(store.querySessions('workspace-primary', 'needle', 'all'))
+    await expect(store.sessions.query('workspace-primary', 'needle', 'all'))
       .resolves.toMatchObject([{ sessionId: 'session-source', matches: [{ reference }] }]);
-    await expect(store.resolveMessageReference(reference))
+    await expect(store.sessions.resolveMessage(reference))
       .resolves.toMatchObject({ content: 'needle', reference });
-    const forkedId = await store.forkSessionFromMessage('session-source', reference);
+    const forkedId = await store.sessions.forkFromMessage('session-source', reference);
     expect(store.getSnapshot().selectedSessionId).toBe(forkedId);
     expect(observed).toContain('conversation.session.fork.v3');
   });

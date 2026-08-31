@@ -390,7 +390,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
     setRestoringSessionId(session.sessionId);
     setSessionLifecycleError(null);
     try {
-      await services.runtime.restoreSession(session);
+      await services.sessions.restore(session);
     } catch (error) {
       setSessionLifecycleError(errorMessage(error, '恢复聊天失败。'));
     } finally {

@@ -16,9 +16,9 @@ describe('Chat module composition', () => {
     expect(sidebar).toContain('className="chat-conversations-sidebar"');
     expect(sidebar).not.toContain('services.runtime.createSession(');
     expect(sidebar).toContain("services.events.emit('chat:new-draft-requested'");
-    expect(sidebar).toContain('services.runtime.clearSessionSelection()');
+    expect(sidebar).toContain('services.sessions.clearSelection()');
     expect(sidebar).toContain('selectSession(session)');
-    expect(sidebar).toContain('services.runtime.renameSession(session, title)');
+    expect(sidebar).toContain('services.sessions.rename(session, title)');
     expect(sidebar).not.toContain('services.conversationNavigation.renameSession(');
     expect(sidebar).not.toContain('services.runtime.deleteSession(');
     expect(sidebar).toContain('services.conversationNavigation.listWorkspaces()');
@@ -80,7 +80,7 @@ describe('Chat module composition', () => {
     expect(sidebar).toContain('重命名聊天');
     expect(sidebar).toContain('归档聊天');
     expect(sidebar).toContain('标记为未读');
-    expect(sidebar).toContain('services.runtime.archiveSession(session)');
+    expect(sidebar).toContain('services.sessions.archive(session)');
     expect(sidebar).not.toContain('services.conversationNavigation.archiveSession(');
     expect(sidebar).not.toContain('materializedSessionIds');
     expect(sidebar).not.toContain('runtime.messages.map');

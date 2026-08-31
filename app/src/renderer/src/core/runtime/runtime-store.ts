@@ -7,7 +7,6 @@ import {
 } from '@ariadne/protocol/public';
 import type {
   ChatRoutingStrategy,
-  ConversationMessageReferenceV3,
   ConversationSession,
   EncodedImageAttachmentV3,
   ModelInferenceOptions,
@@ -59,6 +58,7 @@ import { RuntimeUiState } from './runtime-ui-state';
 import { ProductivityFeatureStore } from './features/productivity-feature-store';
 import { ToolResultFeatureStore } from './features/tool-result-feature-store';
 import { HumanSkillFeatureStore } from './features/human-skill-feature-store';
+import { SessionFeatureStore } from './features/session-feature-store';
 
 export type { AgentInputDeliveryReceipt } from './agent-input-delivery';
 export type {
@@ -102,16 +102,6 @@ export interface SendMessageOptions {
   attachments?: readonly EncodedImageAttachmentV3[];
 }
 
-export type ConversationSessionQueryItem = Extract<
-  RuntimeResult,
-  { readonly kind: 'conversation.sessions.query_result.v3' }
->['items'][number];
-
-export type ResolvedConversationMessage = Extract<
-  RuntimeResult,
-  { readonly kind: 'conversation.message.resolved.v3' }
->;
-
 const STOPPED_STATUS: RuntimeStatus = {
   availability: 'stopped',
   capabilities: [],
@@ -128,6 +118,7 @@ const ACTIVE_PROJECTION_POLL_INTERVAL_MS = 500;
 export class RuntimeStore {
   readonly humanSkills: HumanSkillFeatureStore;
   readonly productivity: ProductivityFeatureStore;
+  readonly sessions: SessionFeatureStore;
   readonly toolResults: ToolResultFeatureStore;
   private readonly projectionClient: ProjectionRuntimeClient;
   private readonly projection = new ProjectionCache();
@@ -162,6 +153,13 @@ export class RuntimeStore {
     const featureGateway = { execute: (command: RuntimeCommand) => this.command(command) };
     this.humanSkills = new HumanSkillFeatureStore(featureGateway);
     this.productivity = new ProductivityFeatureStore(featureGateway);
+    this.sessions = new SessionFeatureStore(featureGateway, {
+      projectionSessions: () => this.projection.sessions.getSnapshot(),
+      selectSession: (sessionId) => this.ui.selectSession(sessionId),
+      clearSessionSelection: () => this.ui.clearSessionSelection(),
+      publish: () => this.publish(),
+      synchronize: () => this.requestSynchronization(false)
+    });
     this.toolResults = new ToolResultFeatureStore(featureGateway);
     this.agentInputDeliveryPersistenceReady = agentInputDeliveryPersistence === undefined;
     this.projectionClient = new ProjectionRuntimeClient(api);
@@ -233,96 +231,6 @@ export class RuntimeStore {
   async refresh(): Promise<void> {
     if (this.status.availability !== 'ready' || !this.lifecycleReady) return;
     await this.requestSynchronization(false);
-  }
-
-  async selectSession(sessionId: string): Promise<void> {
-    this.ui.selectSession(sessionId);
-    this.publish();
-  }
-
-  clearSessionSelection(): void {
-    this.ui.clearSessionSelection();
-    this.publish();
-  }
-
-  async renameSession(session: ConversationSession, title: string): Promise<void> {
-    await this.mutateSession(session, {
-      kind: 'conversation.session.rename.v3',
-      title: title.trim()
-    });
-  }
-
-  async archiveSession(session: ConversationSession): Promise<void> {
-    await this.mutateSession(session, { kind: 'conversation.session.archive.v3' });
-  }
-
-  async restoreSession(session: ConversationSession): Promise<void> {
-    await this.mutateSession(session, { kind: 'conversation.session.restore.v3' });
-  }
-
-  async querySessions(
-    workspaceId: string,
-    query: string,
-    status: 'active' | 'archived' | 'all' = 'active',
-    limit = 20
-  ): Promise<readonly ConversationSessionQueryItem[]> {
-    const result = await this.command({
-      kind: 'conversation.sessions.query.v3',
-      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
-      workspaceId,
-      query,
-      status,
-      limit
-    });
-    if (result.kind !== 'conversation.sessions.query_result.v3') {
-      throw new Error(`runtime_result_invalid:${result.kind}`);
-    }
-    return result.items;
-  }
-
-  async resolveMessageReference(
-    reference: ConversationMessageReferenceV3
-  ): Promise<ResolvedConversationMessage> {
-    const result = await this.command({
-      kind: 'conversation.message.resolve.v3',
-      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
-      reference
-    });
-    if (result.kind !== 'conversation.message.resolved.v3') {
-      throw new Error(`runtime_result_invalid:${result.kind}`);
-    }
-    return result;
-  }
-
-  async forkSessionFromMessage(
-    sourceSessionId: string,
-    boundary: ConversationMessageReferenceV3
-  ): Promise<string> {
-    const source = this.projection.sessions.getSnapshot().find(
-      (session) => session.sessionId === sourceSessionId
-    );
-    if (source === undefined || boundary.sessionId !== source.sessionId) {
-      throw new Error('conversation_fork_projection_missing');
-    }
-    const sessionId = crypto.randomUUID();
-    const result = await this.command({
-      kind: 'conversation.session.fork.v3',
-      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
-      sessionId,
-      sourceSessionId: source.sessionId,
-      workspaceId: source.workspaceId,
-      expectedSourceSessionVersion: source.version,
-      boundary
-    });
-    if (
-      result.kind !== 'conversation.session.forked.v3'
-      || result.sessionId !== sessionId
-      || result.sourceSessionId !== source.sessionId
-    ) throw new Error(`runtime_result_invalid:${result.kind}`);
-    this.ui.selectSession(sessionId);
-    this.publish();
-    await this.requestSynchronization(false);
-    return sessionId;
   }
 
   isPlanModeEnabled(sessionId: string | null = this.ui.selectedSessionId): boolean {
@@ -927,34 +835,6 @@ export class RuntimeStore {
       choice: 'answer',
       answer
     });
-  }
-
-  private async mutateSession(
-    session: ConversationSession,
-    mutation:
-      | { readonly kind: 'conversation.session.rename.v3'; readonly title: string }
-      | { readonly kind: 'conversation.session.archive.v3' }
-      | { readonly kind: 'conversation.session.restore.v3' }
-  ): Promise<void> {
-    const authoritative = this.projection.sessions.getSnapshot().find(
-      (candidate) => candidate.sessionId === session.sessionId
-    );
-    if (authoritative === undefined || authoritative.workspaceId !== session.workspaceId) {
-      throw new Error('conversation_session_projection_missing');
-    }
-    const result = await this.command({
-      ...mutation,
-      contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
-      sessionId: authoritative.sessionId,
-      workspaceId: authoritative.workspaceId,
-      expectedSessionVersion: authoritative.version
-    });
-    if (
-      result.kind !== 'conversation.session.updated.v3'
-      || result.sessionId !== authoritative.sessionId
-      || result.version !== authoritative.version + 1
-    ) throw new Error(`runtime_result_invalid:${result.kind}`);
-    void this.requestSynchronization(false);
   }
 
   private async resolveProjectedDecision(input: {

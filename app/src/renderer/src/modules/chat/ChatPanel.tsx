@@ -245,8 +245,8 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   }), [services.events]);
 
   useEffect(() => services.system.onApprovalNavigation(({ sessionId }) => {
-    void services.runtime.selectSession(sessionId).catch(() => undefined);
-  }), [services.runtime, services.system]);
+    void services.sessions.select(sessionId).catch(() => undefined);
+  }), [services.sessions, services.system]);
 
   const changePermissionMode = async (nextPermissionMode: AgentPermissionMode): Promise<void> => {
     if (savingPermissionMode || nextPermissionMode === permissionMode) return;
@@ -524,7 +524,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                       onFork={node.reference === undefined ? undefined : async () => {
                         setConversationActionError(null);
                         try {
-                          await services.runtime.forkSessionFromMessage(
+                          await services.sessions.forkFromMessage(
                             node.reference!.sessionId,
                             node.reference!
                           );
