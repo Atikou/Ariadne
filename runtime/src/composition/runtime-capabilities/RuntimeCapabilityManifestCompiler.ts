@@ -1,7 +1,8 @@
 import {
   compileComponentCatalog,
   invokeComponentLifecycleReverse,
-  type ComponentCatalog
+  type ComponentCatalog,
+  type ComponentDefinition
 } from '@ariadne/component-contracts';
 import {
   FIRST_PARTY_AGENT_TOOL_CATALOG_DIGEST,
@@ -38,12 +39,16 @@ interface StartedProvider {
 
 export async function compileRuntimeCapabilityManifest(
   context: RuntimeCapabilityStartContext,
-  providers: readonly RuntimeCapabilityProvider[]
+  providers: readonly RuntimeCapabilityProvider[],
+  additionalDefinitions: readonly ComponentDefinition[] = []
 ): Promise<RuntimeCapabilityManifest> {
   const ordered = compileRuntimeCapabilityDefinitionGraph(providers);
   const componentCatalog = await compileComponentCatalog(
     'agent',
-    ordered.map((provider) => toAgentComponentDefinition(provider.definition))
+    [
+      ...ordered.map((provider) => toAgentComponentDefinition(provider.definition)),
+      ...additionalDefinitions
+    ]
   );
   const started: StartedProvider[] = [];
   const services = new Map<string, unknown>();

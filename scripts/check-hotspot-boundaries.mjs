@@ -176,11 +176,25 @@ const boundaries = [
     required: [
       './runtime-capabilities/ProductionRuntimeCapabilityContext.js',
       './runtime-capabilities/ProductionRuntimeCapabilityProviders.js',
-      './runtime-capabilities/RuntimeCapabilityManifestCompiler.js'
+      './runtime-capabilities/RuntimeCapabilityManifestCompiler.js',
+      './agent-entity/AgentCoreComponentDefinitions.js'
     ],
     forbidden: [
       /defineRuntimeCapabilityProvider/,
       /compileTrustedAgentToolCatalog/
+    ]
+  },
+  {
+    file: 'runtime/src/composition/agent-entity/AgentCoreComponentDefinitions.ts',
+    maxLines: 60,
+    required: [
+      '@ariadne/component-contracts'
+    ],
+    forbidden: [
+      /AgentControlPublicCommandRouter/,
+      /Sqlite\w+/,
+      /createAgent\w+Component/,
+      /ProductionAgentControlExecutionPipelineFactory/
     ]
   },
   {

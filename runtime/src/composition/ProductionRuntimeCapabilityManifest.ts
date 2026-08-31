@@ -9,6 +9,7 @@ import {
   productionRuntimeCapabilityProviders
 } from './runtime-capabilities/ProductionRuntimeCapabilityProviders.js';
 import { compileRuntimeCapabilityManifest } from './runtime-capabilities/RuntimeCapabilityManifestCompiler.js';
+import { agentCoreComponentDefinitions } from './agent-entity/AgentCoreComponentDefinitions.js';
 
 export type { ProductionRuntimeCapabilityManifestInput };
 export { createProductionRuntimeCapabilityStartContext };
@@ -26,7 +27,8 @@ export function compileProductionRuntimeCapabilityManifest(
 ): Promise<RuntimeCapabilityManifest> {
   return compileRuntimeCapabilityManifest(
     createProductionRuntimeCapabilityStartContext(input),
-    productionRuntimeCapabilityProviders()
+    productionRuntimeCapabilityProviders(),
+    agentCoreComponentDefinitions()
   );
 }
 

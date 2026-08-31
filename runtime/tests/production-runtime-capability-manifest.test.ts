@@ -101,6 +101,28 @@ describe('production Runtime Capability Manifest', () => {
     expect(manifest.agentComponentCatalog.entries.map((entry) => entry.id)).toContain(
       'agent.control.runtime-services'
     );
+    expect(manifest.agentComponentCatalog.entries.map((entry) => entry.id)).toEqual(
+      expect.arrayContaining([
+        'agent.persistence',
+        'agent.projection',
+        'agent.execution',
+        'agent.conversation',
+        'agent.run-control',
+        'agent.command-entity'
+      ])
+    );
+    expect(manifest.agentComponentCatalog.entries.find(
+      (entry) => entry.id === 'agent.command-entity'
+    )?.dependsOn).toEqual([
+      'agent.conversation',
+      'agent.inbox',
+      'agent.productivity',
+      'agent.projection',
+      'agent.run-control',
+      'agent.skills-human',
+      'agent.subagent-interrupt',
+      'agent.tool-result-detail'
+    ]);
     expect(manifest.agentToolCatalogSnapshots[0]?.entries.map(
       (entry) => entry.document.toolName
     )).toEqual([...FIRST_PARTY_AGENT_TOOL_NAMES]);
