@@ -98,7 +98,7 @@ describe('RuntimeStore session presentation', () => {
     }));
     await store.initialize();
 
-    const accepted = await store.sendMessage('Created', { workspaceId: 'workspace-primary' });
+    const accepted = await store.messages.send('Created', { workspaceId: 'workspace-primary' });
     expect(accepted.sessionId).toBe(createdSessionId);
 
     expect(store.getSnapshot()).toMatchObject({

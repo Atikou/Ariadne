@@ -206,7 +206,7 @@ export class SpeechCoordinator {
       this.storage.setItem(BACKGROUND_SESSION_KEY, activeRun.sessionId ?? '');
       return;
     }
-    const result = await this.runtime.sendMessage(content, {
+    const result = await this.runtime.messages.send(content, {
       ...(background ? { workspaceId: PERSONAL_ASSISTANT_WORKSPACE_ID } : {}),
       ...(sessionId ? { sessionId } : {}),
       selectSession: !background

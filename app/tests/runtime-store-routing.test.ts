@@ -394,7 +394,7 @@ describe('RuntimeStore command routing', () => {
       onEvent: () => () => undefined
     });
 
-    const error = await store.sendMessage('Hello', { workspaceId: 'workspace-a' })
+    const error = await store.messages.send('Hello', { workspaceId: 'workspace-a' })
       .catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(PublicResultError);

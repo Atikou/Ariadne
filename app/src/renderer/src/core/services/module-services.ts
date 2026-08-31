@@ -19,6 +19,7 @@ export function createModuleServices(
     decisions: runtime.decisions,
     events,
     humanSkills: runtime.humanSkills,
+    messages: runtime.messages,
     productivity: runtime.productivity,
     runtime,
     sessions: runtime.sessions,

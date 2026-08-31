@@ -410,7 +410,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
       } else if (activeRun) {
         throw new Error('runtime_capability_missing:agent.inbox');
       } else {
-        await services.runtime.sendMessage(message, {
+        await services.messages.send(message, {
           ...(images.length > 0
             ? { modelId: effectiveVisionModel!.id }
             : selectedModelId !== AUTO_MODEL_ID

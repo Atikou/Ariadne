@@ -74,7 +74,7 @@ describe('RuntimeStore v3 chat boundary', () => {
     await store.initialize();
     await store.sessions.select('session-image');
 
-    await store.sendMessage('', {
+    await store.messages.send('', {
       modelId: 'vision-model',
       attachments: [{ mediaType: 'image/png', data: 'aGVsbG8=', name: 'screen.png' }]
     });
@@ -259,7 +259,7 @@ describe('RuntimeStore v3 chat boundary', () => {
     }));
     await store.initialize();
 
-    await expect(store.sendMessage('读取这台电脑上的说明文件')).resolves.toMatchObject({
+    await expect(store.messages.send('读取这台电脑上的说明文件')).resolves.toMatchObject({
       sessionId: expect.any(String)
     });
     expect(commands.map((command) => command.kind)).toContain('conversation.message.accept.v3');
@@ -362,7 +362,7 @@ describe('RuntimeStore v3 chat boundary', () => {
     await store.initialize();
     await store.sessions.select('session-a');
 
-    const sending = store.sendMessage('Hello projection');
+    const sending = store.messages.send('Hello projection');
     await vi.waitFor(() => expect(resolveAccept).not.toBeNull());
     expect(store.getSnapshot().messages).toMatchObject([
       { role: 'user', content: 'Hello projection', deliveryState: 'pending' },
@@ -435,7 +435,7 @@ describe('RuntimeStore v3 chat boundary', () => {
     await store.initialize();
     store.setPlanModeEnabled(true);
 
-    const result = await store.sendMessage('First message', {
+    const result = await store.messages.send('First message', {
       workspaceId: 'workspace-primary',
       modelId: 'model-selected',
       inference: { reasoningMode: 'on', reasoningEffort: 'high' },
@@ -489,7 +489,7 @@ describe('RuntimeStore v3 chat boundary', () => {
     }));
     await store.initialize();
     await store.sessions.select('session-a');
-    await store.sendMessage('Plan this');
+    await store.messages.send('Plan this');
     await vi.waitFor(() => expect(store.getSnapshot().projectionCursor).toBe(1));
     expect(store.getSnapshot().pendingOverlayIds).toEqual([]);
     expect(store.getSnapshot().messages).toEqual([
@@ -538,7 +538,7 @@ describe('RuntimeStore v3 chat boundary', () => {
     }));
     await store.initialize();
     await store.sessions.select('session-a');
-    await store.sendMessage('Pending overlay');
+    await store.messages.send('Pending overlay');
     expect(store.getSnapshot().messages).toHaveLength(2);
 
     (statusListener as unknown as (status: RuntimeStatus) => void)({

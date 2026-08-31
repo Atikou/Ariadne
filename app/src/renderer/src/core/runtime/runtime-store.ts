@@ -1,14 +1,10 @@
 import { useSyncExternalStore } from 'react';
 
 import {
-  PUBLIC_PROJECTION_CONTRACT_VERSION,
-  PERSONAL_ASSISTANT_WORKSPACE_ID
+  PUBLIC_PROJECTION_CONTRACT_VERSION
 } from '@ariadne/protocol/public';
 import type {
-  ChatRoutingStrategy,
   ConversationSession,
-  EncodedImageAttachmentV3,
-  ModelInferenceOptions,
   ModelSummary,
   PublicRunProjectionV3,
   RunActivity,
@@ -57,6 +53,7 @@ import { ToolResultFeatureStore } from './features/tool-result-feature-store';
 import { HumanSkillFeatureStore } from './features/human-skill-feature-store';
 import { SessionFeatureStore } from './features/session-feature-store';
 import { DecisionFeatureStore } from './features/decision-feature-store';
+import { MessageFeatureStore } from './features/message-feature-store';
 
 export type { AgentInputDeliveryReceipt } from './agent-input-delivery';
 export type {
@@ -90,16 +87,6 @@ export interface RuntimeSnapshot {
   lastError: string | null;
 }
 
-export interface SendMessageOptions {
-  modelId?: string;
-  inference?: ModelInferenceOptions;
-  routingStrategy?: ChatRoutingStrategy;
-  workspaceId?: string;
-  sessionId?: string;
-  selectSession?: boolean;
-  attachments?: readonly EncodedImageAttachmentV3[];
-}
-
 const STOPPED_STATUS: RuntimeStatus = {
   availability: 'stopped',
   capabilities: [],
@@ -116,6 +103,7 @@ const ACTIVE_PROJECTION_POLL_INTERVAL_MS = 500;
 export class RuntimeStore {
   readonly decisions: DecisionFeatureStore;
   readonly humanSkills: HumanSkillFeatureStore;
+  readonly messages: MessageFeatureStore;
   readonly productivity: ProductivityFeatureStore;
   readonly sessions: SessionFeatureStore;
   readonly toolResults: ToolResultFeatureStore;
@@ -155,6 +143,20 @@ export class RuntimeStore {
       awaitDecisionSettlement: (decisionId) => this.awaitDecisionProjectionSettlement(decisionId)
     });
     this.humanSkills = new HumanSkillFeatureStore(featureGateway);
+    this.messages = new MessageFeatureStore(featureGateway, {
+      selectedSessionId: () => this.ui.selectedSessionId,
+      projectionSessions: () => this.projection.sessions.getSnapshot(),
+      hasCapability: (capability) => this.status.capabilities.includes(capability),
+      isPlanModeEnabled: (sessionId) => this.ui.isPlanModeEnabled(sessionId),
+      beginPendingChat: (message, now) => this.ui.beginPendingChat(message, now),
+      moveNewSessionPlanMode: (sessionId) => this.ui.moveNewSessionPlanMode(sessionId),
+      selectSession: (sessionId) => this.ui.selectSession(sessionId),
+      acceptPendingChat: (messageId, sessionId) => this.ui.acceptPendingChat(messageId, sessionId),
+      failPendingChat: (messageId, message) => this.ui.failPendingChat(messageId, message),
+      errorMessage: (error) => runtimeRequestErrorMessage(error),
+      publish: () => this.publish(),
+      synchronize: () => this.requestSynchronization(false)
+    });
     this.productivity = new ProductivityFeatureStore(featureGateway);
     this.sessions = new SessionFeatureStore(featureGateway, {
       projectionSessions: () => this.projection.sessions.getSnapshot(),
@@ -246,92 +248,6 @@ export class RuntimeStore {
   ): void {
     this.ui.setPlanModeEnabled(enabled, sessionId);
     this.publish();
-  }
-
-  async sendMessage(
-    message: string,
-    options: SendMessageOptions = {}
-  ): Promise<{ messageId: string; sessionId: string }> {
-    const selectedSessionId = options.sessionId ?? this.ui.selectedSessionId ?? undefined;
-    const selectedSession = this.projection.sessions.getSnapshot().find(
-      (session) => session.sessionId === selectedSessionId && session.status === 'active'
-    );
-    const workspaceId = selectedSession?.workspaceId
-      ?? options.workspaceId
-      ?? PERSONAL_ASSISTANT_WORKSPACE_ID;
-    const planMode = workspaceId !== PERSONAL_ASSISTANT_WORKSPACE_ID
-      && this.ui.isPlanModeEnabled(selectedSessionId ?? null);
-    if (planMode && !this.status.capabilities.includes('companion.agent-plan')) {
-      throw new Error('runtime_capability_missing:companion.agent-plan');
-    }
-    const executionMode = workspaceId === PERSONAL_ASSISTANT_WORKSPACE_ID
-      ? 'chat' as const
-      : planMode
-        ? 'plan' as const
-        : 'agent' as const;
-    const pending = this.ui.beginPendingChat(message, new Date().toISOString());
-    this.publish();
-
-    try {
-      let sessionId = selectedSessionId;
-      let expectedSessionVersion = selectedSession?.version;
-      if (!sessionId) {
-        sessionId = crypto.randomUUID();
-        const created = await this.command({
-          kind: 'conversation.session.create.v3',
-          contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
-          sessionId,
-          workspaceId
-        });
-        if (
-          created.kind !== 'conversation.session.created.v3'
-          || created.sessionId !== sessionId
-        ) throw new Error(`runtime_result_invalid:${created.kind}`);
-        expectedSessionVersion = created.version;
-        if (planMode) this.ui.moveNewSessionPlanMode(sessionId);
-        if (options.selectSession !== false) this.ui.selectSession(sessionId);
-        this.ui.acceptPendingChat(pending.clientMessageId, sessionId);
-        this.publish();
-      }
-      if (expectedSessionVersion === undefined) {
-        throw new Error('conversation_session_projection_missing');
-      }
-      const result = await this.command({
-        kind: 'conversation.message.accept.v3',
-        contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
-        sessionId,
-        workspaceId,
-        expectedSessionVersion,
-        messageId: pending.clientMessageId,
-        content: message,
-        ...(options.attachments === undefined
-          ? {}
-          : { attachments: options.attachments.map((attachment) => ({ ...attachment })) }),
-        execution: {
-          mode: executionMode,
-          ...(options.modelId === undefined ? {} : { modelId: options.modelId }),
-          ...(options.inference === undefined ? {} : { inference: options.inference }),
-          ...(options.routingStrategy === undefined
-            ? {}
-            : { routingStrategy: options.routingStrategy })
-        }
-      });
-      if (
-        result.kind !== 'conversation.message.accepted.v3'
-        || result.sessionId !== sessionId
-        || result.messageId !== pending.clientMessageId
-      ) {
-        throw new Error(`runtime_result_invalid:${result.kind}`);
-      }
-      this.ui.acceptPendingChat(pending.clientMessageId, result.sessionId);
-      this.publish();
-      void this.requestSynchronization(false);
-      return { messageId: result.messageId, sessionId: result.sessionId };
-    } catch (error) {
-      this.ui.failPendingChat(pending.clientMessageId, runtimeRequestErrorMessage(error));
-      this.publish();
-      throw error;
-    }
   }
 
   async cancelRun(run: Pick<RuntimeRun, 'runId' | 'origin'>): Promise<void> {

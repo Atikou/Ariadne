@@ -10,6 +10,7 @@ import type { HumanSkillFeatureStore } from '../runtime/features/human-skill-fea
 import type { ToolResultFeatureStore } from '../runtime/features/tool-result-feature-store';
 import type { SessionFeatureStore } from '../runtime/features/session-feature-store';
 import type { DecisionFeatureStore } from '../runtime/features/decision-feature-store';
+import type { MessageFeatureStore } from '../runtime/features/message-feature-store';
 
 export type ModuleId = string & { readonly __moduleId: unique symbol };
 export type ModuleIcon =
@@ -52,6 +53,7 @@ export interface ModuleServices {
   decisions: DecisionFeatureStore;
   events: TypedEventBus<AppEventMap>;
   humanSkills: HumanSkillFeatureStore;
+  messages: MessageFeatureStore;
   productivity: ProductivityFeatureStore;
   runtime: RuntimeStore;
   sessions: SessionFeatureStore;
