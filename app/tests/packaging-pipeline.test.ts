@@ -40,6 +40,7 @@ describe('production packaging pipeline', () => {
     expect(rootPackage.scripts['verify:release']).toContain('audit:runtime-independence');
     expect(rootPackage.workspaces).toEqual([
       'app',
+      'packages/component-contracts',
       'packages/agent-core',
       'packages/live-work',
       'packages/protocol',

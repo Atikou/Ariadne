@@ -3,7 +3,7 @@ import { RotateCcw, Search, Waypoints } from 'lucide-react';
 import type { DockviewApi } from 'dockview-react';
 import { PERSONAL_ASSISTANT_WORKSPACE_ID } from '@ariadne/protocol/public';
 import type { ThemePreference } from '@shared/contract';
-import { builtinModuleRegistry } from '@renderer/core/modules/builtin-modules';
+import { uiModuleRegistry } from '@renderer/core/modules/ui-module-registry';
 import type { ModuleId, ModuleServices } from '@renderer/core/modules/module-contract';
 import { MODULE_IDS } from '@renderer/core/modules/module-ids';
 import { useRuntimeSnapshot } from '@renderer/core/runtime/runtime-store';
@@ -69,7 +69,7 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
       setSettingsOpen(true);
       return;
     }
-    if (dockviewApi) openModule(dockviewApi, builtinModuleRegistry, id);
+    if (dockviewApi) openModule(dockviewApi, uiModuleRegistry, id);
   };
 
   const handleOpenModules = (ids: readonly ModuleId[]): void => {
@@ -81,7 +81,7 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
     : openModuleIds;
 
   useEffect(() => services.events.subscribe('module:open', (id) => {
-    const definition = builtinModuleRegistry.get(id);
+    const definition = uiModuleRegistry.get(id);
     if (definition) handleOpenModule(definition.id);
   }), [services, dockviewApi]);
 
@@ -105,7 +105,7 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
             Runtime {formatRuntimeAvailability(runtime.status.availability)}
           </span>
           <ModuleMenu
-            modules={builtinModuleRegistry.list()}
+            modules={uiModuleRegistry.list()}
             openModuleIds={visibleOpenModuleIds}
             onOpenModule={handleOpenModule}
           />
@@ -118,7 +118,7 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
         <ActivityBar openModuleIds={visibleOpenModuleIds} onOpen={handleOpenModules} />
         <div className="workspace-frame">
           <Workspace
-            registry={builtinModuleRegistry}
+            registry={uiModuleRegistry}
             services={services}
             onApiReady={(api) => {
               api.getPanel(MODULE_IDS.settings)?.api.close();
@@ -133,7 +133,7 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
       <GlobalStatusBar services={services} saveStatus={saveStatus} />
       <CommandPalette
         open={commandOpen}
-        registry={builtinModuleRegistry}
+        registry={uiModuleRegistry}
         onClose={() => setCommandOpen(false)}
         onOpenModule={handleOpenModule}
         runtime={services.runtime}
@@ -146,7 +146,7 @@ export function App({ services }: { services: ModuleServices }): React.JSX.Eleme
         confirmLabel="重置布局"
         onClose={() => setResetDialogOpen(false)}
         onConfirm={() => {
-          if (dockviewApi) resetWorkspace(dockviewApi, builtinModuleRegistry);
+          if (dockviewApi) resetWorkspace(dockviewApi, uiModuleRegistry);
           setResetDialogOpen(false);
         }}
       />

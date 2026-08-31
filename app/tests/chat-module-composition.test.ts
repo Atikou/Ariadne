@@ -9,7 +9,7 @@ describe('Chat module composition', () => {
     const [chat, sidebar, registry, moduleIds] = await Promise.all([
       readFile(join(rendererRoot, 'modules', 'chat', 'ChatPanel.tsx'), 'utf8'),
       readFile(join(rendererRoot, 'modules', 'chat', 'ConversationSidebar.tsx'), 'utf8'),
-      readFile(join(rendererRoot, 'core', 'modules', 'builtin-modules.ts'), 'utf8'),
+      readFile(join(rendererRoot, 'core', 'modules', 'UiComponentCatalog.generated.ts'), 'utf8'),
       readFile(join(rendererRoot, 'core', 'modules', 'module-ids.ts'), 'utf8')
     ]);
 
