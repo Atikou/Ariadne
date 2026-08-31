@@ -5,6 +5,10 @@ import type { RuntimeCommandEnvelope } from '../../../ingress/RuntimeIngress.js'
 import type { RuntimeCommandReconciliation } from '../../../control/ports/RuntimeCommandJournal.js';
 
 export type PublicCommandKind = RuntimeCommand['kind'];
+export type OwnedPublicCommand<K extends PublicCommandKind> = Extract<
+  RuntimeCommandEnvelope['command'],
+  { readonly kind: K }
+>;
 
 export interface AgentPublicCommandOwner {
   readonly id: string;
@@ -22,6 +26,33 @@ export interface AgentPublicCommandOwnerTable {
   execute(envelope: RuntimeCommandEnvelope): Promise<RuntimeApplicationCommandResult | null>;
   reconcile(envelope: RuntimeCommandEnvelope): Promise<RuntimeCommandReconciliation | null>;
   diagnosticSnapshot(): readonly AgentPublicCommandOwnerSnapshot[];
+}
+
+export function defineAgentPublicCommandOwner<K extends PublicCommandKind>(
+  id: string,
+  commandKinds: readonly K[],
+  execute: (
+    envelope: RuntimeCommandEnvelope,
+    command: OwnedPublicCommand<K>
+  ) => Promise<RuntimeApplicationCommandResult>,
+  reconcile: (
+    envelope: RuntimeCommandEnvelope,
+    command: OwnedPublicCommand<K>
+  ) => Promise<RuntimeCommandReconciliation>
+): AgentPublicCommandOwner {
+  const frozenKinds = Object.freeze([...commandKinds]);
+  return Object.freeze({
+    id,
+    commandKinds: frozenKinds,
+    execute: (envelope: RuntimeCommandEnvelope) => execute(
+      envelope,
+      envelope.command as OwnedPublicCommand<K>
+    ),
+    reconcile: (envelope: RuntimeCommandEnvelope) => reconcile(
+      envelope,
+      envelope.command as OwnedPublicCommand<K>
+    )
+  });
 }
 
 /** Compile one immutable, duplicate-free command ownership table before Runtime readiness. */

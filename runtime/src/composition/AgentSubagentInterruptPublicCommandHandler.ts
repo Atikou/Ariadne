@@ -5,6 +5,10 @@ import type { RuntimeApplicationCommandResult } from '../ingress/RuntimeApplicat
 import type { RuntimeCommandEnvelope } from '../ingress/RuntimeIngress.js';
 import type { AgentControlExecutionPipeline } from './ProductionAgentControlExecutionPipelineFactory.js';
 import { completedPublicError } from './AgentPublicCommandFailures.js';
+import {
+  defineAgentPublicCommandOwner,
+  type AgentPublicCommandOwner
+} from './agent-entity/command-owners/AgentPublicCommandOwnerTable.js';
 
 type InterruptCommand = Extract<
   RuntimeCommandEnvelope['command'],
@@ -143,6 +147,23 @@ export class AgentSubagentInterruptPublicCommandHandler {
       runId: current.runId,
       runVersion: current.version
     }, isTerminal(current.state.status) ? 'inactive' : 'idle');
+  }
+
+  public commandOwners(): readonly AgentPublicCommandOwner[] {
+    return Object.freeze([
+      defineAgentPublicCommandOwner('agent.subagent-interrupt', [
+        'agent.subagent.interrupt.v3'
+      ], (envelope, command) => this.execute(envelope, command),
+      async (envelope, command) => {
+        const result = await this.execute(envelope, command);
+        if (result.settlement !== 'completed') {
+          throw new Error('agent_subagent_interrupt_reconciliation_invalid');
+        }
+        return result.outcome.ok
+          ? { kind: 'committed', outcome: result.outcome }
+          : { kind: 'not_committed' };
+      })
+    ]);
   }
 
   private async loadCommitted(

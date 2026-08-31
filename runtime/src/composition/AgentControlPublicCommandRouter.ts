@@ -9,27 +9,30 @@ import type {
   RuntimeApplicationCommandResult
 } from '../ingress/RuntimeApplication.js';
 import type { RuntimeCommandEnvelope } from '../ingress/RuntimeIngress.js';
-import type {
-  RuntimeCommandReconciliation
-} from '../control/ports/RuntimeCommandJournal.js';
+import type { RuntimeCommandReconciliation } from '../control/ports/RuntimeCommandJournal.js';
 import type { ConversationAttachmentStore } from '../control/ports/ConversationAttachmentStore.js';
 import type {
   AgentControlExecutionPipeline
 } from './ProductionAgentControlExecutionPipelineFactory.js';
 import { AgentInboxPublicCommandHandler } from './AgentInboxPublicCommandHandler.js';
 import { AgentSubagentInterruptPublicCommandHandler } from './AgentSubagentInterruptPublicCommandHandler.js';
-import { HumanSkillPublicCommandHandler } from './HumanSkillPublicCommandHandler.js';
+import {
+  createHumanSkillCommandOwners,
+  HumanSkillPublicCommandHandler
+} from './HumanSkillPublicCommandHandler.js';
 import type { HumanSkillCatalog } from '../control/ports/HumanSkillCatalog.js';
 import {
+  createProductivityCommandOwners,
   ProductivityPublicCommandHandler
 } from './ProductivityPublicCommandHandler.js';
 import {
-  compileAgentPublicCommandOwnerTable,
+  type AgentPublicCommandOwner,
   type AgentPublicCommandOwnerTable
 } from './agent-entity/command-owners/AgentPublicCommandOwnerTable.js';
 import {
-  createAgentPublicCommandOwners
-} from './agent-entity/command-owners/AgentPublicCommandOwners.js';
+  agentEntityCommandComponent,
+  compileAgentEntityCommandManifest
+} from './agent-entity/AgentEntityCompiler.js';
 import {
   createAgentConversationComponent,
   type AgentConversationComponentHandle
@@ -55,9 +58,7 @@ export interface AgentControlPublicCommandRouterOptions {
 
 export interface AgentControlPublicCommandRouterCallbacks {
   readonly wakeProjectionDrain: () => void;
-  readonly executeProjectionCommand: (
-    envelope: RuntimeCommandEnvelope
-  ) => Promise<RuntimeApplicationCommandResult>;
+  readonly projectionCommandOwners: readonly AgentPublicCommandOwner[];
 }
 
 /**
@@ -123,28 +124,28 @@ export class AgentControlPublicCommandRouter {
           conversation,
           options.authorizedWorkspaceIds ?? []
         );
-    this.ownerTable = compileAgentPublicCommandOwnerTable(
-      createAgentPublicCommandOwners({
-        conversation: this.conversationComponent,
-        runControl: this.runControlComponent,
-        toolResultDetail: this.toolResultDetailComponent,
-        agentInbox: this.agentInbox,
-        subagentInterrupt: this.subagentInterrupt,
-        humanSkills: this.humanSkills,
-        productivity: this.productivity,
-        executeProjectionCommand: callbacks.executeProjectionCommand,
-        reconcileConversation: (envelope, invalidErrorCode) => (
-          this.conversationComponent.reconcileCommitted(
-            envelope,
-            () => this.ownerTable.execute(envelope),
-            invalidErrorCode
-          )
-        ),
-        reconcileByReplay: (envelope, invalidErrorCode) => (
-          this.reconcileByReplay(envelope, invalidErrorCode)
-        )
-      })
-    );
+    this.ownerTable = compileAgentEntityCommandManifest([
+      agentEntityCommandComponent(
+        'agent.conversation', this.conversationComponent.commandOwners()
+      ),
+      agentEntityCommandComponent(
+        'agent.run-control', this.runControlComponent.commandOwners()
+      ),
+      agentEntityCommandComponent(
+        'agent.tool-result-detail', this.toolResultDetailComponent.commandOwners()
+      ),
+      agentEntityCommandComponent('agent.inbox', this.agentInbox.commandOwners()),
+      agentEntityCommandComponent(
+        'agent.subagent-interrupt', this.subagentInterrupt.commandOwners()
+      ),
+      agentEntityCommandComponent('agent.skills-human', createHumanSkillCommandOwners(
+        this.humanSkills
+      )),
+      agentEntityCommandComponent('agent.productivity', createProductivityCommandOwners(
+        this.productivity
+      )),
+      agentEntityCommandComponent('agent.projection', callbacks.projectionCommandOwners)
+    ]).ownerTable;
   }
 
   public async executeOwnedCommand(
@@ -157,19 +158,6 @@ export class AgentControlPublicCommandRouter {
     envelope: RuntimeCommandEnvelope
   ): Promise<RuntimeCommandReconciliation | null> {
     return this.ownerTable.reconcile(envelope);
-  }
-
-  private async reconcileByReplay(
-    envelope: RuntimeCommandEnvelope,
-    invalidErrorCode: string
-  ): Promise<RuntimeCommandReconciliation> {
-    const result = await this.ownerTable.execute(envelope);
-    if (result === null || result.settlement !== 'completed') {
-      throw new Error(invalidErrorCode);
-    }
-    return result.outcome.ok
-      ? { kind: 'committed', outcome: result.outcome }
-      : { kind: 'not_committed' };
   }
 
 }

@@ -4,6 +4,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SqliteAgentRunUnitOfWork } from '../src/adapters/persistence/SqliteAgentRunUnitOfWork.js';
 import type { SqliteConversationRunHandoffUnitOfWork } from '../src/adapters/persistence/SqliteConversationRunHandoffUnitOfWork.js';
 import { AgentControlPublicCommandRouter } from '../src/composition/AgentControlPublicCommandRouter.js';
+import {
+  defineAgentPublicCommandOwner
+} from '../src/composition/agent-entity/command-owners/AgentPublicCommandOwnerTable.js';
 import type { AgentControlExecutionPipeline } from '../src/composition/ProductionAgentControlExecutionPipelineFactory.js';
 import type { RuntimeCommandEnvelope } from '../src/ingress/RuntimeIngress.js';
 
@@ -107,7 +110,7 @@ describe('AgentControlPublicCommandRouter SubAgent interruption', () => {
       {} as SqliteAgentRunUnitOfWork,
       {} as SqliteConversationRunHandoffUnitOfWork,
       pipeline,
-      { wakeProjectionDrain: vi.fn(), executeProjectionCommand: vi.fn() },
+      { wakeProjectionDrain: vi.fn(), projectionCommandOwners: [projectionOwner()] },
       { authorizedWorkspaceIds: ['workspace-detail'] }
     );
     const command = {
@@ -178,7 +181,7 @@ function routerFor(
     pipeline,
     {
       wakeProjectionDrain: vi.fn(),
-      executeProjectionCommand: vi.fn()
+      projectionCommandOwners: [projectionOwner()]
     }
   );
 }
@@ -228,4 +231,12 @@ function childRun(parentRunId: string, mode: 'one_shot' | 'continuable') {
     },
     state: { status: 'running' }
   } as const;
+}
+
+function projectionOwner() {
+  return defineAgentPublicCommandOwner('projection.query', [
+    'projection.snapshot.get', 'projection.commits.read'
+  ], async () => {
+    throw new Error('projection_command_not_expected');
+  }, async () => ({ kind: 'not_committed' }));
 }

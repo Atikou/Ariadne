@@ -4,6 +4,10 @@ import type { SqliteProductivityStore } from '../adapters/persistence/SqliteProd
 import type { RuntimeApplicationCommandResult } from '../ingress/RuntimeApplication.js';
 import type { RuntimeCommandEnvelope } from '../ingress/RuntimeIngress.js';
 import { completedPublicError } from './AgentPublicCommandFailures.js';
+import {
+  defineAgentPublicCommandOwner,
+  type AgentPublicCommandOwner
+} from './agent-entity/command-owners/AgentPublicCommandOwnerTable.js';
 
 export const PRODUCTIVITY_COMMAND_KINDS = Object.freeze([
   'goal.put.v3', 'todo.snapshot.replace.v3', 'productivity.query.v3',
@@ -22,6 +26,25 @@ export function isProductivityQuery(
   command: ProductivityCommand
 ): command is Extract<ProductivityCommand, { kind: 'productivity.query.v3' | 'schedules.query.v3' }> {
   return command.kind === 'productivity.query.v3' || command.kind === 'schedules.query.v3';
+}
+
+export function createProductivityCommandOwners(
+  handler: ProductivityPublicCommandHandler | undefined
+): readonly AgentPublicCommandOwner[] {
+  return Object.freeze([
+    defineAgentPublicCommandOwner('productivity', PRODUCTIVITY_COMMAND_KINDS,
+      (envelope, command) => handler?.execute(envelope, command)
+        ?? Promise.resolve(completedPublicError(
+          envelope, 'productivity_unavailable',
+          'Goal, Todo, Workflow and Schedule authority is unavailable.', false
+        )), async (envelope, command) => {
+        if (isProductivityQuery(command)) return { kind: 'not_committed' };
+        const result = await handler?.reconcile(envelope);
+        return result?.outcome.ok
+          ? { kind: 'committed', outcome: result.outcome }
+          : { kind: 'not_committed' };
+      })
+  ]);
 }
 
 export class ProductivityPublicCommandHandler {

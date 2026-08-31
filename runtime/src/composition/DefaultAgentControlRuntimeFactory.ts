@@ -132,7 +132,7 @@ implements AgentControlRuntimeLifecycle {
       executionPipeline,
       {
         wakeProjectionDrain: () => this.projection.wake(),
-        executeProjectionCommand: (envelope) => this.projection.executeCommand(envelope)
+        projectionCommandOwners: this.projection.commandOwners()
       },
       {
         authorizedWorkspaceIds,

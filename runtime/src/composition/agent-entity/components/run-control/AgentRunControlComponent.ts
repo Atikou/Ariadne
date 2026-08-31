@@ -10,6 +10,10 @@ import type { RuntimeApplicationCommandResult } from '../../../../ingress/Runtim
 import type { RuntimeCommandEnvelope } from '../../../../ingress/RuntimeIngress.js';
 import { completedPublicError, publicRunMutationFailure } from '../../../AgentPublicCommandFailures.js';
 import type { AgentControlExecutionPipeline } from '../../../ProductionAgentControlExecutionPipelineFactory.js';
+import {
+  defineAgentPublicCommandOwner,
+  type AgentPublicCommandOwner
+} from '../../command-owners/AgentPublicCommandOwnerTable.js';
 
 type DecisionCommand = Extract<RuntimeCommandEnvelope['command'], {
   readonly kind: 'agent.decision.resolve.v3';
@@ -27,6 +31,7 @@ export interface AgentRunControlComponentInput {
 }
 
 export interface AgentRunControlComponentHandle {
+  commandOwners(): readonly AgentPublicCommandOwner[];
   executeDecision(
     envelope: RuntimeCommandEnvelope,
     command: DecisionCommand
@@ -71,6 +76,27 @@ class DefaultAgentRunControlComponent implements AgentRunControlComponentHandle 
     return result === null
       ? { kind: 'not_committed' }
       : { kind: 'committed', outcome: { ok: true, result } };
+  }
+
+  public commandOwners(): readonly AgentPublicCommandOwner[] {
+    return Object.freeze([
+      defineAgentPublicCommandOwner('agent.decision', [
+        'agent.decision.resolve.v3'
+      ], (envelope, command) => this.executeDecision(envelope, command),
+      (envelope, command) => this.reconcileDecision(envelope, command)),
+      defineAgentPublicCommandOwner('agent.run', [
+        'agent.run.cancel.v3'
+      ], (envelope, command) => this.executeCancellation(envelope, command),
+      async (envelope, command) => {
+        const result = await this.executeCancellation(envelope, command);
+        if (result.settlement !== 'completed') {
+          throw new Error('agent_run_cancel_reconciliation_invalid');
+        }
+        return result.outcome.ok
+          ? { kind: 'committed', outcome: result.outcome }
+          : { kind: 'not_committed' };
+      })
+    ]);
   }
 
   public async executeDecision(

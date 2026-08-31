@@ -3,6 +3,10 @@ import type { RuntimeApplicationCommandResult } from '../ingress/RuntimeApplicat
 import type { RuntimeCommandEnvelope } from '../ingress/RuntimeIngress.js';
 import type { HumanSkillCatalog } from '../control/ports/HumanSkillCatalog.js';
 import { completedPublicError } from './AgentPublicCommandFailures.js';
+import {
+  defineAgentPublicCommandOwner,
+  type AgentPublicCommandOwner
+} from './agent-entity/command-owners/AgentPublicCommandOwnerTable.js';
 
 type HumanSkillCommand = Extract<RuntimeCommandEnvelope['command'], {
   readonly kind:
@@ -12,6 +16,20 @@ type HumanSkillCommand = Extract<RuntimeCommandEnvelope['command'], {
 }>;
 
 const MAX_PUBLIC_RESOURCE_BYTES = 192 * 1024;
+
+export function createHumanSkillCommandOwners(
+  handler: HumanSkillPublicCommandHandler | undefined
+): readonly AgentPublicCommandOwner[] {
+  return Object.freeze([
+    defineAgentPublicCommandOwner('skills.human', [
+      'skill.commands.query.v3', 'skill.command.load.v3', 'skill.command.resource.read.v3'
+    ], (envelope, command) => handler?.execute(envelope, command)
+      ?? Promise.resolve(completedPublicError(
+        envelope, 'skill_catalog_unavailable',
+        'The human Skill command catalog is unavailable.', false
+      )), async () => ({ kind: 'not_committed' }))
+  ]);
+}
 
 /** Human-only Skill command surface. It never enters Agent admission or starts a Run. */
 export class HumanSkillPublicCommandHandler {

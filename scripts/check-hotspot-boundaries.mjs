@@ -61,7 +61,7 @@ const boundaries = [
     maxLines: 200,
     required: [
       './agent-entity/command-owners/AgentPublicCommandOwnerTable.js',
-      './agent-entity/command-owners/AgentPublicCommandOwners.js',
+      './agent-entity/AgentEntityCompiler.js',
       './agent-entity/components/conversation/AgentConversationComponent.js',
       './agent-entity/components/run-control/AgentRunControlComponent.js',
       './agent-entity/components/tool-result-detail/AgentToolResultDetailComponent.js'
@@ -77,12 +77,28 @@ const boundaries = [
       /publicRunMutationFailure/,
       /protectedEffectResultReader/,
       /PUBLIC_PROJECTION_CONTRACT_VERSION/,
-      /SqlitePublicProjectionStore/
+      /SqlitePublicProjectionStore/,
+      /AgentPublicCommandOwners/
+    ]
+  },
+  {
+    file: 'runtime/src/composition/agent-entity/AgentEntityCompiler.ts',
+    maxLines: 90,
+    required: [
+      './command-owners/AgentPublicCommandOwnerTable.js'
+    ],
+    forbidden: [
+      /ConversationAuthorityService/,
+      /AgentDecisionAuthorityService/,
+      /Sqlite\w+Store/,
+      /Sqlite\w+UnitOfWork/,
+      /conversation\.session\.create/,
+      /agent\.run\.cancel/
     ]
   },
   {
     file: 'runtime/src/composition/agent-entity/components/tool-result-detail/AgentToolResultDetailComponent.ts',
-    maxLines: 90,
+    maxLines: 105,
     forbidden: [
       /SqliteAgentRunUnitOfWork/,
       /SqliteConversationRunHandoffUnitOfWork/,
@@ -91,7 +107,7 @@ const boundaries = [
   },
   {
     file: 'runtime/src/composition/agent-entity/components/run-control/AgentRunControlComponent.ts',
-    maxLines: 270,
+    maxLines: 290,
     required: [
       '../../../../control/run/AgentDecisionAuthorityService.js'
     ],
@@ -103,7 +119,7 @@ const boundaries = [
   },
   {
     file: 'runtime/src/composition/agent-entity/components/conversation/AgentConversationComponent.ts',
-    maxLines: 280,
+    maxLines: 310,
     required: [
       '../../../../control/conversation/ConversationAuthorityService.js',
       '../../../ConversationSessionPublicCommandHandler.js',
@@ -117,17 +133,7 @@ const boundaries = [
   },
   {
     file: 'runtime/src/composition/agent-entity/command-owners/AgentPublicCommandOwnerTable.ts',
-    maxLines: 90,
-    forbidden: [
-      /ConversationAuthorityService/,
-      /AgentDecisionAuthorityService/,
-      /Sqlite\w+Store/,
-      /Sqlite\w+UnitOfWork/
-    ]
-  },
-  {
-    file: 'runtime/src/composition/agent-entity/command-owners/AgentPublicCommandOwners.ts',
-    maxLines: 180,
+    maxLines: 110,
     forbidden: [
       /ConversationAuthorityService/,
       /AgentDecisionAuthorityService/,

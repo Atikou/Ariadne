@@ -13,6 +13,10 @@ import {
   AgentControlConversationMessageAdmissionError,
   type AgentControlExecutionPipeline
 } from '../../../ProductionAgentControlExecutionPipelineFactory.js';
+import {
+  defineAgentPublicCommandOwner,
+  type AgentPublicCommandOwner
+} from '../../command-owners/AgentPublicCommandOwnerTable.js';
 
 type SessionCommand = Extract<RuntimeCommandEnvelope['command'], {
   readonly kind:
@@ -47,6 +51,7 @@ export interface AgentConversationComponentInput {
 }
 
 export interface AgentConversationComponentHandle {
+  commandOwners(): readonly AgentPublicCommandOwner[];
   executeSession(
     envelope: RuntimeCommandEnvelope,
     command: SessionCommand
@@ -107,6 +112,39 @@ class DefaultAgentConversationComponent implements AgentConversationComponentHan
     command: SessionCommand
   ): Promise<RuntimeApplicationCommandResult> {
     return this.sessions.execute(envelope, command);
+  }
+
+  public commandOwners(): readonly AgentPublicCommandOwner[] {
+    return Object.freeze([
+      defineAgentPublicCommandOwner('conversation.sessions', [
+        'conversation.session.create.v3', 'conversation.session.rename.v3',
+        'conversation.session.archive.v3', 'conversation.session.restore.v3'
+      ], (envelope, command) => this.executeSession(envelope, command),
+      (envelope, command) => this.reconcileCommitted(
+        envelope,
+        () => this.executeSession(envelope, command),
+        'conversation_command_reconciliation_invalid'
+      )),
+      defineAgentPublicCommandOwner('conversation.navigation', [
+        'conversation.session.fork.v3', 'conversation.sessions.query.v3',
+        'conversation.message.resolve.v3'
+      ], (envelope, command) => this.executeNavigation(envelope, command),
+      (envelope, command) => command.kind === 'conversation.session.fork.v3'
+        ? this.reconcileCommitted(
+            envelope,
+            () => this.executeNavigation(envelope, command),
+            'conversation_fork_reconciliation_invalid'
+          )
+        : Promise.resolve({ kind: 'not_committed' })),
+      defineAgentPublicCommandOwner('conversation.message', [
+        'conversation.message.accept.v3'
+      ], (envelope, command) => this.executeAcceptMessage(envelope, command),
+      (envelope, command) => this.reconcileCommitted(
+        envelope,
+        () => this.executeAcceptMessage(envelope, command),
+        'conversation_command_reconciliation_invalid'
+      ))
+    ]);
   }
 
   public executeNavigation(

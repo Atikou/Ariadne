@@ -39,6 +39,10 @@ import type {
   AgentControlExecutionPipeline
 } from '../../../ProductionAgentControlExecutionPipelineFactory.js';
 import type { AgentPersistenceComponentHandle } from '../persistence/AgentPersistenceComponent.js';
+import {
+  defineAgentPublicCommandOwner,
+  type AgentPublicCommandOwner
+} from '../../command-owners/AgentPublicCommandOwnerTable.js';
 
 const DEFAULT_PUBLIC_PROJECTION_INTERVAL_MS = 50;
 const EMPTY_MODEL_CATALOG: ModelCatalogProjectionSource = Object.freeze({
@@ -66,6 +70,7 @@ export interface AgentProjectionComponentInput {
 
 export interface AgentProjectionComponentHandle {
   readonly conversationCommandNow: () => Date;
+  commandOwners(): readonly AgentPublicCommandOwner[];
   drainPending(): Promise<void>;
   wake(): void;
   activate(): void;
@@ -153,6 +158,15 @@ class DefaultAgentProjectionComponent implements AgentProjectionComponentHandle 
     const operation = this.drainRequests();
     this.activeDrain = operation;
     return operation;
+  }
+
+  public commandOwners(): readonly AgentPublicCommandOwner[] {
+    return Object.freeze([
+      defineAgentPublicCommandOwner('projection.query', [
+        'projection.snapshot.get', 'projection.commits.read'
+      ], (envelope) => this.executeCommand(envelope),
+      async () => ({ kind: 'not_committed' }))
+    ]);
   }
 
   public wake(): void {

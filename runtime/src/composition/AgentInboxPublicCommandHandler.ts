@@ -11,6 +11,10 @@ import {
   completedPublicError,
   publicRunMutationFailure
 } from './AgentPublicCommandFailures.js';
+import {
+  defineAgentPublicCommandOwner,
+  type AgentPublicCommandOwner
+} from './agent-entity/command-owners/AgentPublicCommandOwnerTable.js';
 
 type AgentInboxCommand = Extract<
   RuntimeCommandEnvelope['command'],
@@ -119,6 +123,24 @@ export class AgentInboxPublicCommandHandler {
       inputId: command.inputId,
       inputVersion: 1
     });
+  }
+
+  public commandOwners(): readonly AgentPublicCommandOwner[] {
+    return Object.freeze([
+      defineAgentPublicCommandOwner('agent.inbox', [
+        'agent.inbox.enqueue.v3', 'agent.inbox.replace.v3',
+        'agent.inbox.remove.v3', 'agent.subagent.send.v3'
+      ], (envelope, command) => this.execute(envelope, command),
+      async (envelope, command) => {
+        const result = await this.execute(envelope, command);
+        if (result.settlement !== 'completed') {
+          throw new Error('agent_inbox_command_reconciliation_invalid');
+        }
+        return result.outcome.ok
+          ? { kind: 'committed', outcome: result.outcome }
+          : { kind: 'not_committed' };
+      })
+    ]);
   }
 
   private async sendToSubagent(

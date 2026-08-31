@@ -2,6 +2,10 @@ import type { RuntimeApplicationCommandResult } from '../../../../ingress/Runtim
 import type { RuntimeCommandEnvelope } from '../../../../ingress/RuntimeIngress.js';
 import { completedPublicError } from '../../../AgentPublicCommandFailures.js';
 import type { AgentControlExecutionPipeline } from '../../../ProductionAgentControlExecutionPipelineFactory.js';
+import {
+  defineAgentPublicCommandOwner,
+  type AgentPublicCommandOwner
+} from '../../command-owners/AgentPublicCommandOwnerTable.js';
 
 type ToolResultDetailCommand = Extract<RuntimeCommandEnvelope['command'], {
   readonly kind: 'agent.tool_result.detail.get.v3';
@@ -13,6 +17,7 @@ export interface AgentToolResultDetailComponentInput {
 }
 
 export interface AgentToolResultDetailComponentHandle {
+  commandOwners(): readonly AgentPublicCommandOwner[];
   execute(
     envelope: RuntimeCommandEnvelope,
     command: ToolResultDetailCommand
@@ -24,6 +29,12 @@ export function createAgentToolResultDetailComponent(
 ): AgentToolResultDetailComponentHandle {
   const authorizedWorkspaces = new Set(input.authorizedWorkspaceIds ?? []);
   const handle: AgentToolResultDetailComponentHandle = {
+    commandOwners: () => Object.freeze([
+      defineAgentPublicCommandOwner('agent.tool-detail', [
+        'agent.tool_result.detail.get.v3'
+      ], (envelope, command) => handle.execute(envelope, command),
+      async () => ({ kind: 'not_committed' }))
+    ]),
     execute: async (
       envelope: RuntimeCommandEnvelope,
       command: ToolResultDetailCommand
