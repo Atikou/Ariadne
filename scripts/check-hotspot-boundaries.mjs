@@ -11,6 +11,7 @@ const boundaries = [
     required: [
       './AgentControlPublicCommandRouter.js',
       './AgentControlRuntimeCompositionSupport.js',
+      './agent-entity/AgentEntityCommandAssembly.js',
       './agent-entity/components/persistence/AgentPersistenceComponent.js',
       './agent-entity/components/projection/AgentProjectionComponent.js'
     ],
@@ -58,16 +59,13 @@ const boundaries = [
   },
   {
     file: 'runtime/src/composition/AgentControlPublicCommandRouter.ts',
-    maxLines: 200,
+    maxLines: 40,
     required: [
-      './agent-entity/command-owners/AgentPublicCommandOwnerTable.js',
-      './agent-entity/AgentEntityCompiler.js',
-      './agent-entity/components/conversation/AgentConversationComponent.js',
-      './agent-entity/components/run-control/AgentRunControlComponent.js',
-      './agent-entity/components/tool-result-detail/AgentToolResultDetailComponent.js'
+      './agent-entity/command-owners/AgentPublicCommandOwnerTable.js'
     ],
     forbidden: [
       /switch\s*\(\s*envelope\.command\.kind\s*\)/,
+      /AgentEntityCommandAssembly/,
       /ConversationAuthorityService/,
       /ConversationSessionPublicCommandHandler/,
       /ConversationNavigationPublicCommandHandler/,
@@ -79,6 +77,20 @@ const boundaries = [
       /PUBLIC_PROJECTION_CONTRACT_VERSION/,
       /SqlitePublicProjectionStore/,
       /AgentPublicCommandOwners/
+    ]
+  },
+  {
+    file: 'runtime/src/composition/agent-entity/AgentEntityCommandAssembly.ts',
+    maxLines: 130,
+    required: [
+      './AgentEntityCompiler.js',
+      './components/conversation/AgentConversationComponent.js',
+      './components/run-control/AgentRunControlComponent.js',
+      './components/tool-result-detail/AgentToolResultDetailComponent.js'
+    ],
+    forbidden: [
+      /AgentControlPublicCommandRouter/,
+      /switch\s*\(\s*envelope\.command\.kind\s*\)/
     ]
   },
   {

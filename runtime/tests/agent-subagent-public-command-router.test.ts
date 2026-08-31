@@ -5,6 +5,9 @@ import type { SqliteAgentRunUnitOfWork } from '../src/adapters/persistence/Sqlit
 import type { SqliteConversationRunHandoffUnitOfWork } from '../src/adapters/persistence/SqliteConversationRunHandoffUnitOfWork.js';
 import { AgentControlPublicCommandRouter } from '../src/composition/AgentControlPublicCommandRouter.js';
 import {
+  composeAgentEntityCommandManifest
+} from '../src/composition/agent-entity/AgentEntityCommandAssembly.js';
+import {
   defineAgentPublicCommandOwner
 } from '../src/composition/agent-entity/command-owners/AgentPublicCommandOwnerTable.js';
 import type { AgentControlExecutionPipeline } from '../src/composition/ProductionAgentControlExecutionPipelineFactory.js';
@@ -106,13 +109,15 @@ describe('AgentControlPublicCommandRouter SubAgent interruption', () => {
       },
       runWorkScheduler: { wake: vi.fn(), interruptActiveTurn: vi.fn() }
     } as unknown as AgentControlExecutionPipeline;
-    const router = new AgentControlPublicCommandRouter(
-      {} as SqliteAgentRunUnitOfWork,
-      {} as SqliteConversationRunHandoffUnitOfWork,
-      pipeline,
-      { wakeProjectionDrain: vi.fn(), projectionCommandOwners: [projectionOwner()] },
-      { authorizedWorkspaceIds: ['workspace-detail'] }
-    );
+    const manifest = composeAgentEntityCommandManifest({
+      unitOfWork: {} as SqliteAgentRunUnitOfWork,
+      conversation: {} as SqliteConversationRunHandoffUnitOfWork,
+      executionPipeline: pipeline,
+      wakeProjectionDrain: vi.fn(),
+      projectionCommandOwners: [projectionOwner()],
+      authorizedWorkspaceIds: ['workspace-detail']
+    });
+    const router = new AgentControlPublicCommandRouter(manifest.ownerTable);
     const command = {
       commandId: 'command-tool-detail',
       correlationId: 'correlation-tool-detail',
@@ -175,15 +180,14 @@ function routerFor(
       interruptActiveTurn
     }
   } as unknown as AgentControlExecutionPipeline;
-  return new AgentControlPublicCommandRouter(
+  const manifest = composeAgentEntityCommandManifest({
     unitOfWork,
-    {} as SqliteConversationRunHandoffUnitOfWork,
-    pipeline,
-    {
-      wakeProjectionDrain: vi.fn(),
-      projectionCommandOwners: [projectionOwner()]
-    }
-  );
+    conversation: {} as SqliteConversationRunHandoffUnitOfWork,
+    executionPipeline: pipeline,
+    wakeProjectionDrain: vi.fn(),
+    projectionCommandOwners: [projectionOwner()]
+  });
+  return new AgentControlPublicCommandRouter(manifest.ownerTable);
 }
 
 function envelope(parentRunId: string): RuntimeCommandEnvelope {

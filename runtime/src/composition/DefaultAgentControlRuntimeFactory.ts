@@ -52,6 +52,9 @@ import {
 import {
   AgentControlPublicCommandRouter
 } from './AgentControlPublicCommandRouter.js';
+import {
+  composeAgentEntityCommandManifest
+} from './agent-entity/AgentEntityCommandAssembly.js';
 import { PublicAgentObservability } from '../adapters/observability/PublicAgentObservability.js';
 import {
   InferenceStreamPublicProjectionPublisher,
@@ -126,24 +129,21 @@ implements AgentControlRuntimeLifecycle {
       modelCatalog,
       wakeEventSink: projectionWakeEventSink
     });
-    this.publicCommands = new AgentControlPublicCommandRouter(
+    const commandManifest = composeAgentEntityCommandManifest({
       unitOfWork,
       conversation,
       executionPipeline,
-      {
-        wakeProjectionDrain: () => this.projection.wake(),
-        projectionCommandOwners: this.projection.commandOwners()
-      },
-      {
-        authorizedWorkspaceIds,
-        conversationCommandNow: this.projection.conversationCommandNow,
-        agentDecisionCommandNow: options.agentDecisionCommandNow,
-        agentInboxCommandNow: options.agentInboxCommandNow,
-        attachmentStore,
-        humanSkillCatalog,
-        productivityStore: productivity
-      }
-    );
+      projectionCommandOwners: this.projection.commandOwners(),
+      wakeProjectionDrain: () => this.projection.wake(),
+      authorizedWorkspaceIds,
+      conversationCommandNow: this.projection.conversationCommandNow,
+      agentDecisionCommandNow: options.agentDecisionCommandNow,
+      agentInboxCommandNow: options.agentInboxCommandNow,
+      attachmentStore,
+      humanSkillCatalog,
+      productivityStore: productivity
+    });
+    this.publicCommands = new AgentControlPublicCommandRouter(commandManifest.ownerTable);
     this.scheduleWorker = productivity === undefined
       ? undefined
       : new V3ScheduleWorker(
