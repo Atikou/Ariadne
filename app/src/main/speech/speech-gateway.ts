@@ -17,6 +17,7 @@ import type {
 } from '@shared/contract';
 import { FramedJsonDecoder, writeFramedJson } from './framed-json';
 import { VoicePackManager, type VoicePackManifest } from './voice-pack-manager';
+import type { SpeechPort } from './entity/speech-port';
 
 const PROTOCOL_VERSION = 1 as const;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -42,7 +43,7 @@ interface PendingRequest {
   reject(error: Error): void;
 }
 
-export class SpeechGateway {
+export class SpeechGateway implements SpeechPort {
   private readonly events = new EventEmitter();
   private child: ChildProcessWithoutNullStreams | null = null;
   private decoder: FramedJsonDecoder | null = null;

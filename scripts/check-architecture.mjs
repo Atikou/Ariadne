@@ -57,6 +57,7 @@ const options = parseOptions(process.argv.slice(2));
 assertNarrowDependencyExceptions();
 assertRetiredProductionChainsAbsent();
 assertUiPanelsUseFeatureStores();
+assertSpeechEntityBoundaries();
 if (options.help) {
   printHelp();
   process.exit(0);
@@ -301,6 +302,26 @@ function assertUiPanelsUseFeatureStores() {
   throw new Error(
     `UI component bypasses declared Feature Stores:\n${violations.join('\n')}`
   );
+}
+
+function assertSpeechEntityBoundaries() {
+  const application = readFileSync(path.join(projectRoot, 'app', 'src', 'main', 'application.ts'), 'utf8');
+  if (application.includes('speech/speech-gateway') || /new\s+SpeechGateway\b/u.test(application)) {
+    throw new Error('ApplicationController must consume the compiled Speech Entity, not SpeechGateway.');
+  }
+  const moduleServices = readFileSync(path.join(
+    projectRoot, 'app', 'src', 'renderer', 'src', 'core', 'services', 'module-services.ts'
+  ), 'utf8');
+  if (/new\s+(?:SpeechCoordinator|SpeechAgentBridge)\b/u.test(moduleServices)) {
+    throw new Error('ModuleServices must consume the compiled Renderer Speech Entity.');
+  }
+  const speechRoot = path.join(projectRoot, 'app', 'src', 'renderer', 'src', 'core', 'speech');
+  const runtimeStoreImports = walk(speechRoot)
+    .filter((file) => readFileSync(file, 'utf8').includes('runtime/runtime-store'))
+    .map(relative);
+  if (runtimeStoreImports.length > 0) {
+    throw new Error(`Speech components bypass Feature Stores:\n${runtimeStoreImports.join('\n')}`);
+  }
 }
 
 function walk(root) {

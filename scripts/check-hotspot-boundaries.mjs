@@ -6,6 +6,38 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 
 const boundaries = [
   {
+    file: 'app/src/main/speech/speech-gateway.ts',
+    maxLines: 400,
+    required: ['./entity/speech-port'],
+    forbidden: []
+  },
+  {
+    file: 'app/src/main/speech/entity/speech-entity-compiler.ts',
+    maxLines: 80,
+    required: [
+      '@ariadne/component-contracts',
+      '../speech-gateway',
+      './unavailable-speech-adapter'
+    ],
+    forbidden: []
+  },
+  {
+    file: 'app/src/renderer/src/core/speech/speech-coordinator.ts',
+    maxLines: 200,
+    required: ['./speech-agent-bridge'],
+    forbidden: [/RuntimeStore/, /MessageFeatureStore/, /RunFeatureStore/, /SessionFeatureStore/]
+  },
+  {
+    file: 'app/src/renderer/src/core/speech/speech-agent-bridge.ts',
+    maxLines: 280,
+    required: [
+      '../runtime/features/message-feature-store',
+      '../runtime/features/run-feature-store',
+      '../runtime/features/session-feature-store'
+    ],
+    forbidden: [/RuntimeStore/]
+  },
+  {
     file: 'runtime/src/composition/DefaultAgentControlRuntimeFactory.ts',
     maxLines: 150,
     required: [

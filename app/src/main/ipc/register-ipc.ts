@@ -60,7 +60,7 @@ import type { TerminalSessionService } from '../services/terminal-service';
 import type { WorkspaceFileService } from '../services/workspace-file-service';
 import type { MainWindowController } from '../windows/main-window';
 import { RuntimeRequestError, type RuntimeSupervisor } from '../runtime/runtime-supervisor';
-import type { SpeechGateway } from '../speech/speech-gateway';
+import type { SpeechPort } from '../speech/entity/speech-port';
 import type { ActivateSpeechVoiceRequest, SpeechVoiceSummary } from '@shared/contract';
 
 const MAX_LAYOUT_BYTES = 2 * 1024 * 1024;
@@ -80,7 +80,7 @@ interface IpcDependencies {
   mainWindow: MainWindowController;
   runtime: RuntimeSupervisor;
   agentInputDeliveryOutbox: AgentInputDeliveryOutbox;
-  speech: SpeechGateway;
+  speech: SpeechPort;
   activateSpeechVoice(request: ActivateSpeechVoiceRequest): Promise<SpeechVoiceSummary>;
   workspaceFiles: WorkspaceFileService;
   testApprovalNotification(): { shown: boolean; supported: boolean };

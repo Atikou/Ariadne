@@ -23,6 +23,7 @@
     "package:win": "node ../scripts/verify-windows-release-signing-environment.mjs && npm run package:win:build && node ../scripts/verify-packaged-runtime-assets.mjs && node ../scripts/verify-windows-release-signatures.mjs"
   },
   "dependencies": {
+    "@ariadne/component-contracts": "file:../packages/component-contracts",
     "@ariadne/live-work": "file:../packages/live-work",
     "@ariadne/protocol": "file:../packages/protocol",
     "@dagrejs/dagre": "^3.0.0",

@@ -4,7 +4,7 @@ import { TypedEventBus } from '../events/typed-event-bus';
 import { RuntimeStore } from '../runtime/runtime-store';
 import type { ModuleServices } from '../modules/module-contract';
 import { ConfiguredConversationNavigationService } from '../conversations/conversation-navigation-service';
-import { SpeechCoordinator } from '../speech/speech-coordinator';
+import { compileRendererSpeechEntity } from '../speech/renderer-speech-entity';
 
 export function createModuleServices(
   api: AriadneApi,
@@ -26,7 +26,15 @@ export function createModuleServices(
     runtime,
     runs: runtime.runs,
     sessions: runtime.sessions,
-    speech: new SpeechCoordinator(api.speech, api.preferences, runtime, events, storage),
+    speech: compileRendererSpeechEntity({
+      speechApi: api.speech,
+      preferencesApi: api.preferences,
+      messages: runtime.messages,
+      runs: runtime.runs,
+      sessions: runtime.sessions,
+      events,
+      storage
+    }),
     preferences: api.preferences,
     system: api.system,
     terminal: api.terminal,

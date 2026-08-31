@@ -9,6 +9,7 @@ import type {
   AgentWorkspacePinUpdate,
   AgentWorkspaceRequest,
   ActivateSpeechVoiceRequest,
+  SpeechStatus,
   OpenWorkspaceResult
 } from '@shared/contract';
 import { IPC_CHANNELS } from '@shared/ipc';
@@ -40,7 +41,8 @@ import { createDesktopRuntimeConfiguration } from './runtime/runtime-configurati
 import { RuntimeSupervisor } from './runtime/runtime-supervisor';
 import { runElectronSmokeTest } from './smoke/electron-smoke';
 import { shouldRestartRuntimeForAgentSettings } from './settings/agent-settings-effects';
-import { SpeechGateway } from './speech/speech-gateway';
+import { compileSpeechEntity } from './speech/entity/speech-entity-compiler';
+import { DEFAULT_SPEECH_COMPONENT_IDS } from './speech/entity/speech-components';
 
 export class ApplicationController {
   private isQuitting = false;
@@ -81,7 +83,7 @@ export class ApplicationController {
   );
   private readonly gameActivity = new UnavailableGameActivityDetector();
   private readonly interruptionPolicy = new InterruptionPolicy();
-  private readonly speech = new SpeechGateway();
+  private readonly speech = compileSpeechEntity(DEFAULT_SPEECH_COMPONENT_IDS);
   private readonly systemCapabilities = new SystemCapabilityCatalog(
     new ElectronAutoLaunchService(),
     this.gameActivity,
@@ -524,8 +526,8 @@ export class ApplicationController {
 }
 
 function speechLabel(
-  activity: ReturnType<SpeechGateway['getStatus']>['activity'],
-  availability: ReturnType<SpeechGateway['getStatus']>['availability']
+  activity: SpeechStatus['activity'],
+  availability: SpeechStatus['availability']
 ): string {
   if (availability === 'disabled') return '已关闭';
   if (availability === 'unavailable') return '未安装';
