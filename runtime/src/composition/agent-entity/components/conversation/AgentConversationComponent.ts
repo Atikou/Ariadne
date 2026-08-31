@@ -10,9 +10,11 @@ import { publicConversationFailure } from '../../../ConversationPublicCommandFai
 import { ConversationSessionPublicCommandHandler } from '../../../ConversationSessionPublicCommandHandler.js';
 import { ConversationNavigationPublicCommandHandler } from '../../../ConversationNavigationPublicCommandHandler.js';
 import {
-  AgentControlConversationMessageAdmissionError,
   type AgentControlExecutionPipeline
 } from '../../../ProductionAgentControlExecutionPipelineFactory.js';
+import {
+  AgentControlConversationMessageAdmissionError
+} from '../../AgentExecutionPipelineErrors.js';
 import {
   defineAgentPublicCommandOwner,
   type AgentPublicCommandOwner

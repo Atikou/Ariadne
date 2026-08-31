@@ -7,7 +7,6 @@ import {
 } from '@ariadne/agent-core';
 import {
   agentAdmissionAuthoritySourceSchema,
-  subagentProviderBootstrapSchema,
   type AgentAdmissionAuthoritySource,
   type AgentAdmissionAuthoritySourceManifest,
   type RuntimeBootstrap
@@ -25,15 +24,6 @@ import type {
 } from '../control/ports/AgentModelInference.js';
 import type { AgentProcessSandbox } from '../control/ports/AgentProcessSandbox.js';
 import type { AgentSubagentSessionStore } from '../control/ports/AgentSubagentSessionStore.js';
-import {
-  AcpSubagentAgentEngine,
-  digestAcpSubagentConfiguration
-} from '../adapters/subagent/AcpSubagentAgentEngine.js';
-import {
-  ClaudeSubagentAgentEngine,
-  CodexSubagentAgentEngine,
-  digestProductSubagentConfiguration
-} from '../adapters/subagent/ProductSubagentAgentEngines.js';
 import {
   Sha256AgentEffectInputDigester
 } from '../adapters/persistence/Sha256AgentEffectInputDigester.js';
@@ -145,11 +135,21 @@ import {
 } from './ProductionAgentLifecycleBridge.js';
 import {
   AgentSubagentExecutionProviderRouter,
-  ImmutableAgentSubagentExecutionProviderCatalog,
-  ORDINARY_RUN_SUBAGENT_EXECUTION_PROVIDER_DESCRIPTOR,
   ordinaryRunSubagentExecutionProvider,
   type AgentSubagentExecutionProvider
 } from './AgentSubagentExecutionProviders.js';
+import {
+  AgentControlConversationMessageAdmissionError,
+  ProductionAgentControlExecutionPipelineError
+} from './agent-entity/AgentExecutionPipelineErrors.js';
+import {
+  createAgentSubagentExecutionComponent
+} from './agent-entity/components/subagent/AgentSubagentExecutionComponent.js';
+
+export {
+  AgentControlConversationMessageAdmissionError,
+  ProductionAgentControlExecutionPipelineError
+} from './agent-entity/AgentExecutionPipelineErrors.js';
 
 const PREFLIGHT_DIGEST = `sha256:${'0'.repeat(64)}`;
 
@@ -213,35 +213,6 @@ export interface ProductionAgentControlExecutionPipelineFactoryOptions {
   readonly liveWorkLifecycle?: {
     closeOwner(runId: string): void | Promise<void>;
   };
-}
-
-export class ProductionAgentControlExecutionPipelineError extends Error {
-  public constructor(
-    public readonly code:
-      | 'AGENT_EXECUTION_PIPELINE_OPTIONS_INVALID'
-      | 'AGENT_EXECUTION_TOOL_CATALOG_MISSING'
-      | 'AGENT_EXECUTION_TOOL_CATALOG_INVALID',
-    message: string,
-    options?: ErrorOptions
-  ) {
-    super(message, options);
-    this.name = 'ProductionAgentControlExecutionPipelineError';
-  }
-}
-
-export class AgentControlConversationMessageAdmissionError extends Error {
-  public readonly code = 'AGENT_EXECUTION_ADMISSION_UNAVAILABLE';
-
-  public constructor(
-    public readonly reason:
-      | 'workspace_authority_missing'
-      | 'authority_expired'
-      | 'tool_catalog_unavailable'
-      | 'model_binding_unavailable'
-  ) {
-    super('Agent execution admission is unavailable.');
-    this.name = 'AgentControlConversationMessageAdmissionError';
-  }
 }
 
 /**
@@ -308,45 +279,15 @@ implements AgentControlExecutionPipelineFactory {
     );
     await assertCatalogAuthorities(source, catalogs);
     const injectedSubagentProviders = this.options.subagentExecutionProviders ?? [];
-    const subagentConfigurations = subagentProviderBootstrapSchema.array().max(8).parse(
-      input.subagentProviders ?? []
-    );
-    if (
-      subagentConfigurations.length > 0
-      && (input.processSandboxForWorkspace === undefined || input.workspaces === undefined)
-    ) throw new ProductionAgentControlExecutionPipelineError(
-      'AGENT_EXECUTION_PIPELINE_OPTIONS_INVALID',
-      'Configured external SubAgent providers require Workspace and process-sandbox services.'
-    );
-    const configuredDescriptors = subagentConfigurations.map((config) => ({
-      providerId: config.providerId,
-      displayName: config.displayName,
-      configurationDigest: config.kind === 'acp_stdio'
-        ? digestAcpSubagentConfiguration(config)
-        : digestProductSubagentConfiguration(config),
-      transport: 'external_process' as const,
-      supportedModes: config.kind === 'acp_stdio' && config.sessionPersistence === 'resume'
-        ? ['one_shot', 'continuable'] as const
-        : ['one_shot'] as const,
-      supportsStructuredReport: false,
-      inheritsParentContext: false,
-      usesParentTools: false
-    }));
-    const externalDescriptors = [
-      ...injectedSubagentProviders.map((provider) => provider.descriptor),
-      ...configuredDescriptors
-    ];
-    if (externalDescriptors.some((descriptor) => (
-      descriptor.providerId
-      === ORDINARY_RUN_SUBAGENT_EXECUTION_PROVIDER_DESCRIPTOR.providerId
-    ))) throw new ProductionAgentControlExecutionPipelineError(
-      'AGENT_EXECUTION_PIPELINE_OPTIONS_INVALID',
-      'The ordinary SubAgent execution provider cannot be replaced.'
-    );
-    const subagentProviderCatalog = new ImmutableAgentSubagentExecutionProviderCatalog([
-      ORDINARY_RUN_SUBAGENT_EXECUTION_PROVIDER_DESCRIPTOR,
-      ...externalDescriptors
-    ]);
+    const subagents = createAgentSubagentExecutionComponent({
+      unitOfWork: input.unitOfWork,
+      configurations: input.subagentProviders,
+      injectedProviders: injectedSubagentProviders,
+      workspaces: input.workspaces,
+      processSandboxForWorkspace: input.processSandboxForWorkspace,
+      sessionStore: input.subagentSessionStore
+    });
+    const subagentProviderCatalog = subagents.providerCatalog;
 
     if (input.modelInferenceGateway === undefined && input.runtimePolicy === undefined) {
       throw new ProductionAgentControlExecutionPipelineError(
@@ -419,55 +360,10 @@ implements AgentControlExecutionPipelineFactory {
       new AgentSubagentDelegationService(input.unitOfWork),
       lifecycle
     );
-    const workspaceRoots = new Map(
-      (input.workspaces ?? []).map((workspace) => [workspace.workspaceId, workspace.rootPath])
-    );
-    const configuredSubagentProviders = subagentConfigurations.map((config) => {
-      const externalEngine = config.kind === 'acp_stdio'
-        ? new AcpSubagentAgentEngine({
-            config,
-            workspaceRoots,
-            sandboxForWorkspace: input.processSandboxForWorkspace!,
-            ...(input.subagentSessionStore === undefined
-              ? {}
-              : { sessionStore: input.subagentSessionStore })
-          })
-        : config.kind === 'codex_app_server'
-          ? new CodexSubagentAgentEngine({
-              config,
-              workspaceRoots,
-              sandboxForWorkspace: input.processSandboxForWorkspace!
-            })
-          : new ClaudeSubagentAgentEngine({
-              config,
-              workspaceRoots,
-              sandboxForWorkspace: input.processSandboxForWorkspace!
-            });
-      const externalInference = new AgentInferenceDispatchService(
-        input.unitOfWork,
-        inputReader,
-        externalEngine,
-        directivePlanner,
-        new V3AgentInferenceDispatchCheckpointFactory(),
-        undefined,
-        undefined,
-        lifecycle
-      );
-      const delegated = new AgentDelegatedInferenceDispatchController(
-        input.unitOfWork,
-        externalInference
-      );
-      return {
-        descriptor: configuredDescriptors.find(
-          (descriptor) => descriptor.providerId === config.providerId
-        )!,
-        dispatchDelegatedInitial: (request, signal) => delegated.dispatchOwned(request, signal),
-        dispatchFollowUp: config.kind === 'acp_stdio' && config.sessionPersistence === 'resume'
-          ? (request, signal) => delegated.dispatchOwned(request, signal)
-          : async () => {
-              throw new Error('External SubAgent provider is pinned as one-shot.');
-            }
-      } satisfies AgentSubagentExecutionProvider;
+    const configuredSubagentProviders = subagents.createConfiguredProviders({
+      inputReader,
+      directivePlanner,
+      lifecycle
     });
     const dispatcher = new AgentRunExecutionDispatchController(
       input.unitOfWork,

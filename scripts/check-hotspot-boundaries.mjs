@@ -66,6 +66,35 @@ const boundaries = [
     ]
   },
   {
+    file: 'runtime/src/composition/agent-entity/components/subagent/AgentSubagentExecutionComponent.ts',
+    maxLines: 180,
+    required: [
+      '../../../../adapters/subagent/AcpSubagentAgentEngine.js',
+      '../../../../adapters/subagent/ProductSubagentAgentEngines.js',
+      '../../../AgentSubagentExecutionProviders.js'
+    ],
+    forbidden: [
+      /AgentControlPublicCommandRouter/,
+      /ConversationAgentHandoffProducer/,
+      /AgentRunWorkScheduler/
+    ]
+  },
+  {
+    file: 'runtime/src/composition/ProductionAgentControlExecutionPipelineFactory.ts',
+    maxLines: 620,
+    required: [
+      './agent-entity/components/subagent/AgentSubagentExecutionComponent.js'
+    ],
+    forbidden: [
+      /AcpSubagentAgentEngine/,
+      /CodexSubagentAgentEngine/,
+      /ClaudeSubagentAgentEngine/,
+      /digestAcpSubagentConfiguration/,
+      /digestProductSubagentConfiguration/,
+      /subagentProviderBootstrapSchema/
+    ]
+  },
+  {
     file: 'runtime/src/composition/agent-entity/components/persistence/AgentPersistenceComponent.ts',
     maxLines: 270,
     required: [
