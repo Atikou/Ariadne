@@ -10,11 +10,12 @@ import component5 from './components/persistence/component.js';
 import component6 from './components/productivity/component.js';
 import component7 from './components/projection/component.js';
 import component8 from './components/run-control/component.js';
-import component9 from './components/skills-human/component.js';
-import component10 from './components/subagent/component.js';
-import component11 from './components/subagent-interrupt/component.js';
-import component12 from './components/tool-execution/component.js';
-import component13 from './components/tool-result-detail/component.js';
+import component9 from './components/scheduler/component.js';
+import component10 from './components/skills-human/component.js';
+import component11 from './components/subagent/component.js';
+import component12 from './components/subagent-interrupt/component.js';
+import component13 from './components/tool-execution/component.js';
+import component14 from './components/tool-result-detail/component.js';
 
 const DEFINITIONS = Object.freeze([
   component0,
@@ -30,7 +31,8 @@ const DEFINITIONS = Object.freeze([
   component10,
   component11,
   component12,
-  component13
+  component13,
+  component14
 ]);
 
 export function agentCoreComponentDefinitions(): readonly ComponentDefinition[] {

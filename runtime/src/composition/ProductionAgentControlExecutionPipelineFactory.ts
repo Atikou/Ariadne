@@ -24,73 +24,27 @@ import type { AgentToolPresentationResolver } from '../projection/AgentRunProjec
 import type {
   TrustedAgentToolCatalogSnapshot
 } from '../adapters/tool/TrustedAgentToolCatalogCompiler.js';
-import {
-  ConversationRunHandoffSagaService
-} from '../control/conversation/ConversationRunHandoffSagaService.js';
-import {
-  ConversationAgentStartFailureProjectionService
-} from '../control/conversation/ConversationAgentStartFailureProjectionService.js';
-import {
-  AgentEffectContinuationController
-} from '../control/execution/AgentEffectContinuationController.js';
-import {
-  AgentInboxContinuationController
-} from '../control/execution/AgentInboxContinuationController.js';
-import {
-  AgentFollowUpInferenceDispatchController
-} from '../control/execution/AgentFollowUpInferenceDispatchController.js';
-import {
-  AgentDelegatedInferenceDispatchController
-} from '../control/execution/AgentDelegatedInferenceDispatchController.js';
-import {
-  AgentChildResultsContinuationController
-} from '../control/execution/AgentChildResultsContinuationController.js';
-import {
-  ProtectedAgentTerminalAssistantContentResolver
-} from './ProtectedAgentTerminalAssistantContentResolver.js';
-import {
-  AgentRunWorkClassifier
-} from '../control/execution/AgentRunWorkClassifier.js';
-import {
-  AgentContinuationBoundaryTerminalizationCoordinator
-} from '../control/execution/AgentContinuationBoundaryTerminalizationCoordinator.js';
-import {
-  AgentRetiredToolCatalogTerminalizationCoordinator
-} from '../control/execution/AgentRetiredToolCatalogTerminalizationCoordinator.js';
-import {
-  AgentStartedWorkRecoveryCoordinator
-} from '../control/execution/AgentStartedWorkRecoveryCoordinator.js';
-import {
+import type {
   AgentRunExecutionIntentScheduler,
-  type AgentRunExecutionIntentRecoveryReporter,
-  type AgentRunExecutionIntentSchedulerOptions
+  AgentRunExecutionIntentRecoveryReporter,
+  AgentRunExecutionIntentSchedulerOptions
 } from './AgentRunExecutionIntentScheduler.js';
-import {
+import type {
   AgentRunWorkScheduler,
-  type AgentRunWorkSchedulerOptions
+  AgentRunWorkSchedulerOptions
 } from './AgentRunWorkScheduler.js';
-import {
-  ConversationAgentHandoffCoordinator
-} from './ConversationAgentHandoffCoordinator.js';
-import {
+import type {
   ConversationAgentHandoffProducer,
-  type ConversationAgentHandoffProducerOptions
+  ConversationAgentHandoffProducerOptions
 } from './ConversationAgentHandoffProducer.js';
 import type { AgentInstructionAssemblyService } from '../control/ports/AgentInstructionAssembly.js';
 import type { AgentLifecycleHookService } from '../control/ports/AgentLifecycleHooks.js';
 import type { AgentLifecycleHookDeliverySink } from '../control/ports/AgentLifecycleObservability.js';
 import type { AgentRuntimeTelemetry } from '../control/ports/AgentLifecycleObservability.js';
 import type { CredentialResolver } from '../control/ports/CredentialResolver.js';
-import {
-  ProductionAgentRunWorkAuthorityVerifier
-} from './ProductionAgentRunWorkAuthorityVerifier.js';
 import type { ProtectedAgentEffectResultReader } from '../control/resources/ProtectedAgentEffectResultReader.js';
 import { ProductionAgentLifecycleBridge } from './ProductionAgentLifecycleBridge.js';
-import {
-  AgentSubagentExecutionProviderRouter,
-  ordinaryRunSubagentExecutionProvider,
-  type AgentSubagentExecutionProvider
-} from './AgentSubagentExecutionProviders.js';
+import type { AgentSubagentExecutionProvider } from './AgentSubagentExecutionProviders.js';
 import {
   AgentControlConversationMessageAdmissionError,
   ProductionAgentControlExecutionPipelineError
@@ -104,6 +58,9 @@ import {
 import {
   createAgentInferenceLoopComponent
 } from './agent-entity/components/inference-loop/AgentInferenceLoopComponent.js';
+import {
+  createAgentExecutionSchedulerComponent
+} from './agent-entity/components/scheduler/AgentExecutionSchedulerComponent.js';
 
 export {
   AgentControlConversationMessageAdmissionError,
@@ -261,112 +218,34 @@ implements AgentControlExecutionPipelineFactory {
       fetch: this.options.fetch,
       now: this.now
     });
-    const inference = loop.inference;
     const configuredSubagentProviders = subagents.createConfiguredProviders({
       inputReader: loop.inputReader,
       directivePlanner: loop.directivePlanner,
       lifecycle
     });
-    const effects = tools.createEffectDispatch(lifecycle);
-    const continuations = new AgentEffectContinuationController(
-      input.unitOfWork,
-      input.unitOfWork
-    );
-    const inboxContinuations = new AgentInboxContinuationController(
-      input.unitOfWork,
-      input.unitOfWork
-    );
-    const followUps = new AgentFollowUpInferenceDispatchController(
-      input.unitOfWork,
-      inference
-    );
-    const delegatedInference = new AgentDelegatedInferenceDispatchController(
-      input.unitOfWork,
-      inference
-    );
-    const subagentProviderRouter = new AgentSubagentExecutionProviderRouter(
-      input.unitOfWork,
-      [
-        ordinaryRunSubagentExecutionProvider(delegatedInference, followUps),
-        ...injectedSubagentProviders,
-        ...configuredSubagentProviders
-      ]
-    );
-    const childResultsContinuation = new AgentChildResultsContinuationController(
-      input.unitOfWork,
-      input.unitOfWork,
-      new ProtectedAgentTerminalAssistantContentResolver(input.unitOfWork)
-    );
-    const startedWorkRecovery = new AgentStartedWorkRecoveryCoordinator(
-      input.unitOfWork
-    );
-    const terminalizations = new AgentContinuationBoundaryTerminalizationCoordinator(
-      input.unitOfWork
-    );
-    const retiredToolCatalogTerminalizations =
-      new AgentRetiredToolCatalogTerminalizationCoordinator(input.unitOfWork);
-    const runWorkScheduler = new AgentRunWorkScheduler(
-      input.unitOfWork,
-      new AgentRunWorkClassifier(),
-      effects,
-      continuations,
-      inboxContinuations,
-      followUps,
-      terminalizations,
-      {
-        ...this.options.runWorkScheduler,
-        startedWorkRecovery,
-        delegatedInference: subagentProviderRouter.delegatedInitial,
-        delegatedFollowUps: subagentProviderRouter.followUp,
-        childResultsContinuation,
-        retiredToolCatalogTerminalizations,
-        authorityVerifier: new ProductionAgentRunWorkAuthorityVerifier(
-          loop.modelAvailability,
-          catalogs,
-          subagentProviderCatalog
-        )
-      }
-    );
-    const executionScheduler = new AgentRunExecutionIntentScheduler(
-      input.unitOfWork,
-      loop.dispatcher,
-      this.options.recoveryReporter,
-      {
-        ...this.options.executionScheduler,
-        startedInitialInferenceRecovery: startedWorkRecovery,
-        // Follow-up work becomes eligible only after the initial execution
-        // intent has crossed its durable settlement boundary.
-        onSettled: () => runWorkScheduler.wake()
-      }
-    );
-    const handoffs = new ConversationRunHandoffSagaService(input.conversation);
-    const coordinator = new ConversationAgentHandoffCoordinator(
-      input.conversation,
-      handoffs,
-      loop.admissions,
-      input.unitOfWork,
-      {},
-      new ConversationAgentStartFailureProjectionService(input.conversation)
-    );
-    const handoffProducer = new ConversationAgentHandoffProducer({
-      drainToFixedPoint: async (request) => {
-        const result = await coordinator.drainToFixedPoint(request);
-        // Admission creates execution intents at the Handoff fixed point. Wake
-        // only after that durable boundary so a fast scheduler cannot miss the
-        // newly admitted work and defer it to its periodic timer.
-        executionScheduler.wake();
-        return result;
-      }
-    }, this.options.handoffProducer);
+    const scheduler = createAgentExecutionSchedulerComponent({
+      unitOfWork: input.unitOfWork,
+      conversation: input.conversation,
+      loop,
+      tools,
+      lifecycle,
+      subagentProviders: subagentProviderCatalog,
+      injectedSubagentProviders,
+      configuredSubagentProviders,
+      recoveryReporter: this.options.recoveryReporter,
+      executionScheduler: this.options.executionScheduler,
+      runWorkScheduler: this.options.runWorkScheduler,
+      handoffProducer: this.options.handoffProducer
+    });
     const manifests = new Map(source.manifests.map((manifest) => [
       manifest.workspace.workspaceId,
       manifest
     ] as const));
 
     return Object.freeze({
-      handoffProducer,
-      executionScheduler,
-      runWorkScheduler,
+      handoffProducer: scheduler.handoffProducer,
+      executionScheduler: scheduler.executionScheduler,
+      runWorkScheduler: scheduler.runWorkScheduler,
       toolPresentationResolver: catalogs,
       protectedEffectResultReader: tools.protectedEffectResultReader,
       assertConversationMessageAdmission: (workspaceId: string): void => {

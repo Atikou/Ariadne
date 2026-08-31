@@ -110,10 +110,27 @@ const boundaries = [
     ]
   },
   {
+    file: 'runtime/src/composition/agent-entity/components/scheduler/AgentExecutionSchedulerComponent.ts',
+    maxLines: 170,
+    required: [
+      '../../../../control/execution/AgentEffectContinuationController.js',
+      '../../../AgentRunExecutionIntentScheduler.js',
+      '../../../AgentRunWorkScheduler.js',
+      '../../../ConversationAgentHandoffProducer.js'
+    ],
+    forbidden: [
+      /AgentControlPublicCommandRouter/,
+      /ProductionExactAgentModelInferenceGateway/,
+      /ProductionAgentEngineAdapter/,
+      /ImmutableAgentToolCatalogRegistry/
+    ]
+  },
+  {
     file: 'runtime/src/composition/ProductionAgentControlExecutionPipelineFactory.ts',
-    maxLines: 440,
+    maxLines: 340,
     required: [
       './agent-entity/components/inference-loop/AgentInferenceLoopComponent.js',
+      './agent-entity/components/scheduler/AgentExecutionSchedulerComponent.js',
       './agent-entity/components/subagent/AgentSubagentExecutionComponent.js',
       './agent-entity/components/tool-execution/AgentToolExecutionComponent.js'
     ],
@@ -136,7 +153,12 @@ const boundaries = [
       /new\s+AgentRunAdmissionController\b/,
       /new\s+ProductionAgentRunAdmissionSnapshotReader\b/,
       /new\s+AgentInferenceDispatchService\b/,
-      /new\s+DefaultAgentInferenceDirectivePlanner\b/
+      /new\s+DefaultAgentInferenceDirectivePlanner\b/,
+      /new\s+AgentRunExecutionIntentScheduler\b/,
+      /new\s+AgentRunWorkScheduler\b/,
+      /new\s+ConversationAgentHandoffProducer\b/,
+      /new\s+AgentSubagentExecutionProviderRouter\b/,
+      /new\s+AgentStartedWorkRecoveryCoordinator\b/
     ]
   },
   {
