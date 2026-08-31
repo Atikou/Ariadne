@@ -22,6 +22,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { AGENT_CONTROL_DB_SCHEMA_VERSION } from '../src/adapters/persistence/agentControlDbSchema.js';
 import { CONVERSATION_DB_SCHEMA_VERSION } from '../src/adapters/persistence/ConversationDbSchema.js';
+import { PRODUCTIVITY_DB_SCHEMA_VERSION } from '../src/adapters/persistence/SqliteProductivityStore.js';
 import { PUBLIC_PROJECTION_DB_SCHEMA_VERSION } from '../src/adapters/persistence/PublicProjectionDbSchema.js';
 import { RUNTIME_COMMAND_DB_SCHEMA_VERSION } from '../src/adapters/persistence/runtimeCommandDbMigrations.js';
 import { projectionWakeAggregateId } from '../src/composition/PublicProjectionWakeCommitSink.js';
@@ -58,7 +59,8 @@ describe('portless Runtime process', () => {
       runtimeCommand: RUNTIME_COMMAND_DB_SCHEMA_VERSION,
       agentControl: AGENT_CONTROL_DB_SCHEMA_VERSION,
       conversation: CONVERSATION_DB_SCHEMA_VERSION,
-      publicProjection: PUBLIC_PROJECTION_DB_SCHEMA_VERSION
+      publicProjection: PUBLIC_PROJECTION_DB_SCHEMA_VERSION,
+      productivity: PRODUCTIVITY_DB_SCHEMA_VERSION
     });
 
     child.send(request(bootstrap, 'status-1', { kind: 'runtime.status.get' }));
