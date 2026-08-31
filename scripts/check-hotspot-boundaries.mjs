@@ -58,18 +58,34 @@ const boundaries = [
   },
   {
     file: 'runtime/src/composition/AgentControlPublicCommandRouter.ts',
-    maxLines: 550,
+    maxLines: 300,
     required: [
       './agent-entity/command-owners/AgentPublicCommandOwnerTable.js',
       './agent-entity/command-owners/AgentPublicCommandOwners.js',
-      './agent-entity/components/conversation/AgentConversationComponent.js'
+      './agent-entity/components/conversation/AgentConversationComponent.js',
+      './agent-entity/components/run-control/AgentRunControlComponent.js'
     ],
     forbidden: [
       /switch\s*\(\s*envelope\.command\.kind\s*\)/,
       /ConversationAuthorityService/,
       /ConversationSessionPublicCommandHandler/,
       /ConversationNavigationPublicCommandHandler/,
-      /deriveConversationAuthorityId/
+      /deriveConversationAuthorityId/,
+      /AgentDecisionAuthorityService/,
+      /AgentRunCommandService/,
+      /publicRunMutationFailure/
+    ]
+  },
+  {
+    file: 'runtime/src/composition/agent-entity/components/run-control/AgentRunControlComponent.ts',
+    maxLines: 270,
+    required: [
+      '../../../../control/run/AgentDecisionAuthorityService.js'
+    ],
+    forbidden: [
+      /ConversationAuthorityService/,
+      /SqliteConversationRunHandoffUnitOfWork/,
+      /ConversationSessionPublicCommandHandler/
     ]
   },
   {

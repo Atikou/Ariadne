@@ -1,8 +1,4 @@
 import {
-  AgentCoreError,
-  AgentRunCommandService
-} from '@ariadne/agent-core';
-import {
   PUBLIC_PROJECTION_CONTRACT_VERSION,
   type RuntimeResult
 } from '@ariadne/protocol/public';
@@ -17,10 +13,6 @@ import type {
   SqlitePublicProjectionStore
 } from '../adapters/persistence/SqlitePublicProjectionStore.js';
 import type { SqliteProductivityStore } from '../adapters/persistence/SqliteProductivityStore.js';
-import {
-  AgentDecisionAuthorityError,
-  AgentDecisionAuthorityService
-} from '../control/run/AgentDecisionAuthorityService.js';
 import type {
   RuntimeApplicationCommandResult
 } from '../ingress/RuntimeApplication.js';
@@ -34,10 +26,7 @@ import type {
 } from './ProductionAgentControlExecutionPipelineFactory.js';
 import { AgentInboxPublicCommandHandler } from './AgentInboxPublicCommandHandler.js';
 import { AgentSubagentInterruptPublicCommandHandler } from './AgentSubagentInterruptPublicCommandHandler.js';
-import {
-  completedPublicError,
-  publicRunMutationFailure
-} from './AgentPublicCommandFailures.js';
+import { completedPublicError } from './AgentPublicCommandFailures.js';
 import { HumanSkillPublicCommandHandler } from './HumanSkillPublicCommandHandler.js';
 import type { HumanSkillCatalog } from '../control/ports/HumanSkillCatalog.js';
 import {
@@ -54,6 +43,10 @@ import {
   createAgentConversationComponent,
   type AgentConversationComponentHandle
 } from './agent-entity/components/conversation/AgentConversationComponent.js';
+import {
+  createAgentRunControlComponent,
+  type AgentRunControlComponentHandle
+} from './agent-entity/components/run-control/AgentRunControlComponent.js';
 
 export interface AgentControlPublicCommandRouterOptions {
   readonly authorizedWorkspaceIds?: readonly string[];
@@ -79,8 +72,7 @@ export interface AgentControlPublicCommandRouterCallbacks {
  */
 export class AgentControlPublicCommandRouter {
   private readonly conversationComponent: AgentConversationComponentHandle;
-  private readonly agentDecisionAuthority: AgentDecisionAuthorityService;
-  private readonly agentCommands: AgentRunCommandService;
+  private readonly runControlComponent: AgentRunControlComponentHandle;
   private readonly agentInbox: AgentInboxPublicCommandHandler;
   private readonly subagentInterrupt: AgentSubagentInterruptPublicCommandHandler;
   private readonly authorizedWorkspaceIds: ReadonlySet<string>;
@@ -89,7 +81,7 @@ export class AgentControlPublicCommandRouter {
   private readonly ownerTable: AgentPublicCommandOwnerTable;
 
   public constructor(
-    private readonly unitOfWork: SqliteAgentRunUnitOfWork,
+    unitOfWork: SqliteAgentRunUnitOfWork,
     conversation: SqliteConversationRunHandoffUnitOfWork,
     private readonly publicProjection: SqlitePublicProjectionStore,
     private readonly executionPipeline: AgentControlExecutionPipeline | undefined,
@@ -106,11 +98,12 @@ export class AgentControlPublicCommandRouter {
         attachmentStore: options.attachmentStore
       }
     });
-    this.agentDecisionAuthority = new AgentDecisionAuthorityService(
+    this.runControlComponent = createAgentRunControlComponent({
       unitOfWork,
-      options.agentDecisionCommandNow
-    );
-    this.agentCommands = new AgentRunCommandService(unitOfWork);
+      executionPipeline,
+      wakeProjectionDrain: callbacks.wakeProjectionDrain,
+      decisionCommandNow: options.agentDecisionCommandNow
+    });
     this.agentInbox = new AgentInboxPublicCommandHandler(unitOfWork, {
       wakeWorkScheduler: () => this.executionPipeline?.runWorkScheduler.wake(),
       wakeProjectionDrain: callbacks.wakeProjectionDrain
@@ -137,19 +130,11 @@ export class AgentControlPublicCommandRouter {
     this.ownerTable = compileAgentPublicCommandOwnerTable(
       createAgentPublicCommandOwners({
         conversation: this.conversationComponent,
+        runControl: this.runControlComponent,
         agentInbox: this.agentInbox,
         subagentInterrupt: this.subagentInterrupt,
         humanSkills: this.humanSkills,
         productivity: this.productivity,
-        executeResolveAgentDecision: (envelope, command) => (
-          this.executeResolveAgentDecision(envelope, command)
-        ),
-        reconcileAgentDecision: (envelope, command) => (
-          this.reconcileAgentDecision(envelope, command)
-        ),
-        executeCancelAgentRun: (envelope, command) => (
-          this.executeCancelAgentRun(envelope, command)
-        ),
         executeToolResultDetail: (envelope, command) => (
           this.executeToolResultDetail(envelope, command)
         ),
@@ -193,22 +178,6 @@ export class AgentControlPublicCommandRouter {
       : { kind: 'not_committed' };
   }
 
-  private async reconcileAgentDecision(
-    envelope: RuntimeCommandEnvelope,
-    command: Extract<RuntimeCommandEnvelope['command'], {
-      readonly kind: 'agent.decision.resolve.v3';
-    }>
-  ): Promise<RuntimeCommandReconciliation> {
-    const result = await this.agentDecisionAuthority.reconcile({
-      commandId: envelope.commandId,
-      command,
-      signal: envelope.signal
-    });
-    return result === null
-      ? { kind: 'not_committed' }
-      : { kind: 'committed', outcome: { ok: true, result } };
-  }
-
   private async executeProjectionCommand(
     envelope: RuntimeCommandEnvelope
   ): Promise<RuntimeApplicationCommandResult> {
@@ -229,147 +198,6 @@ export class AgentControlPublicCommandRouter {
       }));
     }
     throw new Error('agent_command_owner_kind_mismatch:projection.query');
-  }
-
-  private async executeResolveAgentDecision(
-    envelope: RuntimeCommandEnvelope,
-    command: Extract<
-      RuntimeCommandEnvelope['command'],
-      { readonly kind: 'agent.decision.resolve.v3' }
-    >
-  ): Promise<RuntimeApplicationCommandResult> {
-    let result;
-    try {
-      result = await this.agentDecisionAuthority.execute({
-        commandId: envelope.commandId,
-        command,
-        signal: envelope.signal
-      });
-    } catch (error) {
-      envelope.signal.throwIfAborted();
-      const replay = await this.agentDecisionAuthority.reconcile({
-        commandId: envelope.commandId,
-        command,
-        signal: envelope.signal
-      });
-      if (replay !== null) result = replay;
-      else {
-        const failure = publicDecisionFailure(envelope, error);
-        if (failure !== null) return failure;
-        throw error;
-      }
-    }
-    this.executionPipeline?.runWorkScheduler.wake();
-    this.callbacks.wakeProjectionDrain();
-    return {
-      outcome: { ok: true, result },
-      settlement: 'completed'
-    };
-  }
-
-  private async executeCancelAgentRun(
-    envelope: RuntimeCommandEnvelope,
-    command: Extract<
-      RuntimeCommandEnvelope['command'],
-      { readonly kind: 'agent.run.cancel.v3' }
-    >
-  ): Promise<RuntimeApplicationCommandResult> {
-    envelope.signal.throwIfAborted();
-    const replayed = await this.loadCommittedCancellation(
-      envelope.commandId,
-      command.runId
-    );
-    if (replayed !== null) {
-      return {
-        outcome: {
-          ok: true,
-          result: {
-            kind: 'agent.run.cancelled.v3',
-            runId: replayed.runId,
-            runVersion: replayed.runVersion
-          }
-        },
-        settlement: 'completed'
-      };
-    }
-
-    const active = await this.executionPipeline?.executionScheduler.cancelActiveRun({
-      commandId: envelope.commandId,
-      runId: command.runId,
-      expectedVersion: command.expectedVersion,
-      finalize: async (recovery) => {
-        const snapshot = await this.unitOfWork.transaction((transaction) => (
-          transaction.loadRun(recovery.runId)
-        ));
-        if (
-          snapshot === null
-          || snapshot.version !== recovery.runVersion
-          || snapshot.state.status !== 'recovering'
-          || snapshot.state.reason !== 'uncertain_inference'
-        ) {
-          throw new Error('agent_run_active_cancellation_recovery_drifted');
-        }
-        const occurredAt = new Date(Math.max(
-          Date.parse(command.occurredAt),
-          Date.parse(snapshot.updatedAt)
-        )).toISOString();
-        const committed = await this.agentCommands.execute({
-          kind: 'run.cancel',
-          commandId: envelope.commandId,
-          runId: recovery.runId,
-          expectedVersion: recovery.runVersion,
-          occurredAt,
-          reason: command.reason,
-          recoveryDecisionId: recovery.recoveryDecisionId
-        }, { turnInputPayloads: [], effectPayloads: [] });
-        return { runVersion: committed.run.version };
-      }
-    }) ?? { status: 'not_active' as const };
-    if (active.status === 'cancelled') {
-      this.executionPipeline?.runWorkScheduler.wake();
-      this.callbacks.wakeProjectionDrain();
-      return {
-        outcome: {
-          ok: true,
-          result: {
-            kind: 'agent.run.cancelled.v3',
-            runId: command.runId,
-            runVersion: active.runVersion
-          }
-        },
-        settlement: 'completed'
-      };
-    }
-
-    let result;
-    try {
-      result = await this.agentCommands.execute({
-        kind: 'run.cancel',
-        commandId: envelope.commandId,
-        runId: command.runId,
-        expectedVersion: command.expectedVersion,
-        occurredAt: command.occurredAt,
-        reason: command.reason
-      }, { turnInputPayloads: [], effectPayloads: [] });
-    } catch (error) {
-      envelope.signal.throwIfAborted();
-      const failure = publicRunMutationFailure(envelope, error);
-      if (failure !== null) return failure;
-      throw error;
-    }
-    this.executionPipeline?.runWorkScheduler.wake();
-    this.callbacks.wakeProjectionDrain();
-    return {
-      outcome: {
-        ok: true,
-        result: {
-          kind: 'agent.run.cancelled.v3',
-          runId: result.run.runId,
-          runVersion: result.run.version
-        }
-      },
-      settlement: 'completed'
-    };
   }
 
   private async executeToolResultDetail(
@@ -440,83 +268,4 @@ export class AgentControlPublicCommandRouter {
     }
   }
 
-  private async loadCommittedCancellation(
-    commandId: string,
-    runId: string
-  ): Promise<{ readonly runId: string; readonly runVersion: number } | null> {
-    const receipt = await this.unitOfWork.loadCommittedCommandReceipt(commandId);
-    if (receipt === null) return null;
-    const mutation = receipt.mutations[0];
-    const cancellation = mutation?.events.filter(
-      (event) => event.payload.type === 'run.cancelled'
-    );
-    if (
-      receipt.commandId !== commandId
-      || receipt.mutations.length !== 1
-      || mutation === undefined
-      || mutation.runId !== runId
-      || mutation.run.runId !== runId
-      || mutation.resultingVersion !== mutation.run.version
-      || mutation.run.state.status !== 'cancelled'
-      || cancellation?.length !== 1
-    ) {
-      throw new Error('agent_run_cancel_receipt_invalid');
-    }
-    return { runId, runVersion: mutation.run.version };
-  }
-
-}
-
-function publicDecisionFailure(
-  envelope: RuntimeCommandEnvelope,
-  error: unknown
-): RuntimeApplicationCommandResult | null {
-  if (error instanceof AgentDecisionAuthorityError) {
-    switch (error.code) {
-      case 'AGENT_DECISION_AUTHORITY_RUN_NOT_FOUND':
-        return completedPublicError(
-          envelope,
-          'agent_run_not_found',
-          'The authoritative Agent Run does not exist.',
-          false
-        );
-      case 'AGENT_DECISION_AUTHORITY_NOT_ACTIVE':
-        return completedPublicError(
-          envelope,
-          'agent_decision_not_active',
-          'The Decision is no longer active.',
-          false
-        );
-      case 'AGENT_DECISION_AUTHORITY_TOKEN_MISMATCH':
-      case 'AGENT_DECISION_AUTHORITY_CHOICE_INVALID':
-      case 'AGENT_DECISION_AUTHORITY_INVALID':
-        return completedPublicError(
-          envelope,
-          'agent_decision_action_invalid',
-          'The Decision action is not authorized by the current projection.',
-          false
-        );
-      case 'AGENT_DECISION_AUTHORITY_RECEIPT_INVALID':
-        return null;
-    }
-  }
-  if (error instanceof AgentCoreError) {
-    if (error.code === 'AGENT_RUN_VERSION_CONFLICT') {
-      return completedPublicError(
-        envelope,
-        'agent_run_version_conflict',
-        'The Agent Run changed before this Decision was applied.',
-        false
-      );
-    }
-    if (error.code === 'AGENT_RUN_NOT_FOUND') {
-      return completedPublicError(
-        envelope,
-        'agent_run_not_found',
-        'The authoritative Agent Run does not exist.',
-        false
-      );
-    }
-  }
-  return null;
 }

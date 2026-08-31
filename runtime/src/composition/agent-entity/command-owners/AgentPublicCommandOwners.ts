@@ -20,6 +20,9 @@ import type {
 import type {
   AgentConversationComponentHandle
 } from '../components/conversation/AgentConversationComponent.js';
+import type {
+  AgentRunControlComponentHandle
+} from '../components/run-control/AgentRunControlComponent.js';
 
 type OwnedPublicCommand<K extends PublicCommandKind> = Extract<
   RuntimeCommandEnvelope['command'],
@@ -28,13 +31,11 @@ type OwnedPublicCommand<K extends PublicCommandKind> = Extract<
 
 export interface AgentPublicCommandOwnerInputs {
   readonly conversation: AgentConversationComponentHandle;
+  readonly runControl: AgentRunControlComponentHandle;
   readonly agentInbox: AgentInboxPublicCommandHandler;
   readonly subagentInterrupt: AgentSubagentInterruptPublicCommandHandler;
   readonly humanSkills?: HumanSkillPublicCommandHandler;
   readonly productivity?: ProductivityPublicCommandHandler;
-  readonly executeResolveAgentDecision: CommandExecutor<'agent.decision.resolve.v3'>;
-  readonly reconcileAgentDecision: CommandReconciler<'agent.decision.resolve.v3'>;
-  readonly executeCancelAgentRun: CommandExecutor<'agent.run.cancel.v3'>;
   readonly executeToolResultDetail: CommandExecutor<'agent.tool_result.detail.get.v3'>;
   readonly executeProjectionCommand: (envelope: RuntimeCommandEnvelope) => Promise<RuntimeApplicationCommandResult>;
   readonly reconcileConversation: (
@@ -82,10 +83,10 @@ export function createAgentPublicCommandOwners(
         envelope, 'conversation_command_reconciliation_invalid'
       )),
     owner('agent.decision', ['agent.decision.resolve.v3'],
-      input.executeResolveAgentDecision,
-      input.reconcileAgentDecision),
+      (envelope, command) => input.runControl.executeDecision(envelope, command),
+      (envelope, command) => input.runControl.reconcileDecision(envelope, command)),
     owner('agent.run', ['agent.run.cancel.v3'],
-      input.executeCancelAgentRun,
+      (envelope, command) => input.runControl.executeCancellation(envelope, command),
       (envelope) => input.reconcileByReplay(
         envelope, 'agent_run_cancel_reconciliation_invalid'
       )),
