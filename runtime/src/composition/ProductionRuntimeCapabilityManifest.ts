@@ -5,9 +5,9 @@ import {
   type ProductionRuntimeCapabilityManifestInput
 } from './runtime-capabilities/ProductionRuntimeCapabilityContext.js';
 import {
-  AGENT_CONTROL_RUNTIME_SERVICES_ID,
   productionRuntimeCapabilityProviders
-} from './runtime-capabilities/ProductionRuntimeCapabilityProviders.js';
+} from './runtime-capabilities/ProductionRuntimeCapabilityCatalog.generated.js';
+import { AGENT_CONTROL_RUNTIME_SERVICES_ID } from './runtime-capabilities/AgentControlRuntimeServicesProvider.js';
 import { compileRuntimeCapabilityManifest } from './runtime-capabilities/RuntimeCapabilityManifestCompiler.js';
 import {
   agentCoreComponentDefinitions

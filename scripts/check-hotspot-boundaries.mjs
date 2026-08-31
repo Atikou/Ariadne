@@ -350,7 +350,7 @@ const boundaries = [
     maxLines: 60,
     required: [
       './runtime-capabilities/ProductionRuntimeCapabilityContext.js',
-      './runtime-capabilities/ProductionRuntimeCapabilityProviders.js',
+      './runtime-capabilities/ProductionRuntimeCapabilityCatalog.generated.js',
       './runtime-capabilities/RuntimeCapabilityManifestCompiler.js',
       './agent-entity/AgentCoreComponentCatalog.generated.js'
     ],
@@ -570,9 +570,10 @@ const boundaries = [
     maxLines: 110
   },
   {
-    file: 'runtime/src/composition/runtime-capabilities/ProductionRuntimeCapabilityProviders.ts',
-    maxLines: 140,
-    forbidden: [/compileTrustedAgentToolCatalog/]
+    file: 'runtime/src/composition/runtime-capabilities/ProductionRuntimeCapabilityCatalog.generated.ts',
+    maxLines: 35,
+    required: ['scripts/generate-runtime-capability-catalog.mjs'],
+    forbidden: [/defineRuntimeCapabilityProvider/]
   },
   {
     file: 'runtime/src/composition/runtime-capabilities/RuntimeCapabilityManifestCompiler.ts',
