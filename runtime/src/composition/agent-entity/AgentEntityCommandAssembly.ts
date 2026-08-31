@@ -21,6 +21,7 @@ import {
 } from './AgentEntityCompiler.js';
 import type { AgentPublicCommandOwner } from './command-owners/AgentPublicCommandOwnerTable.js';
 import { createAgentConversationComponent } from './components/conversation/AgentConversationComponent.js';
+import { createAgentDecisionComponent } from './components/decision/AgentDecisionComponent.js';
 import { createAgentRunControlComponent } from './components/run-control/AgentRunControlComponent.js';
 import {
   createAgentToolResultDetailComponent
@@ -58,8 +59,13 @@ export function composeAgentEntityCommandManifest(
   const runControl = createAgentRunControlComponent({
     unitOfWork: input.unitOfWork,
     executionPipeline: input.executionPipeline,
+    wakeProjectionDrain: input.wakeProjectionDrain
+  });
+  const decisions = createAgentDecisionComponent({
+    unitOfWork: input.unitOfWork,
+    executionPipeline: input.executionPipeline,
     wakeProjectionDrain: input.wakeProjectionDrain,
-    decisionCommandNow: input.agentDecisionCommandNow
+    commandNow: input.agentDecisionCommandNow
   });
   const toolResultDetail = createAgentToolResultDetailComponent({
     executionPipeline: input.executionPipeline,
@@ -90,6 +96,7 @@ export function composeAgentEntityCommandManifest(
 
   return compileAgentEntityCommandManifest([
     agentEntityCommandComponent('agent.conversation', conversation.commandOwners()),
+    agentEntityCommandComponent('agent.decision', decisions.commandOwners()),
     agentEntityCommandComponent('agent.run-control', runControl.commandOwners()),
     agentEntityCommandComponent(
       'agent.tool-result-detail', toolResultDetail.commandOwners()

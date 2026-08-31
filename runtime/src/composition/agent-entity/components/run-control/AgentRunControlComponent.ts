@@ -1,23 +1,14 @@
-import { AgentCoreError, AgentRunCommandService } from '@ariadne/agent-core';
+import { AgentRunCommandService } from '@ariadne/agent-core';
 
 import type { SqliteAgentRunUnitOfWork } from '../../../../adapters/persistence/SqliteAgentRunUnitOfWork.js';
-import {
-  AgentDecisionAuthorityError,
-  AgentDecisionAuthorityService
-} from '../../../../control/run/AgentDecisionAuthorityService.js';
-import type { RuntimeCommandReconciliation } from '../../../../control/ports/RuntimeCommandJournal.js';
 import type { RuntimeApplicationCommandResult } from '../../../../ingress/RuntimeApplication.js';
 import type { RuntimeCommandEnvelope } from '../../../../ingress/RuntimeIngress.js';
-import { completedPublicError, publicRunMutationFailure } from '../../../AgentPublicCommandFailures.js';
+import { publicRunMutationFailure } from '../../../AgentPublicCommandFailures.js';
 import type { AgentControlExecutionPipeline } from '../../../ProductionAgentControlExecutionPipelineFactory.js';
 import {
   defineAgentPublicCommandOwner,
   type AgentPublicCommandOwner
 } from '../../command-owners/AgentPublicCommandOwnerTable.js';
-
-type DecisionCommand = Extract<RuntimeCommandEnvelope['command'], {
-  readonly kind: 'agent.decision.resolve.v3';
-}>;
 
 type CancelCommand = Extract<RuntimeCommandEnvelope['command'], {
   readonly kind: 'agent.run.cancel.v3';
@@ -27,19 +18,10 @@ export interface AgentRunControlComponentInput {
   readonly unitOfWork: SqliteAgentRunUnitOfWork;
   readonly executionPipeline?: AgentControlExecutionPipeline;
   readonly wakeProjectionDrain: () => void;
-  readonly decisionCommandNow?: () => Date;
 }
 
 export interface AgentRunControlComponentHandle {
   commandOwners(): readonly AgentPublicCommandOwner[];
-  executeDecision(
-    envelope: RuntimeCommandEnvelope,
-    command: DecisionCommand
-  ): Promise<RuntimeApplicationCommandResult>;
-  reconcileDecision(
-    envelope: RuntimeCommandEnvelope,
-    command: DecisionCommand
-  ): Promise<RuntimeCommandReconciliation>;
   executeCancellation(
     envelope: RuntimeCommandEnvelope,
     command: CancelCommand
@@ -53,37 +35,14 @@ export function createAgentRunControlComponent(
 }
 
 class DefaultAgentRunControlComponent implements AgentRunControlComponentHandle {
-  private readonly decisions: AgentDecisionAuthorityService;
   private readonly commands: AgentRunCommandService;
 
   public constructor(private readonly input: AgentRunControlComponentInput) {
-    this.decisions = new AgentDecisionAuthorityService(
-      input.unitOfWork,
-      input.decisionCommandNow
-    );
     this.commands = new AgentRunCommandService(input.unitOfWork);
-  }
-
-  public async reconcileDecision(
-    envelope: RuntimeCommandEnvelope,
-    command: DecisionCommand
-  ): Promise<RuntimeCommandReconciliation> {
-    const result = await this.decisions.reconcile({
-      commandId: envelope.commandId,
-      command,
-      signal: envelope.signal
-    });
-    return result === null
-      ? { kind: 'not_committed' }
-      : { kind: 'committed', outcome: { ok: true, result } };
   }
 
   public commandOwners(): readonly AgentPublicCommandOwner[] {
     return Object.freeze([
-      defineAgentPublicCommandOwner('agent.decision', [
-        'agent.decision.resolve.v3'
-      ], (envelope, command) => this.executeDecision(envelope, command),
-      (envelope, command) => this.reconcileDecision(envelope, command)),
       defineAgentPublicCommandOwner('agent.run', [
         'agent.run.cancel.v3'
       ], (envelope, command) => this.executeCancellation(envelope, command),
@@ -97,36 +56,6 @@ class DefaultAgentRunControlComponent implements AgentRunControlComponentHandle 
           : { kind: 'not_committed' };
       })
     ]);
-  }
-
-  public async executeDecision(
-    envelope: RuntimeCommandEnvelope,
-    command: DecisionCommand
-  ): Promise<RuntimeApplicationCommandResult> {
-    let result;
-    try {
-      result = await this.decisions.execute({
-        commandId: envelope.commandId,
-        command,
-        signal: envelope.signal
-      });
-    } catch (error) {
-      envelope.signal.throwIfAborted();
-      const replay = await this.decisions.reconcile({
-        commandId: envelope.commandId,
-        command,
-        signal: envelope.signal
-      });
-      if (replay !== null) result = replay;
-      else {
-        const failure = publicDecisionFailure(envelope, error);
-        if (failure !== null) return failure;
-        throw error;
-      }
-    }
-    this.input.executionPipeline?.runWorkScheduler.wake();
-    this.input.wakeProjectionDrain();
-    return { outcome: { ok: true, result }, settlement: 'completed' };
   }
 
   public async executeCancellation(
@@ -232,45 +161,4 @@ function cancellationResult(
     outcome: { ok: true, result: { kind: 'agent.run.cancelled.v3', runId, runVersion } },
     settlement: 'completed'
   };
-}
-
-function publicDecisionFailure(
-  envelope: RuntimeCommandEnvelope,
-  error: unknown
-): RuntimeApplicationCommandResult | null {
-  if (error instanceof AgentDecisionAuthorityError) {
-    if (error.code === 'AGENT_DECISION_AUTHORITY_RUN_NOT_FOUND') {
-      return completedPublicError(
-        envelope, 'agent_run_not_found', 'The authoritative Agent Run does not exist.', false
-      );
-    }
-    if (error.code === 'AGENT_DECISION_AUTHORITY_NOT_ACTIVE') {
-      return completedPublicError(
-        envelope, 'agent_decision_not_active', 'The Decision is no longer active.', false
-      );
-    }
-    if (
-      error.code === 'AGENT_DECISION_AUTHORITY_TOKEN_MISMATCH'
-      || error.code === 'AGENT_DECISION_AUTHORITY_CHOICE_INVALID'
-      || error.code === 'AGENT_DECISION_AUTHORITY_INVALID'
-    ) {
-      return completedPublicError(
-        envelope, 'agent_decision_action_invalid',
-        'The Decision action is not authorized by the current projection.', false
-      );
-    }
-    return null;
-  }
-  if (error instanceof AgentCoreError && error.code === 'AGENT_RUN_VERSION_CONFLICT') {
-    return completedPublicError(
-      envelope, 'agent_run_version_conflict',
-      'The Agent Run changed before this Decision was applied.', false
-    );
-  }
-  if (error instanceof AgentCoreError && error.code === 'AGENT_RUN_NOT_FOUND') {
-    return completedPublicError(
-      envelope, 'agent_run_not_found', 'The authoritative Agent Run does not exist.', false
-    );
-  }
-  return null;
 }

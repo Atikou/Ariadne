@@ -215,6 +215,7 @@ const boundaries = [
     required: [
       './AgentEntityCompiler.js',
       './components/conversation/AgentConversationComponent.js',
+      './components/decision/AgentDecisionComponent.js',
       './components/run-control/AgentRunControlComponent.js',
       './components/tool-result-detail/AgentToolResultDetailComponent.js'
     ],
@@ -249,14 +250,28 @@ const boundaries = [
   },
   {
     file: 'runtime/src/composition/agent-entity/components/run-control/AgentRunControlComponent.ts',
-    maxLines: 290,
+    maxLines: 180,
     required: [
-      '../../../../control/run/AgentDecisionAuthorityService.js'
+      'AgentRunCommandService'
     ],
     forbidden: [
+      /AgentDecisionAuthorityService/,
       /ConversationAuthorityService/,
       /SqliteConversationRunHandoffUnitOfWork/,
       /ConversationSessionPublicCommandHandler/
+    ]
+  },
+  {
+    file: 'runtime/src/composition/agent-entity/components/decision/AgentDecisionComponent.ts',
+    maxLines: 145,
+    required: [
+      '../../../../control/run/AgentDecisionAuthorityService.js',
+      'agent.decision.resolve.v3'
+    ],
+    forbidden: [
+      /AgentRunCommandService/,
+      /ConversationAuthorityService/,
+      /SqliteConversationRunHandoffUnitOfWork/
     ]
   },
   {
