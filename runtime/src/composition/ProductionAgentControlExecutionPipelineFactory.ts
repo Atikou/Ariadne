@@ -133,6 +133,7 @@ import type { AgentInstructionAssemblyService } from '../control/ports/AgentInst
 import type { AgentLifecycleHookService } from '../control/ports/AgentLifecycleHooks.js';
 import type { AgentLifecycleHookDeliverySink } from '../control/ports/AgentLifecycleObservability.js';
 import type { AgentRuntimeTelemetry } from '../control/ports/AgentLifecycleObservability.js';
+import type { CredentialResolver } from '../control/ports/CredentialResolver.js';
 import {
   ProductionAgentRunWorkAuthorityVerifier
 } from './ProductionAgentRunWorkAuthorityVerifier.js';
@@ -189,7 +190,8 @@ export interface AgentControlExecutionPipelineFactory {
 
 export interface ProductionAgentControlExecutionPipelineFactoryOptions {
   readonly toolCatalogSnapshots: readonly TrustedAgentToolCatalogSnapshot[];
-  readonly credentialEnvironment: Readonly<Record<string, string | undefined>>;
+  readonly credentialEnvironment?: Readonly<Record<string, string | undefined>>;
+  readonly credentialResolver?: CredentialResolver;
   readonly instructionAssembly: AgentInstructionAssemblyService;
   readonly lifecycleHooks: AgentLifecycleHookService;
   readonly recoveryReporter: AgentRunExecutionIntentRecoveryReporter;
@@ -357,6 +359,7 @@ implements AgentControlExecutionPipelineFactory {
         modelProviders: input.modelProviders,
         agentAdmissionAuthoritySource: source,
         credentialEnvironment: this.options.credentialEnvironment,
+        credentialResolver: this.options.credentialResolver,
         resiliencePolicy: input.runtimePolicy!.providerResilience,
         ...(input.providerTelemetry === undefined
           ? {}

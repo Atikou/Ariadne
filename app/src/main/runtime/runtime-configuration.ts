@@ -25,10 +25,7 @@ export function createDesktopRuntimeConfiguration(
 ): RuntimeSupervisorOptions {
   const environment = { ...(input.environment ?? process.env) };
   for (const id of AGENT_PROVIDER_IDS) {
-    const variable = AGENT_PROVIDER_CATALOG[id].apiKeyEnvironmentVariable;
-    delete environment[variable];
-    const apiKey = input.agentSettings.providers[id].apiKey;
-    if (apiKey) environment[variable] = apiKey;
+    delete environment[AGENT_PROVIDER_CATALOG[id].apiKeyEnvironmentVariable];
   }
   const allowDevelopmentOverrides = !input.packaged;
   const overrideEntry = allowDevelopmentOverrides
@@ -84,6 +81,7 @@ export function createDesktopRuntimeConfiguration(
       protocol: definition.protocol,
       usageReporting: definition.usageReporting,
       credentialEnvironmentVariable: definition.apiKeyEnvironmentVariable,
+      credentialRef: `model:${providerId}`,
       enabled,
       baseUrl,
       model,

@@ -28,6 +28,7 @@ import {
   type ProviderResilienceTelemetrySink
 } from './ProviderResilienceCoordinator.js';
 import { classifyProviderError } from './ProviderError.js';
+import type { CredentialResolver } from '../../control/ports/CredentialResolver.js';
 
 const MAX_REQUEST_MESSAGES = 1_024;
 const MAX_REQUEST_BYTES = 4 * 1_048_576;
@@ -42,7 +43,8 @@ export interface ProductionExactAgentModelInferenceGatewayOptions {
   readonly modelProviders: RuntimeBootstrap['modelProviders'];
   readonly agentAdmissionAuthoritySource: AgentAdmissionAuthoritySource;
   /** Process-start snapshot. Only declared Provider credential variables are read. */
-  readonly credentialEnvironment: Readonly<Record<string, string | undefined>>;
+  readonly credentialEnvironment?: Readonly<Record<string, string | undefined>>;
+  readonly credentialResolver?: CredentialResolver;
   readonly resiliencePolicy: RuntimePolicySnapshot['providerResilience'];
   readonly providerTelemetry?: ProviderResilienceTelemetrySink;
   readonly resilienceDependencies?: Pick<
@@ -61,10 +63,13 @@ interface ExactTransportBinding {
   readonly protocol: ModelProviderBootstrap['protocol'];
   readonly usageReporting: NonNullable<ModelProviderBootstrap['usageReporting']>;
   readonly endpoint: string;
-  readonly credential: string;
+  readonly credentialRef?: string;
+  readonly startupCredential?: string;
   readonly contextWindowTokens: number;
   readonly maxOutputTokens: number;
 }
+
+type ResolvedExactTransportBinding = ExactTransportBinding & { readonly credential: string };
 
 /**
  * Pure Ariadne v3 model transport.
@@ -80,6 +85,7 @@ implements ExactAgentModelInferenceRuntime {
   private readonly requestTimeoutMs: number;
   private readonly resilience: ReadonlyMap<string, ProviderResilienceCoordinator>;
   private readonly now: () => number;
+  private readonly credentialResolver: CredentialResolver | undefined;
 
   public constructor(options: ProductionExactAgentModelInferenceGatewayOptions) {
     this.fetch = options.fetch ?? globalThis.fetch;
@@ -90,6 +96,7 @@ implements ExactAgentModelInferenceRuntime {
       throw new Error('agent_model_request_timeout_invalid');
     }
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.credentialResolver = options.credentialResolver;
     this.bindings = compileExactBindings(options);
     this.now = options.resilienceDependencies?.now ?? Date.now;
     this.resilience = new Map([...this.bindings.entries()].map(([key, binding]) => [
@@ -166,6 +173,8 @@ implements ExactAgentModelInferenceRuntime {
       request.binding.settingsRevision
     ));
     if (binding === undefined) return { status: 'binding_unavailable' };
+    const credential = await this.resolveCredential(binding, request.signal);
+    const resolvedBinding: ResolvedExactTransportBinding = { ...binding, credential };
 
     const tools = validateTools(request.tools);
     const messages = validateMessages(
@@ -191,7 +200,7 @@ implements ExactAgentModelInferenceRuntime {
       ]) + binding.maxOutputTokens,
       execute: (markOutputStarted) => this.inferBindingAttempt(
         request,
-        binding,
+        resolvedBinding,
         messages,
         tools,
         markOutputStarted
@@ -225,7 +234,7 @@ implements ExactAgentModelInferenceRuntime {
 
   private async inferBindingAttempt(
     request: DispatchExactAgentModelInferenceRequest,
-    binding: ExactTransportBinding,
+    binding: ResolvedExactTransportBinding,
     messages: readonly ExactAgentModelInferenceMessage[],
     tools: readonly ExactAgentModelInferenceToolContract[],
     markOutputStarted: () => void
@@ -299,6 +308,34 @@ implements ExactAgentModelInferenceRuntime {
       throw error;
     }
   }
+
+  private async resolveCredential(
+    binding: ExactTransportBinding,
+    signal: AbortSignal
+  ): Promise<string> {
+    if (binding.credentialRef !== undefined && this.credentialResolver !== undefined) {
+      try {
+        return await this.credentialResolver.resolve(
+          binding.credentialRef,
+          'model_inference',
+          signal
+        );
+      } catch {
+        signal.throwIfAborted();
+        throw new ExactAgentModelInferenceTransportError(
+          'agent_model_credential_unavailable',
+          undefined,
+          'authentication'
+        );
+      }
+    }
+    if (binding.startupCredential !== undefined) return binding.startupCredential;
+    throw new ExactAgentModelInferenceTransportError(
+      'agent_model_credential_unavailable',
+      undefined,
+      'authentication'
+    );
+  }
 }
 
 export class ExactAgentModelInferenceTransportError extends Error {
@@ -309,6 +346,7 @@ export class ExactAgentModelInferenceTransportError extends Error {
       | 'agent_model_provider_circuit_open'
       | 'agent_model_provider_rate_limit'
       | 'agent_model_provider_response_invalid'
+      | 'agent_model_credential_unavailable'
       | 'agent_model_request_invalid',
     public readonly status?: number,
     public readonly category:
@@ -431,10 +469,14 @@ function compileExactBindings(
           provider.usageReporting ?? 'none'
         )
       ) continue;
-      const credential = options.credentialEnvironment[
+      const startupCredential = options.credentialEnvironment?.[
         provider.credentialEnvironmentVariable
       ];
-      if (typeof credential !== 'string' || credential.length === 0) continue;
+      const credentialRef = provider.credentialRef;
+      if (
+        (typeof startupCredential !== 'string' || startupCredential.length === 0)
+        && (credentialRef === undefined || options.credentialResolver === undefined)
+      ) continue;
       let endpoint: string;
       try {
         endpoint = exactEndpoint(provider.baseUrl, provider.protocol);
@@ -449,7 +491,10 @@ function compileExactBindings(
         protocol: provider.protocol,
         usageReporting: provider.usageReporting ?? 'none',
         endpoint,
-        credential,
+        ...(credentialRef === undefined ? {} : { credentialRef }),
+        ...(typeof startupCredential !== 'string' || startupCredential.length === 0
+          ? {}
+          : { startupCredential }),
         contextWindowTokens: provider.contextWindowTokens,
         maxOutputTokens: provider.maxOutputTokens
       });
@@ -498,7 +543,7 @@ function exactEndpoint(
 }
 
 function openAiRequest(
-  binding: ExactTransportBinding,
+  binding: ResolvedExactTransportBinding,
   messages: readonly ExactAgentModelInferenceMessage[],
   tools: readonly ExactAgentModelInferenceToolContract[],
   inference: DispatchExactAgentModelInferenceRequest['binding']['inference'],
@@ -534,7 +579,7 @@ function openAiRequest(
 }
 
 function anthropicRequest(
-  binding: ExactTransportBinding,
+  binding: ResolvedExactTransportBinding,
   messages: readonly ExactAgentModelInferenceMessage[],
   tools: readonly ExactAgentModelInferenceToolContract[],
   inference: DispatchExactAgentModelInferenceRequest['binding']['inference'],
@@ -978,7 +1023,8 @@ function sameTransport(left: ExactTransportBinding, right: ExactTransportBinding
   return left.protocol === right.protocol
     && left.usageReporting === right.usageReporting
     && left.endpoint === right.endpoint
-    && left.credential === right.credential
+    && left.credentialRef === right.credentialRef
+    && left.startupCredential === right.startupCredential
     && left.supportsVision === right.supportsVision
     && left.contextWindowTokens === right.contextWindowTokens
     && left.maxOutputTokens === right.maxOutputTokens;

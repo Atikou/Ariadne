@@ -130,6 +130,41 @@ describe('ProductionExactAgentModelInferenceGateway', () => {
     });
   });
 
+  it('resolves an opaque credential exactly once per inference and observes hot rotation', async () => {
+    let credential = 'first-operation-key';
+    const resolve = vi.fn(async () => credential);
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => jsonResponse({
+      id: 'response-credential',
+      model: 'model-exact',
+      choices: [{ index: 0, message: { role: 'assistant', content: 'ok' } }]
+    }));
+    const gateway = gatewayFixture({
+      providers: [provider({ credentialRef: 'model:provider-exact' })],
+      environment: {},
+      credentialResolver: {
+        resolve,
+        describe: vi.fn(async () => ({
+          configured: true,
+          source: 'os_secure_storage' as const,
+          writable: true
+        }))
+      },
+      fetch
+    });
+
+    await gateway.inferExact(request());
+    credential = 'second-operation-key';
+    await gateway.inferExact(request());
+
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(resolve).toHaveBeenNthCalledWith(
+      1, 'model:provider-exact', 'model_inference', expect.any(AbortSignal)
+    );
+    expect(fetch.mock.calls.map((call) => (
+      new Headers(call[1]?.headers).get('authorization')
+    ))).toEqual(['Bearer first-operation-key', 'Bearer second-operation-key']);
+  });
+
   it('counts an OpenAI route with its model-local BPE without claiming wire exactness', async () => {
     const gateway = gatewayFixture({
       providers: [provider({ providerId: 'openai', model: 'gpt-5-mini' })],
@@ -704,6 +739,9 @@ function gatewayFixture(overrides: {
   providerTelemetry?: NonNullable<
     ConstructorParameters<typeof ProductionExactAgentModelInferenceGateway>[0]['providerTelemetry']
   >;
+  credentialResolver?: NonNullable<
+    ConstructorParameters<typeof ProductionExactAgentModelInferenceGateway>[0]['credentialResolver']
+  >;
 } = {}): ProductionExactAgentModelInferenceGateway {
   return new ProductionExactAgentModelInferenceGateway({
     modelProviders: overrides.providers ?? [provider()],
@@ -712,6 +750,9 @@ function gatewayFixture(overrides: {
       overrides.authorityProviderId ?? 'provider-exact'
     ),
     credentialEnvironment: overrides.environment ?? { EXACT_KEY: SECRET },
+    ...(overrides.credentialResolver === undefined
+      ? {}
+      : { credentialResolver: overrides.credentialResolver }),
     resiliencePolicy: overrides.resiliencePolicy
       ?? createDefaultRuntimePolicySnapshot().providerResilience,
     ...(overrides.resilienceDependencies === undefined

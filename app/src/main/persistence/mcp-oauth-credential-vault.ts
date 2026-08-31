@@ -141,6 +141,11 @@ export class McpOAuthCredentialVault {
     await this.writeQueue;
   }
 
+  hasCredentialRecord(credentialRef: string): boolean {
+    this.assertInitialized();
+    return this.file.records[credentialRefSchema.parse(credentialRef)] !== undefined;
+  }
+
   private read(credentialRef: string): SecretRecord {
     this.assertInitialized();
     const ref = credentialRefSchema.parse(credentialRef);

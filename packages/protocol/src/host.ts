@@ -134,6 +134,7 @@ export const modelProviderBootstrapSchema = z.object({
   protocol: z.enum(['openai-compatible', 'anthropic-messages']),
   usageReporting: z.enum(['none', 'openai-stream-options', 'anthropic-events']).optional(),
   credentialEnvironmentVariable: z.string().regex(/^[A-Z][A-Z0-9_]{2,127}$/),
+  credentialRef: z.string().regex(/^model:[a-z][a-z0-9_-]{1,127}$/u).optional(),
   enabled: z.boolean(),
   baseUrl: z.string().url().max(2_048).refine(
     (value) => new URL(value).protocol === 'https:',
@@ -383,6 +384,18 @@ export const agentPersistenceCapabilityOperationSchema = z.object({
   kind: z.literal('agent.persistence.keyring.read')
 }).strict();
 
+export const credentialCapabilityOperationSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('credential.resolve'),
+    credentialRef: z.string().regex(/^[a-z][a-z0-9._:-]{2,255}$/u),
+    purpose: z.enum(['model_inference', 'mcp_oauth', 'subagent'])
+  }).strict(),
+  z.object({
+    kind: z.literal('credential.describe'),
+    credentialRef: z.string().regex(/^[a-z][a-z0-9._:-]{2,255}$/u)
+  }).strict()
+]);
+
 export const agentPersistenceKeyIdSchema = z.string().regex(
   /^agent-key-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
 );
@@ -458,6 +471,13 @@ export const runtimeCapabilityRequestSchema = z.discriminatedUnion('capability',
     requestId: nonEmptyIdSchema,
     capability: z.literal('agent_persistence'),
     operation: agentPersistenceCapabilityOperationSchema
+  }).strict(),
+  z.object({
+    ...envelopeFields,
+    type: z.literal('capability_request'),
+    requestId: nonEmptyIdSchema,
+    capability: z.literal('credential'),
+    operation: credentialCapabilityOperationSchema
   }).strict()
 ]);
 
@@ -510,12 +530,14 @@ export type McpRemoteCapabilityOperation = z.infer<typeof mcpRemoteCapabilityOpe
 export type AgentPersistenceCapabilityOperation = z.infer<
   typeof agentPersistenceCapabilityOperationSchema
 >;
+export type CredentialCapabilityOperation = z.infer<typeof credentialCapabilityOperationSchema>;
 export type AgentPersistenceKeyRing = z.infer<typeof agentPersistenceKeyRingSchema>;
 export type HostCapabilityOperation =
   | ComputerReadCapabilityOperation
   | BrowserCapabilityOperation
   | McpRemoteCapabilityOperation
-  | AgentPersistenceCapabilityOperation;
+  | AgentPersistenceCapabilityOperation
+  | CredentialCapabilityOperation;
 export type HostToRuntimeMessage = z.infer<typeof hostToRuntimeMessageSchema>;
 export type RuntimeToHostMessage = z.infer<typeof runtimeToHostMessageSchema>;
 

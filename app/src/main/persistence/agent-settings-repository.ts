@@ -29,6 +29,7 @@ import {
   type AgentCustomPermissions,
   type AgentPermissionMode,
   type AgentProviderId,
+  type AgentProviderSettingsPatch,
   type AgentSandboxMode,
   type AgentSettingsEffect,
   type AgentSettingsMutation,
@@ -276,6 +277,14 @@ export class AgentSettingsRepository {
     };
   }
 
+  resolveProviderApiKey(providerId: AgentProviderId): string | undefined {
+    return this.tryDecrypt(this.settings.providers[providerId].encryptedApiKey);
+  }
+
+  describeProviderApiKey(providerId: AgentProviderId): ApiKeyStatus {
+    return this.apiKeyStatus(this.settings.providers[providerId].encryptedApiKey);
+  }
+
   createCheckpoint(): AgentSettingsCheckpoint {
     return { serialized: JSON.stringify(this.settings) };
   }
@@ -492,11 +501,18 @@ export function effectForSettingsOperations(
     const operationEffect: AgentSettingsEffect = operation.kind === 'permissions.set'
       || operation.kind === 'routing.set'
       ? 'reload_scheduled'
-      : 'restart_required';
+      : operation.kind === 'provider.update' && isCredentialOnlyProviderPatch(operation.patch)
+        ? 'hot_applied'
+        : 'restart_required';
     if (operationEffect === 'restart_required') return operationEffect;
     if (operationEffect === 'reload_scheduled') effect = operationEffect;
   }
   return effect;
+}
+
+function isCredentialOnlyProviderPatch(patch: AgentProviderSettingsPatch): boolean {
+  const keys = Object.keys(patch);
+  return keys.length > 0 && keys.every((key) => key === 'apiKey' || key === 'clearApiKey');
 }
 
 function applySettingsOperations(

@@ -32,6 +32,7 @@ import { ApprovalNotificationService } from './services/approval-notification-se
 import { BrowserService } from './services/browser-service';
 import { ComputerReadService } from './services/computer-read-service';
 import { McpRemoteService } from './runtime/mcp-remote-service';
+import { MainCredentialAuthority } from './runtime/credential-authority';
 import { PreferencesCoordinator } from './services/preferences-coordinator';
 import { MainWindowController } from './windows/main-window';
 import { RendererSource } from './windows/renderer-source';
@@ -68,8 +69,12 @@ export class ApplicationController {
     join(app.getPath('userData'), 'agent-persistence-keyring.json'),
     this.secretCipher
   );
+  private readonly credentials = new MainCredentialAuthority(
+    this.agentSettings,
+    this.mcpOAuthVault
+  );
   private readonly mcpRemote = new McpRemoteService(
-    this.mcpOAuthVault,
+    this.credentials,
     async (url) => {
       await shell.openExternal(url);
     }
@@ -297,6 +302,9 @@ export class ApplicationController {
             runtimeInstanceId: request.runtimeInstanceId
           };
         }
+        if (request.capability === 'credential') {
+          return this.credentials.handle(request.operation);
+        }
         throw new Error('host_capability_unknown');
       }
     };
@@ -307,7 +315,9 @@ export class ApplicationController {
   ): Promise<AgentSettingsMutationResult> {
     return this.runAgentSettingsOperation(async () => {
       const checkpoint = this.agentSettings.createCheckpoint();
-      const result = await this.agentSettings.mutate(mutation);
+      const result = this.credentials.acceptsUpdate(mutation)
+        ? await this.credentials.update(mutation)
+        : await this.agentSettings.mutate(mutation);
       if (!result.ok) return result;
       try {
         await this.applyCommittedAgentSettings(result.settings, result.effect, mutation.operations);

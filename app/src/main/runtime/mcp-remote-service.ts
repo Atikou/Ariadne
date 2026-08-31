@@ -15,11 +15,16 @@ import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import type { McpRemoteCapabilityOperation } from '@ariadne/protocol/host';
 import type { RuntimePolicySnapshot } from '@ariadne/protocol/settings';
 
-import type { McpOAuthCredentialVault } from '../persistence/mcp-oauth-credential-vault';
+import type { MainCredentialAuthority } from './credential-authority';
 
 const REDIRECT_URL = new URL('ariadne://oauth/mcp');
 const AUTHORIZATION_TIMEOUT_MS = 4 * 60_000;
 const MAX_QUEUED_MESSAGES = 256;
+
+type McpCredentialVault = Pick<MainCredentialAuthority,
+  | 'clientInformation' | 'saveClientInformation' | 'tokens' | 'saveTokens'
+  | 'saveCodeVerifier' | 'codeVerifier' | 'saveExpectedState'
+  | 'consumeExpectedState' | 'saveDiscoveryState' | 'discoveryState' | 'invalidate'>;
 
 type TransportFactory = (
   endpoint: URL,
@@ -67,7 +72,7 @@ export class McpRemoteService {
   private allowedServers = new Map<string, RemoteMcpPolicy>();
 
   constructor(
-    private readonly vault: McpOAuthCredentialVault,
+    private readonly vault: McpCredentialVault,
     private readonly openAuthorizationUrl: (url: string) => Promise<void>,
     private readonly transportFactory: TransportFactory = createTransport
   ) {}
@@ -303,7 +308,7 @@ class MainMcpOAuthProvider implements OAuthClientProvider {
 
   constructor(
     private readonly credentialRef: string,
-    private readonly vault: McpOAuthCredentialVault,
+    private readonly vault: McpCredentialVault,
     private readonly openAuthorizationUrl: (url: string) => Promise<void>
   ) {}
 

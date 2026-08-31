@@ -80,17 +80,15 @@ describe('desktop Runtime configuration', () => {
     });
     expect(configuration.runtimePolicy).toEqual(createDefaultRuntimePolicySnapshot());
     expect(configuration.assistantProfile).toEqual(createDefaultAssistantChatProfile());
-    expect(configuration.environment).toMatchObject({
-      OPENAI_API_KEY: 'openai-secret',
-      DEEPSEEK_API_KEY: 'deepseek-secret',
-      MOONSHOT_API_KEY: 'kimi-secret',
-      ANTHROPIC_API_KEY: 'anthropic-secret'
-    });
+    expect(configuration.environment).not.toHaveProperty('OPENAI_API_KEY');
+    expect(configuration.environment).not.toHaveProperty('DEEPSEEK_API_KEY');
+    expect(configuration.environment).not.toHaveProperty('MOONSHOT_API_KEY');
+    expect(configuration.environment).not.toHaveProperty('ANTHROPIC_API_KEY');
     expect(configuration.modelProviders).toEqual([
-      { providerId: 'openai', name: 'cloud-openai', protocol: 'openai-compatible', usageReporting: 'openai-stream-options', credentialEnvironmentVariable: 'OPENAI_API_KEY', enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'openai-test', supportsVision: true, contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} },
-      { providerId: 'deepseek', name: 'cloud-deepseek', protocol: 'openai-compatible', usageReporting: 'openai-stream-options', credentialEnvironmentVariable: 'DEEPSEEK_API_KEY', enabled: true, baseUrl: 'https://api.deepseek.com', model: 'deepseek-test', supportsVision: false, contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} },
-      { providerId: 'kimi', name: 'cloud-kimi', protocol: 'openai-compatible', usageReporting: 'openai-stream-options', credentialEnvironmentVariable: 'MOONSHOT_API_KEY', enabled: true, baseUrl: 'https://api.moonshot.ai/v1', model: 'kimi-test', supportsVision: false, contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} },
-      { providerId: 'anthropic', name: 'cloud-anthropic', protocol: 'anthropic-messages', usageReporting: 'anthropic-events', credentialEnvironmentVariable: 'ANTHROPIC_API_KEY', enabled: false, baseUrl: 'https://api.anthropic.com', model: 'anthropic-test', supportsVision: true, contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} }
+      { providerId: 'openai', name: 'cloud-openai', protocol: 'openai-compatible', usageReporting: 'openai-stream-options', credentialEnvironmentVariable: 'OPENAI_API_KEY', credentialRef: 'model:openai', enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'openai-test', supportsVision: true, contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} },
+      { providerId: 'deepseek', name: 'cloud-deepseek', protocol: 'openai-compatible', usageReporting: 'openai-stream-options', credentialEnvironmentVariable: 'DEEPSEEK_API_KEY', credentialRef: 'model:deepseek', enabled: true, baseUrl: 'https://api.deepseek.com', model: 'deepseek-test', supportsVision: false, contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} },
+      { providerId: 'kimi', name: 'cloud-kimi', protocol: 'openai-compatible', usageReporting: 'openai-stream-options', credentialEnvironmentVariable: 'MOONSHOT_API_KEY', credentialRef: 'model:kimi', enabled: true, baseUrl: 'https://api.moonshot.ai/v1', model: 'kimi-test', supportsVision: false, contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} },
+      { providerId: 'anthropic', name: 'cloud-anthropic', protocol: 'anthropic-messages', usageReporting: 'anthropic-events', credentialEnvironmentVariable: 'ANTHROPIC_API_KEY', credentialRef: 'model:anthropic', enabled: false, baseUrl: 'https://api.anthropic.com', model: 'anthropic-test', supportsVision: true, contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} }
     ]);
     expect(JSON.stringify(configuration.modelProviders)).not.toContain('secret');
     expect(configuration.subagentProviders).toEqual([{

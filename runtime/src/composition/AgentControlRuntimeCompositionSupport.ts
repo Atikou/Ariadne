@@ -10,11 +10,12 @@ import {
   ProductionAgentControlExecutionPipelineFactory,
   type AgentControlExecutionPipelineFactory
 } from './ProductionAgentControlExecutionPipelineFactory.js';
+import { HostCredentialResolver } from './HostCredentialResolver.js';
 
 export function createProductionExecutionPipelineFactory(
   input: AgentControlRuntimeFactoryInput
 ): AgentControlExecutionPipelineFactory | undefined {
-  if (input.workspaces === undefined || input.credentialEnvironment === undefined) {
+  if (input.workspaces === undefined) {
     return undefined;
   }
   if (input.agentToolCatalogSnapshots === undefined) return undefined;
@@ -23,6 +24,7 @@ export function createProductionExecutionPipelineFactory(
   return new ProductionAgentControlExecutionPipelineFactory({
     toolCatalogSnapshots: input.agentToolCatalogSnapshots,
     credentialEnvironment: input.credentialEnvironment,
+    credentialResolver: new HostCredentialResolver(input.hostCapabilities),
     instructionAssembly: input.runtimeServices.instructionAssembly,
     lifecycleHooks: input.runtimeServices.lifecycleHooks,
     liveWorkLifecycle: input.runtimeServices.liveWorkLifecycle,
