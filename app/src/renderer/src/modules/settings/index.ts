@@ -5,7 +5,7 @@ import { SettingsPanel } from './SettingsPanel';
 export const settingsModule: FeatureModuleDefinition = {
   id: moduleId('settings'), name: '设置', description: '模型、API Key、主题和桌面偏好。', icon: 'settings', component: SettingsPanel,
   consumes: [
-    'agentSettings', 'conversationNavigation', 'events', 'preferences',
+    'agentSettings', 'applicationProfile', 'conversationNavigation', 'events', 'preferences',
     'diagnostics', 'models', 'sessions', 'speech', 'system'
   ],
   presentation: { kind: 'dialog', component: SettingsDialog },

@@ -45,6 +45,7 @@ import type {
   AgentSettingsMutation,
   AgentSettingsMutationResult,
   AgentSettingsView,
+  ApplicationProfileView,
   AgentWorkspacePinUpdate,
   AgentWorkspaceRequest,
   OpenWorkspaceResult,
@@ -81,6 +82,7 @@ interface IpcDependencies {
   runtime: RuntimeSupervisor;
   agentInputDeliveryOutbox: AgentInputDeliveryOutbox;
   speech: SpeechPort;
+  getApplicationProfile(): ApplicationProfileView;
   activateSpeechVoice(request: ActivateSpeechVoiceRequest): Promise<SpeechVoiceSummary>;
   workspaceFiles: WorkspaceFileService;
   testApprovalNotification(): { shown: boolean; supported: boolean };
@@ -150,6 +152,11 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
   ipcMain.handle(IPC_CHANNELS.systemApprovalNotificationTest, (event) => {
     trusted(event);
     return dependencies.testApprovalNotification();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.systemApplicationProfile, (event) => {
+    trusted(event);
+    return dependencies.getApplicationProfile();
   });
 
   ipcMain.handle(IPC_CHANNELS.clipboardWrite, (event, input: unknown) => {

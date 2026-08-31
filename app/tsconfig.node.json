@@ -29,6 +29,7 @@
     "src/renderer/src/core/modules/module-contract.ts",
     "src/renderer/src/core/modules/module-services-contract.ts",
     "src/renderer/src/core/modules/module-registry.tsx",
+    "src/renderer/src/core/modules/ui-profile-selection.ts",
     "src/renderer/src/core/runtime/**/*.ts",
     "src/renderer/src/core/speech/**/*.ts",
     "src/renderer/src/core/services/module-services.ts",

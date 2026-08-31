@@ -4,7 +4,7 @@ import type { AppEventMap } from '../events/app-events';
 import type { MessageFeatureStore } from '../runtime/features/message-feature-store';
 import type { RunFeatureStore } from '../runtime/features/run-feature-store';
 import type { SessionFeatureStore } from '../runtime/features/session-feature-store';
-import { SpeechAgentBridge } from './speech-agent-bridge';
+import { SpeechAgentBridge, type SpeechAgentBridgePort } from './speech-agent-bridge';
 import { SpeechCoordinator } from './speech-coordinator';
 
 export interface RendererSpeechEntityDependencies {
@@ -19,15 +19,18 @@ export interface RendererSpeechEntityDependencies {
 
 /** Renderer composition entry for Speech UI and Agent bridge components. */
 export function compileRendererSpeechEntity(
-  dependencies: RendererSpeechEntityDependencies
+  dependencies: RendererSpeechEntityDependencies,
+  componentIds: readonly string[]
 ): SpeechCoordinator {
-  const agentBridge = new SpeechAgentBridge(
-    dependencies.speechApi,
-    dependencies.messages,
-    dependencies.runs,
-    dependencies.sessions,
-    dependencies.storage
-  );
+  const agentBridge: SpeechAgentBridgePort = componentIds.includes('speech.bridge.agent')
+    ? new SpeechAgentBridge(
+        dependencies.speechApi,
+        dependencies.messages,
+        dependencies.runs,
+        dependencies.sessions,
+        dependencies.storage
+      )
+    : UNAVAILABLE_AGENT_BRIDGE;
   return new SpeechCoordinator(
     dependencies.speechApi,
     dependencies.preferencesApi,
@@ -35,3 +38,11 @@ export function compileRendererSpeechEntity(
     dependencies.events
   );
 }
+
+const UNAVAILABLE_AGENT_BRIDGE: SpeechAgentBridgePort = Object.freeze({
+  initialize: () => undefined,
+  dispose: () => undefined,
+  onError: () => () => undefined,
+  acceptVoiceText: () => undefined,
+  cancelVoiceTurn: () => undefined
+});

@@ -1,4 +1,4 @@
-import type { AriadneApi } from '@shared/contract';
+import type { ApplicationProfileView, AriadneApi } from '@shared/contract';
 import type { ModuleServices } from '../modules/module-contract';
 import { createModuleServices } from './module-services';
 
@@ -19,8 +19,8 @@ export class RendererCompositionRoot {
   private disposed = false;
   private lifecycleInstalled = false;
 
-  constructor(api: AriadneApi, storage: Storage) {
-    this.services = createModuleServices(api, storage);
+  constructor(api: AriadneApi, storage: Storage, applicationProfile: ApplicationProfileView) {
+    this.services = createModuleServices(api, storage, applicationProfile);
   }
 
   start(): Promise<void> {
@@ -48,11 +48,12 @@ export class RendererCompositionRoot {
 export function getWindowRendererCompositionRoot(
   api: AriadneApi,
   storage: Storage,
+  applicationProfile: ApplicationProfileView,
   global: RendererCompositionRootGlobal = globalThis as RendererCompositionRootGlobal
 ): RendererCompositionRoot {
   const existing = global[COMPOSITION_ROOT_KEY];
   if (existing) return existing;
-  const created = new RendererCompositionRoot(api, storage);
+  const created = new RendererCompositionRoot(api, storage, applicationProfile);
   global[COMPOSITION_ROOT_KEY] = created;
   return created;
 }

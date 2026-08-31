@@ -9,6 +9,7 @@ import {
   createDeclaredModuleServices,
   ModuleRegistry
 } from '../src/renderer/src/core/modules/module-registry.js';
+import { selectUiComponentDefinitions } from '../src/renderer/src/core/modules/ui-profile-selection.js';
 
 const gatedModule: FeatureModuleDefinition = {
   id: moduleId('test.voice'),
@@ -56,5 +57,11 @@ describe('UI ModuleRegistry', () => {
     expect(() => scope.speech).toThrow(
       'Module test.runtime cannot access undeclared service speech.'
     );
+  });
+
+  it('fails closed when a UI profile names a component outside the catalog', () => {
+    expect(selectUiComponentDefinitions([gatedModule], ['test.voice'])).toEqual([gatedModule]);
+    expect(() => selectUiComponentDefinitions([gatedModule], ['ui.missing']))
+      .toThrow('ui_profile_component_unknown:ui.missing');
   });
 });

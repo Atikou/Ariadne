@@ -36,6 +36,7 @@ import { deriveChatModelState, type ChatModelState } from './chat-model-state';
 import type { ConversationWorkspace } from '@renderer/core/conversations/conversation-navigation-service';
 import { useConversationPresentationRevision } from '@renderer/core/conversations/use-conversation-presentation';
 import { useSpeechSnapshot } from '@renderer/core/speech/speech-coordinator';
+import { applicationProfileComponents } from '@shared/application-profile';
 import './ImageAttachments.css';
 import './AgentInputDelivery.css';
 
@@ -68,6 +69,8 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   const sessions = useFeatureSnapshot(services.sessions.view);
   const runtime = { ...diagnostics, ...messages, ...models, ...runs, ...sessions };
   const speech = useSpeechSnapshot(services.speech);
+  const speechComponents = applicationProfileComponents(services.applicationProfile, 'speech');
+  const speechInputInstalled = speechComponents.includes('speech.stt');
   useConversationPresentationRevision(services.conversationNavigation);
   const [draft, setDraft] = useState('');
   const [draftImages, setDraftImages] = useState<readonly DraftImageAttachment[]>([]);
@@ -802,7 +805,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                     onChange={(nextPermissionMode) => void changePermissionMode(nextPermissionMode)}
                   />
                 )}
-                <button
+                {speechInputInstalled && <button
                   type="button"
                   className={`composer-mic-button${speech.foregroundRequestId ? ' is-active' : ''}`}
                   aria-label={speech.foregroundRequestId ? '停止语音输入' : '开始语音输入'}
@@ -813,7 +816,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                   onClick={() => void services.speech.toggleForegroundRecognition().catch((error) => {
                     console.error('Unable to toggle speech recognition.', error);
                   })}
-                >{speech.foregroundRequestId ? <MicOff size={15} /> : <Mic size={15} />}</button>
+                >{speech.foregroundRequestId ? <MicOff size={15} /> : <Mic size={15} />}</button>}
                 <button
                   type="button"
                   className={`send-button${running && !hasDraftInput ? ' send-button--stop' : ''}`}

@@ -9,7 +9,7 @@ import type {
 } from '@shared/contract';
 import type { TypedEventBus } from '../events/typed-event-bus';
 import type { AppEventMap } from '../events/app-events';
-import type { SpeechAgentBridge } from './speech-agent-bridge';
+import type { SpeechAgentBridgePort } from './speech-agent-bridge';
 
 export interface SpeechCoordinatorSnapshot {
   initialized: boolean;
@@ -44,7 +44,7 @@ export class SpeechCoordinator {
   constructor(
     private readonly api: AriadneApi['speech'],
     private readonly preferencesApi: AriadneApi['preferences'],
-    private readonly agentBridge: SpeechAgentBridge,
+    private readonly agentBridge: SpeechAgentBridgePort,
     private readonly events: TypedEventBus<AppEventMap>
   ) {
     this.snapshot = this.createSnapshot();

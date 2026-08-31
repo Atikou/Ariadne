@@ -9,10 +9,12 @@ import type {
   AgentWorkspacePinUpdate,
   AgentWorkspaceRequest,
   ActivateSpeechVoiceRequest,
+  ApplicationProfileView,
   SpeechStatus,
   OpenWorkspaceResult
 } from '@shared/contract';
 import { IPC_CHANNELS } from '@shared/ipc';
+import { applicationProfileComponents, compileApplicationProfile } from '@shared/application-profile';
 import { AgentSettingsRepository } from './persistence/agent-settings-repository';
 import { AgentInputDeliveryOutbox } from './persistence/agent-input-delivery-outbox';
 import { AgentPersistenceKeyRingStore } from './persistence/agent-persistence-keyring';
@@ -42,7 +44,7 @@ import { RuntimeSupervisor } from './runtime/runtime-supervisor';
 import { runElectronSmokeTest } from './smoke/electron-smoke';
 import { shouldRestartRuntimeForAgentSettings } from './settings/agent-settings-effects';
 import { compileSpeechEntity } from './speech/entity/speech-entity-compiler';
-import { DEFAULT_SPEECH_COMPONENT_IDS } from './speech/entity/speech-components';
+import { resolveApplicationProfile } from './profiles/application-profiles';
 
 export class ApplicationController {
   private isQuitting = false;
@@ -83,7 +85,12 @@ export class ApplicationController {
   );
   private readonly gameActivity = new UnavailableGameActivityDetector();
   private readonly interruptionPolicy = new InterruptionPolicy();
-  private readonly speech = compileSpeechEntity(DEFAULT_SPEECH_COMPONENT_IDS);
+  private readonly applicationProfileDefinition = resolveApplicationProfile();
+  private applicationProfile: ApplicationProfileView | null = null;
+  private readonly speech = compileSpeechEntity(applicationProfileComponents(
+    this.applicationProfileDefinition,
+    'speech'
+  ));
   private readonly systemCapabilities = new SystemCapabilityCatalog(
     new ElectronAutoLaunchService(),
     this.gameActivity,
@@ -202,6 +209,7 @@ export class ApplicationController {
   }
 
   private async startApplication(): Promise<void> {
+    this.applicationProfile = await compileApplicationProfile(this.applicationProfileDefinition);
     await Promise.all([
       this.state.initialize(),
       this.agentSettings.initialize(),
@@ -248,6 +256,10 @@ export class ApplicationController {
       runtime: this.runtime,
       agentInputDeliveryOutbox: this.agentInputDeliveryOutbox,
       speech: this.speech,
+      getApplicationProfile: () => {
+        if (!this.applicationProfile) throw new Error('application_profile_not_compiled');
+        return this.applicationProfile;
+      },
       activateSpeechVoice: (request) => this.activateSpeechVoice(request),
       mainWindow: this.mainWindow,
       testApprovalNotification: () => this.approvalNotifications.showTestNotification()

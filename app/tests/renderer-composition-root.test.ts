@@ -63,9 +63,20 @@ describe('RendererCompositionRoot', () => {
     } as unknown as Storage;
     const windowLifecycle = new EventTarget();
     const global = {};
+    const profile = {
+      schemaVersion: 1 as const,
+      id: 'test',
+      revision: 1,
+      entities: [
+        { entity: 'agent' as const, componentIds: ['*'], digest: `sha256:${'1'.repeat(64)}` },
+        { entity: 'ui' as const, componentIds: ['*'], digest: `sha256:${'2'.repeat(64)}` },
+        { entity: 'speech' as const, componentIds: ['speech.core'], digest: `sha256:${'3'.repeat(64)}` }
+      ],
+      digest: `sha256:${'0'.repeat(64)}`
+    };
 
-    const first = getWindowRendererCompositionRoot(api, storage, global);
-    const second = getWindowRendererCompositionRoot(api, storage, global);
+    const first = getWindowRendererCompositionRoot(api, storage, profile, global);
+    const second = getWindowRendererCompositionRoot(api, storage, profile, global);
     expect(second).toBe(first);
     expect(second.services.runtime).toBe(first.services.runtime);
 

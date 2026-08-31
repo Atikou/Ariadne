@@ -5,14 +5,18 @@ import { RuntimeStore } from '../runtime/runtime-store';
 import type { ModuleServices } from '../modules/module-contract';
 import { ConfiguredConversationNavigationService } from '../conversations/conversation-navigation-service';
 import { compileRendererSpeechEntity } from '../speech/renderer-speech-entity';
+import type { ApplicationProfileView } from '@shared/contract';
+import { applicationProfileComponents } from '@shared/application-profile';
 
 export function createModuleServices(
   api: AriadneApi,
-  storage: Storage = window.localStorage
+  storage: Storage = window.localStorage,
+  applicationProfile: ApplicationProfileView
 ): ModuleServices {
   const events = new TypedEventBus<AppEventMap>();
   const runtime = new RuntimeStore(api.runtime, api.agentInputDeliveryOutbox);
   return {
+    applicationProfile,
     agentSettings: api.agentSettings,
     clipboard: api.clipboard,
     conversationNavigation: new ConfiguredConversationNavigationService(api.agentSettings, api.workspace, storage),
@@ -34,7 +38,7 @@ export function createModuleServices(
       sessions: runtime.sessions,
       events,
       storage
-    }),
+    }, applicationProfileComponents(applicationProfile, 'speech')),
     preferences: api.preferences,
     system: api.system,
     terminal: api.terminal,

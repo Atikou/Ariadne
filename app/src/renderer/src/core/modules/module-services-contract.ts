@@ -1,4 +1,4 @@
-import type { AriadneApi } from '@shared/contract';
+import type { ApplicationProfileView, AriadneApi } from '@shared/contract';
 import type { AppEventMap } from '../events/app-events';
 import type { TypedEventBus } from '../events/typed-event-bus';
 import type { RuntimeStore } from '../runtime/runtime-store';
@@ -15,6 +15,7 @@ import type { ModelFeatureStore } from '../runtime/features/model-feature-store'
 import type { DiagnosticsFeatureStore } from '../runtime/features/diagnostics-feature-store';
 
 export interface ModuleServices {
+  applicationProfile: ApplicationProfileView;
   agentSettings: AriadneApi['agentSettings'];
   clipboard: AriadneApi['clipboard'];
   conversationNavigation: ConversationNavigationService;

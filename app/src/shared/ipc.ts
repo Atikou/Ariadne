@@ -27,6 +27,7 @@ export const IPC_CHANNELS = {
   speechVoiceActivate: 'ariadne:speech:voice:activate',
   speechEvent: 'ariadne:speech:event',
   systemCapabilityStatuses: 'ariadne:system:capability-statuses',
+  systemApplicationProfile: 'ariadne:system:application-profile',
   systemGameActivity: 'ariadne:system:game-activity',
   systemApprovalNotificationTest: 'ariadne:system:approval-notification:test',
   systemApprovalNavigation: 'ariadne:system:approval-navigation',

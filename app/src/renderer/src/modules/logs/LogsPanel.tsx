@@ -44,6 +44,9 @@ export function LogsPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   return <section className="logs-panel" aria-labelledby={`${moduleId}-title`}>
     <header className="logs-toolbar">
       <h1 id={`${moduleId}-title`}>运行日志</h1>
+      <code title={services.applicationProfile.digest}>
+        {services.applicationProfile.id}@{services.applicationProfile.revision}
+      </code>
       <div className="logs-view-filters" role="toolbar" aria-label="日志类别">
         {viewOptions.map((option) => <button
           type="button"

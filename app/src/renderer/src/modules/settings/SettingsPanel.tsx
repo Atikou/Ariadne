@@ -22,6 +22,7 @@ import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import { workspaceNameFromPath } from '@renderer/core/conversations/conversation-navigation-service';
 import { createEditableLocalModelRoots, moveLocalModelRoot, normalizeLocalModelRoots } from './local-model-roots';
 import { useSpeechSnapshot } from '@renderer/core/speech/speech-coordinator';
+import { applicationProfileComponents } from '@shared/application-profile';
 import { SelectMenu } from '@renderer/shared/ui/SelectMenu';
 
 const themeOptions: Array<{ value: ThemePreference; label: string; icon: typeof Sun }> = [
@@ -51,6 +52,13 @@ const settingsCategories: ReadonlyArray<{
 ];
 
 export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
+  const speechInstalled = applicationProfileComponents(
+    services.applicationProfile,
+    'speech'
+  ).some((id) => id !== 'speech.core');
+  const availableSettingsCategories = speechInstalled
+    ? settingsCategories
+    : settingsCategories.filter((category) => category.id !== 'speech');
   const diagnostics = useFeatureSnapshot(services.diagnostics.view);
   const models = useFeatureSnapshot(services.models.view);
   const sessions = useFeatureSnapshot(services.sessions.view);
@@ -78,7 +86,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
   const [speechActionResult, setSpeechActionResult] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>(() => {
     const saved = window.localStorage.getItem(SETTINGS_CATEGORY_STORAGE_KEY);
-    return settingsCategories.some((category) => category.id === saved)
+    return availableSettingsCategories.some((category) => category.id === saved)
       ? saved as SettingsCategory
       : 'agent';
   });
@@ -416,7 +424,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
           <p>按功能分类管理桌面能力。</p>
         </header>
         <nav aria-label="设置分类">
-          {settingsCategories.map(({ id, label, description, icon: Icon }) => (
+          {availableSettingsCategories.map(({ id, label, description, icon: Icon }) => (
             <button
               type="button"
               key={id}

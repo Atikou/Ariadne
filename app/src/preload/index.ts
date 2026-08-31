@@ -74,6 +74,7 @@ const api: AriadneApi = {
     onEvent: (listener) => subscribe<SpeechEvent>(IPC_CHANNELS.speechEvent, listener)
   },
   system: {
+    getApplicationProfile: () => ipcRenderer.invoke(IPC_CHANNELS.systemApplicationProfile),
     getCapabilityStatuses: () => ipcRenderer.invoke(IPC_CHANNELS.systemCapabilityStatuses),
     getGameActivity: () => ipcRenderer.invoke(IPC_CHANNELS.systemGameActivity),
     testApprovalNotification: () => ipcRenderer.invoke(IPC_CHANNELS.systemApprovalNotificationTest),

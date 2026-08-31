@@ -29,7 +29,15 @@ interface QueuedVoiceTurn {
 }
 
 /** Speech-to-Agent/TTS bridge. It only uses public feature stores, never Agent internals. */
-export class SpeechAgentBridge {
+export interface SpeechAgentBridgePort {
+  initialize(): void;
+  dispose(): void;
+  onError(listener: (error: Error) => void): () => void;
+  acceptVoiceText(text: string, background: boolean): void;
+  cancelVoiceTurn(): void;
+}
+
+export class SpeechAgentBridge implements SpeechAgentBridgePort {
   private readonly errorListeners = new Set<(error: Error) => void>();
   private removers: Array<() => void> = [];
   private voiceTurn: VoiceTurn | null = null;

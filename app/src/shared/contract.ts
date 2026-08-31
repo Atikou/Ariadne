@@ -147,6 +147,22 @@ export interface VoicePackInstallResult {
   detail: string;
 }
 
+export type ApplicationEntityKind = 'agent' | 'ui' | 'speech';
+
+export interface ApplicationEntityProfileView {
+  entity: ApplicationEntityKind;
+  componentIds: readonly string[];
+  digest: string;
+}
+
+export interface ApplicationProfileView {
+  schemaVersion: 1;
+  id: string;
+  revision: number;
+  entities: readonly ApplicationEntityProfileView[];
+  digest: string;
+}
+
 export type SpeechEvent =
   | { kind: 'status'; status: SpeechStatus }
   | { kind: 'wake'; keyword: string; observedAt: string }
@@ -574,6 +590,7 @@ export interface AriadneApi {
     onEvent(listener: (event: SpeechEvent) => void): () => void;
   };
   system: {
+    getApplicationProfile(): Promise<ApplicationProfileView>;
     getCapabilityStatuses(): Promise<CapabilityStatus[]>;
     getGameActivity(): Promise<GameActivitySnapshot>;
     testApprovalNotification(): Promise<ApprovalNotificationTestResult>;
