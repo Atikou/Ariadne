@@ -8,7 +8,7 @@ import {
 const UI_COMPONENT_IDS = Object.freeze([
   'agent.plan', 'agent.status', 'chat.main', 'files.explorer', 'logs',
   'permissions', 'productivity.control', 'session.activity', 'settings',
-  'terminal', 'tools.output'
+  'terminal', 'tools.output', 'runtime.health'
 ]);
 
 export const DESKTOP_DEFAULT_PROFILE = profile('desktop-default', DEFAULT_SPEECH_COMPONENT_IDS);
