@@ -7,11 +7,12 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const boundaries = [
   {
     file: 'runtime/src/composition/DefaultAgentControlRuntimeFactory.ts',
-    maxLines: 700,
+    maxLines: 500,
     required: [
       './AgentControlPublicCommandRouter.js',
       './AgentControlRuntimeCompositionSupport.js',
-      './agent-entity/components/persistence/AgentPersistenceComponent.js'
+      './agent-entity/components/persistence/AgentPersistenceComponent.js',
+      './agent-entity/components/projection/AgentProjectionComponent.js'
     ],
     forbidden: [
       /\bexecuteCancelAgentRun\b/,
@@ -22,7 +23,11 @@ const boundaries = [
       /new\s+SqliteConversationRunHandoffUnitOfWork\b/,
       /new\s+SqlitePublicProjectionStore\b/,
       /new\s+SqliteProductivityStore\b/,
-      /\bloadAgentPersistenceKeyRing\b/
+      /\bloadAgentPersistenceKeyRing\b/,
+      /new\s+AgentRunPublicProjectionPublisher\b/,
+      /new\s+ConversationPublicProjectionPublisher\b/,
+      /new\s+ModelCatalogPublicProjectionPublisher\b/,
+      /\bPublicProjectionWakePublisher\b/
     ]
   },
   {
@@ -34,6 +39,21 @@ const boundaries = [
     forbidden: [
       /AgentControlPublicCommandRouter/,
       /ProductionAgentControlExecutionPipelineFactory/
+    ]
+  },
+  {
+    file: 'runtime/src/composition/agent-entity/components/projection/AgentProjectionComponent.ts',
+    maxLines: 310,
+    required: [
+      '../../../../projection/AgentRunPublicProjectionPublisher.js',
+      '../../../../projection/ConversationPublicProjectionPublisher.js',
+      '../../../../projection/ModelCatalogPublicProjectionPublisher.js'
+    ],
+    forbidden: [
+      /AgentControlPublicCommandRouter/,
+      /new\s+SqliteAgentRunUnitOfWork\b/,
+      /new\s+SqliteConversationRunHandoffUnitOfWork\b/,
+      /new\s+SqlitePublicProjectionStore\b/
     ]
   },
   {

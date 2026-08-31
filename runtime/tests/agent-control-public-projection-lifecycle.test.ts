@@ -497,12 +497,14 @@ describe('Agent Control v3 public projection lifecycle', () => {
     const close = closeControl(control);
     try {
       await control.start();
-      const internals = control as unknown as ProjectionDrainTestInternals;
-      const originalPublish = internals.agentPublisher.publishPending
-        .bind(internals.agentPublisher);
+      const projectionComponent = (
+        control as unknown as AgentRuntimeProjectionTestInternals
+      ).projection;
+      const originalPublish = projectionComponent.agentPublisher.publishPending
+        .bind(projectionComponent.agentPublisher);
       const emptyPassReached = deferred<void>();
       const releaseEmptyPass = deferred<void>();
-      vi.spyOn(internals.agentPublisher, 'publishPending')
+      vi.spyOn(projectionComponent.agentPublisher, 'publishPending')
         .mockImplementation(async () => {
           const result = await originalPublish();
           emptyPassReached.resolve();
@@ -513,7 +515,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
       // Hold an empty pass after both source scans have observed no work. The
       // accepted Session then wakes Projection while that drain still owns the
       // single-flight slot: this was the exact lost-wake window.
-      internals.wakeProjectionDrain();
+      projectionComponent.wake();
       await emptyPassReached.promise;
       await expect(control.executeOwnedCommand({
         commandId: 'create-session-during-active-projection-drain',
@@ -814,7 +816,11 @@ interface ProjectionDrainTestInternals {
       readonly acknowledgedMessages: number;
     }>;
   };
-  wakeProjectionDrain(): void;
+  wake(): void;
+}
+
+interface AgentRuntimeProjectionTestInternals {
+  readonly projection: ProjectionDrainTestInternals;
 }
 
 function deferred<T>(): {

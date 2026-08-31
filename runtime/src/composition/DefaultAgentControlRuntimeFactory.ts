@@ -1,5 +1,4 @@
 import { assertCanonicalAbsoluteDataRoot } from '@ariadne/protocol/host';
-import type { RuntimeResult } from '@ariadne/protocol/public';
 
 import type {
   SqliteAgentRunUnitOfWork
@@ -38,47 +37,18 @@ import {
   AgentLiveWorkCompletionLifecycle
 } from '../control/execution/AgentLiveWorkCompletionLifecycle.js';
 import type { AgentControlLiveWorkService } from '../control/ports/AgentLiveWork.js';
-import {
-  ConversationAgentResultProjectionService
-} from '../control/conversation/ConversationAgentResultProjectionService.js';
-import {
-  AgentRunPublicProjectionPublisher,
-  type AgentRunPublicProjectionPublisherOptions
-} from '../projection/AgentRunPublicProjectionPublisher.js';
-import {
-  ConversationPublicProjectionPublisher,
-  type ConversationPublicProjectionPublisherOptions
-} from '../projection/ConversationPublicProjectionPublisher.js';
-import {
-  ModelCatalogPublicProjectionPublisher,
-  type ModelCatalogPublicProjectionPublisherOptions
-} from '../projection/ModelCatalogPublicProjectionPublisher.js';
 import type { RuntimePublicEventSink } from '../ingress/RuntimePublicEventSink.js';
-import {
-  PublicProjectionWakeCommitSink,
-  PublicProjectionWakePublisher
-} from './PublicProjectionWakeCommitSink.js';
+import { PublicProjectionWakeCommitSink } from './PublicProjectionWakeCommitSink.js';
 import type {
   ModelCatalogProjectionSource
 } from '../projection/ModelCatalogProjectionPorts.js';
-import {
-  ConversationAgentResultCoordinator
-} from './ConversationAgentResultCoordinator.js';
-import { AgentTerminalResultCoordinator } from './AgentTerminalResultCoordinator.js';
 import {
   type AgentControlExecutionPipeline,
   type AgentControlExecutionPipelineFactory
 } from './ProductionAgentControlExecutionPipelineFactory.js';
 import {
-  createAgentRunVersionReader,
   createProductionExecutionPipelineFactory
 } from './AgentControlRuntimeCompositionSupport.js';
-import {
-  ProtectedAgentTerminalAssistantContentResolver
-} from './ProtectedAgentTerminalAssistantContentResolver.js';
-import {
-  ProtectedAgentRunInteractionMessageResolver
-} from './ProtectedAgentRunInteractionMessageResolver.js';
 import {
   AgentControlPublicCommandRouter
 } from './AgentControlPublicCommandRouter.js';
@@ -92,21 +62,15 @@ import {
   startAgentPersistenceComponent,
   type AgentPersistenceComponentHandle
 } from './agent-entity/components/persistence/AgentPersistenceComponent.js';
+import {
+  createAgentProjectionComponent,
+  projectionHealthError,
+  type AgentProjectionComponentHandle,
+  type AgentProjectionComponentOptions
+} from './agent-entity/components/projection/AgentProjectionComponent.js';
 
-const DEFAULT_PUBLIC_PROJECTION_INTERVAL_MS = 50;
-const EMPTY_MODEL_CATALOG: ModelCatalogProjectionSource = Object.freeze({
-  snapshot: () => Object.freeze([])
-});
-
-export interface AgentControlPublicProjectionLifecycleOptions {
-  readonly publishIntervalMs?: number;
-  readonly publisher?: Omit<
-    AgentRunPublicProjectionPublisherOptions,
-    'terminalResultSink' | 'interactionResolver' | 'toolPresentationResolver'
-  >;
-  readonly conversationPublisher?: ConversationPublicProjectionPublisherOptions;
-  readonly modelPublisher?: ModelCatalogPublicProjectionPublisherOptions;
-  readonly conversationCommandNow?: () => Date;
+export interface AgentControlPublicProjectionLifecycleOptions
+extends AgentProjectionComponentOptions {
   readonly agentDecisionCommandNow?: () => Date;
   readonly agentInboxCommandNow?: () => Date;
 }
@@ -121,17 +85,9 @@ implements AgentControlRuntimeLifecycle {
     publicProjection: PUBLIC_PROJECTION_DB_SCHEMA_VERSION,
     productivity: PRODUCTIVITY_DB_SCHEMA_VERSION
   });
-  private readonly agentPublisher: AgentRunPublicProjectionPublisher;
-  private readonly conversationPublisher: ConversationPublicProjectionPublisher;
-  private readonly modelPublisher: ModelCatalogPublicProjectionPublisher;
+  private readonly projection: AgentProjectionComponentHandle;
   private readonly publicCommands: AgentControlPublicCommandRouter;
-  private readonly publishIntervalMs: number;
   private lifecycle: 'new' | 'starting' | 'running' | 'failed' | 'stopping' | 'stopped' = 'new';
-  private timer?: NodeJS.Timeout;
-  private activeDrain: Promise<void> | null = null;
-  private projectionDrainRequested = false;
-  private healthFailure: unknown;
-  private shutdownDrainContext: ShutdownContext | null = null;
   private prepareOperation: Promise<void> | null = null;
   private shutdownOperation: Promise<void> | null = null;
   private readonly liveWorkCompletion?: AgentLiveWorkCompletionLifecycle;
@@ -145,7 +101,7 @@ implements AgentControlRuntimeLifecycle {
     private readonly persistence: AgentPersistenceComponentHandle,
     options: AgentControlPublicProjectionLifecycleOptions = {},
     private readonly executionPipeline?: AgentControlExecutionPipeline,
-    modelCatalog: ModelCatalogProjectionSource = EMPTY_MODEL_CATALOG,
+    modelCatalog?: ModelCatalogProjectionSource,
     projectionWakeEventSink?: RuntimePublicEventSink,
     authorizedWorkspaceIds: readonly string[] = [],
     private readonly observability?: PublicAgentObservability,
@@ -163,67 +119,27 @@ implements AgentControlRuntimeLifecycle {
     this.conversation = conversation;
     this.publicProjection = publicProjection;
     this.productivity = productivity;
-    this.publishIntervalMs = options.publishIntervalMs
-      ?? DEFAULT_PUBLIC_PROJECTION_INTERVAL_MS;
-    const conversationCommandNow = options.conversationCommandNow ?? (() => new Date());
-    assertPublishInterval(this.publishIntervalMs);
-    const projectionSink = projectionWakeEventSink === undefined
-      ? publicProjection
-      : new PublicProjectionWakeCommitSink(
-          publicProjection,
-          projectionWakeEventSink
-        );
-    const projectionWakePublisher = projectionWakeEventSink === undefined
-      ? undefined
-      : new PublicProjectionWakePublisher(projectionWakeEventSink);
-    const conversationTerminalResults = new ConversationAgentResultCoordinator(
-      conversation,
-      new ConversationAgentResultProjectionService(conversation),
-      new ProtectedAgentTerminalAssistantContentResolver(unitOfWork),
-      conversationCommandNow
-    );
-    const terminalResults = new AgentTerminalResultCoordinator(
-      unitOfWork,
-      conversationTerminalResults
-    );
-    this.agentPublisher = new AgentRunPublicProjectionPublisher(
-      unitOfWork,
-      createAgentRunVersionReader(unitOfWork),
-      projectionSink,
-      {
-        ...options.publisher,
-        terminalResultSink: terminalResults,
-        interactionResolver: new ProtectedAgentRunInteractionMessageResolver(unitOfWork),
-        toolPresentationResolver: executionPipeline?.toolPresentationResolver
-      }
-    );
-    this.conversationPublisher = new ConversationPublicProjectionPublisher(
-      conversation,
-      projectionSink,
-      options.conversationPublisher
-    );
-    this.modelPublisher = new ModelCatalogPublicProjectionPublisher(
+    this.projection = createAgentProjectionComponent({
+      persistence,
+      options,
+      executionPipeline,
       modelCatalog,
-      publicProjection,
-      options.modelPublisher,
-      projectionWakePublisher === undefined
-        ? undefined
-        : (commit) => projectionWakePublisher.publish(commit)
-    );
+      wakeEventSink: projectionWakeEventSink
+    });
     this.publicCommands = new AgentControlPublicCommandRouter(
       unitOfWork,
       conversation,
       publicProjection,
       executionPipeline,
       {
-        wakeProjectionDrain: () => this.wakeProjectionDrain(),
+        wakeProjectionDrain: () => this.projection.wake(),
         executeProjectionQuery: (envelope, query) => (
-          this.executeProjectionQuery(envelope, query)
+          this.projection.executeQuery(envelope, query)
         )
       },
       {
         authorizedWorkspaceIds,
-        conversationCommandNow,
+        conversationCommandNow: this.projection.conversationCommandNow,
         agentDecisionCommandNow: options.agentDecisionCommandNow,
         agentInboxCommandNow: options.agentInboxCommandNow,
         attachmentStore,
@@ -241,7 +157,7 @@ implements AgentControlRuntimeLifecycle {
     if (liveWork !== undefined) {
       this.liveWorkCompletion = new AgentLiveWorkCompletionLifecycle(liveWork, unitOfWork, {
         wakeWorkScheduler: () => executionPipeline?.runWorkScheduler.wake(),
-        wakeProjectionDrain: () => this.wakeProjectionDrain()
+        wakeProjectionDrain: () => this.projection.wake()
       });
     }
   }
@@ -276,7 +192,7 @@ implements AgentControlRuntimeLifecycle {
         // Replay already committed terminal Child facts before authority
         // retirement scans Parent Runs. This closes a crash window where the
         // Child terminal event was durable but its Parent observation was not.
-        await this.drainPending();
+        await this.projection.drainPending();
         await this.executionPipeline.runWorkScheduler.start();
         this.executionPipeline.runWorkScheduler.assertHealthy();
         await this.executionPipeline.executionScheduler.start();
@@ -284,16 +200,15 @@ implements AgentControlRuntimeLifecycle {
         await this.executionPipeline.handoffProducer.start();
         this.executionPipeline.handoffProducer.assertHealthy();
       }
-      await this.drainPending();
+      await this.projection.drainPending();
       if (await this.unitOfWork.countUnpublishedOutbox() !== 0) {
         throw new Error('agent_control_startup_projection_not_at_fixed_point');
       }
       this.lifecycle = 'running';
       await this.scheduleWorker?.start();
-      this.timer = setInterval(() => this.publishOnTimer(), this.publishIntervalMs);
-      this.timer.unref?.();
+      this.projection.activate();
     } catch (error) {
-      this.recordHealthFailure(error);
+      this.projection.fail(error);
       throw projectionHealthError(error);
     }
   }
@@ -303,9 +218,7 @@ implements AgentControlRuntimeLifecycle {
     this.executionPipeline?.runWorkScheduler.assertHealthy();
     this.executionPipeline?.executionScheduler.assertHealthy();
     this.executionPipeline?.handoffProducer.assertHealthy();
-    if (this.healthFailure !== undefined) {
-      throw projectionHealthError(this.healthFailure);
-    }
+    this.projection.assertHealthy();
     if (this.lifecycle !== 'running') {
       throw new Error('agent_control_public_projection_not_running');
     }
@@ -332,8 +245,7 @@ implements AgentControlRuntimeLifecycle {
 
     const drainBeforeFreeze = this.lifecycle === 'running';
     this.lifecycle = 'stopping';
-    this.shutdownDrainContext = context;
-    this.stopTimer();
+    this.projection.beginShutdown(context);
     this.prepareOperation = this.prepareProducerShutdown(context, drainBeforeFreeze);
     return this.prepareOperation;
   }
@@ -342,68 +254,6 @@ implements AgentControlRuntimeLifecycle {
     if (this.shutdownOperation !== null) return this.shutdownOperation;
     this.shutdownOperation = this.finishShutdown(context);
     return this.shutdownOperation;
-  }
-
-  private publishOnTimer(): void {
-    if (
-      this.lifecycle !== 'running'
-      || this.healthFailure !== undefined
-      || this.activeDrain !== null
-    ) {
-      return;
-    }
-    this.wakeProjectionDrain();
-  }
-
-  private wakeProjectionDrain(): void {
-    if (
-      this.lifecycle !== 'running'
-      || this.healthFailure !== undefined
-    ) return;
-    this.projectionDrainRequested = true;
-    void this.drainPending().catch((error) => {
-      this.recordHealthFailure(error);
-    });
-  }
-
-  private drainPending(): Promise<void> {
-    this.projectionDrainRequested = true;
-    if (this.activeDrain !== null) return this.activeDrain;
-    const operation = this.drainProjectionRequests();
-    this.activeDrain = operation;
-    return operation;
-  }
-
-  private async drainProjectionRequests(): Promise<void> {
-    try {
-      do {
-        this.projectionDrainRequested = false;
-        await this.publishUntilEmpty();
-      } while (this.projectionDrainRequested);
-    } finally {
-      // Clearing ownership happens synchronously with the final dirty check.
-      // A wake before this point is consumed by this epoch; a wake after it
-      // observes no active owner and starts the next one.
-      this.activeDrain = null;
-    }
-  }
-
-  private async publishUntilEmpty(): Promise<void> {
-    while (true) {
-      this.shutdownDrainContext?.throwIfExpired();
-      const modelResult = await this.modelPublisher.publishPending();
-      this.shutdownDrainContext?.throwIfExpired();
-      const conversationResult = await this.conversationPublisher.publishPending();
-      this.shutdownDrainContext?.throwIfExpired();
-      const agentResult = await this.agentPublisher.publishPending();
-      this.shutdownDrainContext?.throwIfExpired();
-      if (
-        modelResult.publishedChanges === 0
-        && conversationResult.readRecords === 0
-        && agentResult.claimedMessages === 0
-      ) return;
-      await Promise.resolve();
-    }
   }
 
   private async prepareProducerShutdown(
@@ -456,19 +306,22 @@ implements AgentControlRuntimeLifecycle {
     } catch (error) {
       failures.push(error);
     }
+    let projectionBarrierReady = true;
     try {
       context.throwIfExpired();
       await this.observability?.drain();
       context.throwIfExpired();
-      if (this.activeDrain !== null) await this.activeDrain;
-      context.throwIfExpired();
-      if (drainBeforeFreeze && this.healthFailure === undefined) {
-        await this.drainPending();
-      }
-      context.throwIfExpired();
     } catch (error) {
-      this.recordHealthFailure(error);
+      projectionBarrierReady = false;
+      this.projection.fail(error);
       failures.push(projectionHealthError(error));
+    }
+    if (projectionBarrierReady) {
+      try {
+        await this.projection.settleAndDrain(context, drainBeforeFreeze);
+      } catch (error) {
+        failures.push(error);
+      }
     }
 
     try {
@@ -507,44 +360,8 @@ implements AgentControlRuntimeLifecycle {
     } catch (error) {
       throw new AggregateError([error], 'agent_control_shutdown_failed');
     }
+    this.projection.completeShutdown();
     this.lifecycle = 'stopped';
-  }
-
-  private async executeProjectionQuery(
-    envelope: RuntimeCommandEnvelope,
-    query: () => Promise<RuntimeResult>
-  ): Promise<RuntimeApplicationCommandResult> {
-    envelope.signal.throwIfAborted();
-    try {
-      const result = await query();
-      envelope.signal.throwIfAborted();
-      return {
-        outcome: { ok: true, result },
-        settlement: 'completed'
-      };
-    } catch (error) {
-      if (envelope.signal.aborted) throw error;
-      this.recordHealthFailure(error);
-      return completedPublicError(
-        envelope,
-        'public_projection_unavailable',
-        'The authoritative public projection is unavailable.',
-        false
-      );
-    }
-  }
-
-  private recordHealthFailure(error: unknown): void {
-    if (this.healthFailure === undefined) this.healthFailure = error;
-    this.stopTimer();
-    if (this.lifecycle !== 'stopping' && this.lifecycle !== 'stopped') {
-      this.lifecycle = 'failed';
-    }
-  }
-
-  private stopTimer(): void {
-    if (this.timer !== undefined) clearInterval(this.timer);
-    this.timer = undefined;
   }
 }
 
@@ -646,34 +463,4 @@ async function createPublicAgentObservability(
   );
   await observability.start();
   return observability;
-}
-
-function completedPublicError(
-  envelope: RuntimeCommandEnvelope,
-  code: string,
-  message: string,
-  retryable: boolean
-): RuntimeApplicationCommandResult {
-  return {
-    outcome: {
-      ok: false,
-      error: {
-        code,
-        message,
-        retryable,
-        correlationId: envelope.correlationId
-      }
-    },
-    settlement: 'completed'
-  };
-}
-
-function assertPublishInterval(value: number): void {
-  if (!Number.isSafeInteger(value) || value <= 0 || value > 60_000) {
-    throw new Error('agent_control_public_projection_interval_invalid');
-  }
-}
-
-function projectionHealthError(cause: unknown): Error {
-  return new Error('agent_control_public_projection_unhealthy', { cause });
 }
