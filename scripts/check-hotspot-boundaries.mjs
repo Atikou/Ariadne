@@ -43,7 +43,7 @@ const boundaries = [
   },
   {
     file: 'runtime/src/composition/agent-entity/components/projection/AgentProjectionComponent.ts',
-    maxLines: 310,
+    maxLines: 330,
     required: [
       '../../../../projection/AgentRunPublicProjectionPublisher.js',
       '../../../../projection/ConversationPublicProjectionPublisher.js',
@@ -58,7 +58,7 @@ const boundaries = [
   },
   {
     file: 'runtime/src/composition/AgentControlPublicCommandRouter.ts',
-    maxLines: 230,
+    maxLines: 200,
     required: [
       './agent-entity/command-owners/AgentPublicCommandOwnerTable.js',
       './agent-entity/command-owners/AgentPublicCommandOwners.js',
@@ -75,7 +75,9 @@ const boundaries = [
       /AgentDecisionAuthorityService/,
       /AgentRunCommandService/,
       /publicRunMutationFailure/,
-      /protectedEffectResultReader/
+      /protectedEffectResultReader/,
+      /PUBLIC_PROJECTION_CONTRACT_VERSION/,
+      /SqlitePublicProjectionStore/
     ]
   },
   {

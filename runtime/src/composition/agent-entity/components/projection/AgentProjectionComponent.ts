@@ -1,4 +1,7 @@
-import type { RuntimeResult } from '@ariadne/protocol/public';
+import {
+  PUBLIC_PROJECTION_CONTRACT_VERSION,
+  type RuntimeResult
+} from '@ariadne/protocol/public';
 
 import {
   AgentRunPublicProjectionPublisher,
@@ -71,10 +74,7 @@ export interface AgentProjectionComponentHandle {
   completeShutdown(): void;
   fail(error: unknown): void;
   assertHealthy(): void;
-  executeQuery(
-    envelope: RuntimeCommandEnvelope,
-    query: () => Promise<RuntimeResult>
-  ): Promise<RuntimeApplicationCommandResult>;
+  executeCommand(envelope: RuntimeCommandEnvelope): Promise<RuntimeApplicationCommandResult>;
 }
 
 /** Required Agent component that owns Projection publication and fixed-point lifecycle. */
@@ -89,6 +89,7 @@ class DefaultAgentProjectionComponent implements AgentProjectionComponentHandle 
   private readonly agentPublisher: AgentRunPublicProjectionPublisher;
   private readonly conversationPublisher: ConversationPublicProjectionPublisher;
   private readonly modelPublisher: ModelCatalogPublicProjectionPublisher;
+  private readonly publicProjection: AgentPersistenceComponentHandle['publicProjection'];
   private readonly publishIntervalMs: number;
   private lifecycle: 'starting' | 'running' | 'failed' | 'stopping' | 'stopped' = 'starting';
   private timer?: NodeJS.Timeout;
@@ -100,6 +101,7 @@ class DefaultAgentProjectionComponent implements AgentProjectionComponentHandle 
   public constructor(input: AgentProjectionComponentInput) {
     const options = input.options ?? {};
     const { unitOfWork, conversation, publicProjection } = input.persistence;
+    this.publicProjection = publicProjection;
     this.publishIntervalMs = options.publishIntervalMs
       ?? DEFAULT_PUBLIC_PROJECTION_INTERVAL_MS;
     assertPublishInterval(this.publishIntervalMs);
@@ -220,7 +222,29 @@ class DefaultAgentProjectionComponent implements AgentProjectionComponentHandle 
     }
   }
 
-  public async executeQuery(
+  public executeCommand(
+    envelope: RuntimeCommandEnvelope
+  ): Promise<RuntimeApplicationCommandResult> {
+    if (envelope.command.kind === 'projection.snapshot.get') {
+      if (envelope.command.contractVersion !== PUBLIC_PROJECTION_CONTRACT_VERSION) {
+        throw new Error('public_projection_contract_version_mismatch');
+      }
+      return this.executeQuery(envelope, async () => ({
+        kind: 'projection.snapshot' as const,
+        snapshot: await this.publicProjection.snapshot()
+      }));
+    }
+    if (envelope.command.kind === 'projection.commits.read') {
+      const request = envelope.command.request;
+      return this.executeQuery(envelope, async () => ({
+        kind: 'projection.commits' as const,
+        batch: await this.publicProjection.read(request)
+      }));
+    }
+    throw new Error('agent_command_owner_kind_mismatch:projection.query');
+  }
+
+  private async executeQuery(
     envelope: RuntimeCommandEnvelope,
     query: () => Promise<RuntimeResult>
   ): Promise<RuntimeApplicationCommandResult> {

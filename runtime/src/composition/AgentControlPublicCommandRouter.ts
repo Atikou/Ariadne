@@ -1,17 +1,9 @@
-import {
-  PUBLIC_PROJECTION_CONTRACT_VERSION,
-  type RuntimeResult
-} from '@ariadne/protocol/public';
-
 import type {
   SqliteAgentRunUnitOfWork
 } from '../adapters/persistence/SqliteAgentRunUnitOfWork.js';
 import type {
   SqliteConversationRunHandoffUnitOfWork
 } from '../adapters/persistence/SqliteConversationRunHandoffUnitOfWork.js';
-import type {
-  SqlitePublicProjectionStore
-} from '../adapters/persistence/SqlitePublicProjectionStore.js';
 import type { SqliteProductivityStore } from '../adapters/persistence/SqliteProductivityStore.js';
 import type {
   RuntimeApplicationCommandResult
@@ -63,9 +55,8 @@ export interface AgentControlPublicCommandRouterOptions {
 
 export interface AgentControlPublicCommandRouterCallbacks {
   readonly wakeProjectionDrain: () => void;
-  readonly executeProjectionQuery: (
-    envelope: RuntimeCommandEnvelope,
-    query: () => Promise<RuntimeResult>
+  readonly executeProjectionCommand: (
+    envelope: RuntimeCommandEnvelope
   ) => Promise<RuntimeApplicationCommandResult>;
 }
 
@@ -86,9 +77,8 @@ export class AgentControlPublicCommandRouter {
   public constructor(
     unitOfWork: SqliteAgentRunUnitOfWork,
     conversation: SqliteConversationRunHandoffUnitOfWork,
-    private readonly publicProjection: SqlitePublicProjectionStore,
     private readonly executionPipeline: AgentControlExecutionPipeline | undefined,
-    private readonly callbacks: AgentControlPublicCommandRouterCallbacks,
+    callbacks: AgentControlPublicCommandRouterCallbacks,
     options: AgentControlPublicCommandRouterOptions = {}
   ) {
     this.conversationComponent = createAgentConversationComponent({
@@ -142,7 +132,7 @@ export class AgentControlPublicCommandRouter {
         subagentInterrupt: this.subagentInterrupt,
         humanSkills: this.humanSkills,
         productivity: this.productivity,
-        executeProjectionCommand: (envelope) => this.executeProjectionCommand(envelope),
+        executeProjectionCommand: callbacks.executeProjectionCommand,
         reconcileConversation: (envelope, invalidErrorCode) => (
           this.conversationComponent.reconcileCommitted(
             envelope,
@@ -180,28 +170,6 @@ export class AgentControlPublicCommandRouter {
     return result.outcome.ok
       ? { kind: 'committed', outcome: result.outcome }
       : { kind: 'not_committed' };
-  }
-
-  private async executeProjectionCommand(
-    envelope: RuntimeCommandEnvelope
-  ): Promise<RuntimeApplicationCommandResult> {
-    if (envelope.command.kind === 'projection.snapshot.get') {
-      if (envelope.command.contractVersion !== PUBLIC_PROJECTION_CONTRACT_VERSION) {
-        throw new Error('public_projection_contract_version_mismatch');
-      }
-      return this.callbacks.executeProjectionQuery(envelope, async () => ({
-        kind: 'projection.snapshot' as const,
-        snapshot: await this.publicProjection.snapshot()
-      }));
-    }
-    if (envelope.command.kind === 'projection.commits.read') {
-      const request = envelope.command.request;
-      return this.callbacks.executeProjectionQuery(envelope, async () => ({
-        kind: 'projection.commits' as const,
-        batch: await this.publicProjection.read(request)
-      }));
-    }
-    throw new Error('agent_command_owner_kind_mismatch:projection.query');
   }
 
 }

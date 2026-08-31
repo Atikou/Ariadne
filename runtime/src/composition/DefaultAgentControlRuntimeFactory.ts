@@ -129,13 +129,10 @@ implements AgentControlRuntimeLifecycle {
     this.publicCommands = new AgentControlPublicCommandRouter(
       unitOfWork,
       conversation,
-      publicProjection,
       executionPipeline,
       {
         wakeProjectionDrain: () => this.projection.wake(),
-        executeProjectionQuery: (envelope, query) => (
-          this.projection.executeQuery(envelope, query)
-        )
+        executeProjectionCommand: (envelope) => this.projection.executeCommand(envelope)
       },
       {
         authorizedWorkspaceIds,

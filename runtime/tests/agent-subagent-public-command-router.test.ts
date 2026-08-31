@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { SqliteAgentRunUnitOfWork } from '../src/adapters/persistence/SqliteAgentRunUnitOfWork.js';
 import type { SqliteConversationRunHandoffUnitOfWork } from '../src/adapters/persistence/SqliteConversationRunHandoffUnitOfWork.js';
-import type { SqlitePublicProjectionStore } from '../src/adapters/persistence/SqlitePublicProjectionStore.js';
 import { AgentControlPublicCommandRouter } from '../src/composition/AgentControlPublicCommandRouter.js';
 import type { AgentControlExecutionPipeline } from '../src/composition/ProductionAgentControlExecutionPipelineFactory.js';
 import type { RuntimeCommandEnvelope } from '../src/ingress/RuntimeIngress.js';
@@ -107,9 +106,8 @@ describe('AgentControlPublicCommandRouter SubAgent interruption', () => {
     const router = new AgentControlPublicCommandRouter(
       {} as SqliteAgentRunUnitOfWork,
       {} as SqliteConversationRunHandoffUnitOfWork,
-      {} as SqlitePublicProjectionStore,
       pipeline,
-      { wakeProjectionDrain: vi.fn(), executeProjectionQuery: vi.fn() },
+      { wakeProjectionDrain: vi.fn(), executeProjectionCommand: vi.fn() },
       { authorizedWorkspaceIds: ['workspace-detail'] }
     );
     const command = {
@@ -177,11 +175,10 @@ function routerFor(
   return new AgentControlPublicCommandRouter(
     unitOfWork,
     {} as SqliteConversationRunHandoffUnitOfWork,
-    {} as SqlitePublicProjectionStore,
     pipeline,
     {
       wakeProjectionDrain: vi.fn(),
-      executeProjectionQuery: vi.fn()
+      executeProjectionCommand: vi.fn()
     }
   );
 }
