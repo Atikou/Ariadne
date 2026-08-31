@@ -21,8 +21,8 @@ import {
   SqlitePublicProjectionStore
 } from '../src/adapters/persistence/SqlitePublicProjectionStore.js';
 import {
-  ComposedAgentControlRuntime
-} from '../src/composition/DefaultAgentControlRuntimeFactory.js';
+  AgentEntityHandle as ComposedAgentControlRuntime
+} from '../src/composition/agent-entity/AgentEntityHandle.js';
 import {
   composeAgentPersistenceComponentHandle,
   type AgentPersistenceComponentHandle

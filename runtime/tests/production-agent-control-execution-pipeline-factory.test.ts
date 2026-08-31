@@ -26,9 +26,11 @@ import {
   type TrustedAgentToolCatalogSnapshot
 } from '../src/adapters/tool/TrustedAgentToolCatalogCompiler.js';
 import {
-  ComposedAgentControlRuntime,
   DefaultAgentControlRuntimeFactory
 } from '../src/composition/DefaultAgentControlRuntimeFactory.js';
+import {
+  AgentEntityHandle as ComposedAgentControlRuntime
+} from '../src/composition/agent-entity/AgentEntityHandle.js';
 import {
   composeAgentPersistenceComponentHandle
 } from '../src/composition/agent-entity/components/persistence/AgentPersistenceComponent.js';

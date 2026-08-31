@@ -7,14 +7,11 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const boundaries = [
   {
     file: 'runtime/src/composition/DefaultAgentControlRuntimeFactory.ts',
-    maxLines: 420,
+    maxLines: 150,
     required: [
-      './AgentControlPublicCommandRouter.js',
       './AgentControlRuntimeCompositionSupport.js',
-      './agent-entity/AgentEntityCommandAssembly.js',
-      './agent-entity/components/persistence/AgentPersistenceComponent.js',
-      './agent-entity/components/projection/AgentProjectionComponent.js',
-      './agent-entity/components/execution/AgentExecutionComponent.js'
+      './agent-entity/AgentEntityHandle.js',
+      './agent-entity/components/persistence/AgentPersistenceComponent.js'
     ],
     forbidden: [
       /\bexecuteCancelAgentRun\b/,
@@ -31,9 +28,29 @@ const boundaries = [
       /new\s+ModelCatalogPublicProjectionPublisher\b/,
       /\bPublicProjectionWakePublisher\b/,
       /AgentLiveWorkCompletionLifecycle/,
+      /AgentControlPublicCommandRouter/,
+      /AgentEntityCommandAssembly/,
+      /AgentProjectionComponent/,
+      /AgentExecutionComponent/,
+      /prepareProducerShutdown/,
       /\.runWorkScheduler\.start\(/,
       /\.executionScheduler\.start\(/,
       /\.handoffProducer\.start\(/
+    ]
+  },
+  {
+    file: 'runtime/src/composition/agent-entity/AgentEntityHandle.ts',
+    maxLines: 250,
+    required: [
+      './AgentEntityCommandAssembly.js',
+      './components/persistence/AgentPersistenceComponent.js',
+      './components/projection/AgentProjectionComponent.js',
+      './components/execution/AgentExecutionComponent.js'
+    ],
+    forbidden: [
+      /new\s+SqliteAgentRunUnitOfWork\b/,
+      /new\s+SqliteConversationRunHandoffUnitOfWork\b/,
+      /createProductionExecutionPipelineFactory/
     ]
   },
   {
