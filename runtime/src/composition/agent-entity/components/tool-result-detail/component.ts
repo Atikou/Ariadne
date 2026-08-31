@@ -1,3 +1,3 @@
-import { defineCoreAgentComponent } from '../../CoreAgentComponentDefinition.js';
+import { defineFeatureAgentComponent } from '../../CoreAgentComponentDefinition.js';
 
-export default defineCoreAgentComponent('agent.tool-result-detail', ['agent.execution']);
+export default defineFeatureAgentComponent('agent.tool-result-detail', ['agent.execution']);

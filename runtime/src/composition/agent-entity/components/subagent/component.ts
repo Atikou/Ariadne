@@ -1,5 +1,5 @@
-import { defineCoreAgentComponent } from '../../CoreAgentComponentDefinition.js';
+import { defineFeatureAgentComponent } from '../../CoreAgentComponentDefinition.js';
 
-export default defineCoreAgentComponent('agent.subagent', [
+export default defineFeatureAgentComponent('agent.subagent', [
   'agent.persistence'
 ]);

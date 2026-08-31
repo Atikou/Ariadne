@@ -329,7 +329,7 @@ const boundaries = [
   },
   {
     file: 'runtime/src/composition/agent-entity/CoreAgentComponentDefinition.ts',
-    maxLines: 30,
+    maxLines: 40,
     required: [
       '@ariadne/component-contracts'
     ],

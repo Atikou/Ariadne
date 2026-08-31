@@ -123,6 +123,29 @@ describe('production Runtime Capability Manifest', () => {
       'agent.subagent-interrupt',
       'agent.tool-result-detail'
     ]);
+    expect(manifest.agentComponentCatalog.entries.find(
+      (entry) => entry.id === 'agent.inference-loop'
+    )?.required).toBe(true);
+    expect(manifest.agentComponentCatalog.entries.filter(
+      (entry) => [
+        'agent.decision',
+        'agent.inbox',
+        'agent.productivity',
+        'agent.skills-human',
+        'agent.subagent',
+        'agent.subagent-interrupt',
+        'agent.tool-result-detail'
+      ].includes(entry.id)
+    ).sort((left, right) => left.id.localeCompare(right.id))
+      .map((entry) => [entry.id, entry.required])).toEqual([
+      ['agent.decision', false],
+      ['agent.inbox', false],
+      ['agent.productivity', false],
+      ['agent.skills-human', false],
+      ['agent.subagent', false],
+      ['agent.subagent-interrupt', false],
+      ['agent.tool-result-detail', false]
+    ]);
     expect(manifest.agentToolCatalogSnapshots[0]?.entries.map(
       (entry) => entry.document.toolName
     )).toEqual([...FIRST_PARTY_AGENT_TOOL_NAMES]);

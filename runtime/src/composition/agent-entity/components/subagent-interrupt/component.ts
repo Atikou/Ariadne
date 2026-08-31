@@ -1,5 +1,5 @@
-import { defineCoreAgentComponent } from '../../CoreAgentComponentDefinition.js';
+import { defineFeatureAgentComponent } from '../../CoreAgentComponentDefinition.js';
 
-export default defineCoreAgentComponent('agent.subagent-interrupt', [
+export default defineFeatureAgentComponent('agent.subagent-interrupt', [
   'agent.persistence', 'agent.execution'
 ]);
