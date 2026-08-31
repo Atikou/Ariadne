@@ -23,6 +23,10 @@ import {
 import {
   ComposedAgentControlRuntime
 } from '../src/composition/DefaultAgentControlRuntimeFactory.js';
+import {
+  composeAgentPersistenceComponentHandle,
+  type AgentPersistenceComponentHandle
+} from '../src/composition/agent-entity/components/persistence/AgentPersistenceComponent.js';
 import type {
   AgentControlExecutionPipeline
 } from '../src/composition/ProductionAgentControlExecutionPipelineFactory.js';
@@ -47,10 +51,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
     const projection = new SqlitePublicProjectionStore(root);
     const times = [at(0), at(1), at(2), at(3)].map((value) => new Date(value));
     const control = new ComposedAgentControlRuntime(
-      unit,
-      conversation,
-      projection,
-      undefined,
+      testPersistence(root, unit, conversation, projection),
       {
         publishIntervalMs: 60_000,
         conversationCommandNow: () => times.shift() ?? new Date(at(3))
@@ -153,10 +154,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
     };
     const projection = new SqlitePublicProjectionStore(root);
     const control = new ComposedAgentControlRuntime(
-      unit,
-      conversation,
-      projection,
-      undefined,
+      testPersistence(root, unit, conversation, projection),
       {
         publishIntervalMs: 60_000,
         conversationCommandNow: () => new Date(at(2))
@@ -239,10 +237,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
     );
     await startRun(unit, 'run-public-cancel', objectiveDigest);
     const control = new ComposedAgentControlRuntime(
-      unit,
-      conversation,
-      projection,
-      undefined,
+      testPersistence(root, unit, conversation, projection),
       { publishIntervalMs: 60_000 },
       projectionLifecyclePipeline()
     );
@@ -285,10 +280,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
     const projection = new SqlitePublicProjectionStore(root);
     await startRun(unit, 'run-public-inbox');
     const control = new ComposedAgentControlRuntime(
-      unit,
-      conversation,
-      projection,
-      undefined,
+      testPersistence(root, unit, conversation, projection),
       {
         publishIntervalMs: 60_000,
         agentInboxCommandNow: () => new Date(at(1))
@@ -403,10 +395,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
       occurredAt: '2030-01-01T00:00:01.000Z'
     });
     const control = new ComposedAgentControlRuntime(
-      unit,
-      conversation,
-      projection,
-      undefined,
+      testPersistence(root, unit, conversation, projection),
       { publishIntervalMs: 60_000 }
     );
 
@@ -441,10 +430,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
     const projection = new SqlitePublicProjectionStore(root);
     await startRun(unit, 'run-without-work-owner');
     const control = new ComposedAgentControlRuntime(
-      unit,
-      conversation,
-      projection,
-      undefined,
+      testPersistence(root, unit, conversation, projection),
       { publishIntervalMs: 60_000 }
     );
 
@@ -470,10 +456,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
     const projection = new SqlitePublicProjectionStore(root);
     await startRun(unit, 'run-production-chain');
     const control = new ComposedAgentControlRuntime(
-      unit,
-      conversation,
-      projection,
-      undefined,
+      testPersistence(root, unit, conversation, projection),
       { publishIntervalMs: 60_000 },
       projectionLifecyclePipeline()
     );
@@ -505,10 +488,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
     const conversation = new SqliteConversationRunHandoffUnitOfWork(root);
     const projection = new SqlitePublicProjectionStore(root);
     const control = new ComposedAgentControlRuntime(
-      unit,
-      conversation,
-      projection,
-      undefined,
+      testPersistence(root, unit, conversation, projection),
       {
         publishIntervalMs: 60_000,
         conversationCommandNow: () => new Date('2030-01-01T00:00:00.000Z')
@@ -583,10 +563,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
       }
     });
     const control = new ComposedAgentControlRuntime(
-      unit,
-      conversation,
-      projection,
-      undefined,
+      testPersistence(root, unit, conversation, projection),
       {
         publishIntervalMs: 60_000,
         publisher: { claimLeaseMs: 1_000 }
@@ -610,10 +587,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
       clock.advance(1_001);
       const reopenedProjection = new SqlitePublicProjectionStore(root);
       const recovering = new ComposedAgentControlRuntime(
-        unit,
-        conversation,
-        reopenedProjection,
-        undefined,
+        testPersistence(root, unit, conversation, reopenedProjection),
         {
           publishIntervalMs: 60_000,
           publisher: { claimLeaseMs: 1_000 }
@@ -662,10 +636,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
       const recoveredConversation = new SqliteConversationRunHandoffUnitOfWork(root);
       const projection = new SqlitePublicProjectionStore(root);
       const control = new ComposedAgentControlRuntime(
-        recoveredUnit,
-        recoveredConversation,
-        projection,
-        undefined,
+        testPersistence(root, recoveredUnit, recoveredConversation, projection),
         {
           publishIntervalMs: 60_000,
           publisher: { claimLeaseMs: 5 * 60_000 }
@@ -690,10 +661,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
     const commands = new AgentRunCommandService(unit);
     const projection = new SqlitePublicProjectionStore(root);
     const control = new ComposedAgentControlRuntime(
-      unit,
-      conversation,
-      projection,
-      undefined,
+      testPersistence(root, unit, conversation, projection),
       { publishIntervalMs: 60_000 }
     );
     await control.start();
@@ -731,10 +699,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
     const conversation = new SqliteConversationRunHandoffUnitOfWork(root);
     const projection = new SqlitePublicProjectionStore(root);
     const control = new ComposedAgentControlRuntime(
-      unit,
-      conversation,
-      projection,
-      undefined,
+      testPersistence(root, unit, conversation, projection),
       { publishIntervalMs: 60_000 }
     );
     await control.start();
@@ -782,10 +747,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
       }
     });
     const control = new ComposedAgentControlRuntime(
-      unit,
-      conversation,
-      projection,
-      undefined,
+      testPersistence(root, unit, conversation, projection),
       {
         publishIntervalMs: 5,
         publisher: { claimLeaseMs: 1 }
@@ -1033,6 +995,20 @@ function projectionLifecyclePipeline(): AgentControlExecutionPipeline {
       AgentControlExecutionPipeline['runWorkScheduler'],
     assertConversationMessageAdmission: (): void => undefined
   };
+}
+
+function testPersistence(
+  dataRoot: string,
+  unitOfWork: SqliteAgentRunUnitOfWork,
+  conversation: SqliteConversationRunHandoffUnitOfWork,
+  publicProjection: SqlitePublicProjectionStore
+): AgentPersistenceComponentHandle {
+  return composeAgentPersistenceComponentHandle({
+    dataRoot,
+    unitOfWork,
+    conversation,
+    publicProjection
+  });
 }
 
 function createRoot(): string {

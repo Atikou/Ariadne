@@ -7,16 +7,33 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const boundaries = [
   {
     file: 'runtime/src/composition/DefaultAgentControlRuntimeFactory.ts',
-    maxLines: 830,
+    maxLines: 700,
     required: [
       './AgentControlPublicCommandRouter.js',
-      './AgentControlRuntimeCompositionSupport.js'
+      './AgentControlRuntimeCompositionSupport.js',
+      './agent-entity/components/persistence/AgentPersistenceComponent.js'
     ],
     forbidden: [
       /\bexecuteCancelAgentRun\b/,
       /\bexecuteAcceptConversationMessage\b/,
       /\bAgentDecisionAuthorityService\b/,
-      /\bConversationAuthorityService\b/
+      /\bConversationAuthorityService\b/,
+      /new\s+SqliteAgentRunUnitOfWork\b/,
+      /new\s+SqliteConversationRunHandoffUnitOfWork\b/,
+      /new\s+SqlitePublicProjectionStore\b/,
+      /new\s+SqliteProductivityStore\b/,
+      /\bloadAgentPersistenceKeyRing\b/
+    ]
+  },
+  {
+    file: 'runtime/src/composition/agent-entity/components/persistence/AgentPersistenceComponent.ts',
+    maxLines: 270,
+    required: [
+      '../../../loadAgentPersistenceKeyRing.js'
+    ],
+    forbidden: [
+      /AgentControlPublicCommandRouter/,
+      /ProductionAgentControlExecutionPipelineFactory/
     ]
   },
   {

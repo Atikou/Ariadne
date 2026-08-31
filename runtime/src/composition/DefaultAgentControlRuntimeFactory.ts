@@ -1,19 +1,9 @@
 import { assertCanonicalAbsoluteDataRoot } from '@ariadne/protocol/host';
 import type { RuntimeResult } from '@ariadne/protocol/public';
 
-import {
-  AES_GCM_AGENT_PERSISTENCE_CODEC_ID,
-  AesGcmAgentPersistencePayloadCodec
-} from '../adapters/persistence/AesGcmAgentPersistencePayloadCodec.js';
-import {
+import type {
   SqliteAgentRunUnitOfWork
 } from '../adapters/persistence/SqliteAgentRunUnitOfWork.js';
-import {
-  SqliteConversationRunHandoffUnitOfWork
-} from '../adapters/persistence/SqliteConversationRunHandoffUnitOfWork.js';
-import {
-  StrictJsonAgentPersistencePayloadCodec
-} from '../adapters/persistence/StrictJsonAgentPersistencePayloadCodec.js';
 import {
   AGENT_CONTROL_DB_SCHEMA_VERSION
 } from '../adapters/persistence/agentControlDbSchema.js';
@@ -23,13 +13,10 @@ import {
 import {
   CONVERSATION_DB_SCHEMA_VERSION
 } from '../adapters/persistence/ConversationDbSchema.js';
-import {
+import type {
   SqlitePublicProjectionStore
 } from '../adapters/persistence/SqlitePublicProjectionStore.js';
-import {
-  PRODUCTIVITY_DB_SCHEMA_VERSION,
-  SqliteProductivityStore
-} from '../adapters/persistence/SqliteProductivityStore.js';
+import { PRODUCTIVITY_DB_SCHEMA_VERSION } from '../adapters/persistence/SqliteProductivityStore.js';
 import type {
   AgentControlRuntimeFactory,
   AgentControlRuntimeFactoryInput,
@@ -74,7 +61,6 @@ import {
 import type {
   ModelCatalogProjectionSource
 } from '../projection/ModelCatalogProjectionPorts.js';
-import { loadAgentPersistenceKeyRing } from './loadAgentPersistenceKeyRing.js';
 import {
   ConversationAgentResultCoordinator
 } from './ConversationAgentResultCoordinator.js';
@@ -101,10 +87,11 @@ import {
   InferenceStreamPublicProjectionPublisher,
   type InferenceStreamIdentity
 } from '../projection/InferenceStreamPublicProjectionPublisher.js';
-import { LocalConversationAttachmentStore } from '../adapters/attachment/LocalConversationAttachmentStore.js';
-import { FileAgentSubagentSessionStore } from '../adapters/subagent/FileAgentSubagentSessionStore.js';
-import type { ConversationAttachmentStore } from '../control/ports/ConversationAttachmentStore.js';
 import { V3ScheduleWorker } from './V3ScheduleWorker.js';
+import {
+  startAgentPersistenceComponent,
+  type AgentPersistenceComponentHandle
+} from './agent-entity/components/persistence/AgentPersistenceComponent.js';
 
 const DEFAULT_PUBLIC_PROJECTION_INTERVAL_MS = 50;
 const EMPTY_MODEL_CATALOG: ModelCatalogProjectionSource = Object.freeze({
@@ -149,12 +136,13 @@ implements AgentControlRuntimeLifecycle {
   private shutdownOperation: Promise<void> | null = null;
   private readonly liveWorkCompletion?: AgentLiveWorkCompletionLifecycle;
   private readonly scheduleWorker: V3ScheduleWorker | undefined;
+  private readonly unitOfWork: AgentPersistenceComponentHandle['unitOfWork'];
+  private readonly conversation: AgentPersistenceComponentHandle['conversation'];
+  private readonly publicProjection: AgentPersistenceComponentHandle['publicProjection'];
+  private readonly productivity: AgentPersistenceComponentHandle['productivity'];
 
   public constructor(
-    private readonly unitOfWork: SqliteAgentRunUnitOfWork,
-    private readonly conversation: SqliteConversationRunHandoffUnitOfWork,
-    private readonly publicProjection: SqlitePublicProjectionStore,
-    private readonly encryptedCodec?: AesGcmAgentPersistencePayloadCodec,
+    private readonly persistence: AgentPersistenceComponentHandle,
     options: AgentControlPublicProjectionLifecycleOptions = {},
     private readonly executionPipeline?: AgentControlExecutionPipeline,
     modelCatalog: ModelCatalogProjectionSource = EMPTY_MODEL_CATALOG,
@@ -162,10 +150,19 @@ implements AgentControlRuntimeLifecycle {
     authorizedWorkspaceIds: readonly string[] = [],
     private readonly observability?: PublicAgentObservability,
     liveWork?: AgentControlLiveWorkService,
-    attachmentStore?: ConversationAttachmentStore,
-    humanSkillCatalog?: NonNullable<AgentControlRuntimeServices['humanSkillCatalog']>,
-    private readonly productivity?: SqliteProductivityStore
+    humanSkillCatalog?: NonNullable<AgentControlRuntimeServices['humanSkillCatalog']>
   ) {
+    const {
+      unitOfWork,
+      conversation,
+      publicProjection,
+      productivity,
+      attachmentStore
+    } = persistence;
+    this.unitOfWork = unitOfWork;
+    this.conversation = conversation;
+    this.publicProjection = publicProjection;
+    this.productivity = productivity;
     this.publishIntervalMs = options.publishIntervalMs
       ?? DEFAULT_PUBLIC_PROJECTION_INTERVAL_MS;
     const conversationCommandNow = options.conversationCommandNow ?? (() => new Date());
@@ -477,17 +474,7 @@ implements AgentControlRuntimeLifecycle {
     try {
       // The UoW is frozen only after the publisher has stopped and its final
       // drain has settled, so no accepted outbox row can be stranded by order.
-      this.unitOfWork.prepareShutdown(context);
-    } catch (error) {
-      failures.push(error);
-    }
-    try {
-      this.conversation.prepareShutdown(context);
-    } catch (error) {
-      failures.push(error);
-    }
-    try {
-      this.productivity?.prepareShutdown(context);
+      this.persistence.prepareShutdown(context);
     } catch (error) {
       failures.push(error);
     }
@@ -516,14 +503,10 @@ implements AgentControlRuntimeLifecycle {
     // previously closed read model is harmless, while every remaining
     // authority store keeps its owner fence until the process is terminated.
     try {
-      await this.publicProjection.close(context);
-      await this.productivity?.close(context);
-      await this.conversation.close(context);
-      await this.unitOfWork.close(context);
+      await this.persistence.close(context);
     } catch (error) {
       throw new AggregateError([error], 'agent_control_shutdown_failed');
     }
-    this.encryptedCodec?.destroy();
     this.lifecycle = 'stopped';
   }
 
@@ -578,139 +561,21 @@ implements AgentControlRuntimeFactory {
     assertCanonicalAbsoluteDataRoot(input.dataRoot);
     const executionPipelineFactory = this.executionPipelineFactory
       ?? createProductionExecutionPipelineFactory(input);
-    const attachmentStore = new LocalConversationAttachmentStore(input.dataRoot);
-    if (!input.production) {
-      let unitOfWork: SqliteAgentRunUnitOfWork | undefined;
-      let conversation: SqliteConversationRunHandoffUnitOfWork | undefined;
-      let publicProjection: SqlitePublicProjectionStore | undefined;
-      let productivity: SqliteProductivityStore | undefined;
-      let observability: PublicAgentObservability | undefined;
-      try {
-        const persistenceCodec = new StrictJsonAgentPersistencePayloadCodec();
-        unitOfWork = new SqliteAgentRunUnitOfWork(
-          input.dataRoot,
-          persistenceCodec
-        );
-        const subagentSessionStore = new FileAgentSubagentSessionStore(
-          input.dataRoot,
-          persistenceCodec
-        );
-        conversation = new SqliteConversationRunHandoffUnitOfWork(input.dataRoot);
-        productivity = new SqliteProductivityStore(input.dataRoot);
-        publicProjection = new SqlitePublicProjectionStore(input.dataRoot);
-        const inferenceStreams = new InferenceStreamPublicProjectionPublisher(publicProjection);
-        await inferenceStreams.reconcileOpenStreams(
-          (identity) => resolveInferenceStreamTerminalState(unitOfWork!, identity)
-        );
-        observability = await createPublicAgentObservability(input, publicProjection);
-        const executionPipeline = await executionPipelineFactory?.create({
-          unitOfWork,
-          conversation,
-          agentAdmissionAuthoritySource: input.agentAdmissionAuthoritySource,
-          modelProviders: input.modelProviders,
-          subagentProviders: input.subagentProviders,
-          ...(input.installRoot === undefined ? {} : { installRoot: input.installRoot }),
-          ...(input.workspaces === undefined ? {} : { workspaces: input.workspaces }),
-          ...(input.runtimePolicy === undefined ? {} : { runtimePolicy: input.runtimePolicy }),
-          hookDeliverySink: observability,
-          providerTelemetry: input.runtimeServices?.telemetry,
-          processSandboxForWorkspace: input.runtimeServices?.processSandboxForWorkspace,
-          inferenceStreamPublisher: inferenceStreams,
-          attachmentStore,
-          subagentSessionStore,
-          ...(input.modelInferenceGateway === undefined
-            ? {}
-            : { modelInferenceGateway: input.modelInferenceGateway })
-        });
-        return new ComposedAgentControlRuntime(
-          unitOfWork,
-          conversation,
-          publicProjection,
-          undefined,
-          this.lifecycleOptions,
-          executionPipeline ?? undefined,
-          input.modelCatalog,
-          input.publicEventSink,
-          input.workspaces?.map((workspace) => workspace.workspaceId) ?? [],
-          observability,
-          input.runtimeServices?.liveWorkLifecycle,
-          attachmentStore,
-          input.runtimeServices?.humanSkillCatalog,
-          productivity
-        );
-      } catch (error) {
-        const cleanupContext = createShutdownContext(Date.now() + 5_000);
-        const cleanupErrors: unknown[] = [];
-        try {
-          await publicProjection?.close(cleanupContext);
-        } catch (failure) {
-          cleanupErrors.push(failure);
-        }
-        try {
-          await productivity?.close(cleanupContext);
-        } catch (failure) {
-          cleanupErrors.push(failure);
-        }
-        try {
-          await conversation?.close(cleanupContext);
-        } catch (failure) {
-          cleanupErrors.push(failure);
-        }
-        try {
-          await unitOfWork?.close(cleanupContext);
-        } catch (failure) {
-          cleanupErrors.push(failure);
-        } finally {
-          cleanupContext.dispose();
-        }
-        if (cleanupErrors.length > 0) {
-          throw new AggregateError(
-            [error, ...cleanupErrors],
-            'agent_control_factory_initialization_cleanup_failed'
-          );
-        }
-        throw error;
-      }
-    }
-
-    const keyRing = await loadAgentPersistenceKeyRing(
-      input.hostCapabilities,
-      input.runtimeInstanceId
-    );
-    const temporaryKeys = keyRing.keys.map((entry) => ({
-      keyId: entry.keyId,
-      key: Buffer.from(entry.keyMaterialBase64, 'base64')
-    }));
-    let codec: AesGcmAgentPersistencePayloadCodec | undefined;
-    let unitOfWork: SqliteAgentRunUnitOfWork | undefined;
-    let conversation: SqliteConversationRunHandoffUnitOfWork | undefined;
-    let publicProjection: SqlitePublicProjectionStore | undefined;
-    let productivity: SqliteProductivityStore | undefined;
-    let observability: PublicAgentObservability | undefined;
+    const persistence = await startAgentPersistenceComponent(input);
     try {
-      codec = new AesGcmAgentPersistencePayloadCodec(
-        keyRing.activeKeyId,
-        temporaryKeys
+      const inferenceStreams = new InferenceStreamPublicProjectionPublisher(
+        persistence.publicProjection
       );
-      unitOfWork = new SqliteAgentRunUnitOfWork(input.dataRoot, codec);
-      await unitOfWork.verifyOrInitializeKeyringAnchor({
-        generation: keyRing.generation,
-        activeKeyId: keyRing.activeKeyId,
-        availableKeyIds: keyRing.keys.map((entry) => entry.keyId),
-        requiredCodecId: AES_GCM_AGENT_PERSISTENCE_CODEC_ID
-      });
-      conversation = new SqliteConversationRunHandoffUnitOfWork(input.dataRoot);
-      productivity = new SqliteProductivityStore(input.dataRoot);
-      publicProjection = new SqlitePublicProjectionStore(input.dataRoot);
-      const inferenceStreams = new InferenceStreamPublicProjectionPublisher(publicProjection);
       await inferenceStreams.reconcileOpenStreams(
-        (identity) => resolveInferenceStreamTerminalState(unitOfWork!, identity)
+        (identity) => resolveInferenceStreamTerminalState(persistence.unitOfWork, identity)
       );
-      observability = await createPublicAgentObservability(input, publicProjection);
-      const subagentSessionStore = new FileAgentSubagentSessionStore(input.dataRoot, codec);
+      const observability = await createPublicAgentObservability(
+        input,
+        persistence.publicProjection
+      );
       const executionPipeline = await executionPipelineFactory?.create({
-        unitOfWork,
-        conversation,
+        unitOfWork: persistence.unitOfWork,
+        conversation: persistence.conversation,
         agentAdmissionAuthoritySource: input.agentAdmissionAuthoritySource,
         modelProviders: input.modelProviders,
         subagentProviders: input.subagentProviders,
@@ -721,17 +586,14 @@ implements AgentControlRuntimeFactory {
         providerTelemetry: input.runtimeServices?.telemetry,
         processSandboxForWorkspace: input.runtimeServices?.processSandboxForWorkspace,
         inferenceStreamPublisher: inferenceStreams,
-        attachmentStore,
-        subagentSessionStore,
+        attachmentStore: persistence.attachmentStore,
+        subagentSessionStore: persistence.subagentSessionStore,
         ...(input.modelInferenceGateway === undefined
           ? {}
           : { modelInferenceGateway: input.modelInferenceGateway })
       });
       return new ComposedAgentControlRuntime(
-        unitOfWork,
-        conversation,
-        publicProjection,
-        codec,
+        persistence,
         this.lifecycleOptions,
         executionPipeline ?? undefined,
         input.modelCatalog,
@@ -739,24 +601,22 @@ implements AgentControlRuntimeFactory {
         input.workspaces?.map((workspace) => workspace.workspaceId) ?? [],
         observability,
         input.runtimeServices?.liveWorkLifecycle,
-        attachmentStore,
-        input.runtimeServices?.humanSkillCatalog,
-        productivity
+        input.runtimeServices?.humanSkillCatalog
       );
     } catch (error) {
       const cleanupContext = createShutdownContext(Date.now() + 5_000);
+      let cleanupErrors: readonly unknown[];
       try {
-        await publicProjection?.close(cleanupContext).catch(() => undefined);
-        await productivity?.close(cleanupContext).catch(() => undefined);
-        await conversation?.close(cleanupContext).catch(() => undefined);
-        await unitOfWork?.close(cleanupContext).catch(() => undefined);
+        cleanupErrors = await persistence.rollback(cleanupContext);
       } finally {
         cleanupContext.dispose();
       }
-      codec?.destroy();
-      throw error;
-    } finally {
-      for (const entry of temporaryKeys) entry.key.fill(0);
+      throw cleanupErrors.length === 0
+        ? error
+        : new AggregateError(
+            [error, ...cleanupErrors],
+            'agent_control_factory_initialization_cleanup_failed'
+          );
     }
   }
 }

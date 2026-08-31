@@ -30,6 +30,9 @@ import {
   DefaultAgentControlRuntimeFactory
 } from '../src/composition/DefaultAgentControlRuntimeFactory.js';
 import {
+  composeAgentPersistenceComponentHandle
+} from '../src/composition/agent-entity/components/persistence/AgentPersistenceComponent.js';
+import {
   AgentControlConversationMessageAdmissionError,
   ProductionAgentControlExecutionPipelineFactory,
   type AgentControlExecutionPipeline
@@ -1117,10 +1120,12 @@ async function createHarness(
     runtimePolicy: RUNTIME_POLICY
   }));
   const runtime = new ComposedAgentControlRuntime(
-    unitOfWork,
-    conversation,
-    publicProjection,
-    undefined,
+    composeAgentPersistenceComponentHandle({
+      dataRoot: root,
+      unitOfWork,
+      conversation,
+      publicProjection
+    }),
     {
       publishIntervalMs: 60_000,
       conversationCommandNow: () => new Date('2025-01-01T00:00:00.000Z')
