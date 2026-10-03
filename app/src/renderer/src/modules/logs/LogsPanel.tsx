@@ -3,6 +3,8 @@ import { AlertTriangle, CheckCircle2, Info } from 'lucide-react';
 import { useFeatureSnapshot } from '@renderer/core/runtime/features/feature-snapshot-store';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import { SelectMenu, type SelectMenuOption } from '@renderer/shared/ui/SelectMenu';
+import { PanelEmptyState } from '@renderer/shared/ui/PanelEmptyState';
+import './logs.css';
 import {
   coalesceTraceLogs,
   traceLogCategory,
@@ -47,6 +49,8 @@ export function LogsPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
       <code title={services.applicationProfile.digest}>
         {services.applicationProfile.id}@{services.applicationProfile.revision}
       </code>
+      <span className="logs-result-count">{rows.length} 条</span>
+      <div className="logs-controls">
       <div className="logs-view-filters" role="toolbar" aria-label="日志类别">
         {viewOptions.map((option) => <button
           type="button"
@@ -63,7 +67,7 @@ export function LogsPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
         options={levelOptions}
         onChange={setLevel}
       />
-      <span className="logs-result-count">{rows.length} 条</span>
+      </div>
     </header>
     <div className="logs-list">
       {rows.map(({ entry, repeats }) => {
@@ -84,7 +88,7 @@ export function LogsPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
           {repeats > 1 && <span className="log-repeat-count" title={`${repeats} 条相同日志`}>×{repeats}</span>}
         </div>;
       })}
-      {rows.length === 0 && <div className="logs-empty-state"><Info size={14} /><p>当前筛选下没有需要关注的日志。</p></div>}
+      {rows.length === 0 && <PanelEmptyState compact icon={Info} title="没有匹配的日志" description="当前筛选下没有需要关注的日志，可切换类别或级别。" />}
     </div>
   </section>;
 }

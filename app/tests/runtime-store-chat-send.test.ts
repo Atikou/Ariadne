@@ -137,6 +137,7 @@ describe('RuntimeStore v3 chat boundary', () => {
     const projectedRun = run('run-stream', 'running', 2);
     const stream: PublicInferenceStreamProjectionV3 = {
       inferenceStreamId: 'stream-run-stream-turn-stream-attempt-stream',
+      sessionId: 'session-a',
       runId: projectedRun.runId,
       turnId: 'turn-stream',
       attemptId: 'attempt-stream',
@@ -221,6 +222,76 @@ describe('RuntimeStore v3 chat boundary', () => {
     expect(completed.getSnapshot().messages).toHaveLength(1);
   });
 
+  it('places a same-timestamp processing stream after the user message that started it', async () => {
+    const projectedRun = run('run-stream-order', 'running', 2);
+    const userMessage: PublicMessageProjectionV3 = {
+      messageId: 'message-user-stream-order',
+      sessionId: 'session-a',
+      runId: projectedRun.runId,
+      version: 1,
+      role: 'user',
+      content: 'Start this run.',
+      status: 'completed',
+      createdAt: NOW,
+      updatedAt: NOW
+    };
+    const stream: PublicInferenceStreamProjectionV3 = {
+      inferenceStreamId: 'stream-run-stream-order-turn-attempt',
+      sessionId: 'session-a',
+      runId: projectedRun.runId,
+      turnId: 'turn-stream-order',
+      attemptId: 'attempt-stream-order',
+      version: 1,
+      status: 'streaming',
+      retainedFromSequence: 1,
+      finalSequence: 1,
+      chunks: [{
+        sequence: 1,
+        channel: 'reasoning',
+        text: 'Working',
+        observedAt: NOW
+      }],
+      updatedAt: NOW
+    };
+    const store = new RuntimeStore(successfulRuntimeApi({
+      getStatus: async () => READY,
+      request: async (command) => {
+        if (command.kind === 'projection.snapshot.get') {
+          return {
+            kind: 'projection.snapshot',
+            snapshot: projectionSnapshot({
+              sessions: [session('session-a')],
+              messages: [userMessage],
+              runs: [projectedRun],
+              inferenceStreams: [stream]
+            })
+          };
+        }
+        if (command.kind === 'projection.commits.read') {
+          return {
+            kind: 'projection.commits',
+            batch: readBatch(command.request.afterCursor, command.request.afterDigest, [], {
+              streamId: command.request.streamId
+            })
+          };
+        }
+        throw new Error(`Unexpected command: ${command.kind}`);
+      },
+      onEvent: () => () => undefined
+    }));
+
+    await store.initialize();
+    await store.sessions.select('session-a');
+
+    expect(store.getSnapshot().messages.map((message) => ({
+      role: message.role,
+      status: message.status
+    }))).toEqual([
+      { role: 'user', status: 'completed' },
+      { role: 'assistant', status: 'streaming' }
+    ]);
+  });
+
   it('creates personal-assistant chat without requiring a user workspace', async () => {
     const commands: RuntimeCommand[] = [];
     const store = new RuntimeStore(successfulRuntimeApi({
@@ -240,6 +311,7 @@ describe('RuntimeStore v3 chat boundary', () => {
         }
         if (command.kind === 'conversation.session.create.v3') {
           expect(command.workspaceId).toBe(PERSONAL_ASSISTANT_WORKSPACE_ID);
+          expect(command.title).toBe('读取这台电脑上的说明文件');
           return { kind: 'conversation.session.created.v3', sessionId: command.sessionId, version: 1 };
         }
         if (command.kind === 'conversation.message.accept.v3') {
@@ -388,6 +460,59 @@ describe('RuntimeStore v3 chat boundary', () => {
     expect(commands.map((command) => command.kind)).not.toContain('companion.chat.start');
   });
 
+  it('keeps processing below the authoritative user when projection time is later', async () => {
+    let accepted = false;
+    let projected = false;
+    let clientMessageId = '';
+    const store = new RuntimeStore(successfulRuntimeApi({
+      getStatus: async () => READY,
+      request: async (command) => {
+        if (command.kind === 'projection.snapshot.get') {
+          return { kind: 'projection.snapshot', snapshot: projectionSnapshot({ sessions: [session('session-a')] }) };
+        }
+        if (command.kind === 'conversation.message.accept.v3') {
+          clientMessageId = command.messageId;
+          accepted = true;
+          return {
+            kind: 'conversation.message.accepted.v3',
+            sessionId: 'session-a',
+            sessionVersion: 2,
+            messageId: clientMessageId,
+            messageVersion: 1,
+            sagaId: 'saga-delayed-projection'
+          };
+        }
+        if (command.kind === 'projection.commits.read') {
+          const commits = accepted && !projected
+            ? [userOnlyProjectionCommit(clientMessageId)]
+            : [];
+          projected ||= commits.length > 0;
+          return {
+            kind: 'projection.commits',
+            batch: readBatch(command.request.afterCursor, command.request.afterDigest, commits, {
+              streamId: command.request.streamId
+            })
+          };
+        }
+        throw new Error(`Unexpected command: ${command.kind}`);
+      },
+      onEvent: () => () => undefined
+    }));
+    await store.initialize();
+    await store.sessions.select('session-a');
+
+    await store.messages.send('Delayed projection');
+
+    expect(store.getSnapshot().messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+      status: message.status
+    }))).toEqual([
+      { role: 'user', content: 'Delayed projection', status: 'completed' },
+      { role: 'assistant', content: '', status: 'streaming' }
+    ]);
+  });
+
   it('creates a v3 Session before accepting the first message', async () => {
     const commands: RuntimeCommand[] = [];
     const store = new RuntimeStore(successfulRuntimeApi({
@@ -409,6 +534,7 @@ describe('RuntimeStore v3 chat boundary', () => {
           };
         }
         if (command.kind === 'conversation.session.create.v3') {
+          expect(command.title).toBe('First message');
           return { kind: 'conversation.session.created.v3', sessionId: command.sessionId, version: 1 };
         }
         if (command.kind === 'conversation.message.accept.v3') {
@@ -426,6 +552,21 @@ describe('RuntimeStore v3 chat boundary', () => {
             messageId: command.messageId,
             messageVersion: 1,
             sagaId: 'first-message-saga'
+          };
+        }
+        if (command.kind === 'conversation.session.title.generate.v3') {
+          return {
+            kind: 'conversation.session.title.generated.v3',
+            sessionId: command.sessionId,
+            sessionVersion: command.expectedSessionVersion,
+            title: '模型生成的标题'
+          };
+        }
+        if (command.kind === 'conversation.session.rename.v3') {
+          return {
+            kind: 'conversation.session.updated.v3',
+            sessionId: command.sessionId,
+            version: command.expectedSessionVersion + 1
           };
         }
         throw new Error(`Unexpected command: ${command.kind}`);
@@ -448,8 +589,12 @@ describe('RuntimeStore v3 chat boundary', () => {
       'projection.commits.read',
       'conversation.session.create.v3',
       'conversation.message.accept.v3',
+      'conversation.session.title.generate.v3',
       'projection.commits.read'
     ]);
+    await vi.waitFor(() => expect(commands.map((command) => command.kind)).toContain(
+      'conversation.session.rename.v3'
+    ));
   });
 
   it('clears the processing overlay when a pre-Run terminal assistant message arrives', async () => {
@@ -827,7 +972,7 @@ describe('RuntimeStore v3 chat boundary', () => {
   it('restores an unsettled encrypted sender record and reconciles the exact command after reload', async () => {
     const restoredCommand = {
       kind: 'agent.inbox.enqueue.v3' as const,
-      contractVersion: '3.0' as const,
+      contractVersion: '4.0' as const,
       runId: 'run-inbox-restored',
       sessionId: 'session-a',
       inputId: 'input-inbox-restored',
@@ -1151,6 +1296,22 @@ function chatProjectionCommit(clientMessageId: string) {
     upsertChange('messages', user, user.messageId),
     upsertChange('messages', assistant, assistant.messageId),
     upsertChange('runs', run, run.runId)
+  ]);
+}
+
+function userOnlyProjectionCommit(clientMessageId: string) {
+  const user: PublicMessageProjectionV3 = {
+    messageId: clientMessageId,
+    sessionId: 'session-a',
+    version: 1,
+    role: 'user',
+    content: 'Delayed projection',
+    status: 'completed',
+    createdAt: '2099-09-02T03:18:50.206Z',
+    updatedAt: '2099-09-02T03:18:50.206Z'
+  };
+  return projectionCommit('event-user-only-delayed-projection', [
+    upsertChange('messages', user, user.messageId)
   ]);
 }
 

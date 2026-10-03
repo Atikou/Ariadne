@@ -11,7 +11,9 @@ export type ChatModelStateKind =
   | 'unconfigured'
   | 'checking'
   | 'unavailable'
+  | 'text-incompatible'
   | 'agent-incompatible'
+  | 'plan-incompatible'
   | 'privacy-unavailable'
   | 'ready';
 
@@ -19,6 +21,7 @@ export interface ChatModelStateInput {
   readonly runtimeAvailability: RuntimeStatus['availability'];
   readonly planModeAvailable: boolean;
   readonly planModeEnabled: boolean;
+  readonly executionMode: 'chat' | 'agent' | 'plan';
   readonly routingStrategy: ChatRoutingStrategy;
   readonly models: readonly ModelSummary[];
 }
@@ -41,10 +44,15 @@ export interface ChatModelState {
  * back into the unconfigured state.
  */
 export function deriveChatModelState(input: ChatModelStateInput): ChatModelState {
-  const readyModels = input.models.filter((model) => model.availability === 'ready');
-  const modeConfiguredModels = input.planModeEnabled
-    ? input.models.filter((model) => model.supportsAgent)
-    : input.models;
+  const enabledModels = input.models.filter((model) => model.enabled !== false);
+  const readyModels = enabledModels.filter((model) => model.availability === 'ready');
+  const modeConfiguredModels = enabledModels.filter((model) => (
+    input.executionMode === 'chat'
+      ? model.supportsTextChat
+      : input.executionMode === 'agent'
+        ? model.supportsAgent
+        : model.supportsPlan
+  ));
   const routeConfiguredModels = input.routingStrategy === 'privacy-first'
     ? modeConfiguredModels.filter((model) => model.location === 'local')
     : modeConfiguredModels;
@@ -54,7 +62,17 @@ export function deriveChatModelState(input: ChatModelStateInput): ChatModelState
   if (input.runtimeAvailability !== 'ready') kind = 'runtime-unavailable';
   else if (input.planModeEnabled && !input.planModeAvailable) kind = 'plan-unavailable';
   else if (input.models.length === 0) kind = 'unconfigured';
-  else if (input.planModeEnabled && modeConfiguredModels.length === 0) kind = 'agent-incompatible';
+  else if (
+    modeConfiguredModels.length === 0
+    && enabledModels.some((model) => model.qualificationState === 'testing')
+  ) kind = 'checking';
+  else if (modeConfiguredModels.length === 0) {
+    kind = input.executionMode === 'chat'
+      ? 'text-incompatible'
+      : input.executionMode === 'agent'
+        ? 'agent-incompatible'
+        : 'plan-incompatible';
+  }
   else if (input.routingStrategy === 'privacy-first' && routeConfiguredModels.length === 0) {
     kind = 'privacy-unavailable';
   } else if (eligibleModels.length > 0) kind = 'ready';
@@ -63,7 +81,7 @@ export function deriveChatModelState(input: ChatModelStateInput): ChatModelState
 
   return {
     kind,
-    ...presentation(kind, input.runtimeAvailability, input.planModeEnabled),
+    ...presentation(kind, input.runtimeAvailability, input.executionMode),
     readyModels,
     eligibleModels,
     canChat: kind === 'ready'
@@ -73,7 +91,7 @@ export function deriveChatModelState(input: ChatModelStateInput): ChatModelState
 function presentation(
   kind: ChatModelStateKind,
   runtimeAvailability: RuntimeStatus['availability'],
-  planModeEnabled: boolean
+  executionMode: 'chat' | 'agent' | 'plan'
 ): Pick<
   ChatModelState,
   'statusTone' | 'statusLabel' | 'composerPlaceholder' | 'emptyTitle' | 'emptyDescription'
@@ -119,13 +137,29 @@ function presentation(
         emptyTitle: '已配置模型暂不可用',
         emptyDescription: '打开设置查看模型检查结果，并确认模型地址、凭据或本地运行环境。'
       };
+    case 'text-incompatible':
+      return {
+        statusTone: 'warning',
+        statusLabel: '模型未通过文本资格检测',
+        composerPlaceholder: '当前没有通过文本响应检测的模型',
+        emptyTitle: '需要文本响应资格',
+        emptyDescription: '模型必须通过当前端到端链路的文本响应检测后才能用于对话。'
+      };
     case 'agent-incompatible':
       return {
         statusTone: 'warning',
         statusLabel: '模型不支持 Agent',
-        composerPlaceholder: '已配置模型不支持 Agent 协议，请选择兼容模型',
+        composerPlaceholder: '已配置模型未通过 Agent 能力检测，请选择兼容模型',
         emptyTitle: '需要支持 Agent 的模型',
-        emptyDescription: '计划模式只会使用明确支持 Agent 协议的可用模型。'
+        emptyDescription: '工作区模式只会使用通过原生工具调用与续推检测的模型。'
+      };
+    case 'plan-incompatible':
+      return {
+        statusTone: 'warning',
+        statusLabel: '模型不支持计划模式',
+        composerPlaceholder: '已配置模型未通过计划控制能力检测，请选择兼容模型',
+        emptyTitle: '需要支持计划模式的模型',
+        emptyDescription: '计划模式只会使用通过 Agent 与计划控制检测的模型。'
       };
     case 'privacy-unavailable':
       return {
@@ -139,9 +173,11 @@ function presentation(
       return {
         statusTone: 'success',
         statusLabel: '就绪',
-        composerPlaceholder: planModeEnabled
+        composerPlaceholder: executionMode === 'plan'
           ? '描述需要规划的任务；计划模式只读分析'
-          : '向 Ariadne 发送消息；按 Shift + Enter 换行',
+          : executionMode === 'agent'
+            ? '描述需要 Agent 在工作区处理的任务；按 Shift + Enter 换行'
+            : '向 Ariadne 发送消息；按 Shift + Enter 换行',
         emptyTitle: '开始新会话',
         emptyDescription: '描述你的目标，AI 会直接开始处理；只有实际工具权限不足时，Ariadne 才会向你确认具体操作。'
       };

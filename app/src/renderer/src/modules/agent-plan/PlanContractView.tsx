@@ -1,4 +1,5 @@
 import type { AgentPlan } from '@ariadne/protocol/public';
+import './plan-contract.css';
 
 export interface PlanContractViewProps {
   plan: AgentPlan;

@@ -1,6 +1,4 @@
-import {
-  PUBLIC_PROJECTION_CONTRACT_VERSION
-} from '@ariadne/protocol/public';
+import { PUBLIC_PROJECTION_CONTRACT_VERSION } from '@ariadne/protocol/public';
 import type {
   ConversationSession,
   ModelSummary,
@@ -26,16 +24,7 @@ import {
 import { PublicResultError, unwrapPublicResult } from './public-result';
 import type { AgentInputDeliveryReceipt } from './agent-input-delivery';
 import {
-  presentDiagnostic,
-  presentInferenceStreamMessage,
-  presentMessage,
-  presentModel,
-  presentPermissionDecision,
-  presentPlanDecision,
-  presentUserQuestionDecision,
-  presentRun,
-  presentRunActivities,
-  presentSession,
+  mergeInferenceStreamReasoning,
   type RuntimeMessage,
   type RuntimePermissionDecision,
   type RuntimePlanDecision,
@@ -43,6 +32,10 @@ import {
   type RuntimeRun
 } from './runtime-projection-presenter';
 import { RuntimeUiState } from './runtime-ui-state';
+import { RuntimeProjectionViews } from './runtime-projection-views';
+import { LiveSnapshotPublisher } from './live-snapshot-publisher';
+import { LiveInferenceStreamStore } from './live-inference-stream-store';
+import { presentInferenceMessages, reconcileLiveInferenceStreams } from './live-inference-message-projection';
 import { ProductivityFeatureStore } from './features/productivity-feature-store';
 import { ToolResultFeatureStore } from './features/tool-result-feature-store';
 import { HumanSkillFeatureStore } from './features/human-skill-feature-store';
@@ -96,7 +89,7 @@ const ACTIVE_PROJECTION_POLL_INTERVAL_MS = 500;
 
 /**
  * Renderer composition store. The six authoritative domain collections are
- * always rebuilt from ProjectionCache; this class owns only lifecycle, command
+ * derived from ProjectionCache with slice identity caching; this class owns lifecycle, command
  * routing and local UI overlays.
  */
 export class RuntimeStore {
@@ -112,6 +105,9 @@ export class RuntimeStore {
   private readonly projectionClient: ProjectionRuntimeClient;
   private readonly projection = new ProjectionCache();
   private readonly ui = new RuntimeUiState();
+  private readonly views = new RuntimeProjectionViews();
+  private readonly livePublisher = new LiveSnapshotPublisher(() => this.publish());
+  private readonly liveInferenceStreams = new LiveInferenceStreamStore();
   private readonly listeners = new Set<() => void>();
   private readonly removeProjectionListener: () => void;
   private initialized = false;
@@ -177,7 +173,11 @@ export class RuntimeStore {
       messages: snapshot.messages,
       pendingOverlayIds: snapshot.pendingOverlayIds
     })));
-    this.models = new ModelFeatureStore(featureView((snapshot) => ({ models: snapshot.models })));
+    this.models = new ModelFeatureStore(
+      featureView((snapshot) => ({ models: snapshot.models })),
+      featureGateway,
+      () => this.requestSynchronization(false)
+    );
     this.productivity = new ProductivityFeatureStore(featureGateway);
     this.runs = new RunFeatureStore(featureGateway, {
       hasCapability: (capability) => this.status.capabilities.includes(capability),
@@ -212,7 +212,9 @@ export class RuntimeStore {
       if (projection.resetEpoch !== this.lastProjectionResetEpoch) {
         this.lastProjectionResetEpoch = projection.resetEpoch;
         this.ui.clearPendingOverlay();
+        this.liveInferenceStreams.clear();
       }
+      reconcileLiveInferenceStreams(this.liveInferenceStreams, projection);
       this.runs.observeProjection();
       this.publish(projection);
       this.updateProjectionPolling(projection);
@@ -235,9 +237,9 @@ export class RuntimeStore {
     this.synchronizationRequested = false;
     this.synchronizationGeneration += 1;
     this.projection.resetLifecycle();
+    this.liveInferenceStreams.clear();
 
-    // Supervisor status is the only lifecycle authority. Runtime events are
-    // projection wake hints and cannot mutate lifecycle or domain state.
+    // Projection events are wake hints; append-only inference events own ephemeral presentation.
     this.removeStatusListener = this.api.onStatus((status) => {
       if (generation === this.lifecycleGeneration) this.receiveStatus(status);
     });
@@ -249,6 +251,7 @@ export class RuntimeStore {
   }
 
   dispose(): void {
+    this.livePublisher.cancel();
     this.lifecycleGeneration += 1;
     this.synchronizationGeneration += 1;
     this.lifecycleReady = false;
@@ -264,6 +267,7 @@ export class RuntimeStore {
     this.initialized = false;
     this.status = STOPPED_STATUS;
     this.requestError = null;
+    this.liveInferenceStreams.clear();
     this.projection.resetLifecycle();
     this.publish();
   }
@@ -306,6 +310,7 @@ export class RuntimeStore {
       this.snapshotRequired = true;
       this.synchronizationRequested = false;
       this.projection.clearForRuntimeReset();
+      this.liveInferenceStreams.clear();
       return;
     }
     if (!wasReady && this.lifecycleReady) void this.requestSynchronization(true);
@@ -318,6 +323,20 @@ export class RuntimeStore {
   }
 
   private receiveWakeHint(envelope: RuntimeEventEnvelope): void {
+    try {
+      if (this.liveInferenceStreams.accept(envelope)) {
+        if (envelope.event.kind === 'inference.stream.terminated') this.publish();
+        else this.livePublisher.schedule();
+        this.updateProjectionPolling();
+        if (this.liveInferenceStreams.needsSynchronization || envelope.event.kind === 'inference.stream.terminated') {
+          void this.requestSynchronization(false);
+        }
+        return;
+      }
+    } catch (error) {
+      this.setError(error);
+      return;
+    }
     this.synchronizationRequested = true;
     if (this.lifecycleReady && this.status.availability === 'ready') {
       void this.requestSynchronization(false);
@@ -436,7 +455,7 @@ export class RuntimeStore {
     if (
       !this.lifecycleReady
       || this.status.availability !== 'ready'
-      || !projection.runs.some((run) => !isTerminalPublicRun(run))
+      || (!projection.runs.some((run) => !isTerminalPublicRun(run)) && !this.liveInferenceStreams.hasActiveStreams)
     ) {
       this.stopProjectionPolling();
       return;
@@ -504,29 +523,29 @@ export class RuntimeStore {
   }
 
   private publish(projection = this.projection.getSnapshot()): void {
+    this.livePublisher.cancel();
     this.snapshot = this.createSnapshot(projection);
     for (const listener of this.listeners) listener();
   }
 
   private createSnapshot(projection: ProjectionCacheSnapshot): RuntimeSnapshot {
-    const authoritativeMessages = projection.messages.map(presentMessage);
-    const terminalAssistantRunIds = new Set(authoritativeMessages
-      .filter((message) => message.role === 'assistant' && message.status === 'completed')
-      .flatMap((message) => message.runId === undefined ? [] : [message.runId]));
-    const inferenceMessages = projection.inferenceStreams.flatMap((stream) => {
-      if (terminalAssistantRunIds.has(stream.runId)) return [];
-      const message = presentInferenceStreamMessage(
-        stream,
-        projection.runs.find((run) => run.runId === stream.runId)
-      );
-      return message === null ? [] : [message];
-    });
+    const authoritative = this.views.messages(projection.messages, projection.runs);
+    const messagesWithReasoning = mergeInferenceStreamReasoning(
+      [...authoritative.bySession.values()].flat(),
+      this.liveInferenceStreams.getSnapshot(),
+    );
+    const bySession = new Map<string, RuntimeMessage[]>();
+    for (const message of messagesWithReasoning) {
+      const session = bySession.get(message.sessionId) ?? [];
+      session.push(message);
+      bySession.set(message.sessionId, session);
+    }
+    const inferenceMessages = presentInferenceMessages(
+      this.liveInferenceStreams, authoritative.terminalAssistantRunIds
+    );
     const messages = this.ui.projectedMessages(
-      mergeInteractionMessages(
-        [...authoritativeMessages, ...inferenceMessages],
-        projection.runs
-      ),
-      projection.runs
+      this.views.selectedMessages(bySession, inferenceMessages, this.ui.selectedSessionId),
+      projection.runs, true
     );
     const pendingOverlayId = this.ui.pendingChatOverlayId;
     return {
@@ -535,61 +554,22 @@ export class RuntimeStore {
       projectionStreamId: projection.streamId,
       projectionCursor: projection.cursor,
       projectionIntegrityError: projection.integrityError,
-      sessions: projection.sessions.map(presentSession),
+      sessions: this.views.sessions(projection.sessions),
       selectedSessionId: this.ui.selectedSessionId,
-      planModeSessionIds: [...this.ui.planModeSessionIds].sort(compareCodeUnits),
-      pendingOverlayIds: pendingOverlayId === null
-        ? []
-        : [pendingOverlayId],
+      planModeSessionIds: this.ui.planModeSnapshot(),
+      pendingOverlayIds: this.views.pendingOverlayIds(pendingOverlayId),
       messages,
-      models: projection.models.map(presentModel),
-      runs: projection.runs.map(presentRun),
-      activities: projection.runs.flatMap(presentRunActivities),
-      permissions: projection.decisions.flatMap((decision) => {
-        const request = presentPermissionDecision(decision);
-        return request === null ? [] : [request];
-      }),
-      planHandoffs: projection.decisions.flatMap((decision) => {
-        const handoff = presentPlanDecision(decision);
-        return handoff === null ? [] : [handoff];
-      }),
-      userQuestions: projection.decisions.flatMap((decision) => {
-        const question = presentUserQuestionDecision(decision);
-        return question === null ? [] : [question];
-      }),
-      trace: projection.diagnostics.map(presentDiagnostic),
+      models: this.views.models(projection.models),
+      runs: this.views.runs(projection.runs),
+      activities: this.views.activities(projection.runs),
+      ...this.views.decisions(projection.decisions),
+      trace: this.views.trace(projection.diagnostics),
       agentInputDeliveries: this.runs.deliverySnapshot(),
       lastError: projection.integrityError
         ?? this.runs.deliveryPersistenceError
         ?? this.requestError
     };
   }
-
-}
-
-function mergeInteractionMessages(
-  authoritative: readonly RuntimeMessage[],
-  runs: readonly PublicRunProjectionV3[]
-): RuntimeMessage[] {
-  const messages = [...authoritative];
-  const identities = new Set(messages.map((message) => message.messageId));
-  for (const run of runs) {
-    for (const interaction of run.interactionMessages) {
-      if (identities.has(interaction.messageId)) continue;
-      identities.add(interaction.messageId);
-      messages.push(presentMessage(interaction));
-    }
-  }
-  return messages.sort((left, right) => {
-    const time = left.createdAt.localeCompare(right.createdAt);
-    if (time !== 0) return time;
-    const role = interactionRoleOrder(left.role) - interactionRoleOrder(right.role);
-    return role !== 0 ? role : left.messageId.localeCompare(right.messageId);
-  });
-}
-
-function interactionRoleOrder(role: RuntimeMessage['role']): number {
-  return role === 'assistant' ? 0 : role === 'user' ? 1 : 2;
 }
 
 export function runtimeRequestErrorMessage(
@@ -607,10 +587,6 @@ export function runtimeRequestErrorMessage(
     .replace(/decision-action\.v1:[0-9a-f]{64}/giu, '[redacted-decision-action]')
     .trim();
   return (message || fallback).slice(0, 16_384);
-}
-
-function compareCodeUnits(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function sanitizeRuntimeCommandError(

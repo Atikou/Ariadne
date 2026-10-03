@@ -45,7 +45,7 @@ describe('renderer scroll boundaries', () => {
 
     expect(styles).toMatch(/#root \{[^}]*position: fixed;[^}]*inset: 0;[^}]*overflow: hidden;/);
     expect(styles).toMatch(/\.workspace-frame \{[^}]*overflow: hidden;/);
-    expect(styles).not.toMatch(/\.ariadne-dockview-theme\s+\.dv-view[^{}]*\{[^}]*overflow:\s*visible;/);
+    expect(styles).not.toMatch(/\.dockview-theme-abyss\s+\.dv-view[^{}]*\{[^}]*overflow:\s*visible;/);
   });
 
   it('keeps persistent panel overlays inside the module frame', async () => {

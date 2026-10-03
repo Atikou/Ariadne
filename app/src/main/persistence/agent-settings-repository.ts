@@ -103,7 +103,8 @@ const persistedAgentSettingsBase = {
   routingStrategy: agentRoutingStrategySchema,
   localModelRoots: z.array(z.string().min(1).max(32_768).refine(
     (value) => /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value)
-  )).max(8)
+  )).max(8),
+  disabledLocalModelIds: z.array(z.string().trim().min(1).max(256)).max(256)
 };
 const persistedAgentSettingsSchema = z.object({
   ...persistedAgentSettingsBase,
@@ -126,6 +127,7 @@ const persistedAgentSettingsFileSchema = z.object({
   localModelRoots: z.array(z.string().min(1).max(32_768).refine(
     (value) => /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value)
   )).max(8),
+  disabledLocalModelIds: z.array(z.string().trim().min(1).max(256)).max(256).optional(),
   assistant: persistedAssistantChatProfileFileSchema.optional(),
   permissionMode: z.enum(AGENT_PERMISSION_MODES).optional(),
   customPermissions: customPermissionsSchema.optional(),
@@ -174,6 +176,7 @@ export interface RuntimeAgentSettings {
   workspaceAccess: 'read' | 'write';
   workspaces: AgentWorkspaceSettingsView[];
   localModelRoots: string[];
+  disabledLocalModelIds?: string[];
   providers: Record<AgentProviderId, RuntimeAgentProviderSettings>;
   subagentProviders: Array<SubagentProviderConfiguration & { enabled: boolean }>;
   runtimePolicy: RuntimePolicySnapshot;
@@ -228,6 +231,7 @@ export class AgentSettingsRepository {
       workspaceAccess: this.settings.workspaceAccess,
       workspaces: this.settings.workspaces.map((workspace) => ({ ...workspace })),
       localModelRoots: [...this.settings.localModelRoots],
+      disabledLocalModelIds: [...this.settings.disabledLocalModelIds],
       providers: mapProviders(this.settings, (provider) => ({
         enabled: provider.enabled,
         baseUrl: provider.baseUrl,
@@ -257,6 +261,7 @@ export class AgentSettingsRepository {
         .filter((workspace) => workspace.archivedAt === undefined)
         .map((workspace) => ({ ...workspace })),
       localModelRoots: [...this.settings.localModelRoots],
+      disabledLocalModelIds: [...this.settings.disabledLocalModelIds],
       providers: mapProviders(this.settings, (provider) => {
         const apiKey = this.tryDecrypt(provider.encryptedApiKey);
         return {
@@ -544,6 +549,9 @@ function applySettingsOperations(
       case 'modelRoots.replace':
         next.localModelRoots = [...new Set(operation.roots)];
         break;
+      case 'localModels.replace':
+        next.disabledLocalModelIds = [...new Set(operation.disabledModelIds)];
+        break;
       case 'provider.update': {
         const target = next.providers[operation.providerId];
         const patch = operation.patch;
@@ -593,6 +601,7 @@ function createDefaultAgentSettings(): PersistedAgentSettings {
     workspaceAccess: 'write',
     workspaces: [],
     localModelRoots: [],
+    disabledLocalModelIds: [],
     providers: Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => [id, {
       enabled: true,
       baseUrl: AGENT_PROVIDER_CATALOG[id].defaultBaseUrl,
@@ -634,6 +643,7 @@ function parsePersistedAgentSettings(input: unknown): PersistedAgentSettings {
     customPermissions,
     workspaceAccess,
     workspaces: normalizeWorkspaceCatalog(workspaceAccess, workspaces),
+    disabledLocalModelIds: parsed.disabledLocalModelIds ?? defaults.disabledLocalModelIds,
     providers: Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => {
       const saved = parsed.providers[id];
       return [id, saved
@@ -671,6 +681,7 @@ function toTomlDocument(settings: PersistedAgentSettings): TomlTable {
     permissionMode: settings.permissionMode,
     workspaceAccess: settings.workspaceAccess,
     localModelRoots: settings.localModelRoots,
+    disabledLocalModelIds: settings.disabledLocalModelIds,
     customPermissions: structuredClone(settings.customPermissions),
     runtimePolicy: structuredClone(settings.runtimePolicy),
     workspaces: settings.workspaces.map((workspace) => ({ ...workspace })),

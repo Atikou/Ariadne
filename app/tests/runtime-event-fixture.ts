@@ -27,6 +27,18 @@ function metadataFor(event: RuntimeEvent): {
   aggregateVersion?: number;
 } {
   switch (event.kind) {
+    case "inference.chunk.observed":
+      return {
+        aggregateType: "inference_stream",
+        aggregateId: `${event.runId}:${event.turnId}:${event.attemptId}`,
+        aggregateVersion: event.sequence,
+      };
+    case "inference.stream.terminated":
+      return {
+        aggregateType: "inference_stream",
+        aggregateId: `${event.runId}:${event.turnId}:${event.attemptId}`,
+        aggregateVersion: event.finalSequence + 1,
+      };
     case "companion.reasoning.delta":
     case "companion.token.delta":
       return { aggregateType: "companion", aggregateId: event.messageId };

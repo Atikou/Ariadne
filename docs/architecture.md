@@ -98,7 +98,9 @@ Renderer 冷启动读取 `projection.snapshot.get`，随后通过 `projection.co
 
 Agent lifecycle diagnostics 由独立 observability publisher 脱敏后写入同一 Projection，支持 cursor/digest 重放、稳定 delivery 去重和 512 条 retention。它不是完整 Prompt/Tool 日志，也不拥有恢复权威。
 
-Renderer 的写操作只使用 v3 Session lifecycle/Message、Decision、Cancel 和 Agent inbox 命令。Session title 与 archive/restore 只来自 Runtime Projection；本机导航存储仅保留 pin/unread。Renderer 不再使用旧 `runtime.snapshot.get`、`events.replay`、Proposal/Permission/Plan 分散命令，也不从多个 legacy Store 修补领域状态。
+Renderer 使用 v3 Session/Message、Decision、Cancel、Agent inbox、模型资格检测和 productivity 等对应 owner 的命令与查询。Session title 与 archive/restore 只来自 Runtime Projection；本机导航存储仅保留 pin/unread。Renderer 不再使用旧 `runtime.snapshot.get`、`events.replay`、Proposal/Permission/Plan 分散命令，也不从多个 legacy Store 修补领域状态。
+
+实时推理事件是可丢失的显示增量：Renderer 按精确 Attempt 对账持久 head 与连续后缀，缺口拉取现有 Projection，最终 Message 仍拥有正式答案。终态不能降级为 streaming。Main 的投递游标属于单个 Runtime 实例，自动重启也必须重置。Renderer 派生结果和订阅按数据切片隔离，live token 批量发布，数据库 commit 仍原子可见。
 
 ## 6. 能力接线状态
 
@@ -131,7 +133,7 @@ Runtime status 只读取 bootstrap 冻结 Manifest 中已成功启动 Provider �
 - Shutdown 先拒绝新命令、停止并 join producer/scheduler、排空投影，再冻结和释放 Store owner fence。
 - Renderer 不接收密钥、PID、端口、绝对路径或内部异常对象。
 - Workspace、文件与终端请求使用稳定 `workspaceId`；Main 解析真实根并校验 symlink/Junction 边界。
-- API Key 由 Main 使用系统安全存储保护；Runtime 只收到受控环境槽位，Public DTO 不返回明文。
+- API Key 由 Main 使用系统安全存储保护；Runtime 经 `HostCapabilityBroker` 请求精确用途的凭据授权，凭据值仅在私有 Host/Runtime 通道和受控使用范围内存在，不进入 Bootstrap、Renderer 或 Public DTO。
 - Sandbox helper、打包 Runtime、模型资产和 Authenticode 使用 fail-closed 发布门禁。
 
 ## 8. 当前未验收
@@ -142,3 +144,18 @@ Runtime status 只读取 bootstrap 冻结 Manifest 中已成功启动 Provider �
 - 正式签名安装包的全新安装、N-1 升级、失败回滚、降级和卸载。
 
 验证证据见 [验证说明](verification.md)，能力差距与路线见 [deepseek-harness 对比审计](deepseek-harness-comparison-audit-2026-08-28.md)。
+
+## 9. 内部边界与旧源码消费者（2026-09-05）
+
+模型适配器只协调已绑定的模型调用；历史构建、请求校验、工具 schema 和响应解析分别位于 `AgentModelHistory/Request/ToolContracts/Response`。SQLite 的行读取、payload codec、准备校验、事实写入、恢复与 admission 校验已经分开，但仍由原 `SqliteAgentRunUnitOfWork` / `SqliteConversationRunHandoffUnitOfWork` 和同一个 `SqliteTransactionOwner` 提交。内部模块不能获取新数据库连接或另行 BEGIN/COMMIT；启动时 owner 接管 outbox 的同步恢复仍留在 UoW 初始化边界。未改变 schema、存储格式或 command receipt 身份。
+
+| 保留源码 | 当前消费者 | 归属与移除条件 |
+|---|---|---|
+| `RuntimeKernelApplication` / `ComposedRuntimeIngress` | `entry/runtime-process.ts`、`entry/headless.ts` | 当前生产装配；Profile/Manifest 装配到这些入口 |
+| `application/createRuntimeContext.ts` → `app/createAppContext.ts` | `runtime-workspace-access.test.ts` 的四条旧配置/工作区回归；`app/index.ts` 仅 re-export | 未找到生产或 CLI 调用；保留为旧模型回归支持，迁移这四条测试后才移除根装配 |
+| `CompanionAgentPlanWorkflow` 与 `AppContext` 类型 | `companion-agent-plan-workflow.test.ts`；`PublicConfigContracts.ts` 只引用类型 | 旧流程的测试消费者；不能据文件存在推断生产仍启用旧控制平面 |
+| `config`、`model/ModelFactory`、本地模型与存储工具 | 生产精确模型适配器及 `cli/main.ts`、`check-models.ts`、storage/sandbox 等 CLI | 当前共享库或独立 CLI；不能随旧 AppContext 目录关系批量删除 |
+| `LegacySchedulerJournalReader` | 显式 `cli/migrate-scheduler-v3.ts` | 只读旧日志迁移；没有生产定时执行权，保留至旧格式迁移支持结束 |
+| Agent Control v5→v6、v6→v7 migration 与受保护 payload/keyring 校验 | 显式迁移 CLI、启动校验、恢复路径及对应测试 | 数据迁移、完整性和安全设施；保留 |
+
+这份清单区分入口装配与共享源码，依据当前静态 import/callsite 和 package scripts。未发现的外部私有消费者不作为已知契约；本次不运行旧构造器清理或迁移用户数据。代码修复的剩余事项统一维护在 [修复入口](architecture-review-and-remediation.md)，日期审计只作历史快照。

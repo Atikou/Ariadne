@@ -35,6 +35,8 @@
     "verify:reproducible": "npm run verify:source-snapshot && npm run typecheck && npm test && npm run check:architecture && npm run audit:runtime-independence && npm run verify:release-contract",
     "test:electron": "npm run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/electron-smoke.ps1",
     "test:electron-profiles": "npm run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/electron-profile-matrix.ps1",
+    "test:renderer-ui": "node scripts/renderer-ui-smoke.cjs",
+    "bench:renderer-history": "node scripts/benchmarks/renderer-history.mjs",
     "audit:runtime-independence": "node scripts/audit-runtime-independence.mjs",
     "verify:release-contract": "node scripts/verify-release-contract.mjs",
     "verify:packaged-runtime": "node scripts/verify-packaged-runtime-assets.mjs",

@@ -16,6 +16,7 @@ export type PublicAggregateType =
   | "plan_handoff"
   | "proposal"
   | "projection"
+  | "inference_stream"
   | "trace";
 
 export interface PersistedDomainEvent {

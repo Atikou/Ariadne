@@ -1,0 +1,16 @@
+.workspace-group-tabs { --select-menu-min-width: 220px; margin: 4px; }
+.workspace-group-tabs .select-menu-trigger {
+  width: 40px;
+  height: 28px;
+  min-height: 28px;
+  gap: 4px;
+  padding: 0 6px;
+  color: var(--text-2);
+  background: transparent;
+  border-color: transparent;
+  font-size: 11px;
+}
+.workspace-group-tabs .select-menu-value { text-align: center; }
+.workspace-group-tabs .select-menu-trigger:hover { color: var(--text-1); background: var(--bg-hover); }
+.workspace-group-tab-list .select-menu-option { min-height: 34px; }
+.workspace-group-tab-list .select-menu-option strong { font-size: 12px; font-weight: 500; }

@@ -117,7 +117,6 @@ const ModelClientConfigBaseSchema = z.object({
 
 const UNKNOWN_PROVIDER_QUALIFICATION = {
   nativeTools: "unknown",
-  textFallback: "unknown",
   streaming: "unknown",
   reasoning: "unknown",
   cancellation: "unknown",
@@ -127,7 +126,6 @@ const UNKNOWN_PROVIDER_QUALIFICATION = {
 
 export const ProviderQualificationSchema = z.object({
   nativeTools: z.enum(["supported", "unsupported", "unknown"]).default("unknown"),
-  textFallback: z.enum(["supported", "unsupported", "unknown"]).default("unknown"),
   streaming: z.enum(["supported", "unsupported", "unknown"]).default("unknown"),
   reasoning: z.enum(["supported", "unsupported", "unknown"]).default("unknown"),
   cancellation: z.enum(["supported", "unsupported", "unknown"]).default("unknown"),

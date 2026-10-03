@@ -22,6 +22,7 @@ const boundedChunkTextSchema = z.string().min(1).max(PUBLIC_INFERENCE_CHUNK_MAX_
   });
 
 export const publicInferenceStreamIdentityV1Schema = z.object({
+  sessionId: publicProjectionCanonicalIdSchema,
   runId: publicProjectionCanonicalIdSchema,
   turnId: publicProjectionCanonicalIdSchema,
   attemptId: publicProjectionCanonicalIdSchema
@@ -33,6 +34,7 @@ export type PublicInferenceStreamIdentityV1 = z.infer<
 export const publicInferenceChunkObservedV1Schema = z.object({
   contractVersion: z.literal(PUBLIC_INFERENCE_STREAM_CONTRACT_VERSION),
   kind: z.literal('inference.chunk.observed'),
+  sessionId: publicProjectionCanonicalIdSchema,
   runId: publicProjectionCanonicalIdSchema,
   turnId: publicProjectionCanonicalIdSchema,
   attemptId: publicProjectionCanonicalIdSchema,
@@ -48,6 +50,7 @@ export type PublicInferenceChunkObservedV1 = z.infer<
 export const publicInferenceStreamTerminatedV1Schema = z.object({
   contractVersion: z.literal(PUBLIC_INFERENCE_STREAM_CONTRACT_VERSION),
   kind: z.literal('inference.stream.terminated'),
+  sessionId: publicProjectionCanonicalIdSchema,
   runId: publicProjectionCanonicalIdSchema,
   turnId: publicProjectionCanonicalIdSchema,
   attemptId: publicProjectionCanonicalIdSchema,
@@ -84,6 +87,7 @@ export function replayPublicInferenceStreamEventV1(
 ): PublicInferenceStreamReplayStateV1 {
   const event = publicInferenceStreamEventV1Schema.parse(input);
   const current = state ?? {
+    sessionId: event.sessionId,
     runId: event.runId,
     turnId: event.turnId,
     attemptId: event.attemptId,
@@ -91,7 +95,8 @@ export function replayPublicInferenceStreamEventV1(
   };
 
   if (
-    current.runId !== event.runId
+    current.sessionId !== event.sessionId
+    || current.runId !== event.runId
     || current.turnId !== event.turnId
     || current.attemptId !== event.attemptId
   ) {

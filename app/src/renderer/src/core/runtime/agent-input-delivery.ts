@@ -45,6 +45,7 @@ const MAX_TRACKED_AGENT_INPUT_DELIVERIES = 100;
  */
 export class AgentInputDeliveryTracker {
   private readonly records = new Map<string, TrackedAgentInputDelivery>();
+  private cachedSnapshot: AgentInputDeliveryReceipt[] | undefined;
 
   begin(
     commandId: string,
@@ -70,6 +71,7 @@ export class AgentInputDeliveryTracker {
       createdAt: now,
       updatedAt: now
     };
+    this.cachedSnapshot = undefined;
     this.records.set(commandId, { command: { ...command }, receipt });
     return { ...receipt };
   }
@@ -104,6 +106,7 @@ export class AgentInputDeliveryTracker {
       updatedAt: now,
       error: '上次发送在界面退出前没有完成确认，请重新确认结果。'
     };
+    this.cachedSnapshot = undefined;
     this.records.set(commandId, { command: { ...command }, receipt });
     return { ...receipt };
   }
@@ -173,6 +176,7 @@ export class AgentInputDeliveryTracker {
     ) {
       throw new Error('agent_input_delivery_unsettled');
     }
+    this.cachedSnapshot = undefined;
     this.records.delete(commandId);
   }
 
@@ -187,6 +191,7 @@ export class AgentInputDeliveryTracker {
         || record.receipt.state === 'accepted'
       ) continue;
       const { error: _error, ...receipt } = record.receipt;
+      this.cachedSnapshot = undefined;
       this.records.set(commandId, {
         command: record.command,
         receipt: {
@@ -201,12 +206,12 @@ export class AgentInputDeliveryTracker {
   }
 
   snapshot(): AgentInputDeliveryReceipt[] {
-    return [...this.records.values()]
-      .map(({ receipt }) => ({ ...receipt }))
+    return this.cachedSnapshot ??= Object.freeze([...this.records.values()]
+      .map(({ receipt }) => Object.freeze({ ...receipt }))
       .sort((left, right) => (
         left.createdAt.localeCompare(right.createdAt)
         || left.commandId.localeCompare(right.commandId)
-      ));
+      ))) as AgentInputDeliveryReceipt[];
   }
 
   private replace(
@@ -214,6 +219,7 @@ export class AgentInputDeliveryTracker {
     receipt: AgentInputDeliveryReceipt
   ): AgentInputDeliveryReceipt {
     const current = this.require(commandId);
+    this.cachedSnapshot = undefined;
     this.records.set(commandId, { command: current.command, receipt });
     return { ...receipt };
   }
@@ -228,6 +234,7 @@ export class AgentInputDeliveryTracker {
     if (this.records.size < MAX_TRACKED_AGENT_INPUT_DELIVERIES) return;
     for (const [commandId, record] of this.records) {
       if (record.receipt.state === 'accepted' || record.receipt.state === 'failed') {
+        this.cachedSnapshot = undefined;
         this.records.delete(commandId);
         if (this.records.size < MAX_TRACKED_AGENT_INPUT_DELIVERIES) return;
       }

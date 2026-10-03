@@ -1,6 +1,6 @@
 param(
   [string]$OutputRoot = "",
-  [string[]]$Profiles = @("desktop-default", "desktop-no-speech", "desktop-stt-only", "desktop-tts-only")
+  [string[]]$Profiles = @("desktop-default", "desktop-no-speech", "desktop-stt-only", "desktop-tts-only", "desktop-preview")
 )
 
 $ErrorActionPreference = "Stop"

@@ -4,7 +4,6 @@ import {
   type ListProfilesForRoleOptions,
 } from "./model-capabilities.js";
 import type { ModelAvailabilityRegistry } from "./model-availability.js";
-import type { AgentProtocolQualificationStore } from "./agent-protocol-qualification.js";
 import type { ModelProfile, RuleRouteResult } from "./types.js";
 
 const COST_ORDER: Record<ModelProfile["relativeCost"], number> = {
@@ -42,7 +41,6 @@ function sortReview(a: ModelProfile, b: ModelProfile, requiredLevel: number): nu
 
 export interface ModelRegistryOptions {
   availability?: ModelAvailabilityRegistry;
-  agentProtocolQualification?: AgentProtocolQualificationStore;
 }
 
 export class ModelRegistry {
@@ -70,10 +68,6 @@ export class ModelRegistry {
     return this.profiles.find((p) => p.id === id);
   }
 
-  isAgentProtocolAdmitted(profile: ModelProfile): boolean {
-    return this.options.agentProtocolQualification?.isAdmitted(profile) ?? true;
-  }
-
   findPrimaryCandidates(
     rule: RuleRouteResult,
     localOnly?: boolean,
@@ -84,9 +78,7 @@ export class ModelRegistry {
       localOnly,
       routerInput,
     });
-    return candidates
-      .filter((profile) => !routerInput?.agentProtocolRequired || this.isAgentProtocolAdmitted(profile))
-      .sort((a, b) => sortPrimary(a, b, requirement.minLevel));
+    return candidates.sort((a, b) => sortPrimary(a, b, requirement.minLevel));
   }
 
   findDraftCandidates(

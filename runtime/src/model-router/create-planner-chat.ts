@@ -2,9 +2,8 @@ import type { RouteOptions } from "../model/routeOptions.js";
 import type { ChatRequest, ModelResponse } from "../model/types.js";
 import type { ModelChatFn } from "../model-orchestrator/types.js";
 import { estimateRouterContextTokens } from "./router-context-estimate.js";
-import { isModelUnavailableError } from "./model-availability.js";
 import type { SmartModelRouter } from "./smart-model-router.js";
-import { RouterError, type RouterInput } from "./types.js";
+import type { RouterInput } from "./types.js";
 
 export type PlannerChatFn = (
   request: ChatRequest,
@@ -47,35 +46,16 @@ export function createPlannerChatFn(deps: {
   return async (request, opts) => {
     const userInput = extractPlannerGoalFromMessages(request.messages);
     const routerInput = buildPlannerRouterInput(userInput, { ...opts, messages: request.messages });
-    let lastUnavailable: unknown;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      let decision;
-      try {
-        decision = deps.smartRouter.route(routerInput);
-      } catch (error) {
-        if (error instanceof RouterError) {
-          throw new Error(lastUnavailable ? `${error.message}；上一候选不可用：${String(lastUnavailable)}` : error.message);
-        }
-        throw error;
-      }
-
-      const modelId = decision.selectedModelId;
-      if (!modelId) {
-        throw new Error("计划模式路由未选出可用模型");
-      }
-
-      try {
-        const { response } = await deps.modelChatFn(modelId, request, {
-          routeLogId: decision.id,
-          role: "primary",
-          sessionId: decision.sessionId,
-        });
-        return response;
-      } catch (error) {
-        if (!isModelUnavailableError(error)) throw error;
-        lastUnavailable = error;
-      }
+    const decision = deps.smartRouter.route(routerInput);
+    const modelId = decision.selectedModelId;
+    if (!modelId) {
+      throw new Error("计划模式路由未选出可用模型");
     }
-    throw new Error(`计划模式候选模型均不可用：${String(lastUnavailable)}`);
+    const { response } = await deps.modelChatFn(modelId, request, {
+      routeLogId: decision.id,
+      role: "primary",
+      sessionId: decision.sessionId,
+    });
+    return response;
   };
 }

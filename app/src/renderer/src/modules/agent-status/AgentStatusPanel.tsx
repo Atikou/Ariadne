@@ -1,11 +1,24 @@
 import { useState } from 'react';
-import { CircleX, Clock3, RotateCw, Send, ShieldCheck, Square, Wrench } from 'lucide-react';
+import { Bot, CircleX, Clock3, RotateCw, Send, ShieldCheck, Square, Wrench } from 'lucide-react';
 import { useFeatureSnapshot } from '@renderer/core/runtime/features/feature-snapshot-store';
 import { formatRunStatus } from '@renderer/core/runtime/runtime-labels';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import { StatusPill } from '@renderer/shared/ui/StatusPill';
+import { PanelEmptyState } from '@renderer/shared/ui/PanelEmptyState';
+import { selectSessionRun } from './agent-status-model';
+import type { RuntimeRun } from '@renderer/core/runtime/runtime-projection-presenter';
+import { usePanelAction } from '@renderer/shared/ui/usePanelAction';
+import './agent-status.css';
 
 export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
+  const sessions = useFeatureSnapshot(services.sessions.view);
+  const runView = useFeatureSnapshot(services.runs.view);
+  const run = selectSessionRun(runView.runs, sessions.selectedSessionId);
+  return <AgentStatusContent key={run?.runId ?? sessions.selectedSessionId ?? 'none'} moduleId={moduleId} services={services} run={run} selectedSessionId={sessions.selectedSessionId} />;
+}
+
+function AgentStatusContent({ moduleId, services, run, selectedSessionId }: FeaturePanelProps & { run: RuntimeRun | undefined; selectedSessionId: string | null }): React.JSX.Element {
+  const { pending, error, execute } = usePanelAction();
   const [subagentDrafts, setSubagentDrafts] = useState<Record<string, string>>({});
   const [sendingSubagentId, setSendingSubagentId] = useState<string | null>(null);
   const [interruptingSubagentId, setInterruptingSubagentId] = useState<string | null>(null);
@@ -14,14 +27,9 @@ export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): Rea
     message: string;
   } | null>(null);
   const decisions = useFeatureSnapshot(services.decisions.view);
-  const diagnostics = useFeatureSnapshot(services.diagnostics.view);
   const runView = useFeatureSnapshot(services.runs.view);
   const agentRuns = runView.runs;
-  const run = agentRuns.find((candidate) => candidate.parentRunId === undefined && [
-    'queued', 'running', 'waiting_permission', 'waiting_decision',
-    'waiting_budget', 'waiting_children', 'cancelling', 'paused', 'interrupted'
-  ].includes(candidate.status)) ?? agentRuns.find((candidate) => candidate.parentRunId === undefined) ?? agentRuns[0];
-  const progress = Math.round((run?.progress ?? (run?.status === 'completed' ? 1 : 0)) * 100);
+  const progress = run?.progress === undefined ? null : Math.round(run.progress * 100);
   const tone = run?.status === 'completed'
     ? 'success'
     : run?.status === 'failed'
@@ -42,12 +50,18 @@ export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): Rea
     ? agentRuns.filter((candidate) => candidate.parentRunId === run.runId)
     : [];
 
+  if (!run) return <section className="agent-status-panel" aria-labelledby={`${moduleId}-title`}>
+    <header className="module-content-header"><div><span>当前会话</span><h1 id={`${moduleId}-title`}>任务状态</h1></div><StatusPill tone="neutral">空闲</StatusPill></header>
+    <PanelEmptyState icon={Bot} title="暂无 Agent 任务" description={selectedSessionId ? '此会话的任务状态和执行活动会显示在这里。' : '选择一条会话，查看对应任务的状态。'} />
+  </section>;
+
   return <section className="agent-status-panel" aria-labelledby={`${moduleId}-title`}>
     <header className="module-content-header"><div><span>当前 Agent</span><h1 id={`${moduleId}-title`}>任务状态</h1></div><StatusPill tone={tone}>{run ? formatRunStatus(run.status) : '空闲'}</StatusPill></header>
+    <div className="agent-status-body">
     <div className="agent-goal"><span>当前目标</span><p>{run?.title ?? '当前没有正在运行的 Agent 任务。'}</p></div>
-    <div className="agent-progress"><div><span>当前步骤</span><strong>{run?.userFacingLabel ?? diagnostics.status.detail ?? '等待任务'}</strong></div><span>{progress}%</span><div className="progress-track"><i style={{ width: `${progress}%` }} /></div></div>
-    <div className="status-section"><h2>最近活动</h2><ol>{runActivities.slice(-5).map((activity) => <li className={activity.status === 'completed' ? 'is-done' : activity.status === 'running' ? 'is-current' : ''} key={activity.activityId}>{activity.title}</li>)}{runActivities.length === 0 && <li>暂无活动记录。</li>}</ol></div>
-    {subagents.length > 0 && <div className="status-section"><h2>SubAgent</h2><ol>{subagents.map((subagent) => <li className={subagent.status === 'completed' ? 'is-done' : ['running', 'queued'].includes(subagent.status) ? 'is-current' : ''} key={subagent.runId}>
+    <div className="agent-progress"><div><span>执行状态</span><strong>{['completed', 'failed', 'cancelled'].includes(run.status) ? formatRunStatus(run.status) : run.userFacingLabel ?? formatRunStatus(run.status)}</strong></div>{progress !== null && <><span>{progress}%</span><div className="progress-track" role="progressbar" aria-label="任务进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><i style={{ width: `${progress}%` }} /></div></>}</div>
+    <div className="status-section"><h2>最近活动</h2><ol>{runActivities.slice(-5).map((activity) => <li className={activity.status === 'completed' ? 'is-done' : activity.status === 'failed' ? 'is-failed' : activity.status === 'running' ? 'is-current' : ''} key={activity.activityId}>{activity.title}{activity.status === 'failed' && <span> · 失败</span>}</li>)}{runActivities.length === 0 && <li>暂无活动记录。</li>}</ol></div>
+    {subagents.length > 0 && <div className="status-section"><h2>子任务</h2><ol>{subagents.map((subagent) => <li className={subagent.status === 'completed' ? 'is-done' : subagent.status === 'failed' ? 'is-failed' : ['running', 'queued'].includes(subagent.status) ? 'is-current' : ''} key={subagent.runId}>
       <span>{subagent.title} · {formatRunStatus(subagent.status)}{subagent.subagentMode === 'continuable' ? ' · 可继续' : ''}{subagent.subagentProviderId === undefined ? '' : ` · ${subagent.subagentProviderId}`}</span>
       {run && subagent.subagentMode === 'continuable' && subagent.status === 'running' && <div className="agent-controls">
         <button type="button" disabled={interruptingSubagentId !== null} onClick={() => {
@@ -95,7 +109,7 @@ export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): Rea
         {subagentSendError?.runId === subagent.runId && <p role="alert">{subagentSendError.message}</p>}
       </form>}
     </li>)}</ol></div>}
-    <div className="status-section"><h2>执行概况</h2><div className="context-grid"><span><Wrench size={13} /> {runActivities.filter((activity) => activity.activityType === 'tool').length} 次工具调用</span><span><ShieldCheck size={13} /> {decisions.permissions.filter((request) => request.status === 'pending').length} 项待确认</span><span><Clock3 size={13} /> {run?.startedAt ? new Date(run.startedAt).toLocaleTimeString() : '—'}</span></div></div>
+    <div className="status-section"><h2>执行概况</h2><div className="context-grid"><span><Wrench size={13} /> {runActivities.filter((activity) => activity.activityType === 'tool').length} 次工具调用</span><span><ShieldCheck size={13} /> {decisions.permissions.filter((request) => request.status === 'pending' && (request.runId === run.runId || subagents.some(child => child.runId === request.runId))).length} 项待确认</span><span><Clock3 size={13} /> {run.startedAt ? new Date(run.startedAt).toLocaleTimeString() : '—'}</span></div></div>
     {run?.status === 'waiting_budget' && <div className="status-section">
       <h2>执行预算</h2>
       <p>
@@ -105,11 +119,11 @@ export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): Rea
       {run.budgetUsage && <p>
         已累计使用 {run.budgetUsage.modelTurns} 次模型调用、{run.budgetUsage.toolCalls} 次工具调用。
       </p>}
-      {run.origin !== 'projection' && <div className="agent-controls">
-        <button type="button" onClick={() => void services.decisions.resumeBudget(run)}>
+      {run.origin === 'projection' && <div className="agent-controls">
+        <button type="button" disabled={pending} onClick={() => void execute(() => services.decisions.resumeBudget(run))}>
           <RotateCw size={13} /> 按建议预算继续
         </button>
-        <button type="button" onClick={() => void services.runs.requestCancellation(run)}>
+        <button type="button" disabled={pending} onClick={() => void execute(() => services.runs.requestCancellation(run))}>
           <Square size={13} /> 停止任务
         </button>
       </div>}
@@ -123,15 +137,18 @@ export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): Rea
       <p>{run.detail ?? (run.recoveryStatus === 'recoverable'
         ? '运行停在安全检查点，可以从原位置继续。'
         : '存在状态不确定的非幂等副作用，需要结束本次运行。')}</p>
-      {run.origin !== 'projection' && <div className="agent-controls">
+      {run.origin === 'projection' && <div className="agent-controls">
         {run.recoveryStatus === 'recoverable'
-          ? <button type="button" onClick={() => void services.decisions.recoverRun(run, 'resume')}><RotateCw size={13} /> 从检查点继续</button>
+          ? <button type="button" disabled={pending} onClick={() => void execute(() => services.decisions.recoverRun(run, 'resume'))}><RotateCw size={13} /> 从检查点继续</button>
           : <>
-              <button type="button" onClick={() => void services.decisions.recoverRun(run, 'mark_failed')}><CircleX size={13} /> 标记失败</button>
-              <button type="button" onClick={() => void services.decisions.recoverRun(run, 'cancel')}><Square size={13} /> 取消任务</button>
+              <button type="button" disabled={pending} onClick={() => void execute(() => services.decisions.recoverRun(run, 'mark_failed'))}><CircleX size={13} /> 标记失败</button>
+              <button type="button" disabled={pending} onClick={() => void execute(() => services.decisions.recoverRun(run, 'cancel'))}><Square size={13} /> 取消任务</button>
             </>}
       </div>}
     </div>}
-    {run && run.origin !== 'projection' && !['completed', 'failed', 'cancelled', 'interrupted', 'waiting_budget', 'cancelling'].includes(run.status) && <footer className="agent-controls"><button type="button" onClick={() => void services.runs.requestCancellation(run)}><Square size={13} /> 取消任务</button></footer>}
+    </div>
+    {error && <p className="agent-action-feedback is-danger" role="alert">{error}</p>}
+    {pending && <p className="agent-action-feedback" role="status">正在提交操作…</p>}
+    {run.origin === 'projection' && !['completed', 'failed', 'cancelled', 'interrupted', 'waiting_budget', 'cancelling'].includes(run.status) && <footer className="agent-controls"><button type="button" disabled={pending} onClick={() => void execute(() => services.runs.requestCancellation(run))}><Square size={13} /> 取消任务</button></footer>}
   </section>;
 }

@@ -84,6 +84,11 @@ export interface DispatchExactAgentModelInferenceRequest {
   readonly messages: readonly ExactAgentModelInferenceMessage[];
   readonly tools: readonly ExactAgentModelInferenceToolContract[];
   readonly signal: AbortSignal;
+  /** Isolated capability probes may pin deterministic sampling without changing a Run binding. */
+  readonly sampling?: {
+    readonly temperature?: number;
+    readonly maxOutputTokens?: number;
+  };
   readonly chunkObserver?: ExactAgentModelInferenceChunkObserver;
 }
 
@@ -92,6 +97,32 @@ export interface ExactAgentModelContextCapacity {
   readonly contextWindowTokens: number;
   /** Output space reserved before any input is admitted. */
   readonly maxOutputTokens: number;
+}
+
+/**
+ * End-to-end execution qualification for one exact model binding.
+ * Availability is deliberately separate: a loadable model is not thereby an
+ * Agent or Plan model.
+ */
+export interface ExactAgentModelExecutionQualification {
+  readonly supportsTextResponse: boolean;
+  readonly supportsAgent: boolean;
+  readonly supportsPlan: boolean;
+  readonly supportsVision: boolean;
+}
+
+export class ModelExecutionQualificationError extends Error {
+  public constructor(
+    public readonly code:
+      | 'model_text_qualification_required'
+      | 'model_agent_qualification_required'
+      | 'model_plan_qualification_required'
+      | 'model_vision_qualification_required',
+    public readonly modelId?: string
+  ) {
+    super(code);
+    this.name = 'ModelExecutionQualificationError';
+  }
 }
 
 export interface ExactAgentModelTokenCount {
@@ -155,6 +186,10 @@ extends ExactAgentModelInferenceGateway {
     binding: AgentRunBinding['model']
   ): ExactAgentModelContextCapacity | null;
 
+  describeExecutionQualification(
+    binding: AgentRunBinding['model']
+  ): ExactAgentModelExecutionQualification | null;
+
   countRequestTokens(
     request: CountExactAgentModelRequestTokens
   ): Promise<ExactAgentModelTokenCount>;
@@ -163,6 +198,7 @@ extends ExactAgentModelInferenceGateway {
 export interface AgentModelSelectionPreference {
   readonly modelId?: string;
   readonly requiresVision?: boolean;
+  readonly executionMode?: 'chat' | 'agent' | 'plan';
   readonly routingStrategy?:
     | 'local-first'
     | 'cloud-first'

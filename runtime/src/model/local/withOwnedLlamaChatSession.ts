@@ -18,11 +18,11 @@ export async function withOwnedLlamaChatSession<
   Session extends DisposableLlamaChatSession,
   Result,
 >(
-  acquireSequence: () => Sequence,
+  acquireSequence: () => Sequence | Promise<Sequence>,
   createSession: (sequence: Sequence) => Session,
   useSession: (session: Session) => Promise<Result>,
 ): Promise<Result> {
-  const sequence = acquireSequence();
+  const sequence = await acquireSequence();
   let session: Session | undefined;
 
   try {

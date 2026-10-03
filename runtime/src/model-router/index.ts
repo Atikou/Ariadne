@@ -65,15 +65,6 @@ export type {
   TaskRequirement,
   DeclaredCapabilityKey,
 } from "./model-capability-profile.js";
-export {
-  AgentProtocolQualificationStore,
-  profileFingerprint,
-} from "./agent-protocol-qualification.js";
-export type {
-  AgentProtocolQualificationOptions,
-  AgentProtocolQualificationRecord,
-  AgentProtocolQualificationStatus,
-} from "./agent-protocol-qualification.js";
 export { RuntimeStatsCollector } from "./runtime-stats.js";
 export { RuntimeStatsFeedback } from "./runtime-stats-feedback.js";
 export { CostBudgetManager, defaultCostBudgetManager } from "./cost-budget-manager.js";

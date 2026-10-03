@@ -238,8 +238,11 @@ function modelEntry(
     label: `Model ${id}`,
     location: 'remote',
     availability,
+    supportsTextChat: true,
     supportsAgent: true,
-    supportsVision: false
+    supportsPlan: true,
+    supportsVision: false,
+    qualificationState: 'qualified'
   };
 }
 

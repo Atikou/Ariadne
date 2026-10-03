@@ -61,7 +61,7 @@ describe("headless NDJSON Runtime", () => {
       commandId: "headless-expired-1",
       // Keep this independent from host clock adjustments between test and child process.
       deadlineAt: "2000-01-01T00:00:00.000Z",
-      command: { kind: "projection.snapshot.get", contractVersion: "3.0" },
+      command: { kind: "projection.snapshot.get", contractVersion: "4.0" },
     });
     await expect(first.waitForResponse("expired-1")).resolves.toMatchObject({
       outcome: {
@@ -81,7 +81,7 @@ describe("headless NDJSON Runtime", () => {
       requestId: "snapshot-2",
       commandId: "headless-snapshot-2",
       deadlineAt: new Date(Date.now() + 15_000).toISOString(),
-      command: { kind: "projection.snapshot.get", contractVersion: "3.0" },
+      command: { kind: "projection.snapshot.get", contractVersion: "4.0" },
     });
     await expect(second.waitForResponse("snapshot-2")).resolves.toMatchObject({
       outcome: { ok: true, result: { kind: "projection.snapshot" } },

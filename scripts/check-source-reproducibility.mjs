@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { detectedNpmVersion } from './verification-toolchain.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const expectedNode = '24.16.0';
@@ -16,7 +17,7 @@ const nvmVersion = readFileSync(path.join(projectRoot, '.nvmrc'), 'utf8').trim()
 
 assertEqual(nvmVersion, expectedNode, '.nvmrc version');
 assertEqual(process.versions.node, expectedNode, 'Node.js version');
-assertEqual(detectNpmVersion(), expectedNpm, 'npm version');
+assertEqual(detectedNpmVersion(), expectedNpm, 'npm version');
 assertEqual(rootPackage.packageManager, `npm@${expectedNpm}`, 'packageManager');
 assertEqual(rootPackage.engines?.node, expectedNode, 'engines.node');
 assertEqual(rootPackage.engines?.npm, expectedNpm, 'engines.npm');
@@ -101,14 +102,6 @@ function git(args) {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe']
   });
-}
-
-function detectNpmVersion() {
-  const userAgent = process.env.npm_config_user_agent ?? '';
-  const match = userAgent.match(/(?:^|\s)npm\/([^\s]+)/);
-  if (match !== null) return match[1];
-  const executable = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  return execFileSync(executable, ['--version'], { encoding: 'utf8' }).trim();
 }
 
 function assertEqual(actual, expected, label) {

@@ -1,8 +1,8 @@
 # Renderer UI 架构
 
-> 核对日期：2026-08-29
+> 核对日期：2026-09-05
 
-Renderer 使用 React 与 Dockview。业务状态只来自 Public Projection v3；文件、终端、设置等桌面能力通过固定 Preload API 调用 Electron Main。
+Renderer 使用 React 与 Dockview。持久业务状态来自 Public Projection；精确 Attempt 的实时 token/reasoning 是可丢失的显示增量，必须与持久 stream head 对账。文件、终端、设置等桌面能力通过固定 Preload API 调用 Electron Main。
 
 ## 模块边界
 
@@ -12,8 +12,8 @@ Renderer 使用 React 与 Dockview。业务状态只来自 Public Projection v3�
 | Session Activity | Conversation/Run Projection | 只读会话活动 |
 | Agent Status | Run Projection | 展示状态并发出 v3 Cancel |
 | Plan / Permission | Decision Projection | 使用 opaque action token 发出 v3 Decision |
-| Tool Output | Run Activity Projection | 展示已公开的 Tool 活动 |
-| Logs | 当前可用的公开诊断行 | 尚无完整生产 Diagnostics publisher，不应宣称持久 Runtime 日志 |
+| Tool Output | Run Activity Projection 与受保护 detail 查询 | 公共活动定位调用，正文经 owner 校验的 detail API 分段读取，不复制进公共投影 |
+| Logs | 持久、脱敏的生命周期 Diagnostics Projection | 512 条 retention；不等于完整 Prompt/Tool 日志 |
 | Files | Main 的受限工作区文件服务 | 只使用授权 `workspaceId` |
 | Terminal | Main 管理的 node-pty 会话 | 桌面能力，不等于 Agent 的持久终端 Tool |
 | Settings | Main 的设置仓库 | Provider、工作区、权限模式和桌面偏好 |
@@ -39,9 +39,17 @@ Renderer 当前只发送：
 - `agent.run.cancel.v3`；
 - `agent.inbox.*.v3` 与 direct-parent SubAgent 控制命令。
 
+此外，模型检测使用 `model.qualification.run.v3`，会话导航、分支和消息解析使用相应 query/reference API，工具正文使用 protected detail API，目标/工作流模块使用 productivity 命令。以上是按职责归类的入口，不是完整协议命令白名单；完整集合由 `packages/protocol` schema 和 Main/Runtime router 校验。
+
 Renderer 不读取 Host DTO，不访问 Runtime 源码，也不使用旧 `runtime.snapshot.get`、`events.replay` 或分散 Proposal/Permission/Plan 列表修补状态。
 
 发送消息时，Renderer 可维护按 `messageId` 关联的临时 pending overlay；正式 Projection 到达后必须原位替换。临时状态不能创建 Run、Decision 或业务终态。
+
+`LiveInferenceStreamStore` 仅保留每个 Attempt 有界的连续后缀和待补齐片段。中途订阅或序号缺口触发现有 Projection 同步；过旧持久 head 不覆盖较新的连续 live 后缀，同 identity 的冲突仍报错。Attempt 使用 `committed`/`interrupted` 终态，不能重新展示为 streaming；最终答案仍来自 Message。Main 每次创建 Runtime 进程实例都重置临时投递游标，包含自动强杀恢复。
+
+派生 Session、Model、Run、Decision、Diagnostics 按各自集合引用缓存，功能订阅只在所选字段变化时通知。连续 live token 以约 16 ms 的发布间隔合并，持久变更和终态立即发布；这是批量发布间隔，不是对渲染帧率的保证。历史 Message/ConversationNode 复用引用，消息行使用 memo；列表仍完整挂载当前会话，超长会话的首次布局成本仍需按产品规模考虑。
+
+`desktop-default`、`desktop-no-speech`、`desktop-stt-only`、`desktop-tts-only` 均不包含 `review.visual`。可视化审查只属于显式 `desktop-preview`，面板读取当前会话的 Public Projection，工具详情仍按受保护 detail API 读取；Runtime health、恢复和权限基础设施不受此划分影响。
 
 ## 窗口模型
 
@@ -60,4 +68,4 @@ Renderer 不读取 Host DTO，不访问 Runtime 源码，也不使用旧 `runtim
 - 模块布局与业务状态分离；恢复 Dockview 布局不能改变 Run/Session 所有权。
 - 界面正文和状态使用中文；Agent、Runtime、API、模型名与快捷键可保留英文。
 
-当前真实窗口验收只覆盖桌面壳与 Conversation/Projection；完整 Agent 交互边界见 [验证说明](verification.md)。
+真实 Electron 门禁已覆盖 token 完成前可见、丢包/重复/重载恢复、工具与权限、运行中 inbox、主动提问、取消、五个 Runtime 强杀边界及完整桌面重启。五个 Profile 的窗口矩阵也已验证。受控 HTTPS Provider fixture 不代签真实模型、正式签名安装包或硬件语音验收；具体版本与证据见 [当前修复进度](architecture-review-and-remediation.md)。

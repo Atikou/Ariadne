@@ -5,6 +5,7 @@ import {
 } from '../src/shared/application-profile';
 import {
   DESKTOP_DEFAULT_PROFILE,
+  DESKTOP_PREVIEW_PROFILE,
   DESKTOP_NO_SPEECH_PROFILE,
   DESKTOP_STT_ONLY_PROFILE,
   DESKTOP_TTS_ONLY_PROFILE,
@@ -42,9 +43,31 @@ describe('Application Profile', () => {
     expect(applicationProfileComponents(noSpeech, 'speech')).toEqual(['speech.core']);
   });
 
+  it('does not advertise the removed Runtime health UI module', async () => {
+    for (const definition of [
+      DESKTOP_DEFAULT_PROFILE,
+      DESKTOP_NO_SPEECH_PROFILE,
+      DESKTOP_STT_ONLY_PROFILE,
+      DESKTOP_TTS_ONLY_PROFILE
+    ]) {
+      const profile = await compileApplicationProfile(definition);
+      expect(applicationProfileComponents(profile, 'ui')).not.toContain('runtime.health');
+    }
+  });
+
   it('fails closed for an unknown configured profile', () => {
     expect(() => resolveApplicationProfile('unknown-profile'))
       .toThrow('application_profile_unknown:unknown-profile');
+  });
+
+  it('isolates simulated review from every production profile', async () => {
+    for (const definition of [DESKTOP_DEFAULT_PROFILE, DESKTOP_NO_SPEECH_PROFILE, DESKTOP_STT_ONLY_PROFILE, DESKTOP_TTS_ONLY_PROFILE]) {
+      const compiled = await compileApplicationProfile(definition);
+      expect(applicationProfileComponents(compiled, 'ui')).not.toContain('review.visual');
+    }
+    const preview = await compileApplicationProfile(resolveApplicationProfile('desktop-preview'));
+    expect(applicationProfileComponents(preview, 'ui')).toContain('review.visual');
+    expect(resolveApplicationProfile('desktop-preview')).toBe(DESKTOP_PREVIEW_PROFILE);
   });
 
   it('fails before readiness when a cross-entity Speech bridge dependency is missing', async () => {

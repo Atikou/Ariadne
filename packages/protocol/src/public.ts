@@ -17,6 +17,7 @@ import {
   publicProjectionSnapshotV3Schema
 } from './public/projection-v3.js';
 import { encodedImageAttachmentsV3Schema } from './public/attachments-v3.js';
+import { publicInferenceStreamEventV1Schema } from './public/inference-stream-v3.js';
 import { productivityCommandSchemas, productivityResultSchemas } from './public/productivity-v3.js';
 export * from './public/projection-v3.js';
 export * from './public/inference-stream-v3.js';
@@ -132,12 +133,15 @@ export const modelSummarySchema = z
     id: nonEmptyIdSchema,
     label: z.string().trim().min(1).max(256),
     location: z.enum(['local', 'remote']),
+    enabled: z.boolean().optional(),
     availability: z.enum(['ready', 'unavailable', 'checking', 'error']),
+    supportsTextChat: z.boolean(),
     supportsAgent: z.boolean(),
+    supportsPlan: z.boolean(),
     supportsVision: z.boolean(),
+    qualificationState: z.enum(['unknown', 'testing', 'qualified', 'rejected']),
     providerQualification: z.object({
       nativeTools: z.enum(['supported', 'unsupported', 'unknown']),
-      textFallback: z.enum(['supported', 'unsupported', 'unknown']),
       streaming: z.enum(['supported', 'unsupported', 'unknown']),
       reasoning: z.enum(['supported', 'unsupported', 'unknown']),
       cancellation: z.enum(['supported', 'unsupported', 'unknown']),
@@ -669,6 +673,7 @@ export const taskCheckpointSchema = z.object({
 export type TaskCheckpoint = z.infer<typeof taskCheckpointSchema>;
 
 export const runtimeEventSchema = z.discriminatedUnion('kind', [
+  ...publicInferenceStreamEventV1Schema.options,
   z.object({
     kind: z.literal('companion.reasoning.delta'),
     runId: nonEmptyIdSchema,
@@ -710,6 +715,7 @@ export const runtimeEventEnvelopeSchema = z
       'plan_handoff',
       'proposal',
       'projection',
+      'inference_stream',
       'trace'
     ]),
     aggregateId: nonEmptyIdSchema,
@@ -794,6 +800,16 @@ export const runtimeCommandSchema = z.discriminatedUnion('kind', [
   ...productivityCommandSchemas,
   emptyCommand('runtime.status.get'),
   z.object({
+    kind: z.literal('model.qualification.run.v3'),
+    contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
+    modelId: publicProjectionCanonicalIdSchema
+  }).strict(),
+  z.object({
+    kind: z.literal('model.availability.check.v3'),
+    contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
+    modelId: publicProjectionCanonicalIdSchema
+  }).strict(),
+  z.object({
     kind: z.literal('projection.snapshot.get'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION)
   }).strict(),
@@ -805,7 +821,17 @@ export const runtimeCommandSchema = z.discriminatedUnion('kind', [
     kind: z.literal('conversation.session.create.v3'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     sessionId: publicProjectionCanonicalIdSchema,
-    workspaceId: publicProjectionCanonicalIdSchema
+    workspaceId: publicProjectionCanonicalIdSchema,
+    title: z.string().trim().min(1).max(80).optional()
+  }).strict(),
+  z.object({
+    kind: z.literal('conversation.session.title.generate.v3'),
+    contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
+    sessionId: publicProjectionCanonicalIdSchema,
+    workspaceId: publicProjectionCanonicalIdSchema,
+    expectedSessionVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    content: z.string().trim().min(1).max(100_000),
+    execution: conversationMessageExecutionV3Schema.optional()
   }).strict(),
   z.object({
     kind: z.literal('conversation.session.rename.v3'),
@@ -956,6 +982,20 @@ export const runtimeResultSchema = z.discriminatedUnion('kind', [
   ...productivityResultSchemas,
   z.object({ kind: z.literal('runtime.status'), status: runtimeStatusSchema }).strict(),
   z.object({
+    kind: z.literal('model.qualification.completed.v3'),
+    modelId: publicProjectionCanonicalIdSchema,
+    supportsTextChat: z.boolean(),
+    supportsAgent: z.boolean(),
+    supportsPlan: z.boolean(),
+    supportsVision: z.boolean(),
+    qualificationState: z.enum(['unknown', 'testing', 'qualified', 'rejected'])
+  }).strict(),
+  z.object({
+    kind: z.literal('model.availability.completed.v3'),
+    modelId: publicProjectionCanonicalIdSchema,
+    available: z.boolean()
+  }).strict(),
+  z.object({
     kind: z.literal('projection.snapshot'),
     snapshot: publicProjectionSnapshotV3Schema
   }).strict(),
@@ -972,6 +1012,12 @@ export const runtimeResultSchema = z.discriminatedUnion('kind', [
     kind: z.literal('conversation.session.updated.v3'),
     sessionId: publicProjectionCanonicalIdSchema,
     version: z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
+  }).strict(),
+  z.object({
+    kind: z.literal('conversation.session.title.generated.v3'),
+    sessionId: publicProjectionCanonicalIdSchema,
+    sessionVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    title: z.string().trim().min(1).max(80)
   }).strict(),
   z.object({
     kind: z.literal('conversation.session.forked.v3'),

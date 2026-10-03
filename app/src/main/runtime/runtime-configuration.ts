@@ -141,6 +141,7 @@ export function createDesktopRuntimeConfiguration(
     installRoot,
     dataRoot: join(input.userDataPath, 'runtime'),
     modelRoots,
+    disabledLocalModelIds: [...new Set(input.agentSettings.disabledLocalModelIds ?? [])],
     modelProviders,
     subagentProviders,
     routingStrategy: input.agentSettings.routingStrategy,

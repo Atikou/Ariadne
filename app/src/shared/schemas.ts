@@ -239,6 +239,10 @@ export const agentSettingsOperationSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('assistant.replace'), assistant: assistantChatProfileSchema }).strict(),
   z.object({ kind: z.literal('modelRoots.replace'), roots: z.array(absolutePathSchema).max(8) }).strict(),
   z.object({
+    kind: z.literal('localModels.replace'),
+    disabledModelIds: z.array(z.string().trim().min(1).max(256)).max(256)
+  }).strict(),
+  z.object({
     kind: z.literal('provider.update'),
     providerId: agentProviderIdSchema,
     patch: agentProviderSettingsPatchSchema
@@ -315,6 +319,7 @@ export const agentSettingsViewSchema = z.object({
   workspaceAccess: z.enum(['read', 'write']),
   workspaces: z.array(agentWorkspaceSettingsViewSchema).max(32),
   localModelRoots: z.array(absolutePathSchema).max(8),
+  disabledLocalModelIds: z.array(z.string().trim().min(1).max(256)).max(256).optional(),
   providers: z.record(agentProviderIdSchema, agentProviderSettingsViewSchema),
   subagentProviders: z.array(agentSubagentProviderSettingsSchema).max(8),
   runtimePolicy: runtimePolicySnapshotSchema

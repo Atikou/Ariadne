@@ -102,12 +102,6 @@ export class DecisionEngine {
           `指定模型 ${forced.id} 不满足当前执行协议，必须具备：${required.join("、")}`,
         );
       }
-      if (input.agentProtocolRequired && !this.registry.isAgentProtocolAdmitted(forced)) {
-        throw new RouterError(
-          "MODEL_PROTOCOL_QUARANTINED",
-          `指定模型 ${forced.id} 因连续违反严格 AgentAction 协议而处于临时隔离；普通聊天仍可使用，请等待隔离期结束或改用其他 Agent 模型。`,
-        );
-      }
       return {
         ...base,
         source: "manual_override",

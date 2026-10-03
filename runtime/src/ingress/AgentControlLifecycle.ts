@@ -73,6 +73,8 @@ export interface AgentControlRuntimeFactoryInput {
   readonly modelInferenceGateway?: ExactAgentModelInferenceRuntime;
   /** Composition-gated queue for non-authoritative Projection wake hints. */
   readonly publicEventSink: RuntimePublicEventSink;
+  /** Immediate append-only inference events delivered to the public renderer stream. */
+  readonly liveInferenceEventSink: RuntimePublicEventSink;
   readonly hostCapabilities: HostCapabilityClient;
   /** The immutable Tool Catalog compiled from the same Provider graph as Runtime status. */
   readonly agentToolCatalogSnapshots?: readonly AgentToolCatalogSnapshot[];

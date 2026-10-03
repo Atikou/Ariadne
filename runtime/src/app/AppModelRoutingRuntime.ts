@@ -6,13 +6,11 @@ import type { LoopChatFn } from "../agent/AgentLoop.js";
 import { createAgentRuntimeServices, type AgentRuntimeServices } from "../agent/AgentRuntimeServices.js";
 import { createIntentClassifierChatFn } from "../agent/routing/AIIntentClassifier.js";
 import type { ModelClientConfig } from "../config/types.js";
-import { parseAgentModelAction } from "../core/AgentActionProtocol.js";
 import type { MetricsRegistry } from "../model/MetricsRegistry.js";
 import type { createDirectChatFn } from "../model/directChat.js";
 import type { ModelClient } from "../model/types.js";
 import { ModelOrchestrator } from "../model-orchestrator/index.js";
 import {
-  AgentProtocolQualificationStore,
   buildModelProfiles,
   CollaborationRunStore,
   createAgentChatFn,
@@ -27,7 +25,6 @@ import {
   ModelEvalStore,
   ModelProfileStore,
   type ModelRegistry,
-  type ModelProfile,
   RouteLogStore,
   RuntimeStatsFeedback,
   SmartModelRouter,
@@ -41,7 +38,6 @@ type DirectChatFn = ReturnType<typeof createDirectChatFn>;
 
 export interface AppModelRoutingRuntime {
   agentRuntime: AgentRuntimeServices;
-  agentProtocolQualificationStore: AgentProtocolQualificationStore;
   collaborationRunStore: CollaborationRunStore;
   createChatForDelegatedTask: ReturnType<typeof createDelegatedTaskChatFn>;
   defaultAgentChat: LoopChatFn;
@@ -83,12 +79,10 @@ export function createAppModelRoutingRuntime(
     console.warn(`[model-router] 能力矩阵覆盖：${message}`);
   }
 
-  const agentProtocolQualificationStore = new AgentProtocolQualificationStore(options.db);
   const modelProfileStore = ModelProfileStore.fromClients(options.allModelConfigs(), {
     db: options.db,
     metrics: options.metrics,
     availability: options.modelAvailability,
-    agentProtocolQualification: agentProtocolQualificationStore,
   });
   const modelProfileRegistry = modelProfileStore.registry;
   const routeLogStore = new RouteLogStore(options.db);
@@ -117,8 +111,6 @@ export function createAppModelRoutingRuntime(
   const defaultAgentChat = createAgentChatFn({
     smartRouter: smartModelRouter,
     modelChatFn,
-    modelRegistry: modelProfileRegistry,
-    qualificationStore: agentProtocolQualificationStore,
   });
   const createChatForDelegatedTask = createDelegatedTaskChatFn({
     smartRouter: smartModelRouter,
@@ -144,12 +136,9 @@ export function createAppModelRoutingRuntime(
   const makeAgentChatFn = createAgentChatFactory({
     directChat: options.directChat,
     defaultAgentChat,
-    modelProfileRegistry,
-    qualificationStore: agentProtocolQualificationStore,
   });
   return {
     agentRuntime,
-    agentProtocolQualificationStore,
     collaborationRunStore,
     createChatForDelegatedTask,
     defaultAgentChat,
@@ -172,32 +161,15 @@ export function createAppModelRoutingRuntime(
 export function createAgentChatFactory(input: {
   directChat: DirectChatFn;
   defaultAgentChat: LoopChatFn;
-  modelProfileRegistry: Pick<ModelRegistry, "get">;
-  qualificationStore: {
-    recordSuccess(profile: ModelProfile): unknown;
-    recordFailure(profile: ModelProfile, reason: string): unknown;
-  };
 }): (forceClient?: string) => LoopChatFn {
   return (forceClient?: string): LoopChatFn => {
     if (!forceClient) return input.defaultAgentChat;
     return async (request, options) => {
-      const response = await input.directChat(request, {
+      return input.directChat(request, {
         sensitive: options?.sensitive,
         taskType: options?.taskType,
         forceClient,
       });
-      const profile = input.modelProfileRegistry.get(forceClient);
-      if (profile) {
-        if (parseAgentModelAction(response.content, response.toolCalls)) {
-          input.qualificationStore.recordSuccess(profile);
-        } else {
-          input.qualificationStore.recordFailure(
-            profile,
-            "模型响应未通过严格 AgentAction schema",
-          );
-        }
-      }
-      return response;
     };
   };
 }

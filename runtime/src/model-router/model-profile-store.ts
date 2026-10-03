@@ -10,10 +10,6 @@ import type { ModelAvailabilityRecord, ModelAvailabilityRegistry } from "./model
 import { ModelRegistry } from "./model-registry.js";
 import { buildModelProfiles, validateModelProfiles } from "./model-profiles.js";
 import type { ModelProfile } from "./types.js";
-import type {
-  AgentProtocolQualificationRecord,
-  AgentProtocolQualificationStore,
-} from "./agent-protocol-qualification.js";
 
 export interface ModelProfileRuntimeHint {
   calls: number;
@@ -29,14 +25,12 @@ export interface ModelProfileStoreSnapshot extends CapabilityMatrixSnapshot {
   validationErrors: string[];
   runtimeHintsByModelId: Record<string, ModelProfileRuntimeHint>;
   availability?: ModelAvailabilityRecord[];
-  agentProtocolQualifications?: AgentProtocolQualificationRecord[];
 }
 
 export interface ModelProfileStoreOptions {
   db?: DatabaseSync;
   metrics?: MetricsRegistry;
   availability?: ModelAvailabilityRegistry;
-  agentProtocolQualification?: AgentProtocolQualificationStore;
 }
 
 /**
@@ -50,7 +44,6 @@ export class ModelProfileStore {
     this.profiles = [...profiles];
     this.registry = new ModelRegistry(this.profiles, {
       availability: opts.availability,
-      agentProtocolQualification: opts.agentProtocolQualification,
     });
   }
 
@@ -85,7 +78,6 @@ export class ModelProfileStore {
       validationErrors: validateModelProfiles(this.profiles),
       runtimeHintsByModelId: this.collectRuntimeHints(),
       availability: this.opts.availability?.snapshot(),
-      agentProtocolQualifications: this.opts.agentProtocolQualification?.list(this.profiles),
     };
   }
 

@@ -6,7 +6,7 @@ import { backfillMessageEnvelopes } from "./messageEnvelopeBackfill.js";
 import { retireEmptyMemoryControlShadows } from "../adapters/persistence/memoryControlShadowRetirement.js";
 import { addColumnIfMissing, hashRowId, type SqliteMigration } from "../storage/sqliteMigration.js";
 
-export const MEMORY_DB_SCHEMA_VERSION = 45;
+export const MEMORY_DB_SCHEMA_VERSION = 46;
 
 function ensureFts(
   db: DatabaseSync,
@@ -689,28 +689,8 @@ export const MEMORY_DB_MIGRATIONS: readonly SqliteMigration[] = [
   },
   {
     version: 26,
-    name: "model_agent_protocol_qualification",
-    up(db) {
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS model_agent_protocol_qualification (
-          model_id TEXT PRIMARY KEY,
-          profile_fingerprint TEXT NOT NULL,
-          protocol_version INTEGER NOT NULL,
-          status TEXT NOT NULL,
-          success_count INTEGER NOT NULL DEFAULT 0,
-          failure_count INTEGER NOT NULL DEFAULT 0,
-          consecutive_failures INTEGER NOT NULL DEFAULT 0,
-          last_checked_at TEXT,
-          qualified_at TEXT,
-          quarantined_at TEXT,
-          quarantine_until TEXT,
-          reason TEXT,
-          updated_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_model_agent_protocol_status
-          ON model_agent_protocol_qualification(status, quarantine_until);
-      `);
-    },
+    name: "retired_model_agent_protocol_qualification",
+    up() {},
   },
   {
     version: 27,
@@ -1569,6 +1549,13 @@ export const MEMORY_DB_MIGRATIONS: readonly SqliteMigration[] = [
     name: "retire_isolated_control_store_shadows",
     up(db) {
       retireEmptyMemoryControlShadows(db);
+    },
+  },
+  {
+    version: 46,
+    name: "drop_retired_model_agent_protocol_qualification",
+    up(db) {
+      db.exec(`DROP TABLE IF EXISTS model_agent_protocol_qualification;`);
     },
   },
 ];

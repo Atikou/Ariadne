@@ -18,7 +18,6 @@ describe("Provider qualification matrix", () => {
 
     expect(config.qualification).toMatchObject({
       nativeTools: "unknown",
-      textFallback: "unknown",
       streaming: "unknown",
       cancellation: "unknown",
       tokenizer: "unknown",
@@ -42,7 +41,6 @@ describe("Provider qualification matrix", () => {
       model: "model",
       qualification: {
         nativeTools: "supported",
-        textFallback: "unsupported",
         streaming: "supported",
         reasoning: "unknown",
         cancellation: "supported",

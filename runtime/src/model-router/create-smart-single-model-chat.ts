@@ -11,13 +11,9 @@ import {
 import { buildRouterInputFromChat } from "./router-input.js";
 import { resolveRuleOnlyAnswer } from "./rule-only-responses.js";
 import { estimateRouterContextTokens } from "./router-context-estimate.js";
-import { isModelUnavailableError } from "./model-availability.js";
 import type { SmartModelRouter } from "./smart-model-router.js";
 import { RouterError, type RouterInput } from "./types.js";
 import { AGENT_PROTOCOL_REQUIRED_CAPABILITIES } from "./model-capability-profile.js";
-import type { ModelRegistry } from "./model-registry.js";
-import type { AgentProtocolQualificationStore } from "./agent-protocol-qualification.js";
-import { parseAgentModelAction } from "../core/AgentActionProtocol.js";
 
 export type { AgentRoutingMeta } from "./agent-routing-summary.js";
 
@@ -83,64 +79,47 @@ export function createSmartSingleModelChatFn(deps: {
   return async (request, opts) => {
     const userInput = extractLastUserMessage(request.messages);
     const routerInput = deps.buildInput(userInput, opts, { messages: request.messages });
-    let lastUnavailable: unknown;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      let routed;
-      try {
-        routed = deps.smartRouter.routeDetailed(routerInput);
-      } catch (error) {
-        if (error instanceof RouterError) {
-          throw new Error(lastUnavailable ? `${error.message}；上一候选不可用：${String(lastUnavailable)}` : error.message);
-        }
-        throw error;
-      }
-      const decision = routed.decision;
-      const promptStrategy = defaultPromptStrategyBuilder.build({
-        decision,
-        routingContext: routed.routingContext,
-        userInput,
-        qualityMode: routerInput.qualityMode,
+    const routed = deps.smartRouter.routeDetailed(routerInput);
+    const decision = routed.decision;
+    const promptStrategy = defaultPromptStrategyBuilder.build({
+      decision,
+      routingContext: routed.routingContext,
+      userInput,
+      qualityMode: routerInput.qualityMode,
+    });
+    const routingMeta = buildAgentRoutingMeta(decision, promptStrategy);
+
+    const modelId = decision.selectedModelId;
+    if (decision.executionStrategy === "rule_only") {
+      const content = JSON.stringify({
+        action: "final",
+        answer: resolveRuleOnlyAnswer(decision.taskType, userInput),
       });
-      const routingMeta = buildAgentRoutingMeta(decision, promptStrategy);
-
-      const modelId = decision.selectedModelId;
-      if (decision.executionStrategy === "rule_only") {
-        const content = JSON.stringify({
-          action: "final",
-          answer: resolveRuleOnlyAnswer(decision.taskType, userInput),
-        });
-        return {
-          content,
-          toolCalls: [],
-          clientName: "rule-only",
-          modelName: "rule-only",
-          location: "local",
-          latencyMs: 0,
-          routingMeta,
-        };
-      }
-      if (!modelId) {
-        throw new Error("路由未选出可用模型");
-      }
-
-      const chatRequest: ChatRequest = {
-        ...request,
-        temperature: promptStrategy.temperature,
-        messages: applyPromptStrategyToMessages(request.messages, promptStrategy),
+      return {
+        content,
+        toolCalls: [],
+        clientName: "rule-only",
+        modelName: "rule-only",
+        location: "local",
+        latencyMs: 0,
+        routingMeta,
       };
-      try {
-        const { response } = await deps.modelChatFn(modelId, chatRequest, {
-          routeLogId: decision.id,
-          role: "primary",
-          sessionId: decision.sessionId,
-        });
-        return { ...response, routingMeta };
-      } catch (error) {
-        if (!isModelUnavailableError(error)) throw error;
-        lastUnavailable = error;
-      }
     }
-    throw new Error(`路由候选模型均不可用：${String(lastUnavailable)}`);
+    if (!modelId) {
+      throw new Error("路由未选出可用模型");
+    }
+
+    const chatRequest: ChatRequest = {
+      ...request,
+      temperature: promptStrategy.temperature,
+      messages: applyPromptStrategyToMessages(request.messages, promptStrategy),
+    };
+    const { response } = await deps.modelChatFn(modelId, chatRequest, {
+      routeLogId: decision.id,
+      role: "primary",
+      sessionId: decision.sessionId,
+    });
+    return { ...response, routingMeta };
   };
 }
 
@@ -148,8 +127,6 @@ export function createSmartSingleModelChatFn(deps: {
 export function createAgentChatFn(deps: {
   smartRouter: SmartModelRouter;
   modelChatFn: ModelChatFn;
-  modelRegistry?: ModelRegistry;
-  qualificationStore?: AgentProtocolQualificationStore;
 }): LoopChatFn {
   const routedChat = createSmartSingleModelChatFn({
     ...deps,
@@ -162,17 +139,5 @@ export function createAgentChatFn(deps: {
         maxCostUsd: opts?.maxCostUsd,
       }),
   });
-  return async (request, opts) => {
-    const response = await routedChat(request, opts);
-    const modelId = response.routingMeta?.routerDecision.selectedModelId ?? response.clientName;
-    const profile = deps.modelRegistry?.get(modelId);
-    if (profile && deps.qualificationStore) {
-      if (parseAgentModelAction(response.content, response.toolCalls)) {
-        deps.qualificationStore.recordSuccess(profile);
-      } else {
-        deps.qualificationStore.recordFailure(profile, "模型响应未通过严格 AgentAction schema");
-      }
-    }
-    return response;
-  };
+  return routedChat;
 }

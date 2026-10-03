@@ -1,6 +1,7 @@
 import {
   PUBLIC_PROJECTION_CONTRACT_VERSION,
   PUBLIC_PROJECTION_GENESIS_DIGEST,
+  PUBLIC_PROJECTION_HISTORY_DOMAIN,
   assertPublicProjectionReadBatchV3,
   assertPublicProjectionSnapshotV3,
   canonicalPublicProjectionJsonV3,
@@ -388,7 +389,7 @@ async function verifyDigestChain(
   for (const entry of batch.commits) {
     const payloadDigest = await sha256(canonicalPublicProjectionJsonV3(entry.commit));
     const expected = await sha256(
-      `ariadne-public-projection-v3\u0000${previousDigest}`
+      `${PUBLIC_PROJECTION_HISTORY_DOMAIN}\u0000${previousDigest}`
       + `\u0000${String(entry.cursor)}\u0000${payloadDigest}`
     );
     if (entry.cursorDigest !== expected) {

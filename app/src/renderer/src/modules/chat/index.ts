@@ -10,7 +10,7 @@ export const chatModule: FeatureModuleDefinition = {
   consumes: [
     'agentSettings', 'applicationProfile', 'clipboard', 'conversationNavigation', 'events',
     'decisions', 'diagnostics', 'messages', 'models', 'runs',
-    'sessions', 'speech', 'system'
+    'sessions', 'speech', 'system', 'toolResults'
   ],
   navigation: { id: 'chat', label: '对话', icon: 'message', order: 10, position: 'primary' },
   defaultOpen: true,

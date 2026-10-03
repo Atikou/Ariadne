@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 const stylesPath = join(process.cwd(), 'src', 'renderer', 'src', 'app', 'styles.css');
 
 describe('global radius contract', () => {
-  it('uses fixed 12px, 16px, and 20px tokens for every non-circular rounded component', async () => {
+  it('uses a shared compact radius scale for non-circular components', async () => {
     const styles = await readFile(stylesPath, 'utf8');
     const radiusValues = [...styles.matchAll(/border-radius\s*:\s*([^;]+);/g)]
       .map((match) => (match[1] ?? '').trim());
@@ -14,9 +14,9 @@ describe('global radius contract', () => {
       value !== '50%' && !validTokenPattern.test(value)
     );
 
-    expect(styles).toContain('--radius-sm: 12px;');
-    expect(styles).toContain('--radius-md: 16px;');
-    expect(styles).toContain('--radius-lg: 20px;');
+    expect(styles).toContain('--radius-sm: 6px;');
+    expect(styles).toContain('--radius-md: 10px;');
+    expect(styles).toContain('--radius-lg: 16px;');
     expect(unexpectedValues).toEqual([]);
   });
 

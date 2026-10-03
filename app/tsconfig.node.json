@@ -13,37 +13,21 @@
     "resolveJsonModule": true,
     "baseUrl": ".",
     "paths": {
-      "@shared/*": ["src/shared/*"],
-      "@renderer/*": ["src/renderer/src/*"]
+      "@shared/*": [
+        "src/shared/*"
+      ],
+      "@renderer/*": [
+        "src/renderer/src/*"
+      ]
     },
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "electron.vite.config.ts",
     "src/main/**/*.ts",
     "src/preload/**/*.ts",
-    "src/shared/**/*.ts",
-    "src/renderer/src/core/agent/**/*.ts",
-    "src/renderer/src/core/conversations/**/*.ts",
-    "src/renderer/src/core/events/**/*.ts",
-    "src/renderer/src/core/modules/module-contract.ts",
-    "src/renderer/src/core/modules/module-services-contract.ts",
-    "src/renderer/src/core/modules/module-registry.tsx",
-    "src/renderer/src/core/modules/ui-profile-selection.ts",
-    "src/renderer/src/core/runtime/**/*.ts",
-    "src/renderer/src/core/speech/**/*.ts",
-    "src/renderer/src/core/services/module-services.ts",
-    "src/renderer/src/core/services/renderer-composition-root.ts",
-    "src/renderer/src/app/module-popout-policy.ts",
-    "src/renderer/src/app/theme-sync.ts",
-    "src/renderer/src/modules/chat/permission-decision-policy.ts",
-    "src/renderer/src/modules/chat/chat-model-state.ts",
-    "src/renderer/src/modules/chat/MarkdownMessage.tsx",
-    "src/renderer/src/modules/chat/conversation-node.ts",
-    "src/renderer/src/modules/chat/RunProcessingDisclosure.tsx",
-    "src/renderer/src/modules/tool-output/ToolOutputPanel.tsx",
-    "src/renderer/src/modules/settings/local-model-roots.ts",
-    "tests/**/*.ts",
-    "vitest.config.ts"
+    "src/shared/**/*.ts"
   ]
 }

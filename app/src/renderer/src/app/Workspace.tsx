@@ -14,13 +14,16 @@ import { DOCKVIEW_POPOUT_PATH } from '@shared/windowing';
 import type { FeatureModuleDefinition, ModuleServices, ModuleId } from '@renderer/core/modules/module-contract';
 import type { ModuleRegistry } from '@renderer/core/modules/module-registry';
 import { ModuleTab } from './ModuleTab';
+import { WorkspaceGroupActions } from './WorkspaceGroupActions';
 import { isScreenPointOutsideWindow, type ScreenPoint } from './module-popout-policy';
 import { applyThemeToWindow, type EffectiveTheme } from './theme-sync';
 
 const ariadneDockviewTheme: DockviewTheme = {
   ...themeAbyss,
   name: 'ariadne',
-  className: 'dockview-theme-abyss ariadne-dockview-theme',
+  // Dockview propagates one standard theme class into popout windows.
+  // App styles extend that same class, including tab geometry and colors.
+  className: themeAbyss.className,
   gap: 6,
   edgeGroupCollapsedSize: 44
 };
@@ -155,6 +158,8 @@ export function Workspace({
         theme={ariadneDockviewTheme}
         components={components}
         tabComponents={{ moduleTab: ModuleTab }}
+        rightHeaderActionsComponent={WorkspaceGroupActions}
+        disableTabsOverflowList
         onReady={onReady}
         disableFloatingGroups={false}
         popoutUrl={DOCKVIEW_POPOUT_PATH}

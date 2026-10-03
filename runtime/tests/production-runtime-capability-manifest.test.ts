@@ -349,6 +349,69 @@ describe('production Runtime Capability Manifest', () => {
       .toEqual({ resolved: service });
   });
 
+  it.each(['missing-service', 'undeclared-service', 'undeclared-capability', 'later-start', 'manifest'] as const)(
+    'closes every returned handle in reverse order after %s failure', async (failure) => {
+      const closed: string[] = [];
+      const makeProvider = (id: string, dependsOn: string[]): RuntimeCapabilityProvider => ({
+        definition: {
+          id, dependsOn, contractVersion: '1.0', consumes: [], publicCapabilities: [],
+          provides: failure === 'missing-service' && id === 'test.second'
+            ? [{ serviceId: 'test.required', optional: false }] : []
+        },
+        start: () => ({
+          publicCapabilities: failure === 'undeclared-capability' && id === 'test.second'
+            ? ['models.local'] : [],
+          services: failure === 'undeclared-service' && id === 'test.second'
+            ? { 'test.undeclared': {} } : {},
+          close: () => { closed.push(id); }
+        })
+      });
+      const providers = [makeProvider('test.first', []), makeProvider('test.second', ['test.first'])];
+      if (failure === 'later-start') providers.push({
+        ...makeProvider('test.third', ['test.second']),
+        start: () => { throw new Error('third_start_failed'); }
+      });
+      const expected = {
+        'missing-service': 'required_service_not_provided',
+        'undeclared-service': 'service_not_declared',
+        'undeclared-capability': 'public_not_declared',
+        'later-start': 'third_start_failed',
+        manifest: 'A trusted Agent Tool Catalog must contain'
+      }[failure];
+      await expect(compileRuntimeCapabilityManifest(
+        createProductionRuntimeCapabilityStartContext({ bootstrap: createBootstrap() }), providers
+      )).rejects.toThrow(expected);
+      expect(closed).toEqual(['test.second', 'test.first']);
+    }
+  );
+
+  it('preserves the output failure and continues cleanup when the current handle close fails', async () => {
+    const closed: string[] = [];
+    const cleanupError = new Error('close_failed');
+    const providers: RuntimeCapabilityProvider[] = ['first', 'second'].map((name, index) => ({
+      definition: {
+        id: `test.${name}`, contractVersion: '1.0', dependsOn: index === 0 ? [] : ['test.first'],
+        consumes: [], publicCapabilities: [],
+        provides: index === 0 ? [] : [{ serviceId: 'test.required', optional: false }]
+      },
+      start: () => ({
+        publicCapabilities: [],
+        close: () => {
+          closed.push(name);
+          if (index === 1) throw cleanupError;
+        }
+      })
+    }));
+    const error = await compileRuntimeCapabilityManifest(
+      createProductionRuntimeCapabilityStartContext({ bootstrap: createBootstrap() }), providers
+    ).catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toEqual([
+      expect.objectContaining({ message: expect.stringContaining('required_service_not_provided') }), cleanupError
+    ]);
+    expect(closed).toEqual(['second', 'first']);
+  });
+
   it('rejects undeclared service access and missing required Provider output', async () => {
     const bootstrap = createBootstrap();
     const context = createProductionRuntimeCapabilityStartContext({ bootstrap });

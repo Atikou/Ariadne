@@ -66,23 +66,32 @@ describe('bottom edge workspace layout', () => {
   it('lets the custom tab own the full Dockview tab hit area', async () => {
     const styles = await readFile(join(rendererRoot, 'app', 'styles.css'), 'utf8');
 
-    expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-tab \{[^}]*padding: 0;/);
+    expect(styles).toMatch(/\.dockview-theme-abyss \.dv-tab \{[^}]*padding: 0;/);
     expect(styles).toMatch(/\.module-tab \{[^}]*width: 100%;[^}]*height: 100%;/);
   });
 
   it('uses compact tabs with a directional active indicator', async () => {
-    const styles = await readFile(join(rendererRoot, 'app', 'styles.css'), 'utf8');
+    const [styles, moduleTab] = await Promise.all([
+      readFile(join(rendererRoot, 'app', 'styles.css'), 'utf8'),
+      readFile(join(rendererRoot, 'app', 'ModuleTab.tsx'), 'utf8')
+    ]);
     expect(styles).toContain('--dv-tabs-and-actions-container-height: 36px;');
-    expect(styles).toMatch(/\.dv-tabs-container\.dv-horizontal \{[^}]*align-items:\s*stretch;[^}]*padding:\s*0 7px;[^}]*scrollbar-width:\s*none;/);
-    expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-tabs-container\.dv-horizontal::\-webkit-scrollbar,[\s\S]*?\.ariadne-dockview-theme \.dv-scrollable > \.dv-scrollbar-horizontal\s*\{[^}]*display:\s*none;/);
-    expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-tab \{[^}]*height:\s*100%;/);
-    expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-tab\.dv-active-tab \{[^}]*border-radius:\s*var\(--radius-sm\) var\(--radius-sm\) 0 0;[^}]*box-shadow:\s*inset 0 -2px 0 var\(--accent\);/);
-    expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-tab \{[^}]*transition:\s*color 120ms ease, background 120ms ease, border-color 120ms ease;/);
-    expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-tab\.dv-active-tab \{[^}]*background:\s*var\(--module-tab-surface\) !important;/);
+    // Actual tab geometry, clipping and menu selection are verified against
+    // Dockview in renderer-ui-smoke.cjs, not mirrored CSS declarations.
+    expect(styles).toContain('.dv-tabs-container[aria-orientation="horizontal"]');
+    expect(styles).toMatch(/\.dockview-theme-abyss \.dv-tab \{[^}]*height:\s*100%;/);
+    expect(styles).toMatch(/\.dockview-theme-abyss \.dv-tab\.dv-active-tab \{[^}]*border-radius:\s*var\(--radius-sm\) var\(--radius-sm\) 0 0;[^}]*box-shadow:\s*inset 0 -2px 0 var\(--accent\);/);
+    expect(styles).toMatch(/\.dockview-theme-abyss \.dv-tab \{[^}]*transition:\s*color 120ms ease, background 120ms ease, border-color 120ms ease;/);
+    expect(styles).toMatch(/\.dockview-theme-abyss \.dv-tab\.dv-active-tab \{[^}]*background:\s*var\(--module-tab-surface\) !important;/);
     expect(styles).toMatch(/\.dv-groupview-header-bottom \.dv-tab\.dv-active-tab \{[^}]*box-shadow:\s*inset 0 2px 0 var\(--accent\);/);
-    expect(styles).toMatch(/\.dv-groupview-header-bottom \.dv-tabs-container\.dv-horizontal \{[^}]*align-items:\s*stretch;/);
+    expect(styles).toMatch(/\.module-tab-actions \{[^}]*width:\s*40px;[^}]*flex:\s*0 0 40px;/);
+    expect(styles).toMatch(/\.dv-inactive-tab:hover \.module-tab-actions,[\s\S]*?\.dv-active-tab \.module-tab-actions \{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/);
+    expect(moduleTab).not.toContain('headerOverflow');
+    const workspace = await readFile(join(rendererRoot, 'app', 'Workspace.tsx'), 'utf8');
+    expect(workspace).toContain('rightHeaderActionsComponent={WorkspaceGroupActions}');
+    expect(workspace).toContain('disableTabsOverflowList');
     expect(styles).not.toContain('box-shadow: 6px 0 0 0 var(--module-tab-surface)');
-    expect(styles).toMatch(/\.ariadne-dockview-theme \.dv-groupview \{[^}]*border-radius:\s*var\(--radius-md\);/);
+    expect(styles).toMatch(/\.dockview-theme-abyss \.dv-groupview \{[^}]*border-radius:\s*var\(--radius-md\);/);
   });
 
   it('selects the tool edge group before returning focus to the main chat workspace', async () => {
@@ -110,7 +119,7 @@ describe('bottom edge workspace layout', () => {
 
     expect(workspace).toContain('themeAbyss');
     expect(workspace).toContain('...themeAbyss');
-    expect(workspace).toContain("className: 'dockview-theme-abyss ariadne-dockview-theme'");
+    expect(workspace).toContain('className: themeAbyss.className');
     expect(workspace).toContain('LAYOUT_REVISION_KEY');
     expect(workspace).toContain('deserializeLayout(saved.layout)');
     expect(styles).toContain('--dv-group-view-background-color: var(--module-tab-strip);');

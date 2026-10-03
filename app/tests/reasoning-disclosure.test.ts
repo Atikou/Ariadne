@@ -8,7 +8,7 @@ import {
   RunProcessingDisclosure,
   formatProcessingDuration,
 } from '../src/renderer/src/modules/chat/RunProcessingDisclosure';
-import { shouldShowFormalAnswer } from '../src/renderer/src/modules/chat/conversation-node';
+import { conversationTextForDisplay } from '../src/renderer/src/modules/chat/conversation-node';
 
 function run(overrides: Partial<RunSummary> = {}): RunSummary {
   return {
@@ -111,6 +111,7 @@ describe('RunProcessingDisclosure', () => {
     expect(html).toContain('aria-expanded="true"');
     expect(html).toContain('等待计划确认');
     expect(html).toContain('运行了 2 个工具');
+    expect((html.match(/读取文件/g) ?? [])).toHaveLength(2);
     expect(html.indexOf('先检查文件。')).toBeLessThan(html.indexOf('运行了 2 个工具'));
     expect(html.indexOf('运行了 2 个工具')).toBeLessThan(html.indexOf('这是阶段性计划。'));
   });
@@ -185,34 +186,20 @@ describe('RunProcessingDisclosure', () => {
     expect(formatProcessingDuration(381_000)).toBe('6m 21s');
   });
 
-  it('withholds formal content for every unfinished reasoning phase and Agent Run', () => {
-    expect(shouldShowFormalAnswer({
+  it('shows assistant tokens while reasoning and the Agent Run are still active', () => {
+    expect(conversationTextForDisplay({
       kind: 'streaming',
-      reasoning: {
-        content: '仍在思考',
-        status: 'streaming',
-        source: 'provider',
-        startedAt: '2026-07-22T00:00:00.000Z',
-      },
-    }, run({ origin: 'companion' }))).toBe(false);
-    expect(shouldShowFormalAnswer({
+      summary: '正在处理…',
+      content: '回答的第一段',
+    })).toBe('回答的第一段');
+    expect(conversationTextForDisplay({
       kind: 'streaming',
-      reasoning: {
-        content: '阶段性计划',
-        status: 'completed',
-        source: 'summary',
-        startedAt: '2026-07-22T00:00:00.000Z',
-      },
-    }, run({ origin: 'agent', status: 'waiting_plan_handoff' }))).toBe(false);
-    expect(shouldShowFormalAnswer({
-      kind: 'assistant',
-      reasoning: {
-        content: '处理结束',
-        status: 'completed',
-        source: 'summary',
-        startedAt: '2026-07-22T00:00:00.000Z',
-      },
-    }, run({ origin: 'agent', status: 'completed' }))).toBe(true);
+      summary: '正在处理…',
+    })).toBe('');
+    expect(conversationTextForDisplay({
+      kind: 'user',
+      summary: '用户消息',
+    })).toBe('用户消息');
   });
 });
 

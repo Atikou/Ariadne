@@ -23,6 +23,7 @@ export function App({
   registry: ModuleRegistry;
 }): React.JSX.Element {
   const [dockviewApi, setDockviewApi] = useState<DockviewApi | null>(null);
+  const [activeModuleId, setActiveModuleId] = useState<string | null>(null);
   const [openModuleIds, setOpenModuleIds] = useState<ReadonlySet<string>>(new Set());
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('loading');
   const [commandOpen, setCommandOpen] = useState(false);
@@ -34,6 +35,15 @@ export function App({
   const diagnostics = useFeatureSnapshot(services.diagnostics.view);
   const sessions = useFeatureSnapshot(services.sessions.view);
   const closeDialog = useCallback(() => setDialogModuleId(null), []);
+
+  useEffect(() => {
+    if (!dockviewApi) return;
+    setActiveModuleId(dockviewApi.activePanel?.id ?? null);
+    const subscription = dockviewApi.onDidActivePanelChange((event) => {
+      setActiveModuleId(event.panel?.id ?? null);
+    });
+    return () => subscription.dispose();
+  }, [dockviewApi]);
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -108,7 +118,7 @@ export function App({
           <span className="brand-mark"><Waypoints size={17} /></span>
           <span>Ariadne</span>
           <span className="title-divider" />
-          <span className="current-task-title">完善桌面端模块化架构</span>
+          <span className="current-task-title">{sessions.sessions.find((session) => session.sessionId === sessions.selectedSessionId)?.title ?? '工作空间'}</span>
         </div>
         <button type="button" className="command-entry" onClick={() => setCommandOpen(true)}>
           <Search size={14} /><span>搜索或输入命令</span><kbd>Ctrl K</kbd>
@@ -134,6 +144,7 @@ export function App({
         <ActivityBar
           actions={registry.navigationActions()}
           openModuleIds={visibleOpenModuleIds}
+          activeModuleId={dialogModuleId ?? activeModuleId}
           onOpen={handleOpenModules}
         />
         <div className="workspace-frame">

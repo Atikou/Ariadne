@@ -33,6 +33,8 @@ interface SelectMenuProps<T extends string> {
   onChange(value: T): void;
   ariaLabel: string;
   className?: string;
+  popoverClassName?: string;
+  triggerLabel?: ReactNode;
   leadingIcon?: ReactNode;
   placement?: SelectMenuPlacement;
   disabled?: boolean;
@@ -47,6 +49,8 @@ export function SelectMenu<T extends string>({
   onChange,
   ariaLabel,
   className,
+  popoverClassName,
+  triggerLabel,
   leadingIcon,
   placement = 'bottom',
   disabled = false
@@ -55,6 +59,7 @@ export function SelectMenu<T extends string>({
   const selectedIndex = selectedTopIndex < 0 ? 0 : selectedTopIndex;
   const selectedOption = options[selectedIndex];
   const [open, setOpen] = useState(false);
+  const [ownerDocument, setOwnerDocument] = useState<Document>(() => document);
   const [activeIndex, setActiveIndex] = useState(selectedIndex);
   const [openSubmenuIndex, setOpenSubmenuIndex] = useState<number | null>(null);
   const [activeSubmenuIndex, setActiveSubmenuIndex] = useState(0);
@@ -67,6 +72,7 @@ export function SelectMenu<T extends string>({
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const submenuOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const focusSubmenuRef = useRef(false);
+  const restoreFocusRef = useRef(false);
   const listboxId = useId();
   const submenuId = useId();
   const openSubmenu = openSubmenuIndex === null ? null : options[openSubmenuIndex];
@@ -77,6 +83,8 @@ export function SelectMenu<T extends string>({
     const trigger = triggerRef.current;
     const popover = popoverRef.current;
     if (!root || !trigger || !popover) return;
+    const view = root.ownerDocument.defaultView;
+    if (!view) return;
     const anchor = trigger.getBoundingClientRect();
     const configuredWidth = readCssLength(root, '--select-menu-min-width');
     const next = calculateSelectMenuLayout({
@@ -84,8 +92,8 @@ export function SelectMenu<T extends string>({
       naturalHeight: popover.scrollHeight,
       preferredPlacement: placement,
       minimumWidth: configuredWidth ?? DEFAULT_MENU_WIDTH,
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight
+      viewportWidth: view.innerWidth,
+      viewportHeight: view.innerHeight
     });
     setPopoverLayout((current) => layoutsEqual(current, next) ? current : next);
   }, [placement]);
@@ -96,13 +104,15 @@ export function SelectMenu<T extends string>({
     const anchorElement = optionRefs.current[openSubmenuIndex];
     const submenu = submenuRef.current;
     if (!root || !anchorElement || !submenu) return;
+    const view = root.ownerDocument.defaultView;
+    if (!view) return;
     const configuredWidth = readCssLength(root, '--select-submenu-min-width');
     const next = calculateSelectSubmenuLayout({
       anchor: anchorElement.getBoundingClientRect(),
       naturalHeight: submenu.scrollHeight,
       minimumWidth: configuredWidth ?? DEFAULT_SUBMENU_WIDTH,
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight
+      viewportWidth: view.innerWidth,
+      viewportHeight: view.innerHeight
     });
     setSubmenuLayout((current) => submenuLayoutsEqual(current, next) ? current : next);
   }, [openSubmenuIndex]);
@@ -117,20 +127,26 @@ export function SelectMenu<T extends string>({
       setOpen(false);
       setOpenSubmenuIndex(null);
     };
-    document.addEventListener('pointerdown', closeWhenOutside);
-    return () => document.removeEventListener('pointerdown', closeWhenOutside);
-  }, [open]);
+    ownerDocument.addEventListener('pointerdown', closeWhenOutside);
+    return () => ownerDocument.removeEventListener('pointerdown', closeWhenOutside);
+  }, [open, ownerDocument]);
 
   useLayoutEffect(() => {
     if (!open) {
       setPopoverLayout(null);
       setSubmenuLayout(null);
+      if (restoreFocusRef.current) {
+        restoreFocusRef.current = false;
+        triggerRef.current?.focus({ preventScroll: true });
+      }
       return;
     }
+    const view = ownerDocument.defaultView;
+    if (!view) return;
     let frame: number | null = null;
     const scheduleUpdate = (): void => {
       if (frame !== null) return;
-      frame = window.requestAnimationFrame(() => {
+      frame = view.requestAnimationFrame(() => {
         frame = null;
         updatePopoverLayout();
         updateSubmenuLayout();
@@ -138,28 +154,28 @@ export function SelectMenu<T extends string>({
     };
     updatePopoverLayout();
     updateSubmenuLayout();
-    const observer = new ResizeObserver(scheduleUpdate);
+    const observer = new view.ResizeObserver(scheduleUpdate);
     if (triggerRef.current) observer.observe(triggerRef.current);
     if (popoverRef.current) observer.observe(popoverRef.current);
     if (submenuRef.current) observer.observe(submenuRef.current);
-    window.addEventListener('resize', scheduleUpdate);
-    document.addEventListener('scroll', scheduleUpdate, true);
+    view.addEventListener('resize', scheduleUpdate);
+    ownerDocument.addEventListener('scroll', scheduleUpdate, true);
     return () => {
       observer.disconnect();
-      window.removeEventListener('resize', scheduleUpdate);
-      document.removeEventListener('scroll', scheduleUpdate, true);
-      if (frame !== null) window.cancelAnimationFrame(frame);
+      view.removeEventListener('resize', scheduleUpdate);
+      ownerDocument.removeEventListener('scroll', scheduleUpdate, true);
+      if (frame !== null) view.cancelAnimationFrame(frame);
     };
-  }, [open, openSubmenuIndex, options.length, updatePopoverLayout, updateSubmenuLayout]);
+  }, [open, openSubmenuIndex, options.length, ownerDocument, updatePopoverLayout, updateSubmenuLayout]);
 
   useEffect(() => {
-    if (open && popoverLayout && openSubmenuIndex === null) optionRefs.current[activeIndex]?.focus();
+    if (open && popoverLayout && openSubmenuIndex === null) focusMenuOption(optionRefs.current[activeIndex]);
   }, [activeIndex, open, openSubmenuIndex, popoverLayout]);
 
   useEffect(() => {
     if (open && submenuLayout && openSubmenuIndex !== null && focusSubmenuRef.current) {
       focusSubmenuRef.current = false;
-      submenuOptionRefs.current[activeSubmenuIndex]?.focus();
+      focusMenuOption(submenuOptionRefs.current[activeSubmenuIndex]);
     }
   }, [activeSubmenuIndex, open, openSubmenuIndex, submenuLayout]);
 
@@ -176,6 +192,7 @@ export function SelectMenu<T extends string>({
 
   const openMenu = (index = selectedIndex): void => {
     if (options.length === 0) return;
+    setOwnerDocument(rootRef.current?.ownerDocument ?? document);
     setActiveIndex(index);
     setOpenSubmenuIndex(null);
     setPopoverLayout(null);
@@ -183,9 +200,9 @@ export function SelectMenu<T extends string>({
   };
 
   const closeMenu = (restoreFocus = false): void => {
+    restoreFocusRef.current = restoreFocus;
     setOpen(false);
     setOpenSubmenuIndex(null);
-    if (restoreFocus) requestAnimationFrame(() => triggerRef.current?.focus());
   };
 
   const moveActive = (offset: number): void => {
@@ -200,18 +217,27 @@ export function SelectMenu<T extends string>({
   };
 
   const handleTriggerKeyDown = (event: KeyboardEvent<HTMLButtonElement>): void => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat) open ? closeMenu() : openMenu();
+      return;
+    }
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
     event.preventDefault();
+    event.stopPropagation();
     openMenu(event.key === 'ArrowDown' ? selectedIndex : (selectedIndex - 1 + options.length) % options.length);
   };
 
   const handleOptionKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number): void => {
+    if (['Escape', 'Tab', 'ArrowRight', 'ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', ' '].includes(event.key)) event.stopPropagation();
     if (event.key === 'Escape') {
       event.preventDefault();
       closeMenu(true);
       return;
     }
     if (event.key === 'Tab') {
+      triggerRef.current?.focus({ preventScroll: true });
       closeMenu();
       return;
     }
@@ -241,12 +267,14 @@ export function SelectMenu<T extends string>({
   };
 
   const handleSubmenuKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number): void => {
+    if (['Escape', 'Tab', 'ArrowLeft', 'ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', ' '].includes(event.key)) event.stopPropagation();
     if (event.key === 'Escape') {
       event.preventDefault();
       closeMenu(true);
       return;
     }
     if (event.key === 'Tab') {
+      triggerRef.current?.focus({ preventScroll: true });
       closeMenu();
       return;
     }
@@ -254,11 +282,12 @@ export function SelectMenu<T extends string>({
       event.preventDefault();
       const parentIndex = openSubmenuIndex;
       setOpenSubmenuIndex(null);
-      if (parentIndex !== null) requestAnimationFrame(() => optionRefs.current[parentIndex]?.focus());
+      if (parentIndex !== null) ownerDocument.defaultView?.requestAnimationFrame(() => focusMenuOption(optionRefs.current[parentIndex]));
       return;
     }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
+      focusSubmenuRef.current = true;
       setActiveSubmenuIndex((current) => (
         current + (event.key === 'ArrowDown' ? 1 : -1) + submenuOptions.length
       ) % submenuOptions.length);
@@ -266,6 +295,7 @@ export function SelectMenu<T extends string>({
     }
     if (event.key === 'Home' || event.key === 'End') {
       event.preventDefault();
+      focusSubmenuRef.current = true;
       setActiveSubmenuIndex(event.key === 'Home' ? 0 : submenuOptions.length - 1);
       return;
     }
@@ -281,7 +311,7 @@ export function SelectMenu<T extends string>({
     <div
       ref={popoverRef}
       id={listboxId}
-      className="select-menu-popover"
+      className={['select-menu-popover', popoverClassName].filter(Boolean).join(' ')}
       role="listbox"
       aria-label={ariaLabel}
       data-placement={popoverLayout?.placement}
@@ -382,6 +412,7 @@ export function SelectMenu<T extends string>({
         type="button"
         className="select-menu-trigger"
         aria-label={ariaLabel}
+        title={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
@@ -391,10 +422,10 @@ export function SelectMenu<T extends string>({
         onKeyDown={handleTriggerKeyDown}
       >
         {leadingIcon ?? selectedOption?.icon}
-        <span className="select-menu-value">{selectedOption?.label ?? value}</span>
+        <span className="select-menu-value">{triggerLabel ?? selectedOption?.label ?? value}</span>
         <ChevronDown className={open ? 'is-open' : ''} size={13} />
       </button>
-      {(popover || submenu) && createPortal(<>{popover}{submenu}</>, document.body)}
+      {(popover || submenu) && createPortal(<>{popover}{submenu}</>, rootRef.current?.closest('dialog') ?? ownerDocument.body)}
     </div>
   );
 }
@@ -405,8 +436,19 @@ function findSelectedTopIndex<T extends string>(options: readonly SelectMenuOpti
 }
 
 function readCssLength(element: HTMLElement, property: string): number | null {
-  const value = Number.parseFloat(getComputedStyle(element).getPropertyValue(property));
+  const value = Number.parseFloat(element.ownerDocument.defaultView?.getComputedStyle(element).getPropertyValue(property) ?? '');
   return Number.isFinite(value) ? value : null;
+}
+
+function focusMenuOption(option: HTMLButtonElement | null | undefined): void {
+  if (!option) return;
+  option.focus({ preventScroll: true });
+  const menu = option.closest<HTMLElement>('[role="listbox"]');
+  if (!menu) return;
+  const bounds = menu.getBoundingClientRect();
+  const item = option.getBoundingClientRect();
+  if (item.top < bounds.top) menu.scrollTop += item.top - bounds.top;
+  else if (item.bottom > bounds.bottom) menu.scrollTop += item.bottom - bounds.bottom;
 }
 
 function layoutsEqual(left: SelectMenuLayout | null, right: SelectMenuLayout): boolean {

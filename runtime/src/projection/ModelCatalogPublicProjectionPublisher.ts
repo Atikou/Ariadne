@@ -183,9 +183,13 @@ function normalizeEntries(
       version: 1,
       label: value?.label,
       location: value?.location,
+      enabled: value?.enabled ?? true,
       availability: value?.availability,
+      supportsTextChat: value?.supportsTextChat,
       supportsAgent: value?.supportsAgent,
+      supportsPlan: value?.supportsPlan,
       supportsVision: value?.supportsVision,
+      qualificationState: value?.qualificationState,
       updatedAt: ENTRY_VALIDATION_TIME
     });
     if (entries.has(dto.modelId)) {
@@ -195,9 +199,13 @@ function normalizeEntries(
       id: dto.modelId,
       label: dto.label,
       location: dto.location,
+      enabled: dto.enabled,
       availability: dto.availability,
+      supportsTextChat: dto.supportsTextChat,
       supportsAgent: dto.supportsAgent,
-      supportsVision: dto.supportsVision
+      supportsPlan: dto.supportsPlan,
+      supportsVision: dto.supportsVision,
+      qualificationState: dto.qualificationState
     }));
   }
   return entries;
@@ -294,9 +302,13 @@ function projectChange(
     version: change.aggregateVersion,
     label: change.entry.label,
     location: change.entry.location,
+    enabled: change.entry.enabled ?? true,
     availability: change.entry.availability,
+    supportsTextChat: change.entry.supportsTextChat,
     supportsAgent: change.entry.supportsAgent,
+    supportsPlan: change.entry.supportsPlan,
     supportsVision: change.entry.supportsVision,
+    qualificationState: change.entry.qualificationState,
     updatedAt: projectedAt
   });
   return {
@@ -316,9 +328,13 @@ function samePublicState(
   return entry.id === current.modelId
     && entry.label === current.label
     && entry.location === current.location
+    && (entry.enabled ?? true) === current.enabled
     && entry.availability === current.availability
+    && entry.supportsTextChat === current.supportsTextChat
     && entry.supportsAgent === current.supportsAgent
-    && entry.supportsVision === current.supportsVision;
+    && entry.supportsPlan === current.supportsPlan
+    && entry.supportsVision === current.supportsVision
+    && entry.qualificationState === current.qualificationState;
 }
 
 function canonicalNow(now: () => Date): string {

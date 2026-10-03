@@ -753,12 +753,12 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
   });
 
   it('runs one pure v3 Tool loop through durable Effect results and a causal follow-up Turn', async () => {
+    let observedToolCallId = '';
     const execute = vi.fn<AgentToolExecutableImplementationV1['execute']>(
       async (input, context) => {
         expect(input).toEqual({ path: 'README.md' });
-        expect(context).toMatchObject({
-          toolCallId: 'workspace-read-call-v3'
-        });
+        expect(context.toolCallId).toMatch(/^native-[a-f0-9]{64}$/u);
+        observedToolCallId = context.toolCallId;
         return {
           status: 'succeeded',
           result: { path: 'README.md', content: 'pure Ariadne v3' }
@@ -784,7 +784,7 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
               scope: []
             }]
           }
-        });
+        }, init);
       }
       if (call !== 2) throw new Error('unexpected_provider_call');
       await followUpGate;
@@ -884,7 +884,7 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
         state: { status: 'completed' },
         effects: [{
           effectId: effect.effectId,
-          toolCallId: 'workspace-read-call-v3',
+          toolCallId: observedToolCallId,
           state: { status: 'succeeded' }
         }]
       });
@@ -898,7 +898,7 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
           cause: {
             kind: 'effect_results',
             effectIds: [effect.effectId],
-            toolCallIds: ['workspace-read-call-v3']
+            toolCallIds: [observedToolCallId]
           }
         },
         attempts: [{
@@ -923,7 +923,7 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
       async () => ({ status: 'succeeded', result: { mustNotRun: true } })
     );
     const originalCatalog = trustedCatalog({ execute });
-    const initialFetch = vi.fn<typeof globalThis.fetch>(async () => providerResponse({
+    const initialFetch = vi.fn<typeof globalThis.fetch>(async (_url, init) => providerResponse({
       protocol: 'ariadne.agent-directive.v3',
       directive: {
         kind: 'invoke_tools',
@@ -934,7 +934,7 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
           scope: []
         }]
       }
-    }));
+    }, init));
     const harness = await createHarness(
       originalCatalog,
       enabledSource(originalCatalog, { permissionMode: 'trusted' }),
@@ -1440,18 +1440,86 @@ function trustedPlanCatalog(): TrustedAgentToolCatalogSnapshot {
   });
 }
 
-function providerResponse(content: unknown): Response {
+function providerResponse(content: unknown, init?: RequestInit): Response {
+  const directive = record(record(content)?.directive);
+  const kind = typeof directive?.kind === 'string' ? directive.kind : null;
+  if (kind === 'respond' && typeof directive?.content === 'string') {
+    return providerStream({ content: directive.content }, 'stop');
+  }
+  if (kind === 'invoke_tools' && Array.isArray(directive.invocations)) {
+    const body = record(requestBody(init));
+    const tools = Array.isArray(body?.tools) ? body.tools : [];
+    const businessTool = tools.map(record).find((tool) => {
+      const fn = record(tool?.function);
+      return typeof fn?.name === 'string' && !fn.name.startsWith('ariadne_control_');
+    });
+    const functionName = record(businessTool?.function)?.name;
+    if (typeof functionName !== 'string') throw new Error('provider_business_tool_missing');
+    const calls = directive.invocations.map((value, index) => {
+      const invocation = record(value);
+      if (
+        typeof invocation?.toolCallId !== 'string'
+        || invocation.input === undefined
+        || !Array.isArray(invocation.scope)
+      ) throw new Error('provider_invocation_invalid');
+      return {
+        index,
+        id: invocation.toolCallId,
+        type: 'function',
+        function: {
+          name: functionName,
+          arguments: JSON.stringify({ input: invocation.input, scope: invocation.scope })
+        }
+      };
+    });
+    return providerStream({ tool_calls: calls }, 'tool_calls');
+  }
+  if (kind !== null && [
+    'ask_user',
+    'propose_plan',
+    'checkpoint',
+    'complete',
+    'fail',
+    'delegate_subagent',
+    'delegate_subagents'
+  ].includes(kind)) {
+    const { kind: _kind, ...input } = directive!;
+    return providerStream({
+      tool_calls: [{
+        index: 0,
+        id: `native-control-${kind}`,
+        type: 'function',
+        function: {
+          name: `ariadne_control_${kind}`,
+          arguments: JSON.stringify(input)
+        }
+      }]
+    }, 'tool_calls');
+  }
+  return providerStream({ content: JSON.stringify(content) }, 'stop');
+}
+
+function providerStream(
+  delta: Record<string, unknown>,
+  finishReason: 'stop' | 'tool_calls'
+): Response {
   return new Response([
     `data: ${JSON.stringify({
       model: 'model-v3',
       choices: [{
         index: 0,
-        delta: { content: JSON.stringify(content) },
-        finish_reason: 'stop'
+        delta,
+        finish_reason: finishReason
       }]
     })}\n\n`,
     'data: [DONE]\n\n'
   ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 function acpProvider(): NonNullable<RuntimeBootstrap['subagentProviders']>[number] {

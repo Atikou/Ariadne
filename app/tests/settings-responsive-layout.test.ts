@@ -14,10 +14,9 @@ describe('settings panel responsive layout', () => {
     expect(app).toContain("definition?.presentation?.kind === 'dialog'");
     expect(app).toContain('<activeDialog.Component');
     expect(app).not.toContain('MODULE_IDS.settings');
-    expect(dialog).toContain('role="dialog"');
-    expect(dialog).toContain('aria-modal="true"');
-    expect(dialog).toContain("appShell?.setAttribute('inert', '')");
-    expect(dialog).toContain("event.key === 'Escape'");
+    expect(dialog).toContain('<ModalSurface');
+    expect(dialog).toContain('initialFocusRef={closeButtonRef}');
+    expect(dialog).not.toContain("window.addEventListener('keydown'");
     expect(panel).toContain('className="settings-navigation"');
     expect(panel).toContain("activeCategory === 'speech'");
     expect(panel).toContain("activeCategory === 'chat'");
@@ -31,7 +30,7 @@ describe('settings panel responsive layout', () => {
     expect(panel).not.toMatch(/<label className="settings-field[^\"]*"><span>[^<]+<\/span><SelectMenu/);
     expect(panel).toContain('className="agent-settings-actions settings-floating-actions"');
     expect(styles).toMatch(/\.settings-panel\s*\{[^}]*container:\s*settings-panel\s*\/\s*inline-size;/);
-    expect(styles).toMatch(/\.settings-panel\s*\{[^}]*grid-template-columns:\s*210px minmax\(0,\s*1fr\)/);
+    expect(styles).toMatch(/\.settings-layout\s*\{[^}]*grid-template-columns:\s*210px minmax\(0,\s*1fr\)/);
     expect(styles).toMatch(/\.settings-content-scroll\s*\{[^}]*overflow-y:\s*auto;/);
     expect(styles).toMatch(/\.settings-content--with-actions \.settings-content-scroll\s*\{[^}]*padding-bottom:\s*96px;/);
     expect(styles).toMatch(/\.settings-floating-actions\s*\{[^}]*position:\s*absolute;[^}]*right:\s*28px;[^}]*bottom:\s*22px;/);
@@ -41,7 +40,7 @@ describe('settings panel responsive layout', () => {
     expect(styles).toMatch(/\.settings-floating-actions \.primary-button:hover:not\(:disabled\)\s*\{[^}]*transform:\s*translateY\(-1px\)/);
     expect(styles).toMatch(/\.primary-button, \.secondary-button, \.ghost-button\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*center;[^}]*gap:\s*6px;[^}]*line-height:\s*1;/);
     expect(styles).toMatch(/\.primary-button > svg, \.secondary-button > svg, \.ghost-button > svg\s*\{[^}]*display:\s*block;[^}]*flex:\s*0 0 auto;/);
-    expect(styles).toMatch(/\.settings-section-copy p\s*\{[^}]*font-size:\s*10px;[^}]*line-height:\s*1\.5;/);
+    expect(styles).toMatch(/\.settings-section-copy p\s*\{[^}]*font-size:\s*12px;[^}]*line-height:\s*1\.5;/);
     expect(styles).toMatch(/@container\s+settings-panel\s*\(max-width:\s*760px\)/);
     expect(styles).toMatch(/@container\s+settings-panel\s*\(max-width:\s*540px\)/);
     expect(styles).toMatch(/\.agent-settings-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*\.7fr\)\s+minmax\(0,\s*1\.3fr\)/);

@@ -131,7 +131,7 @@ describe('Ariadne desktop architecture boundary', () => {
     expect(wrapper).toMatch(/Stop-Process[\s\S]*?WaitForExit\(5000\)[\s\S]*?WriteAllText/);
   });
 
-  it('requires an authorized workspace identity for file and terminal capabilities', async () => {
+  it('separates Agent workspace files from the App-owned human terminal context', async () => {
     const contract = await readFile(join(process.cwd(), 'src', 'shared', 'contract.ts'), 'utf8');
     const workspaceService = await readFile(join(process.cwd(), 'src', 'main', 'services', 'workspace-file-service.ts'), 'utf8');
     const fileExplorer = await readFile(join(process.cwd(), 'src', 'renderer', 'src', 'modules', 'file-explorer', 'FileExplorerPanel.tsx'), 'utf8');
@@ -142,7 +142,9 @@ describe('Ariadne desktop architecture boundary', () => {
     expect(workspaceService).toContain('private requireWorkspace(workspaceId: string)');
     expect(fileExplorer).toContain('onSelectedWorkspaceChanged(setWorkspaceId)');
     expect(fileExplorer).toContain('workspaceId: requestedWorkspaceId');
-    expect(terminal).toContain('[activeShell]: selectedWorkspaceId');
+    expect(contract).toContain("APP_TERMINAL_CONTEXT_ID = 'ariadne-app-terminal'");
+    expect(terminal).toContain('APP_TERMINAL_CONTEXT_ID');
+    expect(terminal).not.toContain('getSelectedWorkspaceId');
     expect(terminal).toContain('workspaceId,');
     expect(terminal).toContain('workspaceId={workspaceId}');
   });

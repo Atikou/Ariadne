@@ -1,0 +1,3 @@
+dialog.modal-surface { box-sizing: border-box; position: fixed; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; border: 0; outline: 0; overflow: auto; overscroll-behavior: contain; }
+dialog.modal-surface:not([open]) { display: none; }
+dialog.modal-surface::backdrop { background: transparent; }

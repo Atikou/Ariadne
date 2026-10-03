@@ -116,10 +116,9 @@ export function presentMessage(
 }
 
 export function presentInferenceStreamMessage(
-  stream: PublicInferenceStreamProjectionV3,
-  run: PublicRunProjectionV3 | undefined
+  stream: PublicInferenceStreamProjectionV3
 ): RuntimeMessage | null {
-  if (stream.status !== 'streaming' || run?.sessionId === undefined) return null;
+  if (stream.status !== 'streaming') return null;
   const content = stream.chunks
     .filter((chunk) => chunk.channel === 'token')
     .map((chunk) => chunk.text)
@@ -131,7 +130,7 @@ export function presentInferenceStreamMessage(
   const startedAt = stream.chunks[0]?.observedAt ?? stream.updatedAt;
   return {
     messageId: stream.inferenceStreamId,
-    sessionId: run.sessionId,
+    sessionId: stream.sessionId,
     runId: stream.runId,
     role: 'assistant',
     content,
@@ -148,6 +147,57 @@ export function presentInferenceStreamMessage(
         }
       })
   };
+}
+
+/** Keeps provider reasoning visible after the live inference attempt commits. */
+export function mergeInferenceStreamReasoning(
+  messages: readonly RuntimeMessage[],
+  streams: readonly PublicInferenceStreamProjectionV3[],
+): RuntimeMessage[] {
+  const reasoningByRun = new Map<string, {
+    readonly content: string;
+    readonly startedAt: string;
+    readonly status: 'streaming' | 'completed' | 'interrupted';
+    readonly completedAt?: string;
+  }>();
+  const orderedStreams = [...streams].sort((left, right) => {
+    const leftAt = left.chunks[0]?.observedAt ?? left.updatedAt;
+    const rightAt = right.chunks[0]?.observedAt ?? right.updatedAt;
+    return Date.parse(leftAt) - Date.parse(rightAt)
+      || left.inferenceStreamId.localeCompare(right.inferenceStreamId);
+  });
+  for (const stream of orderedStreams) {
+    if (stream.status === 'interrupted' && stream.chunks.every((chunk) => chunk.channel !== 'reasoning')) continue;
+    const reasoning = stream.chunks
+      .filter((chunk) => chunk.channel === 'reasoning')
+      .map((chunk) => chunk.text)
+      .join('');
+    if (!reasoning) continue;
+    const startedAt = stream.chunks.find((chunk) => chunk.channel === 'reasoning')?.observedAt
+      ?? stream.chunks[0]?.observedAt
+      ?? stream.updatedAt;
+    const previous = reasoningByRun.get(stream.runId);
+    reasoningByRun.set(stream.runId, {
+      content: previous === undefined ? reasoning : `${previous.content}\n\n${reasoning}`,
+      status: stream.status === 'streaming'
+        ? 'streaming'
+          : stream.status === 'committed'
+            ? 'completed'
+            : 'interrupted',
+      startedAt: previous?.startedAt ?? startedAt,
+      ...(stream.status !== 'streaming' ? { completedAt: stream.updatedAt } : {}),
+    });
+  }
+  if (reasoningByRun.size === 0) return [...messages];
+  return messages.map((message) => {
+    if (message.role !== 'assistant' || message.runId === undefined) return message;
+    const streamed = reasoningByRun.get(message.runId);
+    if (streamed === undefined) return message;
+    if (message.reasoning !== undefined && message.reasoning.content.length >= streamed.content.length) {
+      return message;
+    }
+    return { ...message, reasoning: { ...streamed, source: 'provider' } };
+  });
 }
 
 export function presentRun(run: PublicRunProjectionV3): RuntimeRun {
@@ -359,9 +409,13 @@ export function presentModel(model: PublicModelProjectionV3): ModelSummary {
     id: model.modelId,
     label: model.label,
     location: model.location,
+    enabled: model.enabled,
     availability: model.availability,
+    supportsTextChat: model.supportsTextChat,
     supportsAgent: model.supportsAgent,
-    supportsVision: model.supportsVision
+    supportsPlan: model.supportsPlan,
+    supportsVision: model.supportsVision,
+    qualificationState: model.qualificationState
   };
 }
 

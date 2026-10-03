@@ -56,6 +56,7 @@ describe('portless Runtime process', () => {
     expect(ready.capabilities).toContain('agent.tools');
     expect(ready.capabilities).toContain('companion.agent-plan');
     expect(ready.storageSchemas).toEqual({
+      modelCapability: 1,
       runtimeCommand: RUNTIME_COMMAND_DB_SCHEMA_VERSION,
       agentControl: AGENT_CONTROL_DB_SCHEMA_VERSION,
       conversation: CONVERSATION_DB_SCHEMA_VERSION,
@@ -99,7 +100,11 @@ describe('portless Runtime process', () => {
       label: 'runtime-process-test-model',
       location: 'remote',
       availability: 'ready',
-      supportsVision: false
+      supportsTextChat: false,
+      supportsAgent: false,
+      supportsPlan: false,
+      supportsVision: false,
+      qualificationState: 'unknown'
     });
     expect(projectedModel?.version).toBeGreaterThan(0);
     expect(serializedProjection).not.toContain('runtime-process-test-key');

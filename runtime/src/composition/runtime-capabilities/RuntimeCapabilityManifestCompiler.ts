@@ -59,8 +59,12 @@ export async function compileRuntimeCapabilityManifest(
         provider.definition,
         services
       ));
+      // A returned handle transfers resource ownership before output validation.
+      // Invalid outputs must not leave an already-started Provider outside rollback.
+      if (handle !== null && typeof handle === 'object') {
+        started.push({ definition: provider.definition, handle });
+      }
       publishRuntimeCapabilityHandleServices(provider.definition, handle, services);
-      started.push({ definition: provider.definition, handle });
     }
     return createManifest(started, services, componentCatalog);
   } catch (error) {

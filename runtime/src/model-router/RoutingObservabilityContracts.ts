@@ -365,23 +365,6 @@ export const RoutingModelAvailabilitySchema = z
   })
   .strict();
 
-export const RoutingAgentProtocolQualificationSchema = z
-  .object({
-    modelId: identifier,
-    profileFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-    protocolVersion: z.number().int().positive(),
-    status: z.enum(["unknown", "probation", "qualified", "quarantined"]),
-    successCount: nonNegativeInteger,
-    failureCount: nonNegativeInteger,
-    consecutiveFailures: nonNegativeInteger,
-    lastCheckedAt: timestamp.optional(),
-    qualifiedAt: timestamp.optional(),
-    quarantinedAt: timestamp.optional(),
-    quarantineUntil: timestamp.optional(),
-    reason: publicText.optional(),
-  })
-  .strict();
-
 export const RoutingProfilesResultSchema = z
   .object({
     profiles: z.array(RoutingModelProfileSchema),
@@ -393,7 +376,6 @@ export const RoutingProfilesResultSchema = z
     validationErrors: z.array(publicText),
     runtimeHintsByModelId: z.record(identifier, RoutingModelRuntimeHintSchema),
     availability: z.array(RoutingModelAvailabilitySchema).optional(),
-    agentProtocolQualifications: z.array(RoutingAgentProtocolQualificationSchema).optional(),
   })
   .strict()
   .superRefine((snapshot, context) => {

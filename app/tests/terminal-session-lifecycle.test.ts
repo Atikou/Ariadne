@@ -7,7 +7,7 @@ const rendererRoot = join(process.cwd(), 'src', 'renderer', 'src');
 describe('terminal session lifecycle', () => {
   it('keeps every started shell mounted while switching the visible terminal', async () => {
     const panel = await readFile(join(rendererRoot, 'modules', 'terminal', 'TerminalPanel.tsx'), 'utf8');
-    const styles = await readFile(join(rendererRoot, 'app', 'styles.css'), 'utf8');
+    const styles = await readFile(join(rendererRoot, 'modules', 'terminal', 'terminal.css'), 'utf8');
 
     expect(panel).toContain('startedShells.has(value)');
     expect(panel).toContain('key={`${value}-${workspaceId}-${restartKeys[value]}`}');
@@ -20,7 +20,7 @@ describe('terminal session lifecycle', () => {
     const panel = await readFile(join(rendererRoot, 'modules', 'terminal', 'TerminalPanel.tsx'), 'utf8');
     expect(panel).toContain('services.terminal.listRecoveryRecords()');
     expect(panel).toContain('命令不会自动重放');
-    expect(panel).toContain('显式重启最近终端');
+    expect(panel).toContain('重启最近中断的终端');
     expect(panel).toContain('...(restartOf === undefined ? {} : { restartOf })');
   });
 
@@ -40,12 +40,12 @@ describe('terminal session lifecycle', () => {
     expect(service).toContain("owner.once('destroyed', listener)");
   });
 
-  it('binds each new or restarted shell to an explicit selected workspace', async () => {
+  it('starts the human terminal in the App directory independently from Agent workspace selection', async () => {
     const panel = await readFile(join(rendererRoot, 'modules', 'terminal', 'TerminalPanel.tsx'), 'utf8');
 
-    expect(panel).toContain('onSelectedWorkspaceChanged');
-    expect(panel).toContain('[shell]: selectedWorkspaceId');
-    expect(panel).toContain('[activeShell]: selectedWorkspaceId');
+    expect(panel).toContain('APP_TERMINAL_CONTEXT_ID');
+    expect(panel).not.toContain('onSelectedWorkspaceChanged');
+    expect(panel).not.toContain('getSelectedWorkspaceId');
     expect(panel).toContain('workspaceId={workspaceId}');
     expect(panel).toContain('workspaceId,');
     expect(panel).toContain("session.workspaceId !== workspaceId");

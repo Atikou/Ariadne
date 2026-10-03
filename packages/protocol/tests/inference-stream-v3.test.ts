@@ -5,6 +5,7 @@ import {
   publicInferenceChunkObservedV1Schema,
   replayPublicInferenceStreamEventV1
 } from '../src/public/inference-stream-v3.js';
+import { runtimeEventEnvelopeSchema } from '../src/public.js';
 
 const observedAt = '2026-08-28T00:00:00.000Z';
 
@@ -12,6 +13,7 @@ function chunk(overrides: Record<string, unknown> = {}) {
   return {
     contractVersion: '1.0',
     kind: 'inference.chunk.observed',
+    sessionId: 'session-1',
     runId: 'run-1',
     turnId: 'turn-1',
     attemptId: 'attempt-1',
@@ -27,6 +29,7 @@ function terminated(overrides: Record<string, unknown> = {}) {
   return {
     contractVersion: '1.0',
     kind: 'inference.stream.terminated',
+    sessionId: 'session-1',
     runId: 'run-1',
     turnId: 'turn-1',
     attemptId: 'attempt-1',
@@ -38,6 +41,22 @@ function terminated(overrides: Record<string, unknown> = {}) {
 }
 
 describe('public inference stream v1', () => {
+  it('is carried by the Runtime public event envelope', () => {
+    expect(runtimeEventEnvelopeSchema.parse({
+      eventId: 'inference.event.1',
+      cursor: 1,
+      schemaVersion: '2.0',
+      aggregateType: 'inference_stream',
+      aggregateId: 'inference.stream.1',
+      aggregateVersion: 1,
+      occurredAt: observedAt,
+      event: chunk()
+    }).event).toMatchObject({
+      kind: 'inference.chunk.observed',
+      sequence: 1
+    });
+  });
+
   it('replays one exact attempt in contiguous sequence', () => {
     const first = replayPublicInferenceStreamEventV1(undefined, chunk());
     const second = replayPublicInferenceStreamEventV1(first, chunk({
@@ -50,6 +69,7 @@ describe('public inference stream v1', () => {
     }));
 
     expect(completed).toEqual({
+      sessionId: 'session-1',
       runId: 'run-1',
       turnId: 'turn-1',
       attemptId: 'attempt-1',

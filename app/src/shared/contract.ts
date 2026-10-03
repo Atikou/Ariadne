@@ -318,6 +318,8 @@ export interface AgentSettingsView {
   workspaceAccess: 'read' | 'write';
   workspaces: AgentWorkspaceSettingsView[];
   localModelRoots: string[];
+  /** Discovered local model ids that the user has explicitly disabled. */
+  disabledLocalModelIds?: string[];
   providers: Record<AgentProviderId, AgentProviderSettingsView>;
   subagentProviders: AgentSubagentProviderSettingsView[];
   runtimePolicy: RuntimePolicySnapshot;
@@ -360,6 +362,7 @@ export type AgentSettingsOperation =
   | { kind: 'routing.set'; strategy: AgentRoutingStrategy }
   | { kind: 'assistant.replace'; assistant: AssistantChatProfile }
   | { kind: 'modelRoots.replace'; roots: string[] }
+  | { kind: 'localModels.replace'; disabledModelIds: string[] }
   | {
       kind: 'provider.update';
       providerId: AgentProviderId;
@@ -451,6 +454,8 @@ export interface GameActivitySnapshot {
 }
 
 export type TerminalShell = 'powershell' | 'cmd';
+
+export const APP_TERMINAL_CONTEXT_ID = 'ariadne-app-terminal' as const;
 
 export interface CreateTerminalSessionRequest {
   sessionId: string;

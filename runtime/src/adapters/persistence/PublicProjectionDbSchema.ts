@@ -14,15 +14,14 @@ import {
   type SqliteOwnerLease
 } from './SqliteOwnerLease.js';
 
-export const PUBLIC_PROJECTION_DB_SCHEMA_VERSION = 2;
+export const PUBLIC_PROJECTION_DB_SCHEMA_VERSION = 3;
 export const PUBLIC_PROJECTION_DB_RELATIVE_PATH = path.join(
   'data',
   'public-projection',
   'projection.db'
 );
 
-const PUBLIC_PROJECTION_SCHEMA_V1_MIGRATION_NAME = 'public_projection_v3_store_v1';
-const PUBLIC_PROJECTION_SCHEMA_V2_MIGRATION_NAME = 'public_projection_inference_streams_v2';
+const PUBLIC_PROJECTION_SCHEMA_NAME = 'public_projection_v4_store_v3';
 
 interface SchemaObject {
   readonly type: string;
@@ -81,11 +80,9 @@ function initializeOrValidatePublicProjectionSchema(database: DatabaseSync): voi
       + String(PUBLIC_PROJECTION_DB_SCHEMA_VERSION)
     );
   }
-  if (version === 1) {
-    migratePublicProjectionV1ToV2(database);
-  } else if (version > 0 && version < PUBLIC_PROJECTION_DB_SCHEMA_VERSION) {
+  if (version > 0 && version < PUBLIC_PROJECTION_DB_SCHEMA_VERSION) {
     throw new Error(
-      `public_projection_offline_migration_required:${String(version)}:`
+      `public_projection_protocol_reset_required:${String(version)}:`
       + String(PUBLIC_PROJECTION_DB_SCHEMA_VERSION)
     );
   }
@@ -111,16 +108,8 @@ function createPublicProjectionSchema(database: DatabaseSync): void {
       `INSERT INTO schema_migrations(version, name, applied_at)
        VALUES (?, ?, ?)`
     ).run(
-      1,
-      PUBLIC_PROJECTION_SCHEMA_V1_MIGRATION_NAME,
-      createdAt
-    );
-    database.prepare(
-      `INSERT INTO schema_migrations(version, name, applied_at)
-       VALUES (?, ?, ?)`
-    ).run(
       PUBLIC_PROJECTION_DB_SCHEMA_VERSION,
-      PUBLIC_PROJECTION_SCHEMA_V2_MIGRATION_NAME,
+      PUBLIC_PROJECTION_SCHEMA_NAME,
       createdAt
     );
     const streamId = randomUUID();
@@ -273,126 +262,6 @@ function createPublicProjectionSchemaObjects(database: DatabaseSync): void {
   `);
 }
 
-function migratePublicProjectionV1ToV2(database: DatabaseSync): void {
-  database.exec('PRAGMA foreign_keys = OFF;');
-  try {
-    database.exec('BEGIN IMMEDIATE;');
-    const ledger = database.prepare(
-      'SELECT version, name FROM schema_migrations ORDER BY version'
-    ).all() as unknown as Array<{ version: number; name: string }>;
-    if (
-      ledger.length !== 1
-      || ledger[0]?.version !== 1
-      || ledger[0]?.name !== PUBLIC_PROJECTION_SCHEMA_V1_MIGRATION_NAME
-    ) {
-      throw new Error('public_projection_v1_migration_ledger_invalid');
-    }
-    database.exec(`
-      CREATE TABLE projection_versions_v1_backup AS
-        SELECT * FROM projection_versions;
-      CREATE TABLE projection_heads_v1_backup AS
-        SELECT * FROM projection_heads;
-      DROP TABLE projection_heads;
-      DROP TABLE projection_versions;
-    `);
-    createProjectionStateTablesV2(database);
-    database.exec(`
-      INSERT INTO projection_versions
-        SELECT * FROM projection_versions_v1_backup;
-      INSERT INTO projection_heads
-        SELECT * FROM projection_heads_v1_backup;
-      DROP TABLE projection_heads_v1_backup;
-      DROP TABLE projection_versions_v1_backup;
-    `);
-    const appliedAt = new Date().toISOString();
-    database.prepare(
-      `INSERT INTO schema_migrations(version, name, applied_at)
-       VALUES (?, ?, ?)`
-    ).run(
-      PUBLIC_PROJECTION_DB_SCHEMA_VERSION,
-      PUBLIC_PROJECTION_SCHEMA_V2_MIGRATION_NAME,
-      appliedAt
-    );
-    database.exec(`PRAGMA user_version = ${PUBLIC_PROJECTION_DB_SCHEMA_VERSION};`);
-    database.exec('COMMIT;');
-  } catch (error) {
-    if (database.isTransaction) database.exec('ROLLBACK;');
-    throw error;
-  } finally {
-    database.exec('PRAGMA foreign_keys = ON;');
-  }
-}
-
-function createProjectionStateTablesV2(database: DatabaseSync): void {
-  database.exec(`
-    CREATE TABLE projection_versions (
-      feature TEXT NOT NULL CHECK(feature IN (
-        'sessions', 'messages', 'runs', 'decisions', 'models', 'diagnostics',
-        'inference_streams'
-      )),
-      aggregate_id TEXT NOT NULL CHECK(length(aggregate_id) BETWEEN 1 AND 256),
-      aggregate_version INTEGER NOT NULL CHECK(aggregate_version > 0),
-      operation TEXT NOT NULL CHECK(operation IN ('upsert', 'delete')),
-      projected_at TEXT NOT NULL,
-      dto_json TEXT CHECK(
-        dto_json IS NULL
-        OR (json_valid(dto_json) AND json_type(dto_json) = 'object')
-      ),
-      payload_digest TEXT NOT NULL CHECK(
-        length(payload_digest) = 71
-        AND substr(payload_digest, 1, 7) = 'sha256:'
-        AND substr(payload_digest, 8) NOT GLOB '*[^0-9a-f]*'
-      ),
-      commit_cursor INTEGER NOT NULL,
-      change_index INTEGER NOT NULL CHECK(change_index >= 0),
-      PRIMARY KEY(feature, aggregate_id, aggregate_version),
-      UNIQUE(commit_cursor, change_index),
-      FOREIGN KEY(commit_cursor) REFERENCES projection_commits(cursor) ON DELETE RESTRICT,
-      CHECK(
-        (operation = 'upsert' AND dto_json IS NOT NULL)
-        OR (operation = 'delete' AND dto_json IS NULL)
-      )
-    );
-    CREATE INDEX idx_projection_versions_commit
-      ON projection_versions(commit_cursor, change_index);
-
-    CREATE TABLE projection_heads (
-      feature TEXT NOT NULL CHECK(feature IN (
-        'sessions', 'messages', 'runs', 'decisions', 'models', 'diagnostics',
-        'inference_streams'
-      )),
-      aggregate_id TEXT NOT NULL CHECK(length(aggregate_id) BETWEEN 1 AND 256),
-      aggregate_version INTEGER NOT NULL CHECK(aggregate_version > 0),
-      operation TEXT NOT NULL CHECK(operation IN ('upsert', 'delete')),
-      projected_at TEXT NOT NULL,
-      dto_json TEXT CHECK(
-        dto_json IS NULL
-        OR (json_valid(dto_json) AND json_type(dto_json) = 'object')
-      ),
-      payload_digest TEXT NOT NULL CHECK(
-        length(payload_digest) = 71
-        AND substr(payload_digest, 1, 7) = 'sha256:'
-        AND substr(payload_digest, 8) NOT GLOB '*[^0-9a-f]*'
-      ),
-      commit_cursor INTEGER NOT NULL,
-      change_index INTEGER NOT NULL CHECK(change_index >= 0),
-      PRIMARY KEY(feature, aggregate_id),
-      FOREIGN KEY(feature, aggregate_id, aggregate_version)
-        REFERENCES projection_versions(feature, aggregate_id, aggregate_version)
-        ON DELETE RESTRICT,
-      FOREIGN KEY(commit_cursor, change_index)
-        REFERENCES projection_versions(commit_cursor, change_index)
-        ON DELETE RESTRICT,
-      CHECK(
-        (operation = 'upsert' AND dto_json IS NOT NULL)
-        OR (operation = 'delete' AND dto_json IS NULL)
-      )
-    );
-    CREATE INDEX idx_projection_heads_snapshot
-      ON projection_heads(feature, operation, aggregate_id);
-  `);
-}
-
 function assertPublicProjectionSchema(database: DatabaseSync): void {
   const version = readUserVersion(database);
   if (version !== PUBLIC_PROJECTION_DB_SCHEMA_VERSION) {
@@ -426,13 +295,10 @@ function assertPublicProjectionSchema(database: DatabaseSync): void {
     applied_at: string;
   }>;
   if (
-    migrations.length !== 2
-    || migrations[0]?.version !== 1
-    || migrations[0]?.name !== PUBLIC_PROJECTION_SCHEMA_V1_MIGRATION_NAME
+    migrations.length !== 1
+    || migrations[0]?.version !== PUBLIC_PROJECTION_DB_SCHEMA_VERSION
+    || migrations[0]?.name !== PUBLIC_PROJECTION_SCHEMA_NAME
     || !isCanonicalTimestamp(migrations[0]?.applied_at)
-    || migrations[1]?.version !== PUBLIC_PROJECTION_DB_SCHEMA_VERSION
-    || migrations[1]?.name !== PUBLIC_PROJECTION_SCHEMA_V2_MIGRATION_NAME
-    || !isCanonicalTimestamp(migrations[1]?.applied_at)
   ) {
     throw new Error('public_projection_schema_migration_ledger_invalid');
   }

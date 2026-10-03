@@ -555,7 +555,7 @@ const boundaries = [
   },
   {
     file: 'app/src/renderer/src/core/runtime/features/feature-snapshot-store.ts',
-    maxLines: 40,
+    maxLines: 55,
     required: [
       'class FeatureSnapshotStore',
       'useFeatureSnapshot'
@@ -602,7 +602,7 @@ const boundaries = [
   },
   {
     file: 'runtime/src/adapters/persistence/SqliteAgentRunUnitOfWork.ts',
-    maxLines: 5_000,
+    maxLines: 700,
     required: [
       './SqliteTransactionOwner.js',
       './agent-control/outbox/SqliteAgentRunOutboxStore.js',
@@ -633,11 +633,11 @@ const boundaries = [
   },
   {
     file: 'runtime/src/adapters/persistence/SqliteConversationRunHandoffUnitOfWork.ts',
-    maxLines: 2_025,
+    maxLines: 400,
     required: [
       './SqliteTransactionOwner.js',
       './conversation/projection/SqliteConversationProjectionReader.js',
-      './conversation/rows/ConversationAuthorityRowMapper.js'
+      './SqliteConversationTransaction.js'
     ],
     forbidden: [
       /function\s+readProjectionRecords\s*\(/,
@@ -656,6 +656,33 @@ const boundaries = [
     maxLines: 350
   }
 ];
+
+// Storage helpers execute under the caller's existing transaction; they cannot acquire or commit one.
+for (const name of [
+  'SqliteAgentRunTransaction', 'AgentControlKeyring', 'AgentControlCommandJournal',
+  'AgentControlFactPreparation', 'AgentControlFactWriter', 'AgentControlFactReader',
+  'AgentControlPayloadPreparation', 'AgentControlPayloadWriter', 'AgentControlPayloadReplay',
+  'AgentControlPayloadReader', 'AgentControlPayloadCodec', 'AgentControlRecoveryReader',
+  'AgentControlExecutionAdmission', 'AgentControlStorageValidation', 'AgentControlStorageTypes',
+  'SqliteConversationTransaction', 'ConversationHandoffCommitValidation', 'ConversationHandoffAuthorityWriter',
+  'ConversationHandoffCommandReader', 'ConversationHandoffRowMapper', 'ConversationHandoffOutbox',
+  'ConversationHandoffStorageValidation', 'ConversationHandoffStorageTypes'
+]) boundaries.push({
+  file: `runtime/src/adapters/persistence/${name}.ts`, maxLines: 750,
+  forbidden: [/new\s+(?:DatabaseSync|SqliteTransactionOwner)\s*\(/, /\.exec\(\s*['"`]\s*(?:BEGIN|COMMIT|ROLLBACK)\b/i]
+});
+for (const [name, maxLines] of [
+  ['ProductionAgentEngineAdapter', 520], ['AgentModelHistory', 750], ['AgentModelRequest', 250],
+  ['AgentModelToolContracts', 500], ['AgentModelResponse', 400], ['AgentModelProtocol', 180]
+]) boundaries.push({ file: `runtime/src/adapters/model/${name}.ts`, maxLines });
+for (const [name, maxLines] of [
+  ['AgentRunWorkScheduler', 760], ['AgentRunWorkSchedulerContracts', 400], ['AgentRunWorkRecoveryScan', 200],
+  ['AgentRunWorkReceiptValidation', 320], ['AgentRunWorkShutdown', 60]
+]) boundaries.push({ file: `runtime/src/composition/${name}.ts`, maxLines });
+for (const [name, maxLines] of [
+  ['ChatPanel.tsx', 930], ['ConversationMessageRow.tsx', 100], ['ConversationMessage.tsx', 200],
+  ['ChatComposerPolicy.tsx', 150], ['ChatImageAttachments.ts', 120], ['ChatMessageProjection.ts', 100], ['ChatPresentation.tsx', 120]
+]) boundaries.push({ file: `app/src/renderer/src/modules/chat/${name}`, maxLines });
 
 const failures = [];
 const measurements = [];

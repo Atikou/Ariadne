@@ -5,7 +5,7 @@ import { LocalModelRuntimeManager } from "./LocalModelRuntimeManager.js";
 
 export class EmbeddedModelClient implements ModelClient {
   readonly location = "local" as const;
-  readonly toolCallCapability = "unsupported" as const;
+  readonly toolCallCapability: ModelClient['toolCallCapability'];
   readonly name: string;
   readonly model: string;
   readonly tokenCounter: TokenCounter;
@@ -17,6 +17,7 @@ export class EmbeddedModelClient implements ModelClient {
   ) {
     this.name = descriptor.id;
     this.model = descriptor.displayName;
+    this.toolCallCapability = descriptor.runtime === 'llama.cpp' ? 'native' : 'unsupported';
     this.contextWindowTokens = descriptor.contextSize;
     this.tokenCounter = {
       profile: `${descriptor.runtime}:${descriptor.id}`,

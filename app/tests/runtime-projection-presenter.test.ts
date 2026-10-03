@@ -6,6 +6,7 @@ import type {
 import { describe, expect, it } from 'vitest';
 
 import {
+  mergeInferenceStreamReasoning,
   presentInferenceStreamMessage,
   presentPermissionDecision,
   presentPlanDecision,
@@ -61,6 +62,7 @@ describe('runtime projection Decision presenter', () => {
   it('presents only an open exact-attempt stream and keeps reasoning separate', () => {
     const stream: PublicInferenceStreamProjectionV3 = {
       inferenceStreamId: 'stream-run-a-turn-a-attempt-a',
+      sessionId: 'session-a',
       runId: 'run-a',
       turnId: 'turn-a',
       attemptId: 'attempt-a',
@@ -81,12 +83,7 @@ describe('runtime projection Decision presenter', () => {
       }],
       updatedAt: REQUESTED_AT
     };
-    const run = {
-      runId: 'run-a',
-      sessionId: 'session-a'
-    } as PublicRunProjectionV3;
-
-    expect(presentInferenceStreamMessage(stream, run)).toMatchObject({
+    expect(presentInferenceStreamMessage(stream)).toMatchObject({
       messageId: stream.inferenceStreamId,
       sessionId: 'session-a',
       runId: 'run-a',
@@ -95,8 +92,7 @@ describe('runtime projection Decision presenter', () => {
       status: 'streaming',
       reasoning: { content: '分析中', status: 'streaming', source: 'provider' }
     });
-    expect(presentInferenceStreamMessage({ ...stream, status: 'committed' }, run)).toBeNull();
-    expect(presentInferenceStreamMessage(stream, undefined)).toBeNull();
+    expect(presentInferenceStreamMessage({ ...stream, status: 'committed' })).toBeNull();
   });
 
   it('presents the exact public Tool, capabilities, and resource scopes without the action token', () => {
@@ -133,6 +129,43 @@ describe('runtime projection Decision presenter', () => {
     });
     expect(JSON.stringify(presented)).not.toContain('decision-action');
     expect(JSON.stringify(presented)).not.toContain(ACTION.actionToken);
+  });
+
+  it('merges committed provider reasoning back into the durable assistant row', () => {
+    const message = {
+      messageId: 'message-a',
+      sessionId: 'session-a',
+      runId: 'run-a',
+      role: 'assistant' as const,
+      content: '最终回答',
+      status: 'completed' as const,
+      createdAt: REQUESTED_AT,
+    };
+    const stream: PublicInferenceStreamProjectionV3 = {
+      inferenceStreamId: 'stream-run-a-turn-a-attempt-a',
+      sessionId: 'session-a',
+      runId: 'run-a',
+      turnId: 'turn-a',
+      attemptId: 'attempt-a',
+      version: 3,
+      status: 'committed',
+      retainedFromSequence: 1,
+      finalSequence: 3,
+      chunks: [
+        { sequence: 1, channel: 'reasoning', text: '先检查 ', observedAt: REQUESTED_AT },
+        { sequence: 2, channel: 'reasoning', text: '约束。', observedAt: REQUESTED_AT },
+        { sequence: 3, channel: 'token', text: '最终回答', observedAt: REQUESTED_AT },
+      ],
+      updatedAt: '2032-01-01T00:00:01.000Z',
+    };
+    expect(mergeInferenceStreamReasoning([message], [stream])[0]).toMatchObject({
+      content: '最终回答',
+      reasoning: {
+        content: '先检查 约束。',
+        status: 'completed',
+        source: 'provider',
+      },
+    });
   });
 
   it('presents every bounded Plan step and impact and enables only the exact Plan action', () => {

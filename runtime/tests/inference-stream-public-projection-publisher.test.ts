@@ -6,10 +6,17 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { SqlitePublicProjectionStore } from '../src/adapters/persistence/SqlitePublicProjectionStore.js';
 import { InferenceStreamPublicProjectionPublisher } from '../src/projection/InferenceStreamPublicProjectionPublisher.js';
+import type { RuntimePublicEventAppend } from '../src/ingress/RuntimePublicEventSink.js';
 
 const roots: string[] = [];
 const stores = new Set<SqlitePublicProjectionStore>();
-const identity = { runId: 'run-1', turnId: 'turn-1', attemptId: 'attempt-1' };
+const identity = {
+  sessionId: 'session-1',
+  runId: 'run-1',
+  turnId: 'turn-1',
+  attemptId: 'attempt-1'
+};
+const discardLiveEvents = { append: async (_event: RuntimePublicEventAppend) => undefined };
 
 afterEach(async () => {
   await Promise.all([...stores].map((store) => store.close().catch(() => undefined)));
@@ -22,6 +29,7 @@ describe('InferenceStreamPublicProjectionPublisher', () => {
     const store = track(new SqlitePublicProjectionStore(tempRoot()));
     const publisher = new InferenceStreamPublicProjectionPublisher(
       store,
+      discardLiveEvents,
       () => new Date('2026-08-28T00:00:00.000Z')
     );
     const stream = await publisher.bind(identity);
@@ -60,7 +68,10 @@ describe('InferenceStreamPublicProjectionPublisher', () => {
 
   it('fails closed on sequence drift and contradictory terminal state', async () => {
     const store = track(new SqlitePublicProjectionStore(tempRoot()));
-    const stream = await new InferenceStreamPublicProjectionPublisher(store).bind(identity);
+    const stream = await new InferenceStreamPublicProjectionPublisher(
+      store,
+      discardLiveEvents
+    ).bind(identity);
 
     expect(() => stream.chunkObserver.observe({
       sequence: 2,
@@ -76,7 +87,10 @@ describe('InferenceStreamPublicProjectionPublisher', () => {
 
   it('retains a bounded suffix while preserving the absolute sequence', async () => {
     const store = track(new SqlitePublicProjectionStore(tempRoot()));
-    const stream = await new InferenceStreamPublicProjectionPublisher(store).bind(identity);
+    const stream = await new InferenceStreamPublicProjectionPublisher(
+      store,
+      discardLiveEvents
+    ).bind(identity);
     for (let sequence = 1; sequence <= 9; sequence += 1) {
       stream.chunkObserver.observe({
         sequence,
@@ -95,13 +109,13 @@ describe('InferenceStreamPublicProjectionPublisher', () => {
 
   it('reconciles a durable open stream to interrupted after restart', async () => {
     const store = track(new SqlitePublicProjectionStore(tempRoot()));
-    const first = new InferenceStreamPublicProjectionPublisher(store);
+    const first = new InferenceStreamPublicProjectionPublisher(store, discardLiveEvents);
     const stream = await first.bind(identity);
     stream.chunkObserver.observe({ sequence: 1, channel: 'token', text: 'partial' });
     await new Promise((resolve) => setTimeout(resolve, 40));
     expect((await store.snapshot()).inferenceStreams[0]?.status).toBe('streaming');
 
-    const reopened = new InferenceStreamPublicProjectionPublisher(store);
+    const reopened = new InferenceStreamPublicProjectionPublisher(store, discardLiveEvents);
     const resolve = async () => 'interrupted' as const;
     await reopened.reconcileOpenStreams(resolve);
 
@@ -109,6 +123,34 @@ describe('InferenceStreamPublicProjectionPublisher', () => {
       status: 'interrupted',
       finalSequence: 1,
       chunks: [{ text: 'partial' }]
+    });
+  });
+
+  it('publishes append-only chunks before the durable projection flushes', async () => {
+    const store = track(new SqlitePublicProjectionStore(tempRoot()));
+    const events: RuntimePublicEventAppend[] = [];
+    const publisher = new InferenceStreamPublicProjectionPublisher(
+      store,
+      { append: async (event) => { events.push(event); } },
+      () => new Date('2026-08-28T00:00:00.000Z')
+    );
+    const stream = await publisher.bind(identity);
+
+    stream.chunkObserver.observe({ sequence: 1, channel: 'token', text: 'A' });
+    stream.chunkObserver.observe({ sequence: 2, channel: 'token', text: 'B' });
+    for (let index = 0; index < 10; index += 1) await Promise.resolve();
+
+    expect(events.map((entry) => entry.event)).toEqual([
+      expect.objectContaining({ kind: 'inference.chunk.observed', sequence: 1, text: 'A' }),
+      expect.objectContaining({ kind: 'inference.chunk.observed', sequence: 2, text: 'B' })
+    ]);
+    expect((await store.snapshot()).inferenceStreams).toEqual([]);
+
+    await stream.terminate('committed');
+    expect(events.at(-1)?.event).toMatchObject({
+      kind: 'inference.stream.terminated',
+      finalSequence: 2,
+      state: 'committed'
     });
   });
 });

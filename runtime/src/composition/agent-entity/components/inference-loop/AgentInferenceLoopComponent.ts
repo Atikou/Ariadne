@@ -152,8 +152,9 @@ export function createAgentInferenceLoopComponent(
     directivePlanner,
     modelAvailability: models,
     hasExactModelAuthority: (manifest: AgentAdmissionAuthoritySourceManifest): boolean => {
-      const binding = models.resolveBinding(manifest.model.settingsRevision);
-      return binding !== null && models.hasExactBinding(binding);
+      return (manifest.modelCandidates ?? [manifest.model]).some((binding) => (
+        models.hasExactBinding(binding)
+      ));
     }
   });
 }

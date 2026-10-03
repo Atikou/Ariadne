@@ -17,6 +17,9 @@ import {
   resolveAgentControlDatabasePath
 } from '../src/adapters/persistence/agentControlDbSchema.js';
 import {
+  PUBLIC_PROJECTION_DB_SCHEMA_VERSION
+} from '../src/adapters/persistence/PublicProjectionDbSchema.js';
+import {
   SqliteAgentRunUnitOfWork
 } from '../src/adapters/persistence/SqliteAgentRunUnitOfWork.js';
 import {
@@ -54,6 +57,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       modelProviders: [],
       modelCatalog: emptyModelCatalog,
       publicEventSink: discardPublicEventSink,
+      liveInferenceEventSink: discardPublicEventSink,
       hostCapabilities: broker(
         keyRing(2, activeKeyId, keyMaterialBase64),
         operations
@@ -94,6 +98,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       modelProviders: [],
       modelCatalog: emptyModelCatalog,
       publicEventSink: discardPublicEventSink,
+      liveInferenceEventSink: discardPublicEventSink,
       hostCapabilities: broker(keyRing(4, activeKeyId, material))
     });
     await first.shutdown(shutdownContext());
@@ -106,6 +111,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       modelProviders: [],
       modelCatalog: emptyModelCatalog,
       publicEventSink: discardPublicEventSink,
+      liveInferenceEventSink: discardPublicEventSink,
       hostCapabilities: broker(keyRing(4, activeKeyId, material))
     });
     await reopened.shutdown(shutdownContext());
@@ -118,6 +124,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       modelProviders: [],
       modelCatalog: emptyModelCatalog,
       publicEventSink: discardPublicEventSink,
+      liveInferenceEventSink: discardPublicEventSink,
       hostCapabilities: broker(keyRing(3, activeKeyId, material))
     })).rejects.toThrow('agent_keyring_anchor_rollback');
     await expect(factory.create({
@@ -128,6 +135,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       modelProviders: [],
       modelCatalog: emptyModelCatalog,
       publicEventSink: discardPublicEventSink,
+      liveInferenceEventSink: discardPublicEventSink,
       hostCapabilities: broker(keyRing(
         5,
         'agent-key-00000000-0000-4000-8000-000000000032',
@@ -143,6 +151,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       modelProviders: [],
       modelCatalog: emptyModelCatalog,
       publicEventSink: discardPublicEventSink,
+      liveInferenceEventSink: discardPublicEventSink,
       hostCapabilities: broker(keyRing(4, activeKeyId, material))
     });
     await finalReopen.shutdown(shutdownContext());
@@ -160,6 +169,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       modelProviders: [],
       modelCatalog: emptyModelCatalog,
       publicEventSink: discardPublicEventSink,
+      liveInferenceEventSink: discardPublicEventSink,
       hostCapabilities: { request }
     });
 
@@ -182,6 +192,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       modelProviders: [],
       modelCatalog: emptyModelCatalog,
       publicEventSink: discardPublicEventSink,
+      liveInferenceEventSink: discardPublicEventSink,
       hostCapabilities: { request }
     })).rejects.toThrow('runtime_bootstrap_data_root_not_canonical_absolute');
 
@@ -203,6 +214,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       modelProviders: [],
       modelCatalog: emptyModelCatalog,
       publicEventSink: discardPublicEventSink,
+      liveInferenceEventSink: discardPublicEventSink,
       hostCapabilities: broker(keyRing(
         1,
         activeKeyId,
@@ -223,6 +235,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       modelProviders: [],
       modelCatalog: emptyModelCatalog,
       publicEventSink: discardPublicEventSink,
+      liveInferenceEventSink: discardPublicEventSink,
       hostCapabilities: broker(keyRing(
         1,
         activeKeyId,
@@ -259,7 +272,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       agentControl: runtime.schemaVersion,
       conversation: 4,
       productivity: 1,
-      publicProjection: 2
+      publicProjection: PUBLIC_PROJECTION_DB_SCHEMA_VERSION
     });
     await expect(runtime.executeOwnedCommand({
       commandId: 'legacy-query',
@@ -286,6 +299,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       modelProviders: [],
       modelCatalog: emptyModelCatalog,
       publicEventSink: discardPublicEventSink,
+      liveInferenceEventSink: discardPublicEventSink,
       hostCapabilities: broker(keyRing(
         1,
         activeKeyId,
@@ -322,11 +336,15 @@ describe('DefaultAgentControlRuntimeFactory', () => {
           label: 'deepseek-chat',
           location: 'remote',
           availability: 'ready',
+          supportsTextChat: true,
           supportsAgent: true,
-          supportsVision: false
+          supportsPlan: true,
+          supportsVision: false,
+          qualificationState: 'qualified'
         }]
       },
       publicEventSink: { append: appendPublicEvent },
+      liveInferenceEventSink: { append: appendPublicEvent },
       hostCapabilities: broker(keyRing(
         1,
         activeKeyId,
@@ -358,8 +376,11 @@ describe('DefaultAgentControlRuntimeFactory', () => {
                 label: 'deepseek-chat',
                 location: 'remote',
                 availability: 'ready',
+                supportsTextChat: true,
                 supportsAgent: true,
-                supportsVision: false
+                supportsPlan: true,
+                supportsVision: false,
+                qualificationState: 'qualified'
               }]
             }
           }
@@ -395,6 +416,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       modelProviders: [],
       modelCatalog: emptyModelCatalog,
       publicEventSink: discardPublicEventSink,
+      liveInferenceEventSink: discardPublicEventSink,
       hostCapabilities: broker(keyRing(
         1,
         activeKeyId,

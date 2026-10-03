@@ -273,6 +273,35 @@ describe('Agent Control v3 public projection lifecycle', () => {
     await control.shutdown(createShutdownContext(Date.now() + 5_000));
   });
 
+  it('serializes concurrent inbox commands without exposing an internal Run version race', async () => {
+    const root = createRoot();
+    const unit = new SqliteAgentRunUnitOfWork(root);
+    const conversation = new SqliteConversationRunHandoffUnitOfWork(root);
+    const projection = new SqlitePublicProjectionStore(root);
+    await startRun(unit, 'run-concurrent-inbox');
+    const control = new ComposedAgentControlRuntime(
+      testPersistence(root, unit, conversation, projection),
+      { publishIntervalMs: 60_000, agentInboxCommandNow: () => new Date(at(1)) },
+      projectionLifecyclePipeline()
+    );
+    const close = closeControl(control);
+    try {
+      await control.start();
+      const commands = Array.from({ length: 4 }, (_, index) => commandEnvelope({
+        kind: 'agent.inbox.enqueue.v3', contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+        runId: 'run-concurrent-inbox', sessionId: 'session-run-concurrent-inbox',
+        inputId: `input-concurrent-${index}`, delivery: 'next_step', content: `Concurrent input ${index}`
+      }, `enqueue-concurrent-${index}`));
+      const results = await Promise.all(commands.map(command => control.executeOwnedCommand(command)));
+      expect(results.every(result => result.outcome.ok)).toBe(true);
+      const run = await unit.transaction(transaction => transaction.loadRun('run-concurrent-inbox'));
+      expect(run?.version).toBe(5);
+      expect(new Set(run?.inbox.map(input => input.inputId)).size).toBe(4);
+      await expect(control.executeOwnedCommand(commands[0]!)).resolves.toEqual(results[0]);
+      expect((await unit.transaction(transaction => transaction.loadRun('run-concurrent-inbox')))?.version).toBe(5);
+    } finally { await close(); }
+  });
+
   it('persists, replays, edits, removes, and projects one unified inbox entry', async () => {
     const root = createRoot();
     const unit = new SqliteAgentRunUnitOfWork(root);

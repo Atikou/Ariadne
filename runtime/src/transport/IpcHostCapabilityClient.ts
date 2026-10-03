@@ -71,11 +71,12 @@ export class IpcHostCapabilityClient implements HostCapabilityClient {
 
 function capabilityForOperation(
   operation: HostCapabilityOperation
-): 'computer_read' | 'browser' | 'mcp_remote' | 'agent_persistence' {
+): 'computer_read' | 'browser' | 'mcp_remote' | 'agent_persistence' | 'credential' {
   if (operation.kind.startsWith('computer.')) return 'computer_read';
   if (operation.kind.startsWith('mcp.remote.')) return 'mcp_remote';
   if (operation.kind === 'agent.persistence.keyring.read') {
     return 'agent_persistence';
   }
+  if (operation.kind.startsWith('credential.')) return 'credential';
   return 'browser';
 }

@@ -11,6 +11,7 @@ export type ModuleIcon =
   | 'file'
   | 'list'
   | 'message'
+  | 'review'
   | 'settings'
   | 'shield'
   | 'terminal'

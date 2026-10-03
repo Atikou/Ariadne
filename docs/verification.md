@@ -1,23 +1,13 @@
 # Ariadne 验证与验收边界
 
-> 状态日期：2026-08-29
+> 状态日期：2026-09-05
 > 自动回归不能替代真实模型、正式签名或干净机器验收。
 
 ## 1. 当前复核
 
-| 命令 | 当前结果 | 证据 |
-|---|---|---|
-| `corepack.cmd npm run typecheck` | PASS | Protocol、Agent Core、Live Work、Runtime、App 类型检查通过 |
-| `corepack.cmd npm test` | **FAIL** | Protocol 48、Agent Core 106、Live Work 5、Runtime 834 均通过；App 296/297，唯一失败仍是 `global-radius-contract` 检出的共享 UI `4px/6px` 非 token 圆角 |
-| `corepack.cmd npm run check:architecture` | PASS | 936 个 TS/TSX 文件、3,718 条内部边、2,061 个 type import、0 SCC、0 循环边、0 规则违规；Hotspot Boundary Gate 通过 |
-| `corepack.cmd npm run audit:runtime-independence` | PASS | 953 个生产文件；无入站 HTTP、仓库外文件依赖或根脚本路径 |
-| `corepack.cmd npm run verify:release-contract` | PASS | 安装器、迁移、模型资产和验收矩阵契约通过 |
-| `corepack.cmd npm run test:electron` | PASS | 完整命令通过；真实窗口观察到运行中 stream、2 个持久分块、单一最终消息，并完成 inbox、稳定 delivery receipt/权威对账、ask-user 卡片/等待态恢复/同 Run 续跑、Tool、Decision、取消和五个持久边界的 Runtime 强杀恢复 |
-| `corepack.cmd npm run verify:source-snapshot` | **FAIL** | 唯一失败是当前 Git 工作树不干净；固定 npm 11.13.0 已生效 |
+最近一次复核的源码范围、通过项、失败记录和剩余边界统一维护在 [架构修复入口](architecture-review-and-remediation.md)。本页定义验证契约，不保留另一张会与当前事实冲突的历史通过表。窗口证据应同时绑定源码摘要、工具链和 Profile；单独一张截图或源码字符串断言不能证明运行行为。
 
-最新真实窗口 artifact 记录了 18 次 Provider 请求、16 次响应、2 次被取消请求。运行中输入场景在 command journal/Agent inbox 已提交但 IPC 响应尚未返回时强杀 Runtime；Renderer 以同一 commandId 显示 `pending/accepted/failed/reconcile` 回执，并以唯一 Public Projection inbox input 作为更强的结算证据。ask-user 场景还在 Run 已提交 `waiting/user_question` 时强杀 Runtime，重启后恢复同一 Decision/卡片并由同一 Run 完成。其余三个强杀点分别位于 initial inference started、effect started 和 Agent authority completed/Public Projection pending。上述数字是本次修复后的当前工作树结果；后续仍应以命令和 artifact 为准。
-
-assistant-profile/schema 测试夹具已由其 owner 补齐；Renderer 对内部 settings 的直接依赖也已改由 Desktop shared contract 暴露规范默认值，typecheck 与 architecture gate 恢复通过。当前 App 全量测试唯一失败仍来自共享 UI 样式中的 4px/6px 圆角；本轮没有机械改写该设计改动，所以仓库仍不得被描述为全量测试通过。
+当前确定性 Provider 场景要求 19 次请求、17 次响应和 2 次中止，包含新增实时丢包、重复与 Renderer 重载恢复。原有五次 Runtime 强杀和完整桌面重启回执恢复继续保留。低层 API 测试、自然完成或人工等待不能代替对应窗口断言。
 
 ## 2. 开发门禁
 
@@ -28,6 +18,7 @@ corepack.cmd npm run check:architecture
 corepack.cmd npm run audit:runtime-independence
 corepack.cmd npm run verify:release-contract
 corepack.cmd npm run test:electron
+corepack.cmd npm run test:renderer-ui
 ```
 
 - `typecheck` 和 `test` 按 Protocol -> Agent Core -> Live Work -> Runtime -> App 顺序运行。

@@ -345,7 +345,8 @@ export class NodeIpcRuntimeHost {
         completedAt: new Date().toISOString()
       });
       if (process.connected) process.disconnect();
-    } catch {
+    } catch (error) {
+      process.stderr.write(`[runtime] shutdown failed: ${shutdownFailureCode(error)}\n`);
       // Keep the child connected and any uncertain owner fence alive until
       // Main enforces the deadline kill.
       process.exitCode = 1;
@@ -442,6 +443,14 @@ export class NodeIpcRuntimeHost {
       context.dispose();
     }
   }
+}
+
+function shutdownFailureCode(error: unknown): string {
+  if (error instanceof AggregateError) {
+    return `${error.message}:${error.errors.map(shutdownFailureCode).join(',')}`;
+  }
+  if (error instanceof Error && /^[a-z0-9_]{1,128}$/u.test(error.message)) return error.message;
+  return 'runtime_shutdown_failed';
 }
 
 function errorOutcome(

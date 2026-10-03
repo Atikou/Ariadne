@@ -49,15 +49,24 @@ describe('conversation overview ruler', () => {
     expect(createRulerEntries([], null)).toEqual([]);
   });
 
-  it('keeps the rail bounded and wheel-scrollable without a visible scrollbar', async () => {
-    const styles = await readFile(join(process.cwd(), 'src', 'renderer', 'src', 'app', 'styles.css'), 'utf8');
+  it('keeps the rail bounded and tweens one focus indicator between ticks', async () => {
+    const [styles, rulerSource] = await Promise.all([
+      readFile(join(process.cwd(), 'src', 'renderer', 'src', 'app', 'styles.css'), 'utf8'),
+      readFile(
+        join(process.cwd(), 'src', 'renderer', 'src', 'modules', 'chat', 'ConversationOverviewRuler.tsx'),
+        'utf8'
+      )
+    ]);
 
     expect(styles).toMatch(/\.conversation-ruler \{[^}]*height: min\(76%, 320px\)/);
     expect(styles).toMatch(/\.ruler-scroll \{[^}]*overflow-y: auto/);
     expect(styles).toMatch(/\.ruler-scroll \{[^}]*overscroll-behavior: contain/);
     expect(styles).toMatch(/\.ruler-scroll::\-webkit-scrollbar \{ display: none; \}/);
-    expect(styles).toMatch(/\.ruler-tick::before \{[^}]*transition: width 220ms/);
+    expect(styles).toMatch(/\.ruler-tick::before \{[^}]*transition: width 280ms cubic-bezier\(\.22, 1, \.36, 1\)/);
     expect(styles).toMatch(/\.ruler-tick--level-4::before \{ width: 20px;/);
-    expect(styles).toMatch(/\.ruler-tick\.is-emphasized::before \{[^}]*background: var\(--text-1\);[^}]*opacity: 1;/);
+    expect(styles).toMatch(/\.ruler-focus-indicator \{[^}]*will-change: width, transform;[^}]*transition: width 280ms[^}]*transform 320ms cubic-bezier\(\.22, 1, \.36, 1\)/);
+    expect(rulerSource).toContain('className="ruler-focus-indicator"');
+    expect(rulerSource).toContain('tickBounds.top - trackBounds.top');
+    expect(rulerSource).not.toContain("' is-emphasized'");
   });
 });

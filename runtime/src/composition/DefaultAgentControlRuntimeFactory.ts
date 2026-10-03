@@ -41,7 +41,8 @@ export class DefaultAgentControlRuntimeFactory implements AgentControlRuntimeFac
     const persistence = await startAgentPersistenceComponent(input);
     try {
       const inferenceStreams = new InferenceStreamPublicProjectionPublisher(
-        persistence.publicProjection
+        persistence.publicProjection,
+        input.liveInferenceEventSink
       );
       await inferenceStreams.reconcileOpenStreams(
         (identity) => resolveInferenceStreamTerminalState(persistence.unitOfWork, identity)

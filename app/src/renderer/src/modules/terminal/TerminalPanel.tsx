@@ -3,8 +3,14 @@ import { RotateCw, SquareTerminal, TriangleAlert } from 'lucide-react';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XtermTerminal, type ITheme } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
-import type { TerminalRecoveryRecord, TerminalShell } from '@shared/contract';
+import {
+  APP_TERMINAL_CONTEXT_ID,
+  type TerminalRecoveryRecord,
+  type TerminalShell
+} from '@shared/contract';
 import type { FeaturePanelProps, ModuleServices } from '@renderer/core/modules/module-contract';
+import { ConfirmDialog } from '@renderer/shared/ui/ActionDialog';
+import './terminal.css';
 
 type TerminalStatus = 'starting' | 'running' | 'exited' | 'error';
 
@@ -41,38 +47,18 @@ const INITIAL_METADATA: Record<TerminalShell, SessionMetadata> = {
 };
 
 export function TerminalPanel({ services }: FeaturePanelProps): React.JSX.Element {
-  const initialWorkspaceId = services.conversationNavigation.getSelectedWorkspaceId();
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(initialWorkspaceId);
   const [activeShell, setActiveShell] = useState<TerminalShell>('powershell');
   const [startedShells, setStartedShells] = useState<ReadonlySet<TerminalShell>>(() => new Set(['powershell']));
-  const [sessionWorkspaceIds, setSessionWorkspaceIds] = useState<Record<TerminalShell, string | null>>({
-    powershell: initialWorkspaceId,
-    cmd: initialWorkspaceId
+  const [sessionWorkspaceIds, setSessionWorkspaceIds] = useState<Record<TerminalShell, string>>({
+    powershell: APP_TERMINAL_CONTEXT_ID,
+    cmd: APP_TERMINAL_CONTEXT_ID
   });
   const [restartKeys, setRestartKeys] = useState<Record<TerminalShell, number>>({ powershell: 0, cmd: 0 });
   const [restartSources, setRestartSources] = useState<Partial<Record<TerminalShell, string>>>({});
   const [recoveryRecords, setRecoveryRecords] = useState<TerminalRecoveryRecord[]>([]);
   const [metadata, setMetadata] = useState<Record<TerminalShell, SessionMetadata>>(INITIAL_METADATA);
+  const [restartTarget, setRestartTarget] = useState<{ shell: TerminalShell; recovery?: TerminalRecoveryRecord } | null>(null);
   const activeMetadata = metadata[activeShell];
-  const activeWorkspaceId = sessionWorkspaceIds[activeShell];
-
-  useEffect(() => {
-    const unsubscribe = services.conversationNavigation.onSelectedWorkspaceChanged((workspaceId) => {
-      setSelectedWorkspaceId(workspaceId);
-      if (!workspaceId) return;
-      setSessionWorkspaceIds((current) => ({
-        powershell: current.powershell ?? workspaceId,
-        cmd: current.cmd ?? workspaceId
-      }));
-    });
-    void services.conversationNavigation.listWorkspaces().catch(() => {
-      setMetadata({
-        powershell: { status: 'error', cwd: '' },
-        cmd: { status: 'error', cwd: '' }
-      });
-    });
-    return unsubscribe;
-  }, [services]);
 
   useEffect(() => {
     void services.terminal.listRecoveryRecords().then((records) => {
@@ -89,10 +75,6 @@ export function TerminalPanel({ services }: FeaturePanelProps): React.JSX.Elemen
   }, []);
 
   const selectShell = (shell: TerminalShell): void => {
-    if (!selectedWorkspaceId) return;
-    if (!startedShells.has(shell)) {
-      setSessionWorkspaceIds((current) => ({ ...current, [shell]: selectedWorkspaceId }));
-    }
     setStartedShells((current) => {
       if (current.has(shell)) return current;
       return new Set([...current, shell]);
@@ -100,18 +82,13 @@ export function TerminalPanel({ services }: FeaturePanelProps): React.JSX.Elemen
     setActiveShell(shell);
   };
 
-  const restartActiveShell = (): void => {
-    if (!selectedWorkspaceId) return;
-    setSessionWorkspaceIds((current) => ({
-      ...current,
-      [activeShell]: selectedWorkspaceId
-    }));
-    setMetadata((current) => ({ ...current, [activeShell]: INITIAL_METADATA[activeShell] }));
-    setRestartKeys((current) => ({ ...current, [activeShell]: current[activeShell] + 1 }));
+  const restartShell = (shell: TerminalShell): void => {
+    setMetadata((current) => ({ ...current, [shell]: INITIAL_METADATA[shell] }));
+    setRestartKeys((current) => ({ ...current, [shell]: current[shell] + 1 }));
   };
 
   const restartRecovered = (record: TerminalRecoveryRecord): void => {
-    setSelectedWorkspaceId(record.workspaceId);
+    setMetadata((current) => ({ ...current, [record.shell]: INITIAL_METADATA[record.shell] }));
     setSessionWorkspaceIds((current) => ({ ...current, [record.shell]: record.workspaceId }));
     setStartedShells((current) => new Set([...current, record.shell]));
     setRestartSources((current) => ({ ...current, [record.shell]: record.sessionId }));
@@ -129,7 +106,6 @@ export function TerminalPanel({ services }: FeaturePanelProps): React.JSX.Elemen
               type="button"
               className={activeShell === option.value ? 'is-active' : ''}
               aria-pressed={activeShell === option.value}
-              disabled={!selectedWorkspaceId}
               onClick={() => selectShell(option.value)}
             >
               <SquareTerminal size={12} />
@@ -143,10 +119,10 @@ export function TerminalPanel({ services }: FeaturePanelProps): React.JSX.Elemen
           <button
             type="button"
             className="terminal-restart"
-            title={activeWorkspaceId === selectedWorkspaceId ? '重新启动当前终端' : '在当前工作区重新启动终端'}
-            aria-label={activeWorkspaceId === selectedWorkspaceId ? '重新启动当前终端' : '在当前工作区重新启动终端'}
-            disabled={!selectedWorkspaceId}
-            onClick={restartActiveShell}
+            title="重新启动当前终端"
+            aria-label="重新启动当前终端"
+            disabled={activeMetadata.status === 'starting'}
+            onClick={() => activeMetadata.status === 'running' ? setRestartTarget({ shell: activeShell }) : restartShell(activeShell)}
           >
             <RotateCw size={13} />
           </button>
@@ -156,13 +132,17 @@ export function TerminalPanel({ services }: FeaturePanelProps): React.JSX.Elemen
         <div className="terminal-recovery" role="status">
           <TriangleAlert size={14} />
           <span>上次 Main 进程退出时有 {recoveryRecords.length} 个终端被中断，命令不会自动重放。</span>
-          <button type="button" onClick={() => restartRecovered(recoveryRecords[0]!)}>显式重启最近终端</button>
+          <button type="button" className="secondary-button" onClick={() => {
+            const record = recoveryRecords[0]!;
+            if (startedShells.has(record.shell) && ['running', 'starting'].includes(metadata[record.shell].status)) setRestartTarget({ shell: record.shell, recovery: record });
+            else restartRecovered(record);
+          }}>重启最近中断的终端</button>
         </div>
       )}
       <div className="terminal-session-stack">
         {SHELLS.flatMap(({ value }) => {
           const workspaceId = sessionWorkspaceIds[value];
-          if (!startedShells.has(value) || !workspaceId) return [];
+          if (!startedShells.has(value)) return [];
           return [<TerminalSessionView
             key={`${value}-${workspaceId}-${restartKeys[value]}`}
             workspaceId={workspaceId}
@@ -183,6 +163,12 @@ export function TerminalPanel({ services }: FeaturePanelProps): React.JSX.Elemen
           />];
         })}
       </div>
+      <ConfirmDialog open={restartTarget !== null} title="重新启动终端？" description="当前终端进程及其中尚在运行的命令会结束。历史命令不会自动重放。" confirmLabel="重新启动" onClose={() => setRestartTarget(null)} onConfirm={() => {
+        if (!restartTarget) return;
+        if (restartTarget.recovery) restartRecovered(restartTarget.recovery);
+        else restartShell(restartTarget.shell);
+        setRestartTarget(null);
+      }} />
     </section>
   );
 }
@@ -218,7 +204,8 @@ function TerminalSessionView({
       lineHeight: 1.3,
       scrollback: 5000,
       theme: readTerminalTheme(),
-      allowTransparency: true
+      allowTransparency: true,
+      disableStdin: true
     });
     const fitAddon = new FitAddon();
     terminalRef.current = terminal;
@@ -252,7 +239,8 @@ function TerminalSessionView({
     });
 
     const resizeObserver = new ResizeObserver(() => {
-      if (!activeRef.current || !sessionReadyRef.current || !fitSafely(fitAddon)) return;
+      if (!activeRef.current || !fitSafely(fitAddon)) return;
+      if (!sessionReadyRef.current) return;
       services.terminal.resize({
         sessionId,
         columns: Math.max(2, terminal.cols),
@@ -278,6 +266,7 @@ function TerminalSessionView({
         throw new Error('终端工作区与请求不一致。');
       }
       sessionReadyRef.current = true;
+      terminal.options.disableStdin = false;
       if (restartOf !== undefined) onRestarted(restartOf);
       onMetadata(shell, { status: 'running', cwd: session.cwd });
       if (activeRef.current) {

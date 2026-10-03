@@ -193,6 +193,7 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
             ? {}
             : { modelInferenceGateway: application.modelInferenceGateway }),
           publicEventSink: projectionWakeEventSink,
+          liveInferenceEventSink: application.publicEventSink,
           hostCapabilities: input.hostCapabilities,
           agentToolCatalogSnapshots: capabilityManifest.agentToolCatalogSnapshots,
           runtimeServices

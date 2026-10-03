@@ -1,10 +1,12 @@
-import { useState } from 'react';
-import { Check, ChevronRight, Clock3, TerminalSquare, Wrench, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { ArrowLeft, Check, ChevronRight, Clock3, LoaderCircle, TerminalSquare, X } from 'lucide-react';
 import type { RunActivity } from '@ariadne/protocol/public';
 import { useFeatureSnapshot } from '@renderer/core/runtime/features/feature-snapshot-store';
 import type { ProtectedToolResultDetail } from '@renderer/core/runtime/features/tool-result-feature-store';
 import { formatActivityKind } from '@renderer/core/runtime/runtime-labels';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
+import { PanelEmptyState } from '@renderer/shared/ui/PanelEmptyState';
+import './tool-output.css';
 
 interface LoadedDetail {
   readonly metadata: ProtectedToolResultDetail;
@@ -12,17 +14,34 @@ interface LoadedDetail {
 }
 
 export function ToolOutputPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
-  const runView = useFeatureSnapshot(services.runs.view);
   const sessions = useFeatureSnapshot(services.sessions.view);
+  const selectedSession = sessions.sessions.find(session => session.sessionId === sessions.selectedSessionId);
+  return <SessionToolOutputPanel
+    key={sessions.selectedSessionId ?? 'no-session'}
+    moduleId={moduleId}
+    services={services}
+    sessionId={sessions.selectedSessionId ?? undefined}
+    workspaceId={selectedSession?.workspaceId}
+  />;
+}
+
+function SessionToolOutputPanel({ moduleId, services, sessionId, workspaceId }: FeaturePanelProps & {
+  sessionId: string | undefined;
+  workspaceId: string | undefined;
+}): React.JSX.Element {
+  const runView = useFeatureSnapshot(services.runs.view);
   const [selected, setSelected] = useState<LoadedDetail | null>(null);
+  const [selectedActivityId, setSelectedActivityId] = useState<string | null>(null);
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const selectedSession = sessions.sessions.find(
-    (session) => session.sessionId === sessions.selectedSessionId
-  );
+  const requestGeneration = useRef(0);
+  const detailHeadingRef = useRef<HTMLButtonElement>(null);
+  const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+  useEffect(() => () => { requestGeneration.current += 1; }, []);
+  useEffect(() => { if (selectedActivityId) detailHeadingRef.current?.focus(); }, [selectedActivityId]);
   const sessionRunIds = new Set(
     runView.runs
-      .filter((run) => run.sessionId === sessions.selectedSessionId)
+      .filter((run) => run.sessionId === sessionId)
       .map((run) => run.runId)
   );
   const activities = runView.activities
@@ -35,28 +54,32 @@ export function ToolOutputPanel({ moduleId, services }: FeaturePanelProps): Reac
     activity: Extract<RunActivity, { activityType: 'tool' }>
   ): Promise<void> => {
     if (
-      selectedSession === undefined
+      workspaceId === undefined
       || !activity.detailAvailable
       || !['completed', 'failed'].includes(activity.status)
     ) return;
+    const generation = ++requestGeneration.current;
+    setSelectedActivityId(activity.activityId);
+    setSelected(null);
     setLoadingId(activity.activityId);
     setError(null);
     try {
       const detail = await services.toolResults.loadDetail(
         activity.runId,
-        selectedSession.workspaceId,
+        workspaceId,
         activity.activityId
       );
-      setSelected({ metadata: detail, content: detail.content });
+      if (generation === requestGeneration.current) setSelected({ metadata: detail, content: detail.content });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '无法读取受保护工具结果。');
+      if (generation === requestGeneration.current) setError(cause instanceof Error ? cause.message : '无法读取受保护工具结果。');
     } finally {
-      setLoadingId(null);
+      if (generation === requestGeneration.current) setLoadingId(null);
     }
   };
 
   const loadMore = async (): Promise<void> => {
-    if (selected === null || selected.metadata.complete) return;
+    if (selected === null || selected.metadata.complete || loadingId !== null) return;
+    const generation = ++requestGeneration.current;
     setLoadingId(selected.metadata.effectId);
     setError(null);
     try {
@@ -71,36 +94,51 @@ export function ToolOutputPanel({ moduleId, services }: FeaturePanelProps): Reac
         || next.cursor !== selected.metadata.nextCursor
         || next.presentation.kind !== selected.metadata.presentation.kind
       ) throw new Error('protected_tool_result_page_drift');
-      setSelected({ metadata: next, content: `${selected.content}${next.content}` });
+      if (generation === requestGeneration.current) setSelected({ metadata: next, content: `${selected.content}${next.content}` });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '无法继续读取受保护工具结果。');
+      if (generation === requestGeneration.current) setError(cause instanceof Error ? cause.message : '无法继续读取受保护工具结果。');
     } finally {
-      setLoadingId(null);
+      if (generation === requestGeneration.current) setLoadingId(null);
     }
   };
 
-  return <section className="bottom-module-panel" aria-labelledby={`${moduleId}-title`}>
+  return <section className="tool-output-panel" aria-labelledby={`${moduleId}-title`}>
     <header><h1 id={`${moduleId}-title`}>工具输出</h1><span>最近 {activities.length} 次调用</span></header>
-    {error && <p className="tool-result-detail-error" role="alert">{error}</p>}
-    <div className="tool-call-table">
+    <div className={`tool-output-body${selectedActivityId ? ' has-detail' : ''}`}>
+    <div className="tool-call-table" aria-label="工具调用列表">
       {activities.map((activity) => <button
         type="button"
-        className={`tool-call-row${activity.status === 'failed' ? ' is-failed' : ''}`}
+        className={`tool-call-row is-${activity.status}`}
         key={activity.activityId}
+        ref={element => { if (element) rowRefs.current.set(activity.activityId, element); else rowRefs.current.delete(activity.activityId); }}
         disabled={!activity.detailAvailable || !['completed', 'failed'].includes(activity.status) || loadingId !== null}
-        aria-expanded={selected?.metadata.effectId === activity.activityId}
+        aria-expanded={selectedActivityId === activity.activityId}
         onClick={() => { void openDetail(activity); }}
       >
-        {activity.status === 'failed' ? <X size={14} /> : <Check size={14} />}
-        <Wrench size={14} />
-        <strong>{activity.title}</strong>
-        <code>{loadingId === activity.activityId ? '正在读取受保护结果…' : activity.summary ?? formatActivityKind(activity)}</code>
-        <span><Clock3 size={11} /> {new Date(activity.occurredAt).toLocaleTimeString()}</span>
+        {activity.status === 'failed' ? <X size={15} /> : activity.status === 'completed' ? <Check size={15} /> : activity.status === 'running' ? <LoaderCircle size={15} className="tool-call-spinner" /> : <Clock3 size={15} />}
+        <div className="tool-call-copy"><strong>{activity.title}</strong><span>{activity.summary ?? formatActivityKind(activity)}</span></div>
+        <time dateTime={activity.occurredAt}>{new Date(activity.occurredAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
         <ChevronRight size={13} />
       </button>)}
-      {activities.length === 0 && <div className="tool-call-row"><TerminalSquare size={14} /><TerminalSquare size={14} /><strong>暂无工具调用</strong><code>Agent 活动将在这里显示。</code></div>}
+      {activities.length === 0 && <PanelEmptyState compact icon={TerminalSquare} title="暂无工具调用" description={sessionId ? '此会话的工具调用和结果会显示在这里。' : '选择一条会话，查看它的工具调用和结果。'} />}
     </div>
-    {selected && <ProtectedResultCard detail={selected} loading={loadingId !== null} onLoadMore={loadMore} />}
+    {selectedActivityId && <section className="tool-output-detail" aria-label="工具结果详情" aria-busy={loadingId !== null}>
+      <header><button ref={detailHeadingRef} type="button" className="tool-detail-back" onClick={() => {
+        requestGeneration.current += 1;
+        const previous = selectedActivityId;
+        setSelectedActivityId(null);
+        setSelected(null);
+        setLoadingId(null);
+        setError(null);
+        requestAnimationFrame(() => rowRefs.current.get(previous)?.focus());
+      }}><ArrowLeft size={14} /> 返回调用列表</button></header>
+      <div className="tool-detail-scroll">
+        {error && <p className="tool-result-detail-error" role="alert">{error}</p>}
+        {loadingId && !selected && <p className="tool-result-loading" role="status">正在读取工具结果…</p>}
+        {selected && <ProtectedResultCard detail={selected} loading={loadingId !== null} onLoadMore={loadMore} />}
+      </div>
+    </section>}
+    </div>
   </section>;
 }
 

@@ -14,6 +14,7 @@ import type {
   RunSummary,
 } from '@ariadne/protocol/public';
 import type { RuntimeRun } from '@renderer/core/runtime/runtime-store';
+import type { ToolResultFeatureStore } from '@renderer/core/runtime/features/tool-result-feature-store';
 
 import { MarkdownMessage } from './MarkdownMessage';
 
@@ -24,6 +25,8 @@ export interface RunProcessingDisclosureProps {
   messageStatus?: 'streaming' | 'completed' | 'interrupted' | 'failed' | undefined;
   fallbackDurationMs?: number | undefined;
   onOpenActivity?: (() => void) | undefined;
+  workspaceId?: string | undefined;
+  toolResults?: ToolResultFeatureStore | undefined;
 }
 
 type ToolActivity = Extract<RunActivity, { activityType: 'tool' }>;
@@ -41,6 +44,8 @@ export function RunProcessingDisclosure({
   messageStatus,
   fallbackDurationMs,
   onOpenActivity,
+  workspaceId,
+  toolResults,
 }: RunProcessingDisclosureProps): React.JSX.Element | null {
   const contentId = useId();
   const open = messageStatus === 'streaming' || isOpenRun(run, reasoning);
@@ -123,7 +128,12 @@ export function RunProcessingDisclosure({
                 )
               : item.kind === 'system'
                 ? <SystemActivityRow key={item.key} activity={item.activity} />
-                : <ToolActivityRow key={item.key} activities={item.activities} />)}
+              : <ToolActivityGroup
+                  key={item.key}
+                  activities={item.activities}
+                  workspaceId={workspaceId}
+                  toolResults={toolResults}
+                />)}
           </div>
         </div>
       )}
@@ -147,7 +157,15 @@ function SystemActivityRow({ activity }: { activity: SystemActivity }): React.JS
   );
 }
 
-function ToolActivityRow({ activities }: { activities: ToolActivity[] }): React.JSX.Element {
+function ToolActivityGroup({
+  activities,
+  workspaceId,
+  toolResults,
+}: {
+  activities: ToolActivity[];
+  workspaceId?: string | undefined;
+  toolResults?: ToolResultFeatureStore | undefined;
+}): React.JSX.Element {
   const running = activities.some((activity) => activity.status === 'running');
   const failed = activities.some((activity) => activity.status === 'failed');
   const durationMs = Math.max(
@@ -161,8 +179,8 @@ function ToolActivityRow({ activities }: { activities: ToolActivity[] }): React.
         : `运行了 ${activities.length} 个工具`
     : toolActivityLabel(activities[0]!);
   const status = running ? 'running' : failed ? 'failed' : 'completed';
-  return (
-    <div className={`run-processing-event run-processing-event--${status}`}>
+  return <div className={`run-processing-tool-group run-processing-event--${status}`}>
+    <div className="run-processing-event run-processing-tool-group-heading">
       {running
         ? <LoaderCircle className="is-spinning" />
         : failed
@@ -171,13 +189,140 @@ function ToolActivityRow({ activities }: { activities: ToolActivity[] }): React.
       <span>{label}</span>
       {durationMs > 0 && <small>{formatProcessingDuration(durationMs)}</small>}
     </div>
+    <div className="run-processing-tool-items">
+      {activities.map((activity) => <ToolActivityRow
+        key={activity.activityId}
+        activity={activity}
+        workspaceId={workspaceId}
+        toolResults={toolResults}
+      />)}
+    </div>
+  </div>;
+}
+
+function ToolActivityRow({
+  activity,
+  workspaceId,
+  toolResults,
+}: {
+  activity: ToolActivity;
+  workspaceId?: string | undefined;
+  toolResults?: ToolResultFeatureStore | undefined;
+}): React.JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [detail, setDetail] = useState<Awaited<ReturnType<ToolResultFeatureStore['loadDetail']>> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const canLoad = Boolean(
+    workspaceId
+      && toolResults
+      && activity.detailAvailable
+      && (activity.status === 'completed' || activity.status === 'failed'),
   );
+
+  const toggleDetail = async (): Promise<void> => {
+    if (!canLoad || loading) return;
+    setExpanded((value) => !value);
+    if (detail !== null || expanded) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const loaded = await toolResults!.loadDetail(
+        activity.runId,
+        workspaceId!,
+        activity.activityId,
+      );
+      setDetail(loaded);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '无法读取工具结果。');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadMore = async (): Promise<void> => {
+    if (!detail || detail.complete || loading || !toolResults || !workspaceId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const next = await toolResults.loadDetail(
+        activity.runId,
+        workspaceId,
+        activity.activityId,
+        detail.nextCursor,
+      );
+      if (
+        next.digest !== detail.digest
+        || next.cursor !== detail.nextCursor
+        || next.presentation.kind !== detail.presentation.kind
+      ) throw new Error('protected_tool_result_page_drift');
+      setDetail({ ...next, content: `${detail.content}${next.content}` });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '无法继续读取工具结果。');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return <div className={`run-processing-tool${expanded ? ' is-expanded' : ''}`}>
+    <button
+      type="button"
+      className="run-processing-tool-button"
+      onClick={() => { void toggleDetail(); }}
+      disabled={!canLoad || loading}
+      aria-expanded={expanded}
+    >
+      {activity.status === 'running'
+        ? <LoaderCircle className="is-spinning" />
+        : activity.status === 'failed'
+          ? <XCircle />
+          : <TerminalSquare />}
+      <span className="run-processing-tool-copy">
+        <strong>{activity.title}</strong>
+        <small>{activity.toolName}{activity.summary ? ` · ${activity.summary}` : ''}</small>
+      </span>
+      {activity.durationMs !== undefined && <small>{formatProcessingDuration(activity.durationMs)}</small>}
+      {canLoad && <span className="run-processing-tool-toggle">{expanded ? '收起' : '查看'}</span>}
+    </button>
+    {expanded && <div className="run-processing-tool-detail" aria-busy={loading}>
+      {loading && <span role="status">正在读取工具结果…</span>}
+      {error && <span role="alert">{error}</span>}
+      {detail && <>
+        <div className="run-processing-tool-meta">
+          <span>{detail.status === 'failed' ? '失败' : '完成'}</span>
+          <span>{formatBytes(detail.totalBytes)}</span>
+          {detail.complete ? null : <span>结果仍有后续内容</span>}
+        </div>
+        <pre>{formatToolDetailContent(detail.content)}</pre>
+        {!detail.complete && <button
+          type="button"
+          className="run-processing-tool-more"
+          disabled={loading}
+          onClick={() => { void loadMore(); }}
+        >{loading ? '正在读取…' : '继续读取结果'}</button>}
+      </>}
+    </div>}
+  </div>;
 }
 
 function toolActivityLabel(activity: ToolActivity): string {
   if (activity.status === 'running') return `正在${activity.title}`;
   if (activity.status === 'failed') return `${activity.title}失败`;
   return `已${activity.title}`;
+}
+
+function formatToolDetailContent(content: string): string {
+  try {
+    return JSON.stringify(JSON.parse(content) as unknown, null, 2);
+  } catch {
+    return content;
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function buildProcessingItems(

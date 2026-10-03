@@ -8,7 +8,6 @@ import {
 } from '@ariadne/agent-core';
 
 const COMPLETED_WITHOUT_TEXT = 'Agent completed without a textual response.';
-const FAILED_MESSAGE = 'The Agent run failed.';
 const CANCELLED_MESSAGE = 'The Agent run was cancelled.';
 const MAX_ASSISTANT_CONTENT_LENGTH = 1_048_576;
 
@@ -27,7 +26,9 @@ implements AgentTerminalAssistantContentResolver {
 
   public async resolveTerminalAssistantContent(run: AgentRun): Promise<string> {
     assertValidAgentRun(run);
-    if (run.state.status === 'failed') return FAILED_MESSAGE;
+    if (run.state.status === 'failed') {
+      return `Agent run failed (${run.state.errorCode}).`;
+    }
     if (run.state.status === 'cancelled') return CANCELLED_MESSAGE;
     if (run.state.status !== 'completed') {
       throw new AgentRunInvariantError(

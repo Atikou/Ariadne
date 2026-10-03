@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": { "composite": false, "types": ["node", "vite/client"] },
+  "include": ["tests/**/*.ts", "src/preload/index.d.ts", "vitest.config.ts"]
+}

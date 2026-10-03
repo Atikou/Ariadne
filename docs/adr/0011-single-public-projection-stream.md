@@ -5,8 +5,8 @@
 
 ## Context
 
-The transition architecture currently has two incompatible public truths. New
-At decision time, Agent Run versions published `run.changed` events, while `runtime.snapshot.get`
+At decision time, the transition architecture had two incompatible public truths.
+Agent Run versions published `run.changed` events, while `runtime.snapshot.get`
 still reads legacy Facade stores. Renderer code then synthesizes Runs from
 Messages, joins timestamps, fetches missing Decisions, and writes terminal Run
 state into Activity views. A refresh can consequently remove a Run that a
@@ -36,7 +36,8 @@ Each commit contains an ordered set of changes across:
 - Run and its Activity view;
 - Decision;
 - Model availability;
-- Diagnostics.
+- Diagnostics;
+- bounded inference heads for exact Run/Turn/Attempt identities (added after the original activation).
 
 Changes that must be observed together, such as `Run waiting_permission` and
 its pending Decision, are written in one Projection Commit. Every Decision
@@ -53,11 +54,12 @@ rejection before admission does not poison the store.
 
 ### Snapshot plus pull-based replay
 
-The public contract moves atomically to version 3:
+The public projection contract is reset atomically to epoch `4.0`. Existing
+`.v3` command names identify the command family, not storage compatibility:
 
 ```ts
 interface PublicProjectionSnapshot {
-  contractVersion: '3.0';
+  contractVersion: '4.0';
   streamId: string;
   cursor: number;
   cursorDigest: `sha256:${string}`;
@@ -74,8 +76,8 @@ interface PublicProjectionSnapshot {
 `streamId` survives ordinary Runtime restart. It changes only when the
 Projection store is rebuilt, migrated incompatibly, or restored to another
 history. Renderer starts with one atomic Snapshot, then pulls commits after its
-cursor. IPC push is only an availability wake-up and carries no delivery
-authority.
+cursor. Projection push notifications are availability wake-ups and carry no delivery
+authority. The additional live inference lane described below also carries no durable authority.
 
 Cursor zero has one explicit genesis digest. Every committed cursor stores a
 domain-separated digest of the prior history digest, cursor, and canonical
@@ -112,6 +114,25 @@ commit through one immutable state replacement. It is the sole writer of
 public DTOs. Session, Message, Run, Decision, Model, and Diagnostics feature
 stores expose selectors, subscriptions, and command methods only; they do not
 write one another.
+
+### Live inference display and incremental views (2026-09-05)
+
+Live chunk events may be duplicated, lost, or first observed midway through an Attempt.
+Renderer buffers a bounded suffix, requests the existing Projection protocol on a gap,
+and joins only a contiguous suffix onto a durable head with the same identity. A stale
+durable streaming head must not hide a newer contiguous live prefix or revive a terminal
+Attempt. `committed` and `interrupted` remain terminal; the final Message remains the
+authoritative answer. Resetting the Projection epoch clears ephemeral stream state.
+
+The Main delivery cursor belongs to a Runtime process instance. Creating a replacement
+instance resets that cursor, including automatic crash recovery; otherwise new low
+cursors would be suppressed by the prior process watermark.
+
+Collection identities are retained when unchanged. Derived feature records and their
+subscribers use those identities; token updates do not notify Session, Model, Run or
+Decision subscribers. Live display publishes are coalesced, while durable commits and
+termination remain immediately observable. These optimizations do not weaken atomic
+cross-feature validation or introduce another public writer.
 
 Command responses contain receipts and update only `PendingCommandStore`.
 Optimistic UI state must not fabricate a Message, Run, Decision, Activity, or

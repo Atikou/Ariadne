@@ -29,6 +29,7 @@ import type {
   ClaimedConversationOutboxMessage,
   ConversationRunHandoffOutboxPort
 } from '../control/ports/ConversationRunHandoffOutbox.js';
+import { ModelExecutionQualificationError } from '../control/ports/AgentModelInference.js';
 import {
   AgentRunAdmissionController,
   AgentRunAdmissionControlError,
@@ -393,7 +394,7 @@ export class ConversationAgentHandoffCoordinator {
       sessionId: message.sessionId,
       workspaceId: message.workspaceId,
       messageId: assistantMessageId,
-      assistantContent: '任务无法启动：当前运行权限或工具配置不可用。请检查设置后重试。',
+      assistantContent: `任务无法启动（${failureCode}）。`,
       sagaId: message.sagaId,
       expectedSagaVersion: message.sagaVersion,
       handoffCommandId,
@@ -856,6 +857,7 @@ function corruption(
 }
 
 function deterministicAdmissionFailureCode(error: unknown): string | null {
+  if (error instanceof ModelExecutionQualificationError) return error.code;
   if (error instanceof ProductionAgentRunAdmissionSnapshotError) {
     return error.code.toLowerCase();
   }

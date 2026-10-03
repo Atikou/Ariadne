@@ -73,6 +73,7 @@ export class ConversationSessionPublicCommandHandler {
       eventId,
       sessionId: command.sessionId,
       workspaceId: command.workspaceId,
+      ...(command.title === undefined ? {} : { title: command.title }),
       expectedVersion: null,
       occurredAt
     } as const;

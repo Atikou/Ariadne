@@ -85,6 +85,7 @@ implements AgentAdmissionAuthorityBundleProvider {
     const model = this.models?.resolveBinding(manifest.model.settingsRevision, {
       ...(execution.modelId === undefined ? {} : { modelId: execution.modelId }),
       ...(query.requiresVision === true ? { requiresVision: true } : {}),
+      executionMode: execution.mode,
       ...(execution.routingStrategy === undefined
         ? {}
         : { routingStrategy: execution.routingStrategy })

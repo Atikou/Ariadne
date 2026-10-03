@@ -32,6 +32,9 @@ jobs:
             package-lock.json
             packaging/runtime/package-lock.json
 
+      - name: Use the repository npm version
+        run: npm install --global npm@11.13.0
+
       - name: Install dependencies
         run: npm ci
 
@@ -52,3 +55,47 @@ jobs:
 
       - name: Verify release contract
         run: npm run verify:release-contract
+
+      - name: Verify real Electron behavior
+        run: npm run test:electron
+
+      - name: Verify production and preview profiles
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/electron-profile-matrix.ps1
+
+      - name: Verify rendered component interaction and layout
+        run: npm run test:renderer-ui
+
+      - name: Save deterministic window evidence
+        if: always()
+        run: node scripts/write-verification-evidence.mjs
+
+      - name: Upload deterministic window evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: electron-${{ github.sha }}
+          path: |
+            artifacts/verification-evidence.json
+            artifacts/electron-runtime-smoke/*.json
+            artifacts/electron-runtime-smoke/*.png
+            artifacts/electron-profile-matrix/**/*.json
+            artifacts/electron-profile-matrix/**/*.png
+          if-no-files-found: warn
+
+  speech:
+    name: Speech pure logic on the supported Sidecar runtime
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Use Node.js 22 for the Sidecar
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: speech-runtime/package-lock.json
+      - name: Install the Sidecar test dependencies without native setup
+        run: npm ci --prefix speech-runtime --ignore-scripts
+      - name: Test Speech protocol and audio processing
+        run: npm test --prefix speech-runtime

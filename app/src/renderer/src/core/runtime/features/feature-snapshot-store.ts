@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { shallowSnapshotEqual } from '../snapshot-equality';
 
 export interface SnapshotSource<T> {
   getSnapshot(): T;
@@ -18,12 +19,21 @@ export class FeatureSnapshotStore<TSource, TSnapshot> {
     const sourceSnapshot = this.source.getSnapshot();
     if (sourceSnapshot !== this.sourceSnapshot || this.featureSnapshot === undefined) {
       this.sourceSnapshot = sourceSnapshot;
-      this.featureSnapshot = this.select(sourceSnapshot);
+      const next = this.select(sourceSnapshot);
+      if (!shallowSnapshotEqual(this.featureSnapshot, next)) this.featureSnapshot = next;
     }
-    return this.featureSnapshot;
+    return this.featureSnapshot as TSnapshot;
   };
 
-  subscribe = (listener: () => void): (() => void) => this.source.subscribe(listener);
+  subscribe = (listener: () => void): (() => void) => {
+    let previous = this.getSnapshot();
+    return this.source.subscribe(() => {
+      const next = this.getSnapshot();
+      if (Object.is(previous, next)) return;
+      previous = next;
+      listener();
+    });
+  };
 }
 
 export function useFeatureSnapshot<T>(store: SnapshotSource<T>): T {

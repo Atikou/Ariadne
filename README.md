@@ -45,7 +45,9 @@ npm.cmd run verify:release-contract
 npm.cmd run test:electron
 ```
 
-`test:electron` 当前通过真实 Electron 窗口、Preload、Main、Runtime 子进程、SQLite 和 Public Projection 执行确定性 Agent 产品门禁，覆盖 durable token/reasoning stream、direct、真实 Composer 中同一 Run 的运行中 inbox continuation、稳定 command receipt/权威对账、Agent `ask_user` 卡片回答与同 Run 续跑、Tool continuation、Decision allow/deny、运行中取消，以及 inbox response loss、user-question waiting、inference、effect、projection 五个持久边界的 Runtime 强杀恢复。它还用同一隔离 userData 验证未结算 enqueue 经 Main-only 系统加密 outbox 跨 Renderer reload 和完整桌面进程重启恢复为同 ID `reconcile`，且启动时不会自动重放。它使用进程外 HTTPS Provider fixture，不替代 Live Provider、本地模型、Browser/MCP、正式签名 Sandbox Helper 或干净机器发布验收。
+`test:electron` 通过真实 Electron 窗口、Preload、Main、Runtime 子进程、SQLite 和 Public Projection 执行确定性 Agent 产品门禁，覆盖完成前 token 可见、实时丢包/重复/Renderer 重载恢复、运行中 inbox、主动提问、工具与权限、取消和五个 Runtime 强杀边界。未结算 enqueue 还通过 Main-only 加密 outbox 跨完整桌面重启恢复为同 ID `reconcile`，启动时不会自动重放。该门禁使用进程外 HTTPS Provider fixture，不替代真实模型、Browser/MCP、正式签名 Sandbox Helper 或干净机器发布验收。
+
+`test:electron-profiles` 检查四个正式 Profile 与显式 `desktop-preview`；可视化审查模块只在预览 Profile 开放，并读取当前 Public Projection 的真实会话数据。CI 固定 Node 24.16.0/npm 11.13.0，分别检查架构、Main/Renderer/测试类型、单元/集成、真实窗口和独立 Speech 逻辑，并上传源码摘要、工具链与 Profile 证据。当前修复与测量维护在 [架构审阅与修复入口](docs/architecture-review-and-remediation.md)。
 
 正式发布门禁：
 

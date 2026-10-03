@@ -49,17 +49,13 @@ describe('RuntimeKernelApplication model catalog', () => {
         label: 'Qwen Local',
         location: 'local',
         availability: 'checking',
-        supportsAgent: true
+        supportsAgent: false
       })
     ]));
     expect(application.status().capabilities).toContain('models.local');
-    const binding = application.modelInferenceGateway?.resolveBinding(1);
-    expect(binding).toEqual({
-      providerId: 'ariadne.local',
-      modelId: 'qwen-local',
-      settingsRevision: 1
-    });
-    expect(binding && application.modelInferenceGateway?.hasExactBinding(binding)).toBe(true);
+    expect(() => application.modelInferenceGateway?.resolveBinding(1, {
+      executionMode: 'chat'
+    })).toThrow('model_text_qualification_required');
 
     const shutdown = createShutdownContext(Date.now() + 5_000);
     try {

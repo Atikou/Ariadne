@@ -1,6 +1,18 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ConversationMessage } from '../src/renderer/src/modules/chat/ConversationMessage';
+import { toConversationNode } from '../src/renderer/src/modules/chat/ChatMessageProjection';
+import type { RuntimeMessage } from '../src/renderer/src/core/runtime/runtime-store';
+
+function renderMessage(role: 'user' | 'assistant', content: string, status: RuntimeMessage['status'] = 'completed'): string {
+  return renderToStaticMarkup(createElement(ConversationMessage, {
+    node: toConversationNode({ messageId: 'message-a', sessionId: 'session-a', role, content, status,
+      createdAt: '2026-09-05T00:00:00.000Z' }), activities: [], onCopy: async () => {}
+  }));
+}
 
 const rendererRoot = join(process.cwd(), 'src', 'renderer', 'src');
 
@@ -13,14 +25,10 @@ describe('chat message actions', () => {
   });
 
   it('shares the typed clipboard action with user messages and assistant answers', async () => {
-    const panel = await readFile(join(rendererRoot, 'modules', 'chat', 'ChatPanel.tsx'), 'utf8');
-
-    expect(panel).toContain('function MessageCopyButton');
-    expect(panel).toContain("subject={isUser ? '消息' : '回答'}");
-    expect(panel).toContain('function ConversationMessage');
-    expect(panel).toContain('onCopy={(text) => services.clipboard.writeText({ text })}');
-    expect(panel).toContain('event.stopPropagation();');
-    expect(panel).toContain('const text = node.content ?? node.summary;');
+    const panel = await readFile(join(rendererRoot, 'modules', 'chat', 'ConversationMessageRow.tsx'), 'utf8');
+    expect(renderMessage('user', 'User text')).toContain('aria-label="复制消息"');
+    expect(renderMessage('assistant', 'Answer text')).toContain('aria-label="复制回答"');
+    expect(panel).toContain('services.clipboard.writeText({ text })');
     expect(panel).not.toContain('navigator.clipboard');
     expect(panel).not.toMatch(/mock/i);
   });
@@ -31,13 +39,21 @@ describe('chat message actions', () => {
       readFile(join(rendererRoot, 'app', 'styles.css'), 'utf8')
     ]);
 
-    expect(panel).toContain('<p className="message-content">{visibleText}</p>');
-    expect(panel).toContain('const visibleText = formalAnswerVisible ? text');
-    expect(panel).not.toContain('text.split(');
+    const content = '  first line\n\nsecond line  ';
+    expect(renderMessage('user', content)).toContain(`<p class="message-content">${content}</p>`);
     expect(panel).toContain('const message = draft;');
     expect(panel).toContain('message.trim().length === 0 && images.length === 0');
     expect(styles).toMatch(/\.message-content\s*\{[^}]*white-space:\s*break-spaces;/);
     expect(styles).toMatch(/\.user-message \.message-content\s*\{[^}]*width:\s*fit-content;/);
+  });
+
+  it('renders partial answer text before completion and preserves explicit failure states', () => {
+    const streaming = renderMessage('assistant', 'Partial answer', 'streaming');
+    expect(streaming).toContain('Partial answer');
+    expect(streaming).not.toContain('assistant-processing-placeholder');
+    expect(renderMessage('assistant', '', 'streaming')).toContain('正在处理…');
+    expect(renderMessage('assistant', 'Preserved text', 'interrupted')).toContain('回复生成中断');
+    expect(renderMessage('assistant', '', 'failed')).toContain('回复生成失败');
   });
 
   it('uses an avatar-free compact user bubble', async () => {

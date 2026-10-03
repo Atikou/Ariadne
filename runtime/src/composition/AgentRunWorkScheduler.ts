@@ -2,321 +2,87 @@ import {
   AgentRunVersionConflictError,
   deriveStableAgentId,
   isCanonicalIsoTimestamp,
-  type AgentRun,
   type AgentRunRecoveryCursor,
   type AgentRunRecoveryQuery,
-  type ReadyResumableAgentRunRecovery,
   type RecoverableAgentRun
 } from '@ariadne/agent-core';
-
 import type { ShutdownContext } from '../ingress/ShutdownContext.js';
-import type {
-  AgentRunWorkClassification,
-  AgentRunWorkClassifier
-} from '../control/execution/AgentRunWorkClassifier.js';
-import type {
-  AgentRunRetiredToolCatalogTerminalizationOwner,
-  AgentRunRetiredToolCatalogTerminalizationReceipt
-} from '../control/ports/AgentRunAuthorityRetirement.js';
-
-type StartedWork = Extract<
-  AgentRunWorkClassification,
-  {
-    readonly kind:
-      | 'recovery_uncertain_effect'
-      | 'recovery_uncertain_inference'
-      | 'recovery_uncertain_delegated_inference'
-  }
->;
-
-type ActionableWork = Extract<
-  AgentRunWorkClassification,
-  {
-    readonly kind:
-      | 'dispatch_effect'
-      | 'continue_effect_results'
-      | 'continue_inbox'
-      | 'continue_child_results'
-      | 'dispatch_follow_up'
-      | 'dispatch_delegated_initial'
-      | 'fail_model_turn_budget'
-      | 'fail_deadline_expired';
-  }
->;
-
-type TerminalizationWork = Extract<
-  ActionableWork,
-  { readonly kind: 'fail_model_turn_budget' | 'fail_deadline_expired' }
->;
-
-export interface AgentRunWorkEffectDispatchRequest {
-  readonly commandId: string;
-  readonly runId: string;
-  readonly effectId: string;
-  readonly expectedVersion: number;
-  readonly occurredAt: string;
-}
-
-/** Structural subset returned by AgentEffectDispatchService. */
-export interface AgentRunWorkEffectDispatchReceipt {
-  readonly run: {
-    readonly runId: string;
-    readonly version: number;
-  };
-  readonly effect: {
-    readonly effectId: string;
-    readonly state: { readonly status: string };
-  };
-  readonly status: string;
-}
-
-export interface AgentRunWorkEffectDispatcher {
-  dispatch(
-    request: AgentRunWorkEffectDispatchRequest,
-    signal: AbortSignal
-  ): Promise<AgentRunWorkEffectDispatchReceipt>;
-}
-
-/** Structural subset returned by AgentEffectContinuationController. */
-export interface AgentRunWorkContinuationReceipt {
-  readonly receiptVersion: 1;
-  readonly commandId: string;
-  readonly runId: string;
-  readonly runVersion: number;
-  readonly turnId: string;
-  readonly attemptId: string;
-  readonly replayed: boolean;
-}
-
-export interface AgentRunWorkContinuationOwner {
-  continueSettledBatch(
-    recovery: ReadyResumableAgentRunRecovery,
-    signal: AbortSignal
-  ): Promise<AgentRunWorkContinuationReceipt>;
-}
-
-export interface AgentRunWorkInboxContinuationOwner {
-  continueInbox(
-    recovery: ReadyResumableAgentRunRecovery,
-    inputIds: readonly string[],
-    signal: AbortSignal
-  ): Promise<AgentRunWorkContinuationReceipt>;
-}
-
-export interface AgentRunWorkChildResultsContinuationOwner {
-  continueChildResults(
-    recovery: ReadyResumableAgentRunRecovery,
-    signal: AbortSignal
-  ): Promise<AgentRunWorkContinuationReceipt>;
-}
-
-export interface AgentRunWorkFollowUpRequest {
-  readonly runId: string;
-  readonly turnId: string;
-  readonly attemptId: string;
-  readonly expectedVersion: number;
-  readonly occurredAt: string;
-}
-
-interface AgentRunWorkFollowUpResultIdentity {
-  readonly run: { readonly runId: string; readonly version: number };
-  readonly turn: { readonly turnId: string };
-  readonly attempt: { readonly attemptId: string; readonly state?: { readonly status: string } };
-  readonly status?: string;
-  readonly recoveryDecisionId?: string;
-}
-
-export type AgentRunWorkFollowUpReceipt =
-  | {
-      readonly status: 'completed';
-      readonly inferenceStatus: 'succeeded' | 'failed' | 'cancelled';
-      readonly result: AgentRunWorkFollowUpResultIdentity;
-    }
-  | {
-      readonly status: 'waiting_recovery';
-      readonly reason:
-        | 'inference_outcome_uncertain'
-        | 'inference_already_crossed_boundary';
-      readonly result?: AgentRunWorkFollowUpResultIdentity;
-    };
-
-export interface AgentRunWorkFollowUpOwner {
-  dispatchOwned(
-    request: AgentRunWorkFollowUpRequest,
-    signal: AbortSignal
-  ): Promise<AgentRunWorkFollowUpReceipt>;
-}
-
-export interface ActiveAgentTurnInterruptionRecovery {
-  readonly runId: string;
-  readonly runVersion: number;
-  readonly turnId: string;
-  readonly attemptId: string;
-  readonly recoveryDecisionId: string;
-}
-
-export interface ActiveAgentTurnInterruptionRequest {
-  readonly commandId: string;
-  readonly runId: string;
-  readonly expectedVersion: number;
-  readonly finalize: (
-    recovery: ActiveAgentTurnInterruptionRecovery
-  ) => Promise<{ readonly runId: string; readonly runVersion: number }>;
-}
-
-export type ActiveAgentTurnInterruptionResult =
-  | { readonly status: 'not_active' }
-  | {
-      readonly status: 'interrupted';
-      readonly runId: string;
-      readonly runVersion: number;
-      readonly turnId: string;
-      readonly attemptId: string;
-      readonly recoveryDecisionId: string;
-    }
-  | { readonly status: 'already_settled' };
-
-export interface AgentRunWorkTerminalizationReceipt {
-  readonly receiptVersion: 1;
-  readonly commandId: string;
-  readonly runId: string;
-  readonly runVersion: number;
-  readonly checkpointVersion: number;
-  readonly status: 'failed';
-  readonly reason: 'model_turn_budget_exhausted' | 'deadline_expired';
-  readonly errorCode:
-    | 'agent_model_turn_budget_exhausted'
-    | 'agent_run_deadline_expired';
-  readonly replayed: boolean;
-}
-
-export interface AgentRunWorkTerminalizationOwner {
-  terminalize(
-    work: TerminalizationWork,
-    signal: AbortSignal
-  ): Promise<AgentRunWorkTerminalizationReceipt>;
-}
-
-/** Structural subset returned by AgentStartedWorkRecoveryCoordinator. */
-export interface AgentRunStartedWorkRecoveryReceipt {
-  readonly receiptVersion: 1;
-  readonly commandId: string;
-  readonly runId: string;
-  readonly runVersion: number;
-  readonly subjectKind: 'effect' | 'inference';
-  readonly subjectId: string;
-  readonly recoveryDecisionId: string;
-  readonly replayed: boolean;
-}
-
-export interface AgentRunStartedWorkRecoveryOwner {
-  recover(
-    work: StartedWork,
-    signal: AbortSignal
-  ): Promise<AgentRunStartedWorkRecoveryReceipt>;
-}
-
-export interface AgentRunWorkSchedulerClock {
-  now(): string;
-}
-
-export interface AgentRunWorkAuthorityVerifier {
-  /**
-   * Distinguishes an intentionally retired immutable Catalog from authority
-   * corruption. All other unavailable or drifting authority remains an error.
-   */
-  assessRestorability(
-    run: AgentRun,
-    signal: AbortSignal
-  ): Promise<AgentRunWorkAuthorityAssessment>;
-}
-
-export type AgentRunWorkAuthorityAssessment =
-  | { readonly status: 'restorable' }
-  | { readonly status: 'retired_tool_catalog' };
-
-export interface AgentRunWorkSchedulerOptions {
-  readonly intervalMs?: number;
-  readonly pageSize?: number;
-  readonly maxFixedPointRounds?: number;
-  readonly clock?: AgentRunWorkSchedulerClock;
-  /** Startup-only. Steady-state started work is always a health fault. */
-  readonly startedWorkRecovery?: AgentRunStartedWorkRecoveryOwner;
-  readonly authorityVerifier?: AgentRunWorkAuthorityVerifier;
-  readonly retiredToolCatalogTerminalizations?:
-    AgentRunRetiredToolCatalogTerminalizationOwner;
-  readonly delegatedInference?: AgentRunWorkFollowUpOwner;
-  /** Provider-routed follow-up owner for durable delegated Child Runs only. */
-  readonly delegatedFollowUps?: AgentRunWorkFollowUpOwner;
-  readonly childResultsContinuation?: AgentRunWorkChildResultsContinuationOwner;
-}
-
-export interface AgentRunWorkDrainResult {
-  readonly rounds: number;
-  readonly scannedRuns: number;
-  readonly dispatchedEffects: number;
-  readonly continuedBatches: number;
-  readonly continuedInboxInputs: number;
-  readonly continuedChildResults: number;
-  readonly dispatchedFollowUps: number;
-  readonly dispatchedDelegatedInitials: number;
-  readonly terminalizedRuns: number;
-}
-
-export interface AgentRunWorkSchedulerFault {
-  readonly runId: string;
-  readonly expectedVersion: number;
-  readonly kind:
-    | 'blocked_recovery'
-    | 'unsupported'
-    | 'health_fault'
-    | 'recovery_uncertain_effect'
-    | 'recovery_uncertain_inference'
-    | 'recovery_uncertain_delegated_inference';
-  readonly reason: string;
-}
-
-export class AgentRunWorkSchedulerHealthError extends Error {
-  public readonly code = 'AGENT_RUN_WORK_SCHEDULER_UNHEALTHY';
-
-  public constructor(public readonly faults: readonly AgentRunWorkSchedulerFault[]) {
-    super('One or more active Agent Runs have no safe production work owner.');
-    this.name = 'AgentRunWorkSchedulerHealthError';
-  }
-}
-
-export class AgentRunWorkSchedulerShutdownError extends Error {
-  public readonly code = 'AGENT_RUN_WORK_SCHEDULER_SHUTDOWN_DEADLINE_EXCEEDED';
-
-  public constructor() {
-    super('Agent Run work scheduler did not join active work before shutdown deadline.');
-    this.name = 'AgentRunWorkSchedulerShutdownError';
-  }
-}
-
-interface ScannedRun {
-  readonly recovery: RecoverableAgentRun;
-  readonly work: AgentRunWorkClassification | null;
-}
-
-interface ScanRound {
-  readonly runs: readonly ScannedRun[];
-}
-
-interface PendingActiveInterruption {
-  readonly request: ActiveAgentTurnInterruptionRequest;
-  readonly result: Promise<ActiveAgentTurnInterruptionResult>;
-  readonly resolve: (result: ActiveAgentTurnInterruptionResult) => void;
-  readonly reject: (error: unknown) => void;
-}
-
-interface ActiveInferenceDispatch {
-  readonly expectedVersion: number;
-  readonly turnId: string;
-  readonly attemptId: string;
-  readonly controller: AbortController;
-  interruption: PendingActiveInterruption | null;
-}
+import type { AgentRunWorkClassifier } from '../control/execution/AgentRunWorkClassifier.js';
+import type { AgentRunRetiredToolCatalogTerminalizationOwner } from '../control/ports/AgentRunAuthorityRetirement.js';
+import {
+  type ActionableWork,
+  type ActiveAgentTurnInterruptionRecovery,
+  type ActiveAgentTurnInterruptionRequest,
+  type ActiveAgentTurnInterruptionResult,
+  type ActiveInferenceDispatch,
+  type AgentRunStartedWorkRecoveryOwner,
+  type AgentRunWorkAuthorityAssessment,
+  type AgentRunWorkAuthorityVerifier,
+  type AgentRunWorkChildResultsContinuationOwner,
+  type AgentRunWorkContinuationOwner,
+  type AgentRunWorkDrainResult,
+  type AgentRunWorkEffectDispatcher,
+  type AgentRunWorkFollowUpOwner,
+  type AgentRunWorkFollowUpReceipt,
+  type AgentRunWorkInboxContinuationOwner,
+  type AgentRunWorkSchedulerClock,
+  AgentRunWorkSchedulerHealthError,
+  type AgentRunWorkSchedulerOptions,
+  AgentRunWorkSchedulerShutdownError,
+  type AgentRunWorkTerminalizationOwner,
+  type MutableAgentRunWorkDrainResult,
+  type PendingActiveInterruption,
+  type ScanRound,
+  type ScannedRun
+} from './AgentRunWorkSchedulerContracts.js';
+import {
+  assertChildResultsContinuationReceipt,
+  assertContinuationReceipt,
+  assertEffectReceipt,
+  assertFollowUpReceipt,
+  assertInboxContinuationReceipt,
+  assertRetiredToolCatalogTerminalizationReceipt,
+  assertStartedWorkRecoveryReceipt,
+  assertTerminalizationReceipt,
+  boundedInteger,
+  exactUncertainInferenceRecovery,
+  isConcurrentSnapshotConflict,
+  requireResumable
+} from './AgentRunWorkReceiptValidation.js';
+import {
+  childFirstRetirementOrder,
+  collectFaults,
+  compareRecoveryCursor,
+  isActionable,
+  mutableDrainResult,
+  startedWorkFault
+} from './AgentRunWorkRecoveryScan.js';
+import { joinBeforeDeadline, uniquePromises } from './AgentRunWorkShutdown.js';
+export type { AgentRunWorkEffectDispatchRequest } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunWorkEffectDispatchReceipt } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunWorkEffectDispatcher } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunWorkContinuationReceipt } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunWorkContinuationOwner } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunWorkInboxContinuationOwner } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunWorkChildResultsContinuationOwner } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunWorkFollowUpRequest } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunWorkFollowUpReceipt } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunWorkFollowUpOwner } from './AgentRunWorkSchedulerContracts.js';
+export type { ActiveAgentTurnInterruptionRecovery } from './AgentRunWorkSchedulerContracts.js';
+export type { ActiveAgentTurnInterruptionRequest } from './AgentRunWorkSchedulerContracts.js';
+export type { ActiveAgentTurnInterruptionResult } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunWorkTerminalizationReceipt } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunWorkTerminalizationOwner } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunStartedWorkRecoveryReceipt } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunStartedWorkRecoveryOwner } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunWorkSchedulerClock } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunWorkAuthorityVerifier } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunWorkAuthorityAssessment } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunWorkSchedulerOptions } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunWorkDrainResult } from './AgentRunWorkSchedulerContracts.js';
+export type { AgentRunWorkSchedulerFault } from './AgentRunWorkSchedulerContracts.js';
+export { AgentRunWorkSchedulerHealthError } from './AgentRunWorkSchedulerContracts.js';
+export { AgentRunWorkSchedulerShutdownError } from './AgentRunWorkSchedulerContracts.js';
 
 const SYSTEM_CLOCK: AgentRunWorkSchedulerClock = {
   now: () => new Date().toISOString()
@@ -911,392 +677,4 @@ export class AgentRunWorkScheduler {
     clearInterval(this.timer);
     this.timer = null;
   }
-}
-
-function childFirstRetirementOrder(items: readonly ScannedRun[]): readonly ScannedRun[] {
-  const byRunId = new Map(items.map((item) => [item.recovery.run.runId, item]));
-  const childrenByParent = new Map<string, ScannedRun[]>();
-  for (const item of items) {
-    const objective = item.recovery.run.binding.objectiveRef;
-    if (objective.kind !== 'parent_delegation' || !byRunId.has(objective.parentRunId)) {
-      continue;
-    }
-    const children = childrenByParent.get(objective.parentRunId) ?? [];
-    children.push(item);
-    childrenByParent.set(objective.parentRunId, children);
-  }
-  const ordered: ScannedRun[] = [];
-  const visiting = new Set<string>();
-  const visited = new Set<string>();
-  const visit = (item: ScannedRun): void => {
-    const runId = item.recovery.run.runId;
-    if (visited.has(runId)) return;
-    if (visiting.has(runId)) {
-      throw new Error('Retired Tool Catalog Run lineage contains a cycle.');
-    }
-    visiting.add(runId);
-    const children = childrenByParent.get(runId) ?? [];
-    children.sort((left, right) => (
-      left.recovery.run.runId < right.recovery.run.runId ? -1 : 1
-    ));
-    for (const child of children) visit(child);
-    visiting.delete(runId);
-    visited.add(runId);
-    ordered.push(item);
-  };
-  for (const item of items) visit(item);
-  return ordered;
-}
-
-interface MutableAgentRunWorkDrainResult {
-  rounds: number;
-  scannedRuns: number;
-  dispatchedEffects: number;
-  continuedBatches: number;
-  continuedInboxInputs: number;
-  continuedChildResults: number;
-  dispatchedFollowUps: number;
-  dispatchedDelegatedInitials: number;
-  terminalizedRuns: number;
-}
-
-function mutableDrainResult(): MutableAgentRunWorkDrainResult {
-  return {
-    rounds: 0,
-    scannedRuns: 0,
-    dispatchedEffects: 0,
-    continuedBatches: 0,
-    continuedInboxInputs: 0,
-    continuedChildResults: 0,
-    dispatchedFollowUps: 0,
-    dispatchedDelegatedInitials: 0,
-    terminalizedRuns: 0
-  };
-}
-
-function collectFaults(
-  round: ScanRound,
-  startupRecoveryAvailable: boolean,
-  ignoredRunIds: ReadonlySet<string> = new Set()
-): AgentRunWorkSchedulerFault[] {
-  const faults: AgentRunWorkSchedulerFault[] = [];
-  for (const item of round.runs) {
-    if (ignoredRunIds.has(item.recovery.run.runId)) continue;
-    if (!item.recovery.ready) {
-      faults.push({
-        runId: item.recovery.run.runId,
-        expectedVersion: item.recovery.run.version,
-        kind: 'blocked_recovery',
-        reason: item.recovery.issues.join(',')
-      });
-      continue;
-    }
-    const work = item.work;
-    if (work === null) {
-      faults.push({
-        runId: item.recovery.run.runId,
-        expectedVersion: item.recovery.run.version,
-        kind: 'health_fault',
-        reason: 'ready_recovery_was_not_classified'
-      });
-      continue;
-    }
-    if (work.kind === 'unsupported' || work.kind === 'health_fault') {
-      faults.push({
-        runId: work.runId,
-        expectedVersion: work.expectedVersion,
-        kind: work.kind,
-        reason: work.reason
-      });
-      continue;
-    }
-    if (
-      (work.kind === 'recovery_uncertain_effect'
-        || work.kind === 'recovery_uncertain_inference'
-        || work.kind === 'recovery_uncertain_delegated_inference')
-      && !startupRecoveryAvailable
-    ) {
-      faults.push(startedWorkFault(work));
-    }
-  }
-  return faults;
-}
-
-function startedWorkFault(work: StartedWork): AgentRunWorkSchedulerFault {
-  return {
-    runId: work.runId,
-    expectedVersion: work.expectedVersion,
-    kind: work.kind,
-    reason: work.kind === 'recovery_uncertain_effect'
-      ? `${work.effectId}:${work.effectAttempt}`
-      : `${work.turnId}:${work.attemptId}`
-  };
-}
-
-function isActionable(work: AgentRunWorkClassification): work is ActionableWork {
-  return work.kind === 'dispatch_effect'
-    || work.kind === 'continue_effect_results'
-    || work.kind === 'continue_inbox'
-    || work.kind === 'continue_child_results'
-    || work.kind === 'dispatch_follow_up'
-    || work.kind === 'dispatch_delegated_initial'
-    || work.kind === 'fail_model_turn_budget'
-    || work.kind === 'fail_deadline_expired';
-}
-
-function assertInboxContinuationReceipt(
-  receipt: AgentRunWorkContinuationReceipt,
-  work: Extract<ActionableWork, { readonly kind: 'continue_inbox' }>
-): void {
-  if (
-    receipt.receiptVersion !== 1
-    || receipt.runId !== work.runId
-    || receipt.runVersion <= work.expectedVersion
-    || !nonEmpty(receipt.commandId)
-    || !nonEmpty(receipt.turnId)
-    || !nonEmpty(receipt.attemptId)
-  ) throw new Error('Inbox continuation returned a contradictory work receipt.');
-}
-
-function assertChildResultsContinuationReceipt(
-  receipt: AgentRunWorkContinuationReceipt,
-  work: Extract<ActionableWork, { readonly kind: 'continue_child_results' }>
-): void {
-  if (
-    receipt.receiptVersion !== 1
-    || receipt.runId !== work.runId
-    || receipt.runVersion <= work.expectedVersion
-    || !nonEmpty(receipt.commandId)
-    || !nonEmpty(receipt.turnId)
-    || !nonEmpty(receipt.attemptId)
-  ) throw new Error('SubAgent continuation returned a contradictory work receipt.');
-}
-
-function isConcurrentSnapshotConflict(error: unknown): boolean {
-  return error instanceof AgentRunVersionConflictError;
-}
-
-function requireResumable(
-  recovery: RecoverableAgentRun,
-  work: ActionableWork
-): ReadyResumableAgentRunRecovery {
-  if (!recovery.ready || recovery.phase !== 'resumable') {
-    throw new Error(
-      `Agent Run work "${work.kind}" requires exact resumable recovery authority.`
-    );
-  }
-  if (
-    recovery.run.runId !== work.runId
-    || recovery.run.version !== work.expectedVersion
-  ) {
-    throw new Error('Agent Run work recovery authority drifted before dispatch.');
-  }
-  return recovery;
-}
-
-function assertEffectReceipt(
-  receipt: AgentRunWorkEffectDispatchReceipt,
-  work: Extract<ActionableWork, { readonly kind: 'dispatch_effect' }>
-): void {
-  if (
-    receipt.run.runId !== work.runId
-    || receipt.run.version <= work.expectedVersion
-    || receipt.effect.effectId !== work.effectId
-    || receipt.status !== receipt.effect.state.status
-    || !['succeeded', 'failed', 'cancelled', 'uncertain'].includes(receipt.status)
-  ) {
-    throw new Error('Effect dispatcher returned a contradictory work receipt.');
-  }
-}
-
-function assertContinuationReceipt(
-  receipt: AgentRunWorkContinuationReceipt,
-  work: Extract<ActionableWork, { readonly kind: 'continue_effect_results' }>
-): void {
-  if (
-    receipt.receiptVersion !== 1
-    || receipt.runId !== work.runId
-    || receipt.runVersion <= work.expectedVersion
-    || !nonEmpty(receipt.commandId)
-    || !nonEmpty(receipt.turnId)
-    || !nonEmpty(receipt.attemptId)
-  ) {
-    throw new Error('Effect continuation returned a contradictory work receipt.');
-  }
-}
-
-function assertFollowUpReceipt(
-  receipt: AgentRunWorkFollowUpReceipt,
-  work: Extract<
-    ActionableWork,
-    { readonly kind: 'dispatch_follow_up' | 'dispatch_delegated_initial' }
-  >
-): void {
-  if (receipt.status === 'waiting_recovery') {
-    if (receipt.result !== undefined) {
-      assertFollowUpResultIdentity(receipt.result, work);
-    }
-    return;
-  }
-  assertFollowUpResultIdentity(receipt.result, work);
-}
-
-function exactUncertainInferenceRecovery(
-  receipt: AgentRunWorkFollowUpReceipt,
-  work: Extract<
-    ActionableWork,
-    { readonly kind: 'dispatch_follow_up' | 'dispatch_delegated_initial' }
-  >
-): ActiveAgentTurnInterruptionRecovery | null {
-  if (
-    receipt.status !== 'waiting_recovery'
-    || receipt.reason !== 'inference_outcome_uncertain'
-    || receipt.result === undefined
-    || receipt.result.status !== 'uncertain'
-    || receipt.result.attempt.state?.status !== 'uncertain'
-    || !nonEmpty(receipt.result.recoveryDecisionId ?? '')
-  ) return null;
-  assertFollowUpResultIdentity(receipt.result, work);
-  return {
-    runId: receipt.result.run.runId,
-    runVersion: receipt.result.run.version,
-    turnId: receipt.result.turn.turnId,
-    attemptId: receipt.result.attempt.attemptId,
-    recoveryDecisionId: receipt.result.recoveryDecisionId!
-  };
-}
-
-function assertFollowUpResultIdentity(
-  result: AgentRunWorkFollowUpResultIdentity,
-  work: Extract<
-    ActionableWork,
-    { readonly kind: 'dispatch_follow_up' | 'dispatch_delegated_initial' }
-  >
-): void {
-  if (
-    result.run.runId !== work.runId
-    || result.run.version <= work.expectedVersion
-    || result.turn.turnId !== work.turnId
-    || result.attempt.attemptId !== work.attemptId
-  ) {
-    throw new Error('Follow-up inference returned a contradictory work receipt.');
-  }
-}
-
-function assertTerminalizationReceipt(
-  receipt: AgentRunWorkTerminalizationReceipt,
-  work: TerminalizationWork
-): void {
-  const expected = work.kind === 'fail_deadline_expired'
-    ? {
-        reason: 'deadline_expired' as const,
-        errorCode: 'agent_run_deadline_expired' as const
-      }
-    : {
-        reason: 'model_turn_budget_exhausted' as const,
-        errorCode: 'agent_model_turn_budget_exhausted' as const
-      };
-  if (
-    receipt.receiptVersion !== 1
-    || receipt.runId !== work.runId
-    || receipt.runVersion !== work.expectedVersion + 1
-    || receipt.checkpointVersion !== work.checkpointVersion + 1
-    || receipt.status !== 'failed'
-    || receipt.reason !== expected.reason
-    || receipt.errorCode !== expected.errorCode
-    || !nonEmpty(receipt.commandId)
-  ) {
-    throw new Error('Run terminalization returned a contradictory work receipt.');
-  }
-}
-
-function assertRetiredToolCatalogTerminalizationReceipt(
-  receipt: AgentRunRetiredToolCatalogTerminalizationReceipt,
-  run: AgentRun
-): void {
-  if (
-    receipt.receiptVersion !== 1
-    || receipt.runId !== run.runId
-    || receipt.runVersion <= run.version
-    || receipt.checkpointVersion <= run.state.checkpointVersion
-    || receipt.status !== 'failed'
-    || receipt.reason !== 'tool_catalog_retired'
-    || receipt.errorCode !== 'agent_tool_catalog_retired'
-    || !nonEmpty(receipt.commandId)
-  ) {
-    throw new Error(
-      'Retired Tool Catalog terminalization returned a contradictory receipt.'
-    );
-  }
-}
-
-function assertStartedWorkRecoveryReceipt(
-  receipt: AgentRunStartedWorkRecoveryReceipt,
-  work: StartedWork
-): void {
-  const subjectKind = work.kind === 'recovery_uncertain_effect' ? 'effect' : 'inference';
-  const subjectId = work.kind === 'recovery_uncertain_effect'
-    ? work.effectId
-    : work.attemptId;
-  if (
-    receipt.receiptVersion !== 1
-    || receipt.runId !== work.runId
-    || receipt.runVersion <= work.expectedVersion
-    || receipt.subjectKind !== subjectKind
-    || receipt.subjectId !== subjectId
-    || !nonEmpty(receipt.commandId)
-    || !nonEmpty(receipt.recoveryDecisionId)
-  ) {
-    throw new Error('Started-work recovery returned a contradictory receipt.');
-  }
-}
-
-function nonEmpty(value: string): boolean {
-  return value.length > 0 && value.trim() === value;
-}
-
-function boundedInteger(
-  value: number,
-  minimum: number,
-  maximum: number,
-  field: string
-): number {
-  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
-    throw new Error(`${field} is outside its bounded range.`);
-  }
-  return value;
-}
-
-function compareRecoveryCursor(
-  left: AgentRunRecoveryCursor,
-  right: AgentRunRecoveryCursor
-): number {
-  const createdAt = left.createdAt.localeCompare(right.createdAt);
-  return createdAt === 0 ? left.runId.localeCompare(right.runId) : createdAt;
-}
-
-function uniquePromises(
-  values: readonly (Promise<unknown> | null)[]
-): Promise<unknown>[] {
-  const unique: Promise<unknown>[] = [];
-  for (const value of values) {
-    if (value !== null && !unique.includes(value)) unique.push(value);
-  }
-  return unique;
-}
-
-function joinBeforeDeadline(
-  operation: Promise<unknown>,
-  remainingMs: number
-): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new AgentRunWorkSchedulerShutdownError());
-    }, Math.min(remainingMs, 2_147_483_647));
-    timeout.unref?.();
-    operation.then(
-      () => { clearTimeout(timeout); resolve(); },
-      () => { clearTimeout(timeout); resolve(); }
-    );
-  });
 }

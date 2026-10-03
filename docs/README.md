@@ -1,6 +1,6 @@
 # Ariadne 文档索引
 
-> 核对日期：2026-08-26
+> 核对日期：2026-09-05
 
 文档中的“有源码”“有 schema”“有单元测试”和“已进入产品路径”是四种不同状态。当前事实按以下优先级判断：
 
@@ -18,6 +18,7 @@
 |---|---|
 | [源码快照复现契约](source-reproducibility.md) | 固定工具链、lockfile、干净检出和 CI 复现边界 |
 | [当前实现架构](architecture.md) | 生产进程、命令、持久化、能力接线和未验收边界 |
+| [全局架构审阅与修复计划](architecture-review-and-remediation.md) | 当前工作树的客观评价、已复现缺陷、结构债务与分阶段验收条件（2026-09-05） |
 | [目标架构](architecture-v3.md) | 长期依赖方向、Owner、事务和安全不变量 |
 | [项目结构](project-structure.md) | 当前目录、依赖方向和数据目录 |
 | [验证说明](verification.md) | 当前门禁、Electron smoke 的准确边界和发布验收 |

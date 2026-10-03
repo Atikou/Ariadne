@@ -1,4 +1,5 @@
 import type {
+  PublicInferenceStreamEventV1,
   PublicInferenceStreamProjectionV3,
   PublicProjectionChangeV3
 } from '@ariadne/protocol/public';
@@ -17,6 +18,20 @@ extends PublicProjectionCommitSink {
     inferenceStreamId: string
   ): Promise<InferenceStreamProjectionHead | null>;
   readInferenceStreamProjectionHeads(): Promise<readonly InferenceStreamProjectionHead[]>;
+}
+
+export interface InferenceStreamLiveEventAppend {
+  readonly eventId: string;
+  readonly aggregateType: 'inference_stream';
+  readonly aggregateId: string;
+  readonly aggregateVersion: number;
+  readonly correlationId: string;
+  readonly occurredAt: string;
+  readonly event: PublicInferenceStreamEventV1;
+}
+
+export interface InferenceStreamLiveEventSink {
+  append(event: InferenceStreamLiveEventAppend): Promise<void>;
 }
 
 export interface BoundInferenceStreamProjection {

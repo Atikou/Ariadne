@@ -40,4 +40,13 @@ describe('local model root list', () => {
     expect(styles).toMatch(/\.local-model-root-add\s*\{[^}]*height:\s*24px;[^}]*border-top:\s*1px solid/);
     expect(styles).not.toMatch(/\.local-model-root-add\s*\{[^}]*border:\s*1px dashed/);
   });
+
+  it('offers per-model enable switches that are persisted separately from model roots', async () => {
+    const panel = await readFile(join(process.cwd(), 'src', 'renderer', 'src', 'modules', 'settings', 'SettingsPanel.tsx'), 'utf8');
+    const contract = await readFile(join(process.cwd(), 'src', 'shared', 'contract.ts'), 'utf8');
+
+    expect(panel).toContain('aria-label={`启用 ${model.label}`}');
+    expect(panel).toContain("kind: 'localModels.replace'");
+    expect(contract).toContain('disabledLocalModelIds');
+  });
 });

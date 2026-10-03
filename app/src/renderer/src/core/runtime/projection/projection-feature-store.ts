@@ -81,9 +81,9 @@ export class ProjectionFeatureStore<T extends ProjectionEntity> {
   prepareChanges(
     changes: readonly ProjectionFeatureChange<T>[]
   ): PreparedProjectionFeature<T> {
-    const heads = new Map(this.heads);
+    let heads: Map<string, ProjectionHead<T>> | undefined;
     for (const change of changes) {
-      const current = heads.get(change.aggregateId);
+      const current = (heads ?? this.heads).get(change.aggregateId);
       const currentVersion = current?.version ?? 0;
       const nextFingerprint = change.dto === null
         ? 'delete'
@@ -112,13 +112,16 @@ export class ProjectionFeatureStore<T extends ProjectionEntity> {
       if (value !== null && this.identify(value) !== change.aggregateId) {
         throw new Error(`projection_aggregate_identity_drift:${change.aggregateId}`);
       }
+      heads ??= new Map(this.heads);
       heads.set(change.aggregateId, {
         version: change.aggregateVersion,
         value,
         fingerprint: nextFingerprint
       });
     }
-    return prepared(heads, this.identify);
+    return heads === undefined
+      ? { heads: this.heads, visible: this.visible }
+      : prepared(heads, this.identify);
   }
 
   commitPrepared(preparedState: PreparedProjectionFeature<T>): void {

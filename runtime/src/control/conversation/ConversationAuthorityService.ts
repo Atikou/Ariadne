@@ -80,7 +80,7 @@ export class ConversationAuthorityService {
       const committed = await transaction.loadCommittedAuthorityCommand(command.commandId);
       if (committed !== null) {
         assertExactCommittedCommand(committed, commandFingerprint, command.kind);
-        return replayCreatedSession(committed, command);
+        return replayCreatedSession(transaction, committed, command);
       }
       const existing = await transaction.loadSession(command.sessionId);
       if (existing !== null) {
@@ -219,6 +219,7 @@ function snapshotCreateConversationSessionCommand(
     sessionId: input.sessionId,
     workspaceId: input.workspaceId,
     expectedVersion: input.expectedVersion,
+    ...(input.title === undefined ? {} : { title: input.title }),
     occurredAt: input.occurredAt
   };
 }
@@ -308,10 +309,11 @@ function assertExactCommittedCommand(
   }
 }
 
-function replayCreatedSession(
+async function replayCreatedSession(
+  transaction: ConversationAuthorityTransaction,
   committed: CommittedConversationAuthorityCommand,
   command: CreateConversationSessionCommand
-): CreateConversationSessionResult {
+): Promise<CreateConversationSessionResult> {
   const receipt = committed.receipt;
   const event = committed.event;
   if (
@@ -329,16 +331,13 @@ function replayCreatedSession(
     || event.sessionVersion !== receipt.resultingSessionVersion
     || event.occurredAt !== receipt.committedAt
   ) throw storageCorruption('Create Session receipt and event binding differs.');
+  const session = await transaction.loadSessionVersion(
+    command.sessionId,
+    receipt.resultingSessionVersion
+  );
+  if (session === null) throw storageCorruption('Created Session is missing during replay.');
   return {
-    session: {
-      sessionId: receipt.sessionId,
-      workspaceId: receipt.workspaceId,
-      version: receipt.resultingSessionVersion,
-      title: 'Conversation',
-      status: 'active',
-      createdAt: receipt.committedAt,
-      updatedAt: receipt.committedAt
-    },
+    session,
     event,
     receipt,
     replayed: true

@@ -132,7 +132,6 @@ app/src/renderer/src/modules/*/index.ts
 - Panel 不再消费巨型 Runtime snapshot，而是消费自己的 Feature Store；
 - Runtime connection 与 Projection cursor/cache 仍保持唯一；
 - 默认布局按 `referenceModuleId` 拓扑装配，不依赖目录或 Catalog 的偶然顺序；
-- `runtime.health` 是纯 UI 即插即用样板，只新增组件目录并在 Profile 启用。
 
 ### 4.3 Speech Entity
 

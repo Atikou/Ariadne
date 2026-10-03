@@ -363,13 +363,13 @@ describe('Ariadne Runtime protocol', () => {
     const message = '  你好\n下一行  ';
     expect(runtimeCommandSchema.parse({
       kind: 'conversation.session.create.v3',
-      contractVersion: '3.0',
+      contractVersion: '4.0',
       sessionId: 'session-exact-text',
       workspaceId: 'secondary'
     })).toMatchObject({ sessionId: 'session-exact-text', workspaceId: 'secondary' });
     const command = runtimeCommandSchema.parse({
       kind: 'conversation.message.accept.v3',
-      contractVersion: '3.0',
+      contractVersion: '4.0',
       sessionId: 'session-exact-text',
       workspaceId: 'secondary',
       expectedSessionVersion: 1,
@@ -379,12 +379,19 @@ describe('Ariadne Runtime protocol', () => {
     expect(command).toMatchObject({ content: message, expectedSessionVersion: 1 });
     expect(runtimeCommandSchema.safeParse({
       kind: 'conversation.message.accept.v3',
-      contractVersion: '3.0',
+      contractVersion: '4.0',
       sessionId: 'session-exact-text',
       workspaceId: 'secondary',
       expectedSessionVersion: 1,
       messageId: 'ui-message-whitespace-only',
       content: ' \n\t '
+    }).success).toBe(false);
+  });
+
+  it('rejects commands from the previous public projection contract epoch', () => {
+    expect(runtimeCommandSchema.safeParse({
+      kind: 'projection.snapshot.get',
+      contractVersion: '3.0'
     }).success).toBe(false);
   });
 

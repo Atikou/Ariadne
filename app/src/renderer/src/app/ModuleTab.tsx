@@ -5,6 +5,7 @@ import type { IDockviewPanelHeaderProps } from 'dockview-react';
 import type { ModuleIcon } from '@renderer/core/modules/module-contract';
 import { ModuleGlyph } from '@renderer/shared/ui/ModuleGlyph';
 import { activateEdgeTab } from '@shared/edge-tab-policy';
+import { useActiveTabLayout } from './useActiveTabLayout';
 
 interface ModuleTabParameters {
   moduleId: string;
@@ -26,7 +27,9 @@ export function ModuleTab({ api, containerApi, params }: IDockviewPanelHeaderPro
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuId = useId();
-  const title = api.title ?? params.moduleId;
+  const [title, setTitle] = useState(api.title ?? params.moduleId);
+  useActiveTabLayout(rootRef, api, locationType);
+  useEffect(() => api.onDidTitleChange(event => setTitle(event.title ?? params.moduleId)).dispose, [api, params.moduleId]);
 
   useEffect(() => api.onDidLocationChange((event) => {
     setLocationType(event.location.type);
@@ -115,6 +118,10 @@ export function ModuleTab({ api, containerApi, params }: IDockviewPanelHeaderPro
     });
   }, [menuDocument, menuOpen]);
 
+  useEffect(() => {
+    if (menuPosition) menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+  }, [menuPosition]);
+
   const maximize = (): void => {
     const group = containerApi.getPanel(api.id)?.group;
     if (!group) return;
@@ -144,25 +151,25 @@ export function ModuleTab({ api, containerApi, params }: IDockviewPanelHeaderPro
     <ModuleGlyph icon={params.icon} size={13} />
     <span>{title}</span>
     <div className="module-tab-actions">
-      <button
-        ref={triggerRef}
-        type="button"
-        aria-label={`${title} 更多操作`}
-        aria-haspopup="menu"
-        aria-expanded={menuOpen}
-        aria-controls={menuOpen ? menuId : undefined}
-        onClick={(event) => {
-          event.stopPropagation();
-          if (menuOpen) closeMenu();
-          else {
-            setMenuDocument(rootRef.current?.ownerDocument ?? document);
-            setMenuPosition(null);
-            setMenuOpen(true);
-          }
-        }}
-      ><Ellipsis size={13} /></button>
-      <button type="button" aria-label={`关闭 ${title}`} onClick={(event) => { event.stopPropagation(); api.close(); }}><X size={13} /></button>
-    </div>
+        <button
+          ref={triggerRef}
+          type="button"
+          aria-label={`${title} 更多操作`}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          aria-controls={menuOpen ? menuId : undefined}
+          onClick={(event) => {
+            event.stopPropagation();
+            if (menuOpen) closeMenu();
+            else {
+              setMenuDocument(rootRef.current?.ownerDocument ?? document);
+              setMenuPosition(null);
+              setMenuOpen(true);
+            }
+          }}
+        ><Ellipsis size={13} /></button>
+        <button type="button" aria-label={`关闭 ${title}`} onClick={(event) => { event.stopPropagation(); api.close(); }}><X size={13} /></button>
+      </div>
     {menuOpen && createPortal(
       <div
         ref={menuRef}
@@ -177,6 +184,20 @@ export function ModuleTab({ api, containerApi, params }: IDockviewPanelHeaderPro
         }}
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            closeMenu(true);
+            return;
+          }
+          const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+          const index = items.indexOf(menuDocument.activeElement as HTMLButtonElement);
+          const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+            : event.key === 'ArrowDown' ? (index + 1) % items.length
+            : event.key === 'ArrowUp' ? (index - 1 + items.length) % items.length : null;
+          if (next !== null) { event.preventDefault(); items[next]?.focus(); }
+        }}
       >
         {locationType !== 'popout' && (
           <button

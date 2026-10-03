@@ -12,6 +12,7 @@ import type {
   AgentModelSelectionPreference,
   DispatchExactAgentModelInferenceRequest,
   ExactAgentModelContextCapacity,
+  ExactAgentModelExecutionQualification,
   ExactAgentModelInferenceRequestContentBlock,
   ExactAgentModelInferenceRuntime,
   ExactAgentModelInferenceMessage,
@@ -163,6 +164,22 @@ implements ExactAgentModelInferenceRuntime {
     };
   }
 
+  public describeExecutionQualification(
+    binding: DispatchExactAgentModelInferenceRequest['binding']
+  ): ExactAgentModelExecutionQualification | null {
+    const exact = this.bindings.get(bindingKey(
+      binding.providerId,
+      binding.modelId,
+      binding.settingsRevision
+    ));
+    return exact === undefined ? null : {
+      supportsTextResponse: true,
+      supportsAgent: true,
+      supportsPlan: true,
+      supportsVision: exact.supportsVision
+    };
+  }
+
   public async inferExact(
     request: DispatchExactAgentModelInferenceRequest
   ): Promise<ExactAgentModelInferenceResult> {
@@ -242,8 +259,8 @@ implements ExactAgentModelInferenceRuntime {
     const timeoutSignal = AbortSignal.timeout(this.requestTimeoutMs);
     const transportSignal = AbortSignal.any([request.signal, timeoutSignal]);
     const transportRequest = binding.protocol === 'openai-compatible'
-      ? openAiRequest(binding, messages, tools, request.binding.inference, transportSignal)
-      : anthropicRequest(binding, messages, tools, request.binding.inference, transportSignal);
+      ? openAiRequest(binding, messages, tools, request.binding.inference, request.sampling, transportSignal)
+      : anthropicRequest(binding, messages, tools, request.binding.inference, request.sampling, transportSignal);
     const requestEnvelopeDigest = digestRequestEnvelope(transportRequest);
     let response: Response;
     try {
@@ -547,14 +564,16 @@ function openAiRequest(
   messages: readonly ExactAgentModelInferenceMessage[],
   tools: readonly ExactAgentModelInferenceToolContract[],
   inference: DispatchExactAgentModelInferenceRequest['binding']['inference'],
+  sampling: DispatchExactAgentModelInferenceRequest['sampling'],
   signal: AbortSignal
 ): RequestInit {
   return jsonRequest({
     model: binding.modelId,
     messages: openAiMessages(messages),
     ...(binding.providerId === 'openai'
-      ? { max_completion_tokens: binding.maxOutputTokens }
-      : { max_tokens: binding.maxOutputTokens }),
+      ? { max_completion_tokens: sampling?.maxOutputTokens ?? binding.maxOutputTokens }
+      : { max_tokens: sampling?.maxOutputTokens ?? binding.maxOutputTokens }),
+    ...(sampling?.temperature === undefined ? {} : { temperature: sampling.temperature }),
     ...openAiInference(binding.providerId, binding.modelId, inference),
     ...(tools.length === 0
       ? {}
@@ -583,6 +602,7 @@ function anthropicRequest(
   messages: readonly ExactAgentModelInferenceMessage[],
   tools: readonly ExactAgentModelInferenceToolContract[],
   inference: DispatchExactAgentModelInferenceRequest['binding']['inference'],
+  sampling: DispatchExactAgentModelInferenceRequest['sampling'],
   signal: AbortSignal
 ): RequestInit {
   if (inference !== undefined && Object.keys(inference).length > 0) {
@@ -598,7 +618,8 @@ function anthropicRequest(
   if (conversation.length === 0) throw invalidRequest();
   return jsonRequest({
     model: binding.modelId,
-    max_tokens: binding.maxOutputTokens,
+    max_tokens: sampling?.maxOutputTokens ?? binding.maxOutputTokens,
+    ...(sampling?.temperature === undefined ? {} : { temperature: sampling.temperature }),
     ...(system.length > 0 ? { system } : {}),
     messages: conversation,
     ...(tools.length === 0

@@ -167,14 +167,16 @@
         "runtime/src/adapters/persistence/SqlitePublicProjectionStore.ts",
         "runtime/src/projection",
         "runtime/src/projection/InferenceStreamPublicProjectionPublisher.ts",
-        "app/src/renderer/src/core/runtime/projection"
+        "app/src/renderer/src/core/runtime/projection",
+        "app/src/renderer/src/core/runtime/live-inference-attempt.ts",
+        "app/src/renderer/src/core/runtime/runtime-projection-views.ts"
       ],
       "unit": "verified",
       "integration": "verified",
       "realModel": "not_applicable",
       "realWindow": "verified",
       "realMachine": "not_accepted",
-      "notes": "Snapshot, commit replay, Conversation, Model and bounded inference-stream projection are covered in the real Electron smoke. Wake events are non-authoritative latency hints; while a Run is active, Renderer also tails the same durable commit stream and stops polling at terminal state, so a lost wake cannot strand Decision or Run UI. Durable redacted diagnostics are integrated; protected raw Directive tokens remain outside Public Projection."
+      "notes": "Projection commits remain the durable read authority. Live inference events are bounded attempt-scoped display increments: gaps request the existing durable protocol, exact duplicates are idempotent and terminal heads cannot be revived. Main resets its cursor for each Runtime process instance. Slice identity caching, isolated subscriptions and coalesced live publication are covered at 1k and 10k retained messages. Durable redacted diagnostics remain separate from protected Tool/Directive payloads."
     },
     {
       "module": "browser-and-mcp-tools",
@@ -218,7 +220,9 @@
         "runtime/src/ingress/RuntimeCapabilityManifest.ts",
         "runtime/src/composition/ProductionRuntimeCapabilityManifest.ts",
         "runtime/src/composition/runtime-capabilities/RuntimeCapabilityProvider.ts",
-        "runtime/src/composition/runtime-capabilities/ProductionRuntimeCapabilityProviders.ts",
+        "runtime/src/composition/runtime-capabilities/ProductionRuntimeCapabilityCatalog.generated.ts",
+        "runtime/src/composition/runtime-capabilities/components/runtime-kernel/component.ts",
+        "runtime/src/composition/runtime-capabilities/components/agent-control-services/component.ts",
         "runtime/src/composition/runtime-capabilities/RuntimeCapabilityDefinitionGraph.ts",
         "runtime/src/composition/runtime-capabilities/RuntimeCapabilityServiceResolver.ts",
         "runtime/src/composition/runtime-capabilities/AgentControlRuntimeServicesProvider.ts",
@@ -345,14 +349,15 @@
         "app/src/renderer/src/core/runtime/runtime-store.ts",
         "scripts/electron-smoke.ps1",
         "scripts/electron-smoke-provider.mjs",
-        "scripts/electron-smoke-boundary-watcher.mjs"
+        "scripts/electron-smoke-boundary-watcher.mjs",
+        "app/src/main/smoke/inference-stream-recovery-smoke.ts"
       ],
       "unit": "not_applicable",
       "integration": "verified",
       "realModel": "not_accepted",
       "realWindow": "verified",
       "realMachine": "not_accepted",
-      "notes": "Real Electron Agent gate observes one live reasoning chunk and two retained chunks before a single authoritative terminal message, then covers image attachment selection/persistence/visual request/rendering, inbox continuation, stable command receipt and same-ID reconciliation, versioned read and atomic create-if-absent, write allow/deny, in-flight cancel, and five hard kills at committed-inbox-before-response, user-question waiting, inference-started, effect-started and projection-pending. Exact trace is 18 Provider requests, 16 responses and 2 aborts, with one projected inbox input and no duplicate file effect. A Main-only safeStorage-encrypted sender outbox is then recovered across Renderer reload and a second complete desktop-process launch with the same isolated userData; the receipt keeps the same commandId/inputId in reconcile, remains absent from Public Projection without automatic replay, and is removed only by explicit settlement."
+      "notes": "Real Electron Agent gate observes one live reasoning chunk and two retained chunks before a single authoritative terminal message, then covers image attachment selection/persistence/visual request/rendering, inbox continuation, stable command receipt and same-ID reconciliation, versioned read and atomic create-if-absent, write allow/deny, in-flight cancel, and five hard kills at committed-inbox-before-response, user-question waiting, inference-started, effect-started and projection-pending. Exact trace is 19 Provider requests, 17 responses and 2 aborts, with one projected inbox input and no duplicate file effect. A Main-only safeStorage-encrypted sender outbox is then recovered across Renderer reload and a second complete desktop-process launch with the same isolated userData; the receipt keeps the same commandId/inputId in reconcile, remains absent from Public Projection without automatic replay, and is removed only by explicit settlement. The real window also injects a duplicate and a missing live chunk, reloads Renderer during the attempt, and waits for exactly one committed final Message."
     },
     {
       "module": "architecture-and-runtime-independence",

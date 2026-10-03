@@ -75,7 +75,7 @@ export function planV3LongContext(input: {
   if (!/^sha256:[a-f0-9]{64}$/u.test(input.requestHeaderDigest)) {
     throw new Error('agent_model_context_request_header_invalid');
   }
-  if (input.pinnedMessages.length === 0 || input.groups.length === 0) {
+  if (input.groups.length === 0) {
     throw new Error('agent_model_context_source_invalid');
   }
   const fixedOverheadTokens = input.fixedOverheadTokens ?? 0;

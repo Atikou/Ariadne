@@ -26,6 +26,78 @@ const READY: RuntimeStatus = {
 };
 
 describe('RuntimeStore v3 projection startup', () => {
+  it('renders append-only inference chunks on the next frame without a Projection read', async () => {
+    let listener: ((event: RuntimeEventEnvelope) => void) | null = null;
+    let projectionRequests = 0;
+    const store = new RuntimeStore(successfulRuntimeApi({
+      getStatus: async () => READY,
+      request: async (command) => {
+        projectionRequests += 1;
+        if (command.kind === 'projection.snapshot.get') {
+          return {
+            kind: 'projection.snapshot',
+            snapshot: projectionSnapshot({ sessions: [session('session-live')] })
+          };
+        }
+        if (command.kind === 'projection.commits.read') {
+          return {
+            kind: 'projection.commits',
+            batch: readBatch(command.request.afterCursor, command.request.afterDigest, [], {
+              streamId: command.request.streamId
+            })
+          };
+        }
+        throw new Error(`Unexpected command: ${command.kind}`);
+      },
+      onEvent: (next) => {
+        listener = next;
+        return () => { listener = null; };
+      }
+    }));
+    await store.initialize();
+    await store.sessions.select('session-live');
+    const beforeChunk = projectionRequests;
+
+    (listener as unknown as (event: RuntimeEventEnvelope) => void)(runtimeEnvelope({
+      contractVersion: '1.0',
+      kind: 'inference.chunk.observed',
+      sessionId: 'session-live',
+      runId: 'run-live',
+      turnId: 'turn-live',
+      attemptId: 'attempt-live',
+      sequence: 1,
+      channel: 'token',
+      text: '第一段',
+      observedAt: '2026-07-31T00:00:01.000Z'
+    }, 1));
+
+    await vi.waitFor(() => expect(store.getSnapshot().messages).toMatchObject([{
+      sessionId: 'session-live',
+      runId: 'run-live',
+      role: 'assistant',
+      content: '第一段',
+      status: 'streaming'
+    }]));
+    expect(projectionRequests).toBe(beforeChunk);
+
+    (listener as unknown as (event: RuntimeEventEnvelope) => void)(runtimeEnvelope({
+      contractVersion: '1.0',
+      kind: 'inference.chunk.observed',
+      sessionId: 'session-live',
+      runId: 'run-live',
+      turnId: 'turn-live',
+      attemptId: 'attempt-live',
+      sequence: 2,
+      channel: 'token',
+      text: '第二段',
+      observedAt: '2026-07-31T00:00:02.000Z'
+    }, 2));
+
+    await vi.waitFor(() => expect(store.getSnapshot().messages[0]?.content).toBe('第一段第二段'));
+    expect(projectionRequests).toBe(beforeChunk);
+    store.dispose();
+  });
+
   it('converges on Supervisor ready when an older startup query resolves afterward', async () => {
     let statusListener: ((status: RuntimeStatus) => void) | null = null;
     let resolveStatus: ((status: RuntimeStatus) => void) | null = null;

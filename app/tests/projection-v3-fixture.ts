@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   PUBLIC_PROJECTION_CONTRACT_VERSION,
   PUBLIC_PROJECTION_GENESIS_DIGEST,
+  PUBLIC_PROJECTION_HISTORY_DOMAIN,
   canonicalPublicProjectionJsonV3,
   type ProjectionCommitV3,
   type PublicMessageProjectionV3,
@@ -96,8 +97,11 @@ export function model(modelId: string, version = 1): PublicModelProjectionV3 {
     label: `Model ${modelId}`,
     location: 'local',
     availability: 'ready',
+    supportsTextChat: true,
     supportsAgent: true,
+    supportsPlan: true,
     supportsVision: false,
+    qualificationState: 'qualified',
     updatedAt: NOW
   };
 }
@@ -143,7 +147,7 @@ export function readBatch(
     const cursor = afterCursor + index + 1;
     const payloadDigest = digest(canonicalPublicProjectionJsonV3(commit));
     const cursorDigest = digest(
-      `ariadne-public-projection-v3\u0000${previous}`
+      `${PUBLIC_PROJECTION_HISTORY_DOMAIN}\u0000${previous}`
       + `\u0000${String(cursor)}\u0000${payloadDigest}`
     );
     previous = cursorDigest;

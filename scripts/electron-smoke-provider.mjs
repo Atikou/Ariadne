@@ -13,6 +13,7 @@ const agentDatabasePath = requireOption(options, 'agent-db');
 
 const scenarios = [
   'direct',
+  'stream_recovery',
   'image',
   'read',
   'write_allow',
@@ -56,10 +57,19 @@ const server = createServer({
     return;
   }
   const messages = Array.isArray(body?.messages) ? body.messages : [];
+  if (body?.model !== model) {
+    response.writeHead(422, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ error: 'unknown_smoke_model' }));
+    return;
+  }
+  const probeOutput = createQualificationProbeOutput(body, messages);
+  if (probeOutput !== null) {
+    await writeNativeSseResponse(response, probeOutput);
+    return;
+  }
   const scenario = identifyScenario(messages);
   if (
     scenario === null
-    || body?.model !== model
     || (scenario === 'image' && !hasValidImageInput(messages))
   ) {
     response.writeHead(422, { 'content-type': 'application/json' });
@@ -107,35 +117,15 @@ const server = createServer({
     await delay(750);
   }
 
-  const directive = createDirective(
+  const output = createNativeOutput(
+    body,
     scenario,
     continuationPayload,
     inboxContinuation,
     questionContinuation
   );
-  const directivePayload = JSON.stringify({
-    protocol: 'ariadne.agent-directive.v3',
-    directive
-  });
-  response.writeHead(200, {
-    'content-type': 'text/event-stream; charset=utf-8',
-    'cache-control': 'no-cache',
-    connection: 'keep-alive'
-  });
-  writeSseData(response, {
-    model,
-    choices: [{ delta: { reasoning_content: 'ARIADNE_SMOKE_STREAM_REASONING' } }]
-  });
-  await delay(750);
-  writeSseData(response, {
-    model,
-    choices: [{ delta: { content: directivePayload } }]
-  });
-  writeSseData(response, {
-    model,
-    choices: [{ delta: {}, finish_reason: 'stop' }]
-  });
-  response.end('data: [DONE]\n\n');
+  await writeNativeSseResponse(response, output, scenario === 'stream_recovery' ? 2_000 : 750,
+    scenario === 'stream_recovery' ? 4 : 2);
   settled = true;
   state.responses += 1;
   scenarioState.responses += 1;
@@ -168,26 +158,24 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => server.close(() => process.exit(0)));
 }
 
-function createDirective(
+function createNativeOutput(
+  body,
   scenario,
   continuationPayload,
   inboxContinuation,
   questionContinuation
 ) {
   if (inboxContinuation) {
-    return { kind: 'respond', content: 'ARIADNE_SMOKE_INBOX_FINAL' };
+    return textOutput('ARIADNE_SMOKE_INBOX_FINAL');
   }
   if (questionContinuation) {
-    return {
-      kind: 'respond',
-      content: scenario === 'crash_question'
-        ? 'ARIADNE_SMOKE_CRASH_USER_QUESTION_COMPLETED'
-        : 'ARIADNE_SMOKE_USER_QUESTION_COMPLETED'
-    };
+    return textOutput(scenario === 'crash_question'
+      ? 'ARIADNE_SMOKE_CRASH_USER_QUESTION_COMPLETED'
+      : 'ARIADNE_SMOKE_USER_QUESTION_COMPLETED');
   }
   if (continuationPayload !== null) {
     if (!validContinuation(scenario, continuationPayload)) {
-      return { kind: 'respond', content: 'ARIADNE_SMOKE_EFFECT_VALIDATION_FAILED' };
+      return textOutput('ARIADNE_SMOKE_EFFECT_VALIDATION_FAILED');
     }
     const content = {
       read: 'ARIADNE_SMOKE_READ_OK',
@@ -196,19 +184,22 @@ function createDirective(
       crash_projection: 'ARIADNE_SMOKE_CRASH_PROJECTION_OK'
     }[scenario];
     if (content === undefined) throw new Error(`unexpected_continuation:${scenario}`);
-    return { kind: 'respond', content };
+    return textOutput(content);
   }
   switch (scenario) {
     case 'direct':
-      return { kind: 'respond', content: 'ARIADNE_SMOKE_DIRECT_OK' };
+      return textOutput('ARIADNE_SMOKE_DIRECT_OK');
+    case 'stream_recovery':
+      return textOutput('ARIADNE_SMOKE_STREAM_RECOVERY_OK');
     case 'image':
-      return { kind: 'respond', content: 'ARIADNE_SMOKE_IMAGE_OK' };
+      return textOutput('ARIADNE_SMOKE_IMAGE_OK');
     case 'inbox':
-      return { kind: 'respond', content: 'ARIADNE_SMOKE_INBOX_FIRST' };
+      return textOutput('ARIADNE_SMOKE_INBOX_FIRST');
     case 'question':
     case 'crash_question':
-      return {
-        kind: 'ask_user',
+      return toolOutput('smoke-question-call', findToolName(body, {
+        name: 'ariadne_control_ask_user'
+      }), {
         question: {
           prompt: 'Which execution path should Ariadne use for this smoke?',
           options: [
@@ -224,33 +215,38 @@ function createDirective(
             }
           ]
         }
-      };
+      });
     case 'read':
-      return {
-        kind: 'invoke_tools',
-        invocations: [{
-          toolCallId: 'smoke-read-call',
-          toolName: 'workspace.read_file',
-          input: { path: 'fixtures/read.txt' },
-          scope: [workspaceId]
-        }]
-      };
+      return toolOutput('smoke-read-call', findToolName(body, {
+        description: 'Read one bounded UTF-8 Workspace file'
+      }), {
+        input: { path: 'fixtures/read.txt' },
+        scope: [workspaceId]
+      });
     case 'write_allow':
-      return writeDirective('smoke-write-allow-call', 'results/allow.txt', 'ARIADNE_SMOKE_WRITE_ALLOW_CONTENT');
+      return writeOutput(
+        body,
+        'smoke-write-allow-call',
+        'results/allow.txt',
+        'ARIADNE_SMOKE_WRITE_ALLOW_CONTENT'
+      );
     case 'write_deny':
-      return writeDirective('smoke-write-deny-call', 'results/deny.txt', 'ARIADNE_SMOKE_WRITE_DENY_CONTENT');
+      return writeOutput(
+        body,
+        'smoke-write-deny-call',
+        'results/deny.txt',
+        'ARIADNE_SMOKE_WRITE_DENY_CONTENT'
+      );
     case 'crash_effect':
-      return {
-        kind: 'invoke_tools',
-        invocations: [{
-          toolCallId: 'smoke-crash-effect-call',
-          toolName: 'browser.wait',
-          input: { milliseconds: 30_000 },
-          scope: [workspaceId]
-        }]
-      };
+      return toolOutput('smoke-crash-effect-call', findToolName(body, {
+        description: 'Wait for a bounded interval while the current browser page continues processing.'
+      }), {
+        input: { milliseconds: 30_000 },
+        scope: [workspaceId]
+      });
     case 'crash_projection':
-      return writeDirective(
+      return writeOutput(
+        body,
         'smoke-crash-projection-call',
         'results/projection-once.txt',
         'ARIADNE_SMOKE_PROJECTION_SIDE_EFFECT_ONCE'
@@ -326,20 +322,73 @@ function validContinuation(scenario, payload) {
   return scenario === 'crash_effect';
 }
 
-function writeDirective(toolCallId, path, content) {
-  return {
-    kind: 'invoke_tools',
-    invocations: [{
-      toolCallId,
-      toolName: 'workspace.write_file',
-      input: { path, content, mode: 'create_if_absent' },
-      scope: [workspaceId]
-    }]
-  };
+function writeOutput(body, toolCallId, path, content) {
+  return toolOutput(toolCallId, findToolName(body, {
+    description: 'Create a new Workspace file or replace an observed file'
+  }), {
+    input: { path, content, mode: 'create_if_absent' },
+    scope: [workspaceId]
+  });
 }
 
-function identifyScenario(messages) {
-  const text = messages
+function createQualificationProbeOutput(body, messages) {
+  if (identifyScenario(messages) !== null) return null;
+  const toolNames = requestTools(body).map((tool) => tool.function.name);
+  const text = messageText(messages);
+  if (toolNames.length === 0 && hasValidImageInput(messages)) {
+    return textOutput('IMAGE_OK');
+  }
+  if (toolNames.includes('probe_calculate')) {
+    if (messages.some((message) => message?.role === 'tool')) return textOutput('5');
+    if (text.includes('Answer directly. Do not use a function.')) return textOutput('READY');
+    return toolOutput('qualification-calculate-call', 'probe_calculate', { left: 2, right: 3 });
+  }
+  if (toolNames.length === 1 && toolNames[0] === 'ariadne_control_ask_user') {
+    return toolOutput('qualification-ask-user-call', 'ariadne_control_ask_user', {
+      question: { prompt: 'Which color do you prefer?' }
+    });
+  }
+  if (toolNames.length === 1 && toolNames[0] === 'ariadne_control_propose_plan') {
+    return toolOutput('qualification-plan-call', 'ariadne_control_propose_plan', {
+      plan: {
+        summary: 'Inspect a document.',
+        impactSummary: 'Read-only document inspection.',
+        steps: [{
+          title: 'Inspect document',
+          summary: 'Read and inspect the selected document.',
+          impact: 'read_only'
+        }]
+      }
+    });
+  }
+  return toolNames.length === 0 && text.includes('Reply with the single word READY.')
+    ? textOutput('READY')
+    : null;
+}
+
+function requestTools(body) {
+  if (!Array.isArray(body?.tools)) return [];
+  return body.tools.filter((tool) => (
+    tool?.type === 'function'
+    && typeof tool.function?.name === 'string'
+    && typeof tool.function?.description === 'string'
+  ));
+}
+
+function findToolName(body, selector) {
+  const selected = requestTools(body).find((tool) => (
+    (selector.name === undefined || tool.function.name === selector.name)
+    && (
+      selector.description === undefined
+      || tool.function.description.includes(selector.description)
+    )
+  ));
+  if (selected === undefined) throw new Error('required_native_tool_not_advertised');
+  return selected.function.name;
+}
+
+function messageText(messages) {
+  return messages
     .flatMap((message) => typeof message?.content === 'string'
       ? [message.content]
       : Array.isArray(message?.content)
@@ -348,6 +397,73 @@ function identifyScenario(messages) {
             .map((block) => block.text)
         : [])
     .join('\n');
+}
+
+function textOutput(content) {
+  return { kind: 'text', content };
+}
+
+function toolOutput(toolCallId, providerToolName, input) {
+  return { kind: 'tool_call', toolCallId, providerToolName, input };
+}
+
+async function writeNativeSseResponse(response, output, responseDelayMs = 0, fragmentCount = 2) {
+  response.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache',
+    connection: 'keep-alive'
+  });
+  writeSseData(response, {
+    model,
+    choices: [{ delta: { reasoning_content: 'ARIADNE_SMOKE_STREAM_REASONING' } }]
+  });
+  if (responseDelayMs > 0) await delay(responseDelayMs);
+  if (output.kind === 'text') {
+    const splitAt = responseDelayMs > 0 && output.content.length > 1
+      ? Math.ceil(output.content.length / fragmentCount)
+      : output.content.length;
+    writeSseData(response, {
+      model,
+      choices: [{ delta: { content: output.content.slice(0, splitAt) } }]
+    });
+    for (let offset = splitAt; offset < output.content.length; offset += splitAt) {
+      await delay(responseDelayMs);
+      writeSseData(response, {
+        model,
+        choices: [{ delta: { content: output.content.slice(offset, offset + splitAt) } }]
+      });
+    }
+    writeSseData(response, {
+      model,
+      choices: [{ delta: {}, finish_reason: 'stop' }]
+    });
+  } else {
+    writeSseData(response, {
+      model,
+      choices: [{
+        delta: {
+          tool_calls: [{
+            index: 0,
+            id: output.toolCallId,
+            type: 'function',
+            function: {
+              name: output.providerToolName,
+              arguments: JSON.stringify(output.input)
+            }
+          }]
+        }
+      }]
+    });
+    writeSseData(response, {
+      model,
+      choices: [{ delta: {}, finish_reason: 'tool_calls' }]
+    });
+  }
+  response.end('data: [DONE]\n\n');
+}
+
+function identifyScenario(messages) {
+  const text = messageText(messages);
   let identified = null;
   let identifiedAt = -1;
   for (const scenario of scenarios) {

@@ -2,7 +2,8 @@ import { z } from 'zod';
 
 import { imageAttachmentRefV3Schema } from './attachments-v3.js';
 
-export const PUBLIC_PROJECTION_CONTRACT_VERSION = '3.0' as const;
+export const PUBLIC_PROJECTION_CONTRACT_VERSION = '4.0' as const;
+export const PUBLIC_PROJECTION_HISTORY_DOMAIN = 'ariadne-public-projection-v4' as const;
 
 export const publicProjectionCanonicalIdSchema = z
   .string()
@@ -478,9 +479,13 @@ export const publicModelProjectionV3Schema = z.object({
   version: versionSchema,
   label: boundedLabelSchema,
   location: z.enum(['local', 'remote']),
+  enabled: z.boolean().optional(),
   availability: z.enum(['ready', 'unavailable', 'checking', 'error']),
+  supportsTextChat: z.boolean(),
   supportsAgent: z.boolean(),
+  supportsPlan: z.boolean(),
   supportsVision: z.boolean(),
+  qualificationState: z.enum(['unknown', 'testing', 'qualified', 'rejected']),
   updatedAt: publicProjectionCanonicalTimestampSchema
 }).strict();
 export type PublicModelProjectionV3 = z.infer<typeof publicModelProjectionV3Schema>;
@@ -513,6 +518,7 @@ export type PublicInferenceChunkProjectionV3 = z.infer<
 
 export const publicInferenceStreamProjectionV3Schema = z.object({
   inferenceStreamId: publicProjectionCanonicalIdSchema,
+  sessionId: publicProjectionCanonicalIdSchema,
   runId: publicProjectionCanonicalIdSchema,
   turnId: publicProjectionCanonicalIdSchema,
   attemptId: publicProjectionCanonicalIdSchema,

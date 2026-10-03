@@ -24,6 +24,7 @@ describe('RuntimeKernelModelInferenceGateway', () => {
     }));
     const client = {
       name: 'local-exact',
+      toolCallCapability: 'unsupported' as const,
       contextWindowTokens: 32_768,
       tokenCounter: {
         countRequest: vi.fn(async () => ({
@@ -43,13 +44,16 @@ describe('RuntimeKernelModelInferenceGateway', () => {
       countRequestTokens: async () => ({ tokens: 1, exact: false, tokenizer: 'remote' }),
       hasExactBinding: () => false,
       resolveBinding: () => null,
-      describeContextCapacity: () => null
+      describeContextCapacity: () => null,
+      describeExecutionQualification: () => null
     };
     const gateway = new RuntimeKernelModelInferenceGateway(
       remote,
       localModels,
       [],
-      'local-first'
+      'local-first',
+      undefined,
+      () => false
     );
     const request: DispatchExactAgentModelInferenceRequest = {
       binding: {

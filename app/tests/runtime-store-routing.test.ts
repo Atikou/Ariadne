@@ -152,7 +152,7 @@ describe('RuntimeStore command routing', () => {
     });
     expect(commands).toEqual([{
       kind: 'agent.tool_result.detail.get.v3',
-      contractVersion: '3.0',
+      contractVersion: '4.0',
       runId: 'run-detail',
       workspaceId: 'workspace-detail',
       effectId: 'effect-detail',
@@ -261,7 +261,7 @@ describe('RuntimeStore command routing', () => {
       .toEqual([
         {
           kind: 'agent.decision.resolve.v3',
-          contractVersion: '3.0',
+          contractVersion: '4.0',
           runId: 'run-permission',
           decisionId: 'decision-permission',
           action: {
@@ -272,7 +272,7 @@ describe('RuntimeStore command routing', () => {
         },
         {
           kind: 'agent.decision.resolve.v3',
-          contractVersion: '3.0',
+          contractVersion: '4.0',
           runId: 'run-plan',
           decisionId: 'decision-plan',
           action: {
@@ -283,7 +283,7 @@ describe('RuntimeStore command routing', () => {
         },
         {
           kind: 'agent.decision.resolve.v3',
-          contractVersion: '3.0',
+          contractVersion: '4.0',
           runId: 'run-user-question',
           decisionId: 'decision-user-question',
           action: {

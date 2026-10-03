@@ -8,11 +8,11 @@ import { fileExplorerModule } from '@renderer/modules/file-explorer';
 import { logsModule } from '@renderer/modules/logs';
 import { permissionsModule } from '@renderer/modules/permissions';
 import { productivityModule } from '@renderer/modules/productivity';
-import { runtimeHealthModule } from '@renderer/modules/runtime-health';
 import { sessionActivityModule } from '@renderer/modules/session-activity';
 import { settingsModule } from '@renderer/modules/settings';
 import { terminalModule } from '@renderer/modules/terminal';
 import { toolOutputModule } from '@renderer/modules/tool-output';
+import { visualReviewModule } from '@renderer/modules/visual-review';
 
 const DEFINITIONS = Object.freeze([
   agentPlanModule,
@@ -22,11 +22,11 @@ const DEFINITIONS = Object.freeze([
   logsModule,
   permissionsModule,
   productivityModule,
-  runtimeHealthModule,
   sessionActivityModule,
   settingsModule,
   terminalModule,
   toolOutputModule,
+  visualReviewModule,
 ]);
 
 export function uiComponentDefinitions(): readonly FeatureModuleDefinition[] {

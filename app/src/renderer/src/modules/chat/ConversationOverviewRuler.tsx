@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MouseEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent } from 'react';
 import { createRulerEntries, resolveRulerCurrentId } from '@shared/ruler-model';
 import { getNearestScrollDelta } from '@shared/scroll-geometry';
 import type { ConversationNode, ConversationNodeKind } from './conversation-node';
@@ -13,6 +13,11 @@ interface ConversationOverviewRulerProps {
 interface HoveredNode {
   node: ConversationNode;
   top: number;
+}
+
+interface RulerFocusPosition {
+  top: number;
+  width: number;
 }
 
 const PREVIEW_HALF_HEIGHT = 52;
@@ -38,13 +43,43 @@ export function ConversationOverviewRuler({
   onSelect
 }: ConversationOverviewRulerProps): React.JSX.Element | null {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
   const tickRefs = useRef(new Map<string, HTMLButtonElement>());
   const [hovered, setHovered] = useState<HoveredNode | null>(null);
+  const [focusPosition, setFocusPosition] = useState<RulerFocusPosition | null>(null);
 
   const hoveredId = hovered?.node.id ?? null;
   const currentId = resolveRulerCurrentId(nodes, activeId, selectedId);
   const visualFocusId = hoveredId ?? currentId;
   const entries = createRulerEntries(nodes, hoveredId);
+
+  useLayoutEffect(() => {
+    const track = trackRef.current;
+    const tick = visualFocusId ? tickRefs.current.get(visualFocusId) : undefined;
+    if (!track || !tick) {
+      setFocusPosition(null);
+      return;
+    }
+
+    const updateFocusPosition = (): void => {
+      const trackBounds = track.getBoundingClientRect();
+      const tickBounds = tick.getBoundingClientRect();
+      const next = {
+        top: tickBounds.top - trackBounds.top + tickBounds.height / 2 - 1,
+        width: hoveredId === visualFocusId ? 20 : 7
+      };
+      setFocusPosition((current) => current
+        && Math.abs(current.top - next.top) < 0.25
+        && current.width === next.width
+        ? current
+        : next);
+    };
+
+    updateFocusPosition();
+    const observer = new ResizeObserver(updateFocusPosition);
+    observer.observe(track);
+    return () => observer.disconnect();
+  }, [hoveredId, nodes.length, visualFocusId]);
 
   useEffect(() => {
     if (!currentId) return;
@@ -87,7 +122,7 @@ export function ConversationOverviewRuler({
         className="ruler-scroll"
         onScroll={() => setHovered(null)}
       >
-        <div className="ruler-track">
+        <div ref={trackRef} className="ruler-track">
           {entries.map(({ node, emphasisLevel }) => {
             return (
               <div className="ruler-entry" key={node.id}>
@@ -97,7 +132,7 @@ export function ConversationOverviewRuler({
                     else tickRefs.current.delete(node.id);
                   }}
                   type="button"
-                  className={`ruler-tick ruler-tick--level-${emphasisLevel}${activeId === node.id ? ' is-active' : ''}${visualFocusId === node.id ? ' is-emphasized' : ''}`}
+                  className={`ruler-tick ruler-tick--level-${emphasisLevel}${activeId === node.id ? ' is-active' : ''}`}
                   data-ruler-node-id={node.id}
                   aria-label={`跳转到${kindLabels[node.kind]}：${node.summary}`}
                   aria-current={activeId === node.id ? 'location' : undefined}
@@ -108,6 +143,15 @@ export function ConversationOverviewRuler({
               </div>
             );
           })}
+          <span
+            aria-hidden="true"
+            className="ruler-focus-indicator"
+            data-visible={focusPosition !== null}
+            style={{
+              width: focusPosition?.width ?? 7,
+              transform: `translate3d(0, ${focusPosition?.top ?? 0}px, 0)`
+            } satisfies CSSProperties}
+          />
         </div>
       </div>
 

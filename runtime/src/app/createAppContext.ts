@@ -155,7 +155,6 @@ export class AppContext {
   readonly evalSetRunner: AppModelRoutingRuntime["evalSetRunner"];
   readonly modelProfileStore: AppModelRoutingRuntime["modelProfileStore"];
   readonly modelProfileRegistry: AppModelRoutingRuntime["modelProfileRegistry"];
-  readonly agentProtocolQualificationStore: AppModelRoutingRuntime["agentProtocolQualificationStore"];
   readonly projectAllowedPermissions: ToolPermission[];
   readonly shellPolicy: ShellPolicy;
   readonly networkPolicy: NetworkPolicy;
@@ -222,7 +221,6 @@ export class AppContext {
     evalSetRunner: AppModelRoutingRuntime["evalSetRunner"];
     modelProfileStore: AppModelRoutingRuntime["modelProfileStore"];
     modelProfileRegistry: AppModelRoutingRuntime["modelProfileRegistry"];
-    agentProtocolQualificationStore: AppModelRoutingRuntime["agentProtocolQualificationStore"];
     makeAgentChatFn: AppModelRoutingRuntime["makeAgentChatFn"];
     projectAllowedPermissions: ToolPermission[];
     shellPolicy: ShellPolicy;
@@ -287,7 +285,6 @@ export class AppContext {
     this.evalSetRunner = opts.evalSetRunner;
     this.modelProfileStore = opts.modelProfileStore;
     this.modelProfileRegistry = opts.modelProfileRegistry;
-    this.agentProtocolQualificationStore = opts.agentProtocolQualificationStore;
     this.makeAgentChat = opts.makeAgentChatFn;
     this.projectAllowedPermissions = opts.projectAllowedPermissions;
     this.shellPolicy = opts.shellPolicy;
@@ -361,13 +358,6 @@ export class AppContext {
       if (!profile || !profileSupportsAgentProtocol(profile)) {
         return {
           error: `模型 ${clientName} 不支持 Agent 执行协议；必须具备 ${AGENT_PROTOCOL_REQUIRED_CAPABILITIES.join(" + ")} 能力。请改用兼容模型，或仅在纯聊天中使用该模型。`,
-          status: 422,
-        };
-      }
-      if (!this.agentProtocolQualificationStore.isAdmitted(profile)) {
-        const qualification = this.agentProtocolQualificationStore.get(profile);
-        return {
-          error: `模型 ${clientName} 因连续违反严格 AgentAction 协议而暂时隔离至 ${qualification.quarantineUntil ?? "稍后"}；普通聊天仍可使用。`,
           status: 422,
         };
       }
@@ -622,7 +612,6 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
   });
   modelProfileStoreForRefresh = modelRuntime.modelProfileStore;
   const {
-    agentProtocolQualificationStore,
     agentRuntime,
     collaborationRunStore,
     createChatForDelegatedTask,
@@ -879,7 +868,6 @@ export function createAppContext(opts: CreateAppContextOptions = {}): AppContext
     evalSetRunner,
     modelProfileStore,
     modelProfileRegistry: profileRegistry,
-    agentProtocolQualificationStore,
     makeAgentChatFn,
     projectAllowedPermissions,
     shellPolicy,

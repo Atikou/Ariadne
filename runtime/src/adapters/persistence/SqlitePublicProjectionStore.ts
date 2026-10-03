@@ -5,6 +5,7 @@ import {
   MAX_PUBLIC_PROJECTION_READ_BATCH_BYTES,
   PUBLIC_PROJECTION_CONTRACT_VERSION,
   PUBLIC_PROJECTION_GENESIS_DIGEST,
+  PUBLIC_PROJECTION_HISTORY_DOMAIN,
   publicProjectionCanonicalIdSchema,
   type ProjectionCommitV3,
   type PublicProjectionChangeV3,
@@ -952,7 +953,7 @@ function nextHistoryDigest(
   payloadDigest: string
 ): string {
   return digest(
-    `ariadne-public-projection-v3\u0000${previousDigest}`
+    `${PUBLIC_PROJECTION_HISTORY_DOMAIN}\u0000${previousDigest}`
     + `\u0000${String(cursor)}\u0000${payloadDigest}`
   );
 }

@@ -50,6 +50,7 @@ export interface RuntimeSupervisorOptions {
   installRoot: string;
   dataRoot: string;
   modelRoots: string[];
+  disabledLocalModelIds?: string[];
   modelProviders: ModelProviderBootstrap[];
   subagentProviders?: SubagentProviderBootstrap[];
   routingStrategy: 'local-first' | 'cloud-first' | 'privacy-first' | 'quality-first';
@@ -237,6 +238,8 @@ export class RuntimeSupervisor {
     mkdirSync(this.options.dataRoot, { recursive: true });
     const runtimeInstanceId = randomUUID();
     this.runtimeInstanceId = runtimeInstanceId;
+    // Delivery cursors belong to this Runtime instance, including automatic recovery.
+    this.lastEventCursor = 0;
     this.eventDeliveryQueue = Promise.resolve();
 
     let resolveStartup!: (ready: RuntimeReady) => void;
@@ -495,6 +498,9 @@ export class RuntimeSupervisor {
       installRoot: this.options.installRoot,
       dataRoot: this.options.dataRoot,
       modelRoots: [...this.options.modelRoots],
+      ...(this.options.disabledLocalModelIds === undefined
+        ? {}
+        : { disabledLocalModelIds: [...this.options.disabledLocalModelIds] }),
       modelProviders: this.options.modelProviders.map((provider) => ({ ...provider })),
       ...(this.options.subagentProviders === undefined
         ? {}

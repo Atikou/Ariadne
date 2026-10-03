@@ -54,6 +54,7 @@ export interface CreateConversationSessionCommand
 extends ConversationAuthorityCommandBase {
   readonly kind: 'conversation.create_session';
   readonly expectedVersion: null;
+  readonly title?: string;
 }
 
 export type ConversationSessionMutation =
@@ -359,7 +360,7 @@ export function createConversationSession(
     sessionId: command.sessionId,
     workspaceId: command.workspaceId,
     version: 1,
-    title: 'Conversation',
+    title: command.title ?? 'Conversation',
     status: 'active',
     createdAt: command.occurredAt,
     updatedAt: command.occurredAt
@@ -1113,12 +1114,13 @@ export function assertCreateConversationSessionCommand(
 ): void {
   assertExactObjectKeys(command, [
     'kind', 'commandId', 'eventId', 'sessionId', 'workspaceId',
-    'expectedVersion', 'occurredAt'
+    'expectedVersion', ...(command.title === undefined ? [] : ['title']), 'occurredAt'
   ], 'createSessionCommand');
   assertCommandBase(command);
   if (command.kind !== 'conversation.create_session' || command.expectedVersion !== null) {
     throw invariant('Create Session command shape is invalid.');
   }
+  if (command.title !== undefined) assertSessionTitle(command.title, 'createSessionCommand.title');
 }
 
 export function assertMutateConversationSessionCommand(

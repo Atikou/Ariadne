@@ -1,6 +1,8 @@
 import type { CompanionMessage } from '@ariadne/protocol/public';
 import type { RuntimeMessage } from './runtime-projection-presenter';
 import type { PublicRunProjectionV3 } from '@ariadne/protocol/public';
+import { compareConversationMessages } from './conversation-message-order';
+import { memoizeInputs } from './memoize-inputs';
 
 const NEW_SESSION_PLAN_MODE_KEY = '__new_session__';
 
@@ -18,6 +20,17 @@ export class RuntimeUiState {
   selectedSessionId: string | null = null;
   readonly planModeSessionIds = new Set<string>();
   private pendingChat: PendingChatOverlay | null = null;
+  private planModes: string[] = [];
+  private readonly messageView = memoizeInputs((authoritative: readonly CompanionMessage[], runs: readonly PublicRunProjectionV3[],
+    _selected: string | null, _pending: PendingChatOverlay | null, ordered: boolean) => this.deriveMessages(authoritative, runs, ordered));
+
+  planModeSnapshot(): string[] {
+    if (this.planModes.length !== this.planModeSessionIds.size
+      || this.planModes.some(id => !this.planModeSessionIds.has(id))) {
+      this.planModes = [...this.planModeSessionIds].sort();
+    }
+    return this.planModes;
+  }
 
   selectSession(sessionId: string): void {
     this.selectedSessionId = sessionId;
@@ -103,12 +116,22 @@ export class RuntimeUiState {
 
   projectedMessages(
     authoritative: readonly CompanionMessage[],
-    runs: readonly PublicRunProjectionV3[]
+    runs: readonly PublicRunProjectionV3[],
+    ordered = false
+  ): RuntimeMessage[] {
+    return this.messageView(authoritative, runs, this.selectedSessionId, this.pendingChat, ordered);
+  }
+
+  private deriveMessages(
+    authoritative: readonly CompanionMessage[],
+    runs: readonly PublicRunProjectionV3[],
+    ordered: boolean
   ): RuntimeMessage[] {
     const selected = this.selectedSessionId;
     const visible = authoritative.filter((message) => (
       selected !== null && message.sessionId === selected
-    )).sort(compareMessages);
+    ));
+    if (!ordered) visible.sort(compareConversationMessages);
     const pending = this.pendingChat;
     if (pending === null) return [...visible];
 
@@ -134,11 +157,19 @@ export class RuntimeUiState {
           && Date.parse(message.createdAt) >= Date.parse(projectedUser.createdAt)
         ));
     if (userProjected && assistantProjected) this.pendingChat = null;
-    return [
-      ...visible,
-      ...(userProjected ? [] : [pending.user]),
-      ...(assistantProjected ? [] : [pending.assistant])
-    ].sort(compareMessages);
+
+    const projected = [...visible];
+    if (!userProjected) {
+      projected.push(pending.user);
+      projected.sort(compareConversationMessages);
+    }
+    if (!assistantProjected) {
+      const sourceIndex = projected.findIndex(
+        (message) => message.messageId === pending.clientMessageId
+      );
+      projected.splice(sourceIndex < 0 ? projected.length : sourceIndex + 1, 0, pending.assistant);
+    }
+    return projected;
   }
 
   clearPendingOverlay(): void {
@@ -148,13 +179,4 @@ export class RuntimeUiState {
   get pendingChatOverlayId(): string | null {
     return this.pendingChat?.overlayId ?? null;
   }
-}
-
-function compareCodeUnits(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function compareMessages(left: CompanionMessage, right: CompanionMessage): number {
-  return Date.parse(left.createdAt) - Date.parse(right.createdAt)
-    || compareCodeUnits(left.messageId, right.messageId);
 }

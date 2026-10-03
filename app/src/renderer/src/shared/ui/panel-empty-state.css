@@ -1,0 +1,7 @@
+.panel-empty-state { display: flex; min-width: 0; min-height: 116px; height: 100%; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; color: var(--text-3); text-align: center; }
+.panel-empty-state > svg { flex: 0 0 auto; opacity: .7; }
+.panel-empty-state strong { color: var(--text-2); font-size: 13px; font-weight: 600; }
+.panel-empty-state p { max-width: 38ch; margin: 6px auto 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.simple-module-panel > .panel-empty-state, .agent-status-panel > .panel-empty-state { height: auto; min-height: 180px; }
+.panel-empty-state--compact { min-height: 0; flex-direction: row; padding: 12px 20px; text-align: left; }
+.panel-empty-state--compact p { margin-inline: 0; max-width: 60ch; }

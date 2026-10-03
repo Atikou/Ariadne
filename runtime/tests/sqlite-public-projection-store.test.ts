@@ -72,6 +72,12 @@ describe('SqlitePublicProjectionStore', () => {
         journalMode: 'wal',
         synchronous: 2
       });
+      expect(database.prepare(
+        'SELECT version, name FROM schema_migrations ORDER BY version'
+      ).all()).toEqual([{
+        version: PUBLIC_PROJECTION_DB_SCHEMA_VERSION,
+        name: 'public_projection_v4_store_v3'
+      }]);
     } finally {
       database.close();
     }
@@ -123,39 +129,18 @@ describe('SqlitePublicProjectionStore', () => {
       .toBe(3);
   });
 
-  it('migrates a populated v1 projection in place and preserves its cursor history', async () => {
+  it('rejects a populated projection database from the previous protocol epoch', async () => {
     const root = tempRoot();
-    let store = track(new SqlitePublicProjectionStore(root));
+    const store = track(new SqlitePublicProjectionStore(root));
     await store.append(singleSessionCommit());
-    const streamId = store.streamId;
     await closeTracked(store);
     mutateDatabase(root, (database) => {
-      database.prepare('DELETE FROM schema_migrations WHERE version=2').run();
-      database.exec('PRAGMA user_version = 1;');
+      database.exec('PRAGMA user_version = 2;');
     });
 
-    store = track(new SqlitePublicProjectionStore(root));
-    const snapshot = await store.snapshot();
-    expect(store.streamId).toBe(streamId);
-    expect(snapshot).toMatchObject({
-      cursor: 1,
-      sessions: [{ sessionId: 'session-1', version: 1 }],
-      inferenceStreams: []
-    });
-    const database = new DatabaseSync(resolvePublicProjectionDatabasePath(root), {
-      readOnly: true
-    });
-    try {
-      expect(database.prepare('PRAGMA user_version;').get()).toEqual({ user_version: 2 });
-      expect(database.prepare(
-        'SELECT version, name FROM schema_migrations ORDER BY version'
-      ).all()).toEqual([
-        { version: 1, name: 'public_projection_v3_store_v1' },
-        { version: 2, name: 'public_projection_inference_streams_v2' }
-      ]);
-    } finally {
-      database.close();
-    }
+    expect(() => new SqlitePublicProjectionStore(root)).toThrow(
+      `public_projection_protocol_reset_required:2:${String(PUBLIC_PROJECTION_DB_SCHEMA_VERSION)}`
+    );
   });
 
   it('rolls back a commit that would make the complete snapshot exceed its bound', async () => {
@@ -413,7 +398,7 @@ describe('SqlitePublicProjectionStore', () => {
       hasMore: false,
       commits: [{ cursor: 2 }]
     });
-    await expectReset(store, { ...request(store.streamId, 0, 10), contractVersion: '4.0' }, 'contract_mismatch');
+    await expectReset(store, { ...request(store.streamId, 0, 10), contractVersion: '3.0' }, 'contract_mismatch');
     await expectReset(store, request('different-stream', 0, 10), 'stream_mismatch');
     await expectReset(
       store,
@@ -714,8 +699,11 @@ function commitWithAllFeatures(): ProjectionCommitV3 {
           label: 'Model One',
           location: 'local',
           availability: 'ready',
+          supportsTextChat: true,
           supportsAgent: true,
+          supportsPlan: true,
           supportsVision: false,
+          qualificationState: 'qualified',
           updatedAt: at(1)
         }
       },
@@ -776,8 +764,11 @@ function modelCatalogCommit(
           label: 'Reloadable model',
           location: 'remote',
           availability: 'ready',
+          supportsTextChat: true,
           supportsAgent: true,
+          supportsPlan: true,
           supportsVision: false,
+          qualificationState: 'qualified',
           updatedAt: projectedAt
         }
       };

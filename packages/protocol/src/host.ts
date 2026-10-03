@@ -167,6 +167,7 @@ export const runtimeBootstrapSchema = z
     installRoot: z.string().trim().min(1).max(32_768),
     dataRoot: canonicalAbsoluteDataRootSchema,
     modelRoots: z.array(z.string().trim().min(1).max(32_768)).max(16),
+    disabledLocalModelIds: z.array(nonEmptyIdSchema).max(256).optional(),
     modelProviders: z.array(modelProviderBootstrapSchema).max(16).optional(),
     subagentProviders: z.array(subagentProviderBootstrapSchema).max(8).optional(),
     routingStrategy: z.enum([

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
 import { AlertTriangle, ArchiveRestore, BellRing, CheckCircle2, ChevronRight, Database, FolderArchive, KeyRound, Laptop, MessageCircle, Mic, Moon, PackageOpen, Plus, RotateCcw, Save, Sun, X } from 'lucide-react';
+import type { ModelSummary } from '@ariadne/protocol/public';
 import type {
   AgentSubagentProviderSettingsView,
   AgentProviderId,
@@ -84,6 +85,9 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
   const [restoringSessionId, setRestoringSessionId] = useState<string | null>(null);
   const [sessionLifecycleError, setSessionLifecycleError] = useState<string | null>(null);
   const [speechActionResult, setSpeechActionResult] = useState<string | null>(null);
+  const [qualifyingModelIds, setQualifyingModelIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [checkingAllProviders, setCheckingAllProviders] = useState(false);
+  const [qualificationResult, setQualificationResult] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>(() => {
     const saved = window.localStorage.getItem(SETTINGS_CATEGORY_STORAGE_KEY);
     return availableSettingsCategories.some((category) => category.id === saved)
@@ -121,6 +125,34 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
   }, [services]);
 
   const modelHealth = useMemo(() => new Map(models.models.map((model) => [model.id, model])), [models.models]);
+  const markQualification = (modelId: string, active: boolean): void => {
+    setQualifyingModelIds((current) => {
+      const next = new Set(current);
+      if (active) next.add(modelId);
+      else next.delete(modelId);
+      return next;
+    });
+  };
+  const qualifyModel = async (modelId: string): Promise<void> => {
+    if (qualifyingModelIds.size > 0 || checkingAllProviders) return;
+    markQualification(modelId, true);
+    setQualificationResult(null);
+    try {
+      const result = await services.models.qualify(modelId);
+      const capability = result.supportsPlan
+        ? '文本、Agent、Plan'
+        : result.supportsAgent
+          ? '文本、Agent'
+          : result.supportsTextChat
+            ? '仅文本'
+            : '未通过';
+      setQualificationResult(`${modelId}：${capability}`);
+    } catch (error) {
+      setQualificationResult(`${modelId}：${errorMessage(error)}`);
+    } finally {
+      markQualification(modelId, false);
+    }
+  };
   const runtimeIsLoading = diagnostics.status.availability === 'starting' || diagnostics.status.availability === 'restarting';
   const runtimeStateTone = diagnostics.status.availability === 'ready'
     ? 'ready'
@@ -275,6 +307,16 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
     setLocalModelRoots((current) => createEditableLocalModelRoots(current.filter((_, rootIndex) => rootIndex !== index)));
   };
 
+  const updateLocalModelEnabled = (modelId: string, enabled: boolean): void => {
+    setAgentSettings((current) => {
+      if (!current) return current;
+      const disabled = new Set(current.disabledLocalModelIds ?? []);
+      if (enabled) disabled.delete(modelId);
+      else disabled.add(modelId);
+      return { ...current, disabledLocalModelIds: [...disabled] };
+    });
+  };
+
   const reorderLocalModelRoot = (fromIndex: number, toIndex: number): void => {
     if (fromIndex === toIndex) return;
     setLocalModelRoots((current) => moveLocalModelRoot(current, fromIndex, toIndex));
@@ -303,6 +345,117 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
     requestAnimationFrame(() => localModelRootHandles.current[targetIndex]?.focus());
   };
 
+  const persistProviderEnabledStates = async (
+    changes: Partial<Record<AgentProviderId, boolean>>
+  ): Promise<void> => {
+    const baseline = persistedAgentSettings.current;
+    if (!baseline) return;
+    const applyLocalStates = (): void => {
+      setAgentSettings((current) => {
+        if (!current) return current;
+        const providers = { ...current.providers };
+        for (const id of AGENT_PROVIDER_IDS) {
+          const nextEnabled = changes[id];
+          if (nextEnabled !== undefined) {
+            providers[id] = { ...providers[id], enabled: nextEnabled };
+          }
+        }
+        return { ...current, providers };
+      });
+    };
+    const operations: AgentSettingsOperation[] = AGENT_PROVIDER_IDS.flatMap((id) => {
+      const enabled = changes[id];
+      return enabled !== undefined && enabled !== baseline.providers[id].enabled
+        ? [{ kind: 'provider.update' as const, providerId: id, patch: { enabled } }]
+        : [];
+    });
+    if (operations.length === 0) {
+      applyLocalStates();
+      return;
+    }
+    setSaving(true);
+    try {
+      const result = await services.agentSettings.apply({
+        expectedRevision: baseline.revision,
+        operations
+      });
+      if (!result.ok) {
+        persistedAgentSettings.current = result.settings;
+        setAgentSettings((current) => current
+          ? { ...current, revision: result.settings.revision, providers: result.settings.providers }
+          : result.settings);
+        throw new Error(`${result.error.code}: ${result.error.message}`);
+      }
+      const saved = result.settings;
+      persistedAgentSettings.current = saved;
+      applyLocalStates();
+      setAgentSettings((current) => current ? { ...current, revision: saved.revision } : saved);
+      setSaveResult({ tone: 'success', message: settingsEffectMessage(result.effect) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const checkProvider = async (id: AgentProviderId): Promise<void> => {
+    if (!agentSettings || checkingAllProviders || qualifyingModelIds.size > 0 || saving) return;
+    const provider = agentSettings.providers[id];
+    if (!provider.enabled) return;
+    const { label, runtimeModelId } = AGENT_PROVIDER_CATALOG[id];
+    markQualification(runtimeModelId, true);
+    setQualificationResult(null);
+    try {
+      const result = await services.models.checkAvailability(runtimeModelId);
+      const usable = result.available;
+      await persistProviderEnabledStates({ [id]: usable });
+      setQualificationResult(`${label}：${usable ? '检测通过，已启用' : '检测未通过，已关闭'}`);
+    } catch (error) {
+      try {
+        await persistProviderEnabledStates({ [id]: false });
+      } catch (persistError) {
+        setQualificationResult(`${label}：检测失败，且无法更新启用状态：${errorMessage(persistError)}`);
+        return;
+      }
+      setQualificationResult(`${label}：检测失败，已关闭（${errorMessage(error)}）`);
+    } finally {
+      markQualification(runtimeModelId, false);
+    }
+  };
+
+  const checkAllEnabledProviders = async (): Promise<void> => {
+    if (!agentSettings || checkingAllProviders || qualifyingModelIds.size > 0 || saving) return;
+    const enabledIds = AGENT_PROVIDER_IDS.filter((id) => agentSettings.providers[id].enabled);
+    if (enabledIds.length === 0) {
+      setQualificationResult('没有已启用的 Provider 可检测。');
+      return;
+    }
+    setCheckingAllProviders(true);
+    setQualificationResult(null);
+    const modelIds = enabledIds.map((id) => AGENT_PROVIDER_CATALOG[id].runtimeModelId);
+    modelIds.forEach((modelId) => markQualification(modelId, true));
+    try {
+      const outcomes = await Promise.all(enabledIds.map(async (id) => {
+        const { runtimeModelId } = AGENT_PROVIDER_CATALOG[id];
+        try {
+          const result = await services.models.checkAvailability(runtimeModelId);
+          return { id, usable: result.available, error: null };
+        } catch (error) {
+          return { id, usable: false, error: errorMessage(error) };
+        }
+      }));
+      await persistProviderEnabledStates(Object.fromEntries(
+        outcomes.map(({ id, usable }) => [id, usable])
+      ) as Partial<Record<AgentProviderId, boolean>>);
+      const passed = outcomes.filter((outcome) => outcome.usable).length;
+      const failed = outcomes.length - passed;
+      setQualificationResult(`已检测 ${outcomes.length} 个已启用 Provider：${passed} 个可用，${failed} 个已关闭。`);
+    } catch (error) {
+      setQualificationResult(`统一检测失败：${errorMessage(error)}`);
+    } finally {
+      modelIds.forEach((modelId) => markQualification(modelId, false));
+      setCheckingAllProviders(false);
+    }
+  };
+
   const saveAgentSettings = async (event: FormEvent): Promise<void> => {
     event.preventDefault();
     if (!agentSettings || saving) return;
@@ -321,6 +474,10 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
       }
       if (!sameJsonValue(normalizedRoots, baseline.localModelRoots)) {
         operations.push({ kind: 'modelRoots.replace', roots: normalizedRoots });
+      }
+      const disabledLocalModelIds = [...new Set(agentSettings.disabledLocalModelIds ?? [])];
+      if (!sameJsonValue(disabledLocalModelIds, baseline.disabledLocalModelIds ?? [])) {
+        operations.push({ kind: 'localModels.replace', disabledModelIds: disabledLocalModelIds });
       }
       for (const id of AGENT_PROVIDER_IDS) {
         const provider = agentSettings.providers[id];
@@ -417,6 +574,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
 
   return (
     <section className="settings-panel" aria-labelledby={`${moduleId}-title`}>
+      <div className="settings-layout">
       <aside className="settings-navigation">
         <header className="settings-navigation-header">
           <span>设置中心</span>
@@ -429,6 +587,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
               type="button"
               key={id}
               title={label}
+              aria-label={label}
               className={`settings-navigation-item${activeCategory === id ? ' is-active' : ''}`}
               aria-current={activeCategory === id ? 'page' : undefined}
               onClick={() => selectCategory(id)}
@@ -442,7 +601,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
       </aside>
 
       <div className={`settings-content${activeCategory === 'agent' || activeCategory === 'chat' ? ' settings-content--with-actions' : ''}`}>
-        <div className="settings-content-scroll">
+        <div className="settings-content-scroll" key={activeCategory}>
       {activeCategory === 'agent' && <section className="settings-section" aria-labelledby={`${moduleId}-model-settings`}>
         <div className="settings-section-heading">
           <div className="settings-section-title"><span className="settings-section-icon"><KeyRound size={16} /></span><div className="settings-section-copy"><h2 id={`${moduleId}-model-settings`}>Agent 与模型</h2><p>配置本地模型目录和远程 Provider；工作区通过 Chat 侧栏的“打开工作区”管理。</p></div></div>
@@ -499,9 +658,58 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
                 </div>
                 <small>目录从上到下按优先级排列；拖动左侧“=”可以调整顺序。</small>
               </div>
+              <div className="setting-block setting-block--wide local-model-catalog">
+                  <div className="local-model-catalog-heading">
+                    <strong>本地模型列表</strong>
+                    <p>勾选后模型会出现在聊天模型下拉列表，并参与自动路由。能力由 Runtime 自动检测；图片生成当前未接入 Runtime。</p>
+                </div>
+                <div className="local-model-list">
+                  {models.models.filter((model) => model.location === 'local').map((model) => <article className="local-model-card" key={model.id}>
+                    <div className="local-model-card-heading">
+                      <div><strong>{model.label}</strong><small>{modelQualificationLabel(model)} · {modelAvailabilityLabel(model.availability)}</small></div>
+                      <div className="local-model-card-actions">
+                        <label className="provider-enable"><input
+                          type="checkbox"
+                          aria-label={`启用 ${model.label}`}
+                          checked={!(agentSettings.disabledLocalModelIds ?? []).includes(model.id)}
+                          disabled={saving}
+                          onChange={(event) => updateLocalModelEnabled(model.id, event.target.checked)}
+                        /><span>启用</span></label>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={model.availability !== 'ready' || qualifyingModelIds.size > 0 || checkingAllProviders}
+                          onClick={() => void qualifyModel(model.id)}
+                        >{qualifyingModelIds.has(model.id) ? '检测中…' : '重新检测'}</button>
+                      </div>
+                    </div>
+                    <div className="local-model-capabilities" aria-label={`${model.label} 能力`}>
+                      <ModelCapability label="文本聊天" status={modelCapabilityStatus(model, model.supportsTextChat)} />
+                      <ModelCapability label="图片识别" status={modelCapabilityStatus(model, model.supportsVision)} />
+                      <ModelCapability label="Agent" status={modelCapabilityStatus(model, model.supportsAgent)} />
+                      <ModelCapability label="Plan" status={modelCapabilityStatus(model, model.supportsPlan)} />
+                      <ModelCapability label="图片生成" status="unavailable" />
+                    </div>
+                  </article>)}
+                  {models.models.every((model) => model.location !== 'local') && <small className="local-model-list-empty">当前未发现本地模型。</small>}
+                </div>
+              </div>
             </div>
 
             <div className="provider-settings-list">
+              <div className="provider-list-heading">
+                <div className="settings-section-copy">
+                  <h3>远程 Provider</h3>
+                  <p>检测会调用已启用 Provider 的 API；完成后，能正常文本聊天的 Provider 自动保持启用，其余自动关闭。</p>
+                </div>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={checkingAllProviders || qualifyingModelIds.size > 0 || saving}
+                  onClick={() => void checkAllEnabledProviders()}
+                >{checkingAllProviders ? '统一检测中…' : '检测全部已启用'}</button>
+              </div>
+              {qualificationResult && <div className="provider-check-result" role="status" aria-live="polite">{qualificationResult}</div>}
               {AGENT_PROVIDER_IDS.map((id) => {
                 const { label, runtimeModelId, apiKeyLabel } = AGENT_PROVIDER_CATALOG[id];
                 const provider = agentSettings.providers[id];
@@ -532,7 +740,14 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
                     <label className="provider-enable"><input type="checkbox" aria-label={`启用 ${label}`} checked={provider.enabled} onChange={(event) => updateProvider(id, { enabled: event.target.checked })} /><span>启用</span></label>
                   </legend>
                   <div id={detailsId} className="provider-settings-body" hidden={!expanded}>
-                    <div className="provider-health"><span className={`provider-health-dot provider-health-dot--${health?.availability ?? 'unavailable'}`} />{health ? modelAvailabilityLabel(health.availability) : '等待 Runtime 检查'} · API Key {keyStatus}</div>
+                    <div className="provider-health"><span className={`provider-health-dot provider-health-dot--${health?.availability ?? 'unavailable'}`} />{health ? modelAvailabilityLabel(health.availability) : '等待 Runtime 检查'} · API Key {keyStatus}
+                      <button
+                        type="button"
+                        className="secondary-button provider-check-button"
+                        disabled={!provider.enabled || checkingAllProviders || qualifyingModelIds.size > 0 || saving}
+                        onClick={() => void checkProvider(id)}
+                      >{qualifyingModelIds.has(runtimeModelId) ? '检测中…' : '检查此 Provider'}</button>
+                    </div>
                     <div className="agent-settings-grid">
                       <label className="settings-field"><span>模型</span><input value={provider.model} onChange={(event) => {
                         const model = event.target.value;
@@ -884,6 +1099,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
           <button type="submit" form={`${moduleId}-${activeCategory}-settings-form`} className="primary-button" disabled={saving}><Save size={14} />{saving ? '正在保存并重启…' : activeCategory === 'chat' ? '保存聊天设置' : '保存 Agent 设置'}</button>
         </footer>}
       </div>
+      </div>
     </section>
   );
 }
@@ -915,6 +1131,34 @@ function reasoningEffortLabel(value: 'none' | 'low' | 'medium' | 'high' | 'xhigh
 
 function sameJsonValue(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function modelQualificationLabel(model: ModelSummary): string {
+  if (model.qualificationState === 'testing') return '检测中';
+  if (model.supportsPlan) return '文本 / Agent / Plan';
+  if (model.supportsAgent) return '文本 / Agent';
+  if (model.supportsTextChat) return '仅文本';
+  if (model.qualificationState === 'rejected') return '未通过';
+  return '未检测';
+}
+
+type ModelCapabilityStatus = 'supported' | 'unsupported' | 'unknown' | 'checking' | 'unavailable';
+
+function modelCapabilityStatus(model: ModelSummary, supported: boolean): ModelCapabilityStatus {
+  if (model.qualificationState === 'testing') return 'checking';
+  if (model.qualificationState === 'unknown' && !supported) return 'unknown';
+  return supported ? 'supported' : 'unsupported';
+}
+
+function ModelCapability({ label, status }: { label: string; status: ModelCapabilityStatus }): React.JSX.Element {
+  const copy: Record<ModelCapabilityStatus, string> = {
+    supported: '支持',
+    unsupported: '不支持',
+    unknown: '未检测',
+    checking: '检测中',
+    unavailable: '未接入'
+  };
+  return <span className={`model-capability model-capability--${status}`}><span>{label}</span><strong>{copy[status]}</strong></span>;
 }
 
 function nextAcpProviderId(

@@ -1,10 +1,8 @@
 import type {
   CompanionMessageReasoning,
   ConversationMessageReferenceV3,
-  ImageAttachmentRefV3,
-  RunSummary
+  ImageAttachmentRefV3
 } from '@ariadne/protocol/public';
-import type { RuntimeRun } from '@renderer/core/runtime/runtime-store';
 
 export type ConversationNodeKind =
   | 'assistant'
@@ -40,13 +38,9 @@ export interface ConversationNode {
   };
 }
 
-export function shouldShowFormalAnswer(
-  node: Pick<ConversationNode, 'kind' | 'reasoning'>,
-  run?: Pick<RuntimeRun, 'origin' | 'status'> | Pick<RunSummary, 'origin' | 'status'>,
-): boolean {
-  if (node.kind === 'user') return true;
-  if (node.reasoning?.status === 'streaming') return false;
-  if (!run) return true;
-  if (run?.origin === 'companion') return true;
-  return ['completed', 'failed', 'cancelled', 'interrupted'].includes(run.status);
+export function conversationTextForDisplay(
+  node: Pick<ConversationNode, 'kind' | 'content' | 'summary'>
+): string {
+  if (node.kind === 'user') return node.content ?? node.summary;
+  return node.content ?? '';
 }

@@ -1,7 +1,6 @@
 import {
   getLlama,
-  LlamaChatSession,
-  type ChatHistoryItem,
+  LlamaChat,
   type Llama,
   type LlamaContext,
   type LlamaModel,
@@ -18,6 +17,11 @@ import type {
   RuntimeRequestMessage,
 } from "../runtimeProtocol.js";
 import { withOwnedLlamaChatSession } from "../withOwnedLlamaChatSession.js";
+import {
+  stableLlamaCppCallDigest,
+  toLlamaCppChatFunctions,
+  toLlamaCppChatHistory
+} from '../llamaCppNativeChat.js';
 
 let llama: Llama | undefined;
 let model: LlamaModel | undefined;
@@ -110,27 +114,40 @@ async function generate(id: string, input: RuntimeGeneratePayload): Promise<void
   abortControllers.set(id, controller);
   try {
     await withOwnedLlamaChatSession(
-      () => activeContext.getSequence(),
+      () => acquireLlamaSequence(activeContext, controller.signal),
       (sequence) =>
-        new LlamaChatSession({
+        new LlamaChat({
           contextSequence: sequence,
           autoDisposeSequence: true,
         }),
-      async (session) => {
-        const { history, prompt } = toChatHistory(input.messages);
-        session.setChatHistory(history);
-        const meta = await session.promptWithMeta(prompt, {
+      async (chat) => {
+        const history = toLlamaCppChatHistory(input.messages);
+        const functions = toLlamaCppChatFunctions(input.tools ?? []);
+        const generated = await chat.generateResponse(history, {
           signal: controller.signal,
           stopOnAbortSignal: true,
           maxTokens: input.maxTokens,
           budgets: { thoughtTokens: 0 },
           temperature: input.temperature,
           onTextChunk: (delta) => send({ id, type: "token", delta }),
+          ...(Object.keys(functions).length === 0
+            ? {}
+            : { functions, maxParallelFunctionCalls: input.tools?.length ?? 1 }),
         });
+        const toolCalls = (generated.functionCalls ?? []).map((call, index) => ({
+          id: `llama-${String(index)}-${stableLlamaCppCallDigest(call.functionName, call.params)}`,
+          name: call.functionName,
+          arguments: call.params,
+        }));
         const result: RuntimeGenerateResult = {
-          content: meta.responseText,
-          inputTokens: activeModel.tokenize(renderMessages(input.messages)).length,
-          outputTokens: activeModel.tokenize(meta.responseText).length,
+          content: generated.response,
+          toolCalls,
+          inputTokens: activeModel.tokenize(
+            `${renderMessages(input.messages)}\ntools:${JSON.stringify(input.tools ?? [])}`,
+          ).length,
+          outputTokens: activeModel.tokenize(
+            `${generated.response}${JSON.stringify(toolCalls)}`,
+          ).length,
         };
         send({ id, type: "result", result });
       },
@@ -146,38 +163,16 @@ async function generate(id: string, input: RuntimeGeneratePayload): Promise<void
   }
 }
 
-function toChatHistory(messages: RuntimeGeneratePayload["messages"]): {
-  history: ChatHistoryItem[];
-  prompt: string;
-} {
-  let promptIndex = -1;
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const role = messages[i]?.role;
-    if (role === "user" || role === "tool") {
-      promptIndex = i;
-      break;
-    }
+async function acquireLlamaSequence(
+  activeContext: LlamaContext,
+  signal: AbortSignal,
+): Promise<ReturnType<LlamaContext['getSequence']>> {
+  while (activeContext.sequencesLeft === 0) {
+    signal.throwIfAborted();
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  const promptMessage = promptIndex >= 0 ? messages[promptIndex] : undefined;
-  const history: ChatHistoryItem[] = [];
-  for (let i = 0; i < messages.length; i += 1) {
-    if (i === promptIndex) continue;
-    const message = messages[i];
-    if (!message) continue;
-    if (message.role === "system") history.push({ type: "system", text: message.content });
-    else if (message.role === "assistant") history.push({ type: "model", response: [message.content] });
-    else history.push({ type: "user", text: renderUserMessage(message) });
-  }
-  return {
-    history,
-    prompt: promptMessage ? renderUserMessage(promptMessage) : "请根据以上上下文继续回答。",
-  };
-}
-
-function renderUserMessage(message: RuntimeGeneratePayload["messages"][number]): string {
-  return message.role === "tool"
-    ? `[工具结果${message.name ? ` ${message.name}` : ""}]\n${message.content}`
-    : message.content;
+  signal.throwIfAborted();
+  return activeContext.getSequence();
 }
 
 function renderMessages(messages: RuntimeGeneratePayload["messages"]): string {

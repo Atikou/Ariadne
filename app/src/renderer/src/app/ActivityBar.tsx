@@ -5,15 +5,18 @@ import { ModuleGlyph } from '@renderer/shared/ui/ModuleGlyph';
 interface ActivityBarProps {
   actions: readonly ModuleNavigationAction[];
   openModuleIds: ReadonlySet<string>;
+  activeModuleId: string | null;
   onOpen(ids: readonly ModuleId[]): void;
 }
 
-export function ActivityBar({ actions, openModuleIds, onOpen }: ActivityBarProps): React.JSX.Element {
+export function ActivityBar({ actions, openModuleIds, activeModuleId, onOpen }: ActivityBarProps): React.JSX.Element {
   const renderAction = (action: ModuleNavigationAction): React.JSX.Element => (
     <button
       key={action.id}
       type="button"
-      className={action.moduleIds.some((id) => openModuleIds.has(id)) ? 'is-active' : ''}
+      className={action.moduleIds.some((id) => id === activeModuleId) ? 'is-active' : ''}
+      data-open={action.moduleIds.some((id) => openModuleIds.has(id))}
+      aria-current={action.moduleIds.some((id) => id === activeModuleId) ? 'page' : undefined}
       data-tooltip={action.label}
       aria-label={action.label}
       onClick={() => onOpen(action.moduleIds)}

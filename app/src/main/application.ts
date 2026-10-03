@@ -30,6 +30,7 @@ import {
 } from './services/system-capabilities';
 import { InterruptionPolicy } from './services/interruption-policy';
 import { TerminalSessionService } from './services/terminal-service';
+import { TerminalWorkingDirectoryAuthority } from './services/terminal-working-directory-authority';
 import { WorkspaceFileService } from './services/workspace-file-service';
 import { ApprovalNotificationService } from './services/approval-notification-service';
 import { BrowserService } from './services/browser-service';
@@ -98,11 +99,15 @@ export class ApplicationController {
   );
   private readonly preferences = new PreferencesCoordinator(this.state, this.systemCapabilities);
   private readonly workspaceFiles = new WorkspaceFileService([]);
+  private readonly terminalWorkingDirectories = new TerminalWorkingDirectoryAuthority(
+    app.getPath('userData'),
+    (workspaceId) => this.workspaceFiles.getRoot(workspaceId)
+  );
   private readonly terminalJournal = new TerminalSessionJournal(
     join(app.getPath('userData'), 'terminal-sessions.json')
   );
   private readonly terminals = new TerminalSessionService(
-    (workspaceId) => this.workspaceFiles.getRoot(workspaceId),
+    (workspaceId) => this.terminalWorkingDirectories.resolve(workspaceId),
     this.terminalJournal
   );
   private readonly browser = new BrowserService({

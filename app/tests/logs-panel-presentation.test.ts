@@ -99,15 +99,15 @@ describe('Logs panel presentation', () => {
   it('renders a compact filter toolbar and flexible concise log rows', async () => {
     const [panel, styles] = await Promise.all([
       readFile(join(process.cwd(), 'src', 'renderer', 'src', 'modules', 'logs', 'LogsPanel.tsx'), 'utf8'),
-      readFile(join(process.cwd(), 'src', 'renderer', 'src', 'app', 'styles.css'), 'utf8')
+      readFile(join(process.cwd(), 'src', 'renderer', 'src', 'modules', 'logs', 'logs.css'), 'utf8')
     ]);
 
     expect(panel).toContain("useState<LogViewFilter>('important')");
     expect(panel).toContain("{ value: 'tool', label: '工具' }");
     expect(panel).toContain("{ value: 'network', label: '网络' }");
     expect(panel).toContain('coalesceTraceLogs(');
-    expect(styles).toMatch(/\.logs-toolbar\s*\{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\) auto auto;/);
-    expect(styles).toMatch(/\.log-row\s*\{[^}]*grid-template-columns:\s*70px 15px 48px minmax\(0, 1fr\) auto;/);
+    expect(styles).toMatch(/\.logs-toolbar\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;/);
+    expect(styles).toMatch(/\.log-row\s*\{[^}]*grid-template-columns:\s*62px 15px 48px minmax\(0, 1fr\) auto;/);
     expect(styles).toMatch(/\.logs-list\s*\{[^}]*overflow:\s*auto;/);
   });
 });

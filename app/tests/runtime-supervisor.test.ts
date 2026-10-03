@@ -51,7 +51,7 @@ describe('RuntimeSupervisor', () => {
     await supervisor.start();
     const snapshot = await supervisor.request({
       kind: 'projection.snapshot.get',
-      contractVersion: '3.0'
+      contractVersion: '4.0'
     });
     expect(snapshot).toMatchObject({ kind: 'projection.snapshot' });
     expect(supervisor.getStatus()).toMatchObject({
@@ -91,8 +91,11 @@ describe('RuntimeSupervisor', () => {
       [10]
     );
     const statuses: string[] = [];
+    const readyEvents: string[] = [];
+    supervisor.onEvent(event => readyEvents.push(event.eventId));
     supervisor.onStatus((status) => statuses.push(status.availability));
     await supervisor.start();
+    await waitUntil(() => readyEvents.length === 1);
 
     await expect(supervisor.request(
       { kind: 'runtime.status.get' },
@@ -103,6 +106,9 @@ describe('RuntimeSupervisor', () => {
       correlationId: 'command-crash'
     });
     await waitUntil(() => statuses.filter((status) => status === 'ready').length === 2);
+
+    // The restarted fixture emits cursor 1 again; the old epoch must not suppress it.
+    await waitUntil(() => readyEvents.length === 2);
 
     expect(statuses).toContain('crashed');
     expect(statuses).toContain('restarting');

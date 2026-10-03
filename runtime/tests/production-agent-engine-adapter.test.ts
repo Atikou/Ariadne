@@ -37,7 +37,7 @@ describe('ProductionAgentEngineAdapter', () => {
     try {
       const inference = vi.fn(async (request: DispatchExactAgentModelInferenceRequest) => {
         request.chunkObserver?.observe({ sequence: 1, channel: 'reasoning', text: 'why' });
-        request.chunkObserver?.observe({ sequence: 2, channel: 'token', text: 'directive' });
+        request.chunkObserver?.observe({ sequence: 2, channel: 'token', text: 'completed from stream' });
         return inferenceResponse({
           protocol: PROTOCOL,
           directive: { kind: 'respond', content: 'completed from stream' }
@@ -48,6 +48,7 @@ describe('ProductionAgentEngineAdapter', () => {
         exactContracts(fixture.available),
         new InferenceStreamPublicProjectionPublisher(
           store,
+          { append: async () => undefined },
           () => new Date('2030-01-01T00:00:00.000Z')
         )
       );
@@ -95,7 +96,7 @@ describe('ProductionAgentEngineAdapter', () => {
     const request = inference.mock.calls[0]![0];
     expect(request.binding).toEqual(input.run.binding.model);
     expect(request.signal).toBe(controller.signal);
-    expect(request.tools).toHaveLength(1);
+    expect(request.tools).toHaveLength(8);
     expect(request.tools[0]).toMatchObject({
       providerToolName: expect.stringMatching(/^ariadne_[a-f0-9]{32}$/u),
       description: [
@@ -112,20 +113,48 @@ describe('ProductionAgentEngineAdapter', () => {
       role: 'user',
       content: [{ type: 'text', text: 'Write the result under src.' }]
     }]);
-    expect(JSON.parse(textBlockContent(request.messages[0]!))).toMatchObject({
-      protocol: PROTOCOL,
-      subagentProviders: [{
-        providerId: 'external.codex',
-        displayName: 'External Codex worker',
-        configurationDigest: `sha256:${'f'.repeat(64)}`,
-        transport: 'external_process',
-        supportedModes: ['one_shot'],
-        supportsStructuredReport: true,
-        inheritsParentContext: false,
-        usesParentTools: false
-      }],
-      nativeToolCount: 1
+    expect(textBlockContent(request.messages[0]!)).toContain('Ariadne execution mode: agent.');
+    expect(textBlockContent(request.messages[0]!)).toContain('external.codex');
+    expect(request.tools.map((tool) => tool.providerToolName)).toContain('ariadne_control_ask_user');
+  });
+
+  it('treats a qualified text-only Chat binding as a first-class text response channel', async () => {
+    const fixture = createFixture();
+    const input = withExecutionMode(fixture.input, 'chat');
+    const inference = vi.fn(async (): Promise<ExactAgentModelInferenceResult> => ({
+      status: 'completed',
+      contentBlocks: [{ type: 'text', text: '原始文本，包括 {"tool":"只是文字"}。' }],
+      replay: {
+        envelopeVersion: 1,
+        adapter: 'embedded-local',
+        finishReason: 'stop',
+        requestEnvelopeDigest: `sha256:${'9'.repeat(64)}`,
+        contentBlocksDigest: `sha256:${'8'.repeat(64)}`
+      }
+    }));
+    const gateway = exactInferenceGateway(inference, undefined, {
+      supportsTextResponse: true,
+      supportsAgent: false,
+      supportsPlan: false,
+      supportsVision: false
     });
+    const contracts = exactContracts(fixture.available);
+    const adapter = new ProductionAgentEngineAdapter(gateway, contracts);
+
+    await expect(decide(
+      adapter,
+      input,
+      new AbortController().signal
+    )).resolves.toEqual({
+      kind: 'respond',
+      content: '原始文本，包括 {"tool":"只是文字"}。'
+    });
+    expect(contracts.readInferenceToolContracts).not.toHaveBeenCalled();
+    const request = inference.mock.calls[0]![0];
+    expect(request.tools).toEqual([]);
+    expect(request.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'Write the result under src.' }] }
+    ]);
   });
 
   it('parses a strict user question and advertises a schema-valid two-option example', async () => {
@@ -167,12 +196,14 @@ describe('ProductionAgentEngineAdapter', () => {
         ]
       }
     });
-    const systemPrompt = JSON.parse(textBlockContent(
-      inference.mock.calls[0]![0].messages[0]!
-    )) as {
-      directiveShapes: { ask_user: { question: { options: unknown[] } } };
-    };
-    expect(systemPrompt.directiveShapes.ask_user.question.options).toHaveLength(2);
+    const request = inference.mock.calls[0]![0];
+    const askUser = request.tools.find((tool) => (
+      tool.providerToolName === 'ariadne_control_ask_user'
+    ));
+    expect(askUser?.inputSchema).toMatchObject({
+      type: 'object',
+      required: ['question']
+    });
   });
 
   it('captures exact Provider usage and applies its conservative correction on the next Turn', async () => {
@@ -461,12 +492,14 @@ describe('ProductionAgentEngineAdapter', () => {
       plan: { summary: 'Build the effect from layered canvas stars.' }
     });
 
-    const prompt = JSON.parse(textBlockContent(inference.mock.calls[0]![0].messages[0]!));
-    expect(prompt.executionMode).toBe('plan');
-    expect(prompt.directiveShapes).toHaveProperty('propose_plan');
-    expect(prompt.directiveShapes).not.toHaveProperty('respond');
-    expect(prompt.directiveShapes).not.toHaveProperty('complete');
-    expect(prompt.directiveShapes).not.toHaveProperty('request_decision');
+    const request = inference.mock.calls[0]![0];
+    expect(textBlockContent(request.messages[0]!)).toContain('Ariadne execution mode: plan.');
+    expect(request.tools.map((tool) => tool.providerToolName)).toContain(
+      'ariadne_control_propose_plan'
+    );
+    expect(request.tools.map((tool) => tool.providerToolName)).not.toContain(
+      'ariadne_control_complete'
+    );
   });
 
   it('renders every cumulative causal Effect batch as native typed Tool history', async () => {
@@ -494,7 +527,7 @@ describe('ProductionAgentEngineAdapter', () => {
     )).resolves.toEqual({ kind: 'respond', content: 'continued exactly' });
 
     const request = inference.mock.calls[0]![0];
-    expect(request.tools).toHaveLength(1);
+    expect(request.tools).toHaveLength(8);
     expect(request.messages[1]).toEqual(textRequestMessage('user', 'Write the result under src.'));
     const exchanges = request.messages.slice(2);
     expect(exchanges).toHaveLength(fixture.batches.length * 2);
@@ -802,14 +835,10 @@ describe('ProductionAgentEngineAdapter', () => {
         scope: ['src']
       }]
     });
-    expect(inference.mock.calls[0]![0].tools).toHaveLength(1);
+    expect(inference.mock.calls[0]![0].tools).toHaveLength(8);
   });
 
   it.each([
-    {
-      name: 'legacy AgentAction JSON',
-      response: inferenceResponse({ action: 'final', answer: 'legacy result' })
-    },
     {
       name: 'unexpected native tool calls',
       response: {
@@ -830,13 +859,6 @@ describe('ProductionAgentEngineAdapter', () => {
           input: {}
         }]
       }
-    },
-    {
-      name: 'extra protocol fields',
-      response: inferenceResponse({
-        protocol: PROTOCOL,
-        directive: { kind: 'respond', content: 'text', extra: true }
-      })
     }
   ])('fails closed for $name without executing any Tool', async ({ response }) => {
     const fixture = createFixture();
@@ -909,6 +931,24 @@ describe('ProductionAgentEngineAdapter', () => {
     expect(inference).not.toHaveBeenCalled();
   });
 
+  it.each([
+    JSON.stringify({ action: 'final', answer: 'legacy result' }),
+    JSON.stringify({
+      protocol: PROTOCOL,
+      directive: { kind: 'respond', content: 'text', extra: true }
+    })
+  ])('keeps ordinary JSON-looking text as inert response content', async (content) => {
+    const fixture = createFixture();
+    const inference = vi.fn(async () => textInferenceResponse(content));
+    const adapter = new ProductionAgentEngineAdapter(
+      exactInferenceGateway(inference),
+      exactContracts(fixture.available)
+    );
+
+    await expect(decide(adapter, fixture.input, new AbortController().signal))
+      .resolves.toEqual({ kind: 'respond', content });
+  });
+
   it('rejects malformed model semantics before the Provider boundary', async () => {
     const fixture = createFixture();
     const inference = vi.fn(async () => inferenceResponse({
@@ -963,16 +1003,20 @@ describe('ProductionAgentEngineAdapter', () => {
 
   it('rejects a model-requested scope outside the exact Run grants', async () => {
     const fixture = createFixture();
-    const inference = vi.fn(async () => inferenceResponse({
-      protocol: PROTOCOL,
-      directive: {
-        kind: 'invoke_tools',
-        invocations: [{
-          toolCallId: 'call-v3-1',
-          toolName: fixture.tool.toolName,
-          input: { path: 'other/result.ts' },
-          scope: ['other']
-        }]
+    const inference = vi.fn(async (request: DispatchExactAgentModelInferenceRequest) => ({
+      status: 'completed' as const,
+      contentBlocks: [{
+        type: 'tool_call' as const,
+        toolCallId: 'call-v3-1',
+        providerToolName: request.tools[0]!.providerToolName,
+        input: { input: { path: 'other/result.ts' }, scope: ['other'] }
+      }],
+      replay: {
+        envelopeVersion: 1 as const,
+        adapter: 'openai-compatible' as const,
+        finishReason: 'tool_calls' as const,
+        requestEnvelopeDigest: `sha256:${'9'.repeat(64)}`,
+        contentBlocksDigest: `sha256:${'8'.repeat(64)}`
       }
     }));
     const adapter = new ProductionAgentEngineAdapter(
@@ -1281,6 +1325,33 @@ function withSubagentProviders(input: AgentTurnInput): AgentTurnInput {
   return { ...input, run };
 }
 
+function withExecutionMode(
+  input: AgentTurnInput,
+  mode: 'chat' | 'agent' | 'plan'
+): AgentTurnInput {
+  const binding = {
+    ...input.run.binding,
+    bindingVersion: 4 as const,
+    executionProfile: {
+      mode
+    }
+  };
+  const run: AgentRun = {
+    ...input.run,
+    binding,
+    turns: input.run.turns.map((turn) => ({
+      ...turn,
+      intention: {
+        ...turn.intention,
+        bindingVersion: 4 as const,
+        executionProfile: binding.executionProfile
+      }
+    }))
+  };
+  assertValidAgentRun(run);
+  return { ...input, run };
+}
+
 function createPlanFixture(): ReturnType<typeof createFixture> {
   const fixture = createFixture();
   const binding = {
@@ -1423,7 +1494,13 @@ function exactInferenceGateway(
   infer: (
     request: DispatchExactAgentModelInferenceRequest
   ) => Promise<ExactAgentModelInferenceResult>,
-  capacity = { contextWindowTokens: 128_000, maxOutputTokens: 4_096 }
+  capacity = { contextWindowTokens: 128_000, maxOutputTokens: 4_096 },
+  qualification = {
+    supportsTextResponse: true,
+    supportsAgent: true,
+    supportsPlan: true,
+    supportsVision: false
+  }
 ): ExactAgentModelInferenceRuntime & {
   inferExact: ReturnType<typeof vi.fn>;
 } {
@@ -1444,7 +1521,8 @@ function exactInferenceGateway(
     })),
     hasExactBinding: () => true,
     resolveBinding: () => null,
-    describeContextCapacity: () => ({ ...capacity })
+    describeContextCapacity: () => ({ ...capacity }),
+    describeExecutionQualification: () => ({ ...qualification })
   };
 }
 
@@ -1520,9 +1598,46 @@ function textBlockContent(
 }
 
 function inferenceResponse(content: unknown): ExactAgentModelInferenceResult {
+  if (isRecord(content) && content.protocol === PROTOCOL && isRecord(content.directive)) {
+    const directive = content.directive;
+    if (directive.kind === 'respond' && typeof directive.content === 'string') {
+      return textInferenceResponse(directive.content);
+    }
+    if (typeof directive.kind === 'string' && [
+      'ask_user',
+      'propose_plan',
+      'checkpoint',
+      'complete',
+      'fail',
+      'delegate_subagent',
+      'delegate_subagents'
+    ].includes(directive.kind)) {
+      const { kind, ...input } = directive;
+      return {
+        status: 'completed',
+        contentBlocks: [{
+          type: 'tool_call',
+          toolCallId: `native-control-${'1'.repeat(48)}`,
+          providerToolName: `ariadne_control_${kind}`,
+          input
+        }],
+        replay: {
+          envelopeVersion: 1,
+          adapter: 'openai-compatible',
+          finishReason: 'tool_calls',
+          requestEnvelopeDigest: `sha256:${'9'.repeat(64)}`,
+          contentBlocksDigest: `sha256:${'8'.repeat(64)}`
+        }
+      };
+    }
+  }
+  return textInferenceResponse(JSON.stringify(content));
+}
+
+function textInferenceResponse(content: string): ExactAgentModelInferenceResult {
   return {
     status: 'completed',
-    contentBlocks: [{ type: 'text', text: JSON.stringify(content) }],
+    contentBlocks: [{ type: 'text', text: content }],
     replay: {
       envelopeVersion: 1,
       adapter: 'openai-compatible',
@@ -1531,6 +1646,10 @@ function inferenceResponse(content: unknown): ExactAgentModelInferenceResult {
       contentBlocksDigest: `sha256:${'8'.repeat(64)}`
     }
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function initialTurnRun(tool: AgentPinnedToolIdentity): AgentRun {

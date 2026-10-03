@@ -119,6 +119,27 @@ describe('ComposedRuntimeIngress', () => {
     };
     await received?.publicEventSink.append(wake);
     await vi.waitFor(() => expect(application.publicEvents).toEqual([wake]));
+    const live: RuntimePublicEventAppend = {
+      eventId: 'inference-live-1',
+      aggregateType: 'inference_stream',
+      aggregateId: 'inference-live',
+      aggregateVersion: 1,
+      occurredAt: '2030-01-01T00:00:01.000Z',
+      event: {
+        contractVersion: '1.0',
+        kind: 'inference.chunk.observed',
+        sessionId: 'session-live',
+        runId: 'run-live',
+        turnId: 'turn-live',
+        attemptId: 'attempt-live',
+        sequence: 1,
+        channel: 'token',
+        text: 'live',
+        observedAt: '2030-01-01T00:00:01.000Z'
+      }
+    };
+    await received?.liveInferenceEventSink.append(live);
+    expect(application.publicEvents).toEqual([wake, live]);
   });
 
   it('closes failed Control before disposing its model-domain dependency', async () => {
@@ -288,7 +309,7 @@ describe('ComposedRuntimeIngress', () => {
 
     const conflict = await harness.ingress.execute({
       ...envelope('stable-command'),
-      command: { kind: 'projection.snapshot.get', contractVersion: '3.0' }
+      command: { kind: 'projection.snapshot.get', contractVersion: '4.0' }
     });
 
     expect(conflict).toMatchObject({
@@ -305,7 +326,7 @@ describe('ComposedRuntimeIngress', () => {
       ...envelope('canonical-command'),
       command: {
         kind: 'agent.decision.resolve.v3' as const,
-        contractVersion: '3.0' as const,
+        contractVersion: '4.0' as const,
         runId: 'run-canonical',
         decisionId: 'decision-canonical',
         action: {
@@ -325,7 +346,7 @@ describe('ComposedRuntimeIngress', () => {
         },
         decisionId: 'decision-canonical',
         runId: 'run-canonical',
-        contractVersion: '3.0' as const,
+        contractVersion: '4.0' as const,
         kind: 'agent.decision.resolve.v3' as const
       }
     };

@@ -52,12 +52,12 @@ describe("memory.db control-shadow retirement", () => {
     expect(existsSync(path.join(root, "data"))).toBe(false);
   });
 
-  it("fresh installs finish at v45 without active control-shadow tables", () => {
+  it("fresh installs finish at the current schema without active control-shadow tables", () => {
     const dataDir = path.join(createTemporaryRoot(), "data");
     const manager = new DatabaseManager(dataDir);
     try {
       expect(manager.schemaVersion).toBe(MEMORY_DB_SCHEMA_VERSION);
-      expect(getUserVersion(manager.connection)).toBe(45);
+      expect(getUserVersion(manager.connection)).toBe(46);
       expect(controlShadowObjects(manager.connection)).toEqual([]);
       expect(manager.connection.prepare(
         "SELECT name FROM schema_migrations WHERE version=45",
@@ -82,7 +82,7 @@ describe("memory.db control-shadow retirement", () => {
 
     const manager = new DatabaseManager(dataDir);
     try {
-      expect(manager.schemaVersion).toBe(45);
+      expect(manager.schemaVersion).toBe(46);
       expect(controlShadowObjects(manager.connection)).toEqual([]);
       expect(manager.connection.prepare(
         "SELECT name FROM sqlite_sequence WHERE name LIKE 'agent_v2_%'",
@@ -137,7 +137,7 @@ describe("memory.db control-shadow retirement", () => {
 
     const reopened = new DatabaseSync(dbPath);
     reopened.exec("PRAGMA foreign_keys = ON;");
-    expect(applySqliteMigrations(reopened, MEMORY_DB_MIGRATIONS).version).toBe(45);
+    expect(applySqliteMigrations(reopened, MEMORY_DB_MIGRATIONS).version).toBe(46);
     expect(controlShadowObjects(reopened)).toEqual([]);
     expect(reopened.prepare(
       "SELECT name FROM sqlite_sequence WHERE name LIKE 'agent_v2_%'",

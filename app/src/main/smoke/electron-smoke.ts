@@ -1,11 +1,14 @@
 import { app, BrowserWindow } from 'electron';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
+import { APP_TERMINAL_CONTEXT_ID } from '@shared/contract';
+import { verifyInferenceStreamRecovery } from './inference-stream-recovery-smoke';
 
 interface SmokeResult {
   passed: boolean;
   runtimeReady: boolean;
   projectionReady: boolean;
+  modelQualificationCompleted: boolean;
   projectedModelCount: number;
   configuredAgentModelExclusive: boolean;
   configuredModelMislabelAbsent: boolean;
@@ -21,6 +24,9 @@ interface SmokeResult {
   sessionProjected: boolean;
   messageProjected: boolean;
   directStreamObserved: boolean;
+  inferenceStreamDeliveryRecovered: boolean;
+  directStreamRenderedBeforeCompletion: boolean;
+  directStreamPartialText: string;
   directStreamChunkCount: number;
   directAgentCompleted: boolean;
   imageAttachmentCompleted: boolean;
@@ -53,6 +59,7 @@ interface SmokeObservation {
   fatalError?: string;
   runtimeReady?: boolean;
   projectionReady?: boolean;
+  modelQualificationCompleted?: boolean;
   projectedModelCount?: number;
   configuredAgentModelExclusive?: boolean;
   configuredModelMislabelAbsent?: boolean;
@@ -68,6 +75,8 @@ interface SmokeObservation {
   sessionProjected?: boolean;
   messageProjected?: boolean;
   directStreamObserved?: boolean;
+  directStreamRenderedBeforeCompletion?: boolean;
+  directStreamPartialText?: string;
   directStreamChunkCount?: number;
   directAgentCompleted?: boolean;
   imageAttachmentCompleted?: boolean;
@@ -206,7 +215,7 @@ export async function runElectronSmokeTest(
         const snapshot = async () => {
           const value = await request({
             kind: 'projection.snapshot.get',
-            contractVersion: '3.0'
+            contractVersion: '4.0'
           });
           if (value.kind !== 'projection.snapshot') throw new Error('projection_snapshot_kind_invalid');
           diagnosticSnapshot = {
@@ -225,7 +234,7 @@ export async function runElectronSmokeTest(
           const messageId = crypto.randomUUID();
           const created = await request({
             kind: 'conversation.session.create.v3',
-            contractVersion: '3.0',
+            contractVersion: '4.0',
             sessionId,
             workspaceId: ${JSON.stringify(workspaceId)}
           });
@@ -234,7 +243,7 @@ export async function runElectronSmokeTest(
           }
           const accepted = await request({
             kind: 'conversation.message.accept.v3',
-            contractVersion: '3.0',
+            contractVersion: '4.0',
             sessionId,
             workspaceId: ${JSON.stringify(workspaceId)},
             expectedSessionVersion: created.version,
@@ -267,7 +276,7 @@ export async function runElectronSmokeTest(
         });
         const resolvePermission = (runId, decision, choice) => request({
           kind: 'agent.decision.resolve.v3',
-          contractVersion: '3.0',
+          contractVersion: '4.0',
           runId,
           decisionId: decision.decisionId,
           action: {
@@ -310,16 +319,41 @@ export async function runElectronSmokeTest(
           const result = await api.runtime.getStatus();
           return result.ok && result.value.availability === 'ready' ? result.value : null;
         });
+        const availableProjection = await waitUntil(async () => {
+          const current = await snapshot();
+          return current.models.some((item) => (
+            item.modelId === ${JSON.stringify(providerModel)}
+            && item.availability === 'ready'
+          )) ? current : null;
+        });
+        const qualification = await request({
+          kind: 'model.qualification.run.v3',
+          contractVersion: '4.0',
+          modelId: ${JSON.stringify(providerModel)}
+        });
+        if (
+          qualification.kind !== 'model.qualification.completed.v3'
+          || qualification.modelId !== ${JSON.stringify(providerModel)}
+          || qualification.supportsTextChat !== true
+          || qualification.supportsAgent !== true
+          || qualification.supportsPlan !== true
+          || qualification.supportsVision !== true
+          || qualification.qualificationState !== 'qualified'
+        ) throw new Error('model_qualification_result_invalid:' + JSON.stringify(qualification));
         const initialProjection = await waitUntil(async () => {
           const current = await snapshot();
           return current.models.some((item) => (
             item.modelId === ${JSON.stringify(providerModel)}
             && item.availability === 'ready'
+            && item.supportsTextChat
             && item.supportsAgent
+            && item.supportsPlan
+            && item.supportsVision
+            && item.qualificationState === 'qualified'
           )) ? current : null;
         });
 
-        const sessionsBeforeDraft = initialProjection.sessions.map((session) => session.sessionId).sort();
+        const sessionsBeforeDraft = availableProjection.sessions.map((session) => session.sessionId).sort();
         const workspaceButton = await waitUntil(() => document.querySelector(
           '.conversation-workspace-row[data-workspace-id="' + ${JSON.stringify(workspaceId)} + '"] .conversation-workspace-main'
         ));
@@ -347,6 +381,18 @@ export async function runElectronSmokeTest(
           return button instanceof HTMLButtonElement && !button.disabled ? button : null;
         });
         enabledSendButton.click();
+        const directStreamPartialText = await waitUntil(() => {
+          const candidates = [...document.querySelectorAll(
+            '.assistant-message-content > .message-content'
+          )];
+          const text = candidates
+            .map((candidate) => candidate.textContent?.trim() ?? '')
+            .find((candidate) => (
+              candidate.startsWith('ARIADNE_')
+              && candidate !== 'ARIADNE_SMOKE_DIRECT_OK'
+            ));
+          return text ?? null;
+        });
         const directStreamObserved = await waitUntil(async () => {
           const current = await snapshot();
           const userMessage = current.messages.find((item) => (
@@ -492,7 +538,7 @@ export async function runElectronSmokeTest(
         lifecycleStep = 'rename_dialog';
         clickMenuItem('重命名聊天');
         const renameDialog = await waitUntil(() => document.querySelector(
-          '.action-dialog--prompt[role="dialog"]'
+          'dialog[open][role="dialog"] .action-dialog--prompt'
         ));
         const renameInput = renameDialog.querySelector('input');
         if (!(renameInput instanceof HTMLInputElement)) throw new Error('conversation_rename_input_missing');
@@ -524,7 +570,7 @@ export async function runElectronSmokeTest(
         await openSessionMenu();
         clickMenuItem('归档聊天');
         const archiveDialog = await waitUntil(() => document.querySelector(
-          '.action-dialog[role="alertdialog"]'
+          'dialog[open][role="alertdialog"] .action-dialog'
         ));
         const archiveConfirm = [...archiveDialog.querySelectorAll('button')].find(
           (button) => button.textContent?.trim() === '归档聊天'
@@ -550,7 +596,7 @@ export async function runElectronSmokeTest(
         if (!(settingsButton instanceof HTMLButtonElement)) throw new Error('settings_button_missing');
         settingsButton.click();
         const settingsDialog = await waitUntil(() => document.querySelector(
-          '.settings-dialog[role="dialog"]'
+          'dialog[open][role="dialog"] .settings-dialog'
         ));
         const archiveCategory = [...settingsDialog.querySelectorAll(
           '.settings-navigation-item'
@@ -881,7 +927,7 @@ export async function runElectronSmokeTest(
         const runningCancellation = await waitForRun(cancelled.runId, (run) => run.status === 'running');
         const cancelResult = await request({
           kind: 'agent.run.cancel.v3',
-          contractVersion: '3.0',
+          contractVersion: '4.0',
           runId: cancelled.runId,
           expectedVersion: runningCancellation.run.version,
           occurredAt: new Date().toISOString(),
@@ -1023,6 +1069,7 @@ export async function runElectronSmokeTest(
         return {
           runtimeReady: status.availability === 'ready',
           projectionReady: true,
+          modelQualificationCompleted: qualification.qualificationState === 'qualified',
           projectedModelCount: initialProjection.models.length,
           configuredAgentModelExclusive: readyAgentModels.length === 1
             && readyAgentModels[0]?.modelId === ${JSON.stringify(providerModel)},
@@ -1039,6 +1086,8 @@ export async function runElectronSmokeTest(
           sessionProjected: direct.current.sessions.some((item) => item.sessionId === direct.run.sessionId),
           messageProjected: direct.current.messages.some((item) => item.messageId === direct.userMessage.messageId),
           directStreamObserved: directStreamObserved.stream.runId === direct.run.runId,
+          directStreamRenderedBeforeCompletion: directStreamPartialText.length > 0,
+          directStreamPartialText,
           directStreamChunkCount: direct.current.inferenceStreams.find((item) => (
             item.runId === direct.run.runId
           ))?.chunks.length ?? 0,
@@ -1096,12 +1145,21 @@ export async function runElectronSmokeTest(
       workspaceId,
       outputRoot
     );
-    const providerState = await readProviderState(providerStatePath);
+    let inferenceStreamDeliveryRecovered = false;
+    if (observation.fatalError === undefined) {
+      try { inferenceStreamDeliveryRecovered = await verifyInferenceStreamRecovery(window, providerModel); }
+      catch (error) { observation.fatalError = error instanceof Error ? error.message : String(error); }
+    }
+    // The Provider persists counters after closing each response. The final
+    // Runtime/Renderer assertion can win that race by a few milliseconds, so
+    // wait for the complete trace before evaluating the external fixture.
+    const providerState = await waitForProviderTrace(providerStatePath);
     const providerTraceValid = validateProviderTrace(providerState);
     const result: SmokeResult = {
       passed: false,
       runtimeReady: observation.runtimeReady === true,
       projectionReady: observation.projectionReady === true,
+      modelQualificationCompleted: observation.modelQualificationCompleted === true,
       projectedModelCount: observation.projectedModelCount ?? 0,
       configuredAgentModelExclusive: observation.configuredAgentModelExclusive === true,
       configuredModelMislabelAbsent: observation.configuredModelMislabelAbsent === true,
@@ -1117,6 +1175,10 @@ export async function runElectronSmokeTest(
       sessionProjected: observation.sessionProjected === true,
       messageProjected: observation.messageProjected === true,
       directStreamObserved: observation.directStreamObserved === true,
+      inferenceStreamDeliveryRecovered,
+      directStreamRenderedBeforeCompletion:
+        observation.directStreamRenderedBeforeCompletion === true,
+      directStreamPartialText: observation.directStreamPartialText ?? '',
       directStreamChunkCount: observation.directStreamChunkCount ?? 0,
       directAgentCompleted: observation.directAgentCompleted === true,
       imageAttachmentCompleted: observation.imageAttachmentCompleted === true,
@@ -1148,6 +1210,7 @@ export async function runElectronSmokeTest(
     };
     result.passed = result.runtimeReady
       && result.projectionReady
+      && result.modelQualificationCompleted
       && result.configuredAgentModelExclusive
       && result.configuredModelMislabelAbsent
       && result.newDraftDidNotCreateSession
@@ -1162,6 +1225,8 @@ export async function runElectronSmokeTest(
       && result.sessionProjected
       && result.messageProjected
       && result.directStreamObserved
+      && result.inferenceStreamDeliveryRecovered
+      && result.directStreamRenderedBeforeCompletion
       && result.directStreamChunkCount >= 2
       && result.directAgentCompleted
       && result.imageAttachmentCompleted
@@ -1238,16 +1303,55 @@ async function verifyApplicationProfileWindow(
     settingsButton.click();
     await waitUntil(() => document.querySelector('.settings-navigation'));
     const speechIds = profile.entities.find((entry) => entry.entity === 'speech').componentIds;
+    const uiIds = profile.entities.find((entry) => entry.entity === 'ui').componentIds;
     const mic = document.querySelector('.composer-mic-button');
     const speechCategory = [...document.querySelectorAll('.settings-navigation-item')]
       .some((item) => item.textContent?.includes('本地语音'));
+    step = 'visual-review';
+    const closeSettingsButton = await waitUntil(() => document.querySelector('button[aria-label="关闭设置"]'));
+    closeSettingsButton.click();
+    await waitUntil(() => document.querySelector('.settings-dialog') === null);
+    const expectsVisualReview = uiIds.includes('review.visual');
+    let reviewPanel = null;
+    if (expectsVisualReview) {
+    const reviewButton = await waitUntil(() => document.querySelector('.activity-bar button[aria-label="可视化审查"]'));
+    reviewButton.click();
+    reviewPanel = await waitUntil(() => document.querySelector('.visual-review-panel'));
+    }
+    await delay(250);
+    const reopenedSettingsButton = document.querySelector('button[aria-label="关闭设置"]');
+    if (reopenedSettingsButton) {
+      reopenedSettingsButton.click();
+      await waitUntil(() => document.querySelector('.settings-dialog') === null);
+    }
+    await delay(100);
+    const sequenceRect = document.querySelector('.review-sequence')?.getBoundingClientRect();
+    const boardRect = document.querySelector('.review-sequence-board')?.getBoundingClientRect();
+    const participantRects = [...document.querySelectorAll('.review-participant')].map((item) => ({
+      label: item.querySelector('strong')?.textContent ?? '',
+      left: Math.round(item.getBoundingClientRect().left),
+      right: Math.round(item.getBoundingClientRect().right)
+    }));
     return {
       profileId: profile.id,
       profileDigest: profile.digest,
       entityDigestsValid: profile.entities.every((entry) => /^sha256:[a-f0-9]{64}$/.test(entry.digest)),
       composerVisible: Boolean(composer),
+      runtimeHealthProfileAbsent: !uiIds.includes('runtime.health'),
+      runtimeHealthDomAbsent: document.querySelector('[data-module-id="runtime.health"]') === null
+        && !document.body.textContent?.includes('Runtime 健康'),
       micVisible: Boolean(mic),
       speechCategoryVisible: speechCategory,
+      visualReviewVisible: Boolean(reviewPanel),
+      visualReviewNavigationVisible: document.querySelector('.activity-bar button[aria-label="可视化审查"]') !== null,
+      expectsVisualReview,
+      visualReviewMarkedAsLive: document.body.textContent?.includes('真实会话数据') === true
+        || document.body.textContent?.includes('选择一个会话后') === true,
+      visualReviewLayout: {
+        sequenceWidth: Math.round(sequenceRect?.width ?? 0),
+        boardWidth: Math.round(boardRect?.width ?? 0),
+        participants: participantRects
+      },
       expectsStt: speechIds.includes('speech.stt'),
       expectsSpeechUi: speechIds.some((id) => id !== 'speech.core')
     };
@@ -1266,8 +1370,19 @@ async function verifyApplicationProfileWindow(
     profileDigest: string;
     entityDigestsValid: boolean;
     composerVisible: boolean;
+    runtimeHealthProfileAbsent: boolean;
+    runtimeHealthDomAbsent: boolean;
     micVisible: boolean;
     speechCategoryVisible: boolean;
+    visualReviewVisible: boolean;
+    visualReviewNavigationVisible: boolean;
+    expectsVisualReview: boolean;
+    visualReviewMarkedAsLive: boolean;
+    visualReviewLayout: {
+      sequenceWidth: number;
+      boardWidth: number;
+      participants: Array<{ label: string; left: number; right: number }>;
+    };
     expectsStt: boolean;
     expectsSpeechUi: boolean;
   };
@@ -1279,6 +1394,12 @@ async function verifyApplicationProfileWindow(
     && /^sha256:[a-f0-9]{64}$/u.test(observation.profileDigest)
     && observation.entityDigestsValid
     && observation.composerVisible
+    && observation.runtimeHealthProfileAbsent
+    && observation.runtimeHealthDomAbsent
+    && observation.expectsVisualReview === (expectedProfile === 'desktop-preview')
+    && observation.visualReviewVisible === observation.expectsVisualReview
+    && observation.visualReviewNavigationVisible === observation.expectsVisualReview
+    && observation.visualReviewMarkedAsLive === observation.expectsVisualReview
     && observation.micVisible === observation.expectsStt
     && observation.speechCategoryVisible === observation.expectsSpeechUi;
   await writeFile(join(outputRoot, 'profile-window.json'), JSON.stringify({
@@ -1310,7 +1431,7 @@ async function verifyDeliveryRendererReload(
     commandId: ${JSON.stringify(commandId)},
     command: {
       kind: 'agent.inbox.enqueue.v3',
-      contractVersion: '3.0',
+      contractVersion: '4.0',
       runId: ${JSON.stringify(runId)},
       sessionId: ${JSON.stringify(sessionId)},
       inputId: ${JSON.stringify(inputId)},
@@ -1457,7 +1578,7 @@ async function verifyDeliveryDesktopRestart(
       }
       const projection = await window.ariadne.runtime.request({
         kind: 'projection.snapshot.get',
-        contractVersion: '3.0'
+        contractVersion: '4.0'
       });
       if (!projection.ok || projection.value.kind !== 'projection.snapshot') {
         throw new Error('desktop_restart_projection_unavailable');
@@ -1473,7 +1594,7 @@ async function verifyDeliveryDesktopRestart(
         .some((candidate) => candidate.commandId === record.commandId);
       const terminalRecords = await window.ariadne.terminal.listRecoveryRecords();
       const interruptedTerminal = terminalRecords.find((candidate) => (
-        candidate.workspaceId === ${JSON.stringify(workspaceId)}
+        candidate.workspaceId === ${JSON.stringify(APP_TERMINAL_CONTEXT_ID)}
         && candidate.status === 'interrupted'
         && candidate.detail === 'main_process_lost'
       ));
@@ -1487,20 +1608,28 @@ async function verifyDeliveryDesktopRestart(
       }
       await delay(100);
       let recoveryBanner = null;
+      let visibleTerminalPanel = null;
       const recoveryDeadline = Date.now() + 10_000;
       while (Date.now() < recoveryDeadline) {
-        const candidate = document.querySelector('.terminal-recovery');
-        if (candidate instanceof HTMLElement && candidate.textContent?.includes('命令不会自动重放')) {
+        visibleTerminalPanel = Array.from(document.querySelectorAll('.terminal-panel')).find((candidate) => (
+          candidate instanceof HTMLElement
+          && candidate.getBoundingClientRect().height > 0
+          && getComputedStyle(candidate).visibility !== 'hidden'
+        )) ?? null;
+        const candidate = visibleTerminalPanel?.querySelector('.terminal-recovery') ?? null;
+        if (
+          candidate instanceof HTMLElement
+          && candidate.getBoundingClientRect().height > 0
+          && getComputedStyle(candidate).visibility !== 'hidden'
+          && candidate.textContent?.includes('命令不会自动重放')
+        ) {
           recoveryBanner = candidate;
           break;
         }
         await delay(50);
       }
       const terminalRecoveryVisible = recoveryBanner !== null;
-      const terminalPanel = document.querySelector('.terminal-panel');
-      const terminalPanelVisible = terminalPanel instanceof HTMLElement
-        && terminalPanel.getBoundingClientRect().height > 0
-        && getComputedStyle(terminalPanel).visibility !== 'hidden';
+      const terminalPanelVisible = visibleTerminalPanel instanceof HTMLElement;
       return {
         commandId: record.commandId,
         inputId: record.command.inputId,
@@ -1525,9 +1654,30 @@ async function verifyDeliveryDesktopRestart(
     result.terminalScreenshot = terminalScreenshot;
     result.terminalExplicitRestartLinked = await window.webContents.executeJavaScript(`(async () => {
       const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-      const restart = document.querySelector('.terminal-recovery button');
+      const restart = Array.from(document.querySelectorAll('.terminal-panel')).find((candidate) => (
+        candidate instanceof HTMLElement
+        && candidate.getBoundingClientRect().height > 0
+        && getComputedStyle(candidate).visibility !== 'hidden'
+      ))?.querySelector('.terminal-recovery button');
       if (!(restart instanceof HTMLButtonElement)) return false;
       restart.click();
+      const confirmationDeadline = Date.now() + 5_000;
+      let confirmed = false;
+      while (Date.now() < confirmationDeadline) {
+        const dialog = Array.from(document.querySelectorAll('dialog[open][role="alertdialog"]')).find(
+          (candidate) => candidate.querySelector('h2')?.textContent === '重新启动终端？'
+        );
+        const confirm = dialog && Array.from(dialog.querySelectorAll('button')).find(
+          (candidate) => candidate.textContent === '重新启动'
+        );
+        if (confirm instanceof HTMLButtonElement) {
+          confirm.click();
+          confirmed = true;
+          break;
+        }
+        await delay(50);
+      }
+      if (!confirmed) throw new Error('terminal_restart_confirmation_missing');
       const deadline = Date.now() + 10_000;
       while (Date.now() < deadline) {
         const linked = (await window.ariadne.terminal.listRecoveryRecords()).some((candidate) => (
@@ -1579,9 +1729,20 @@ async function readProviderState(path: string): Promise<ProviderState> {
   return parsed;
 }
 
+async function waitForProviderTrace(path: string, timeoutMs = 5_000): Promise<ProviderState> {
+  let state = await readProviderState(path);
+  const deadline = Date.now() + timeoutMs;
+  while (!validateProviderTrace(state) && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    state = await readProviderState(path);
+  }
+  return state;
+}
+
 function validateProviderTrace(state: ProviderState): boolean {
   const expected: Record<string, readonly [number, number, number]> = {
-    direct: [1, 0, 1],
+    stream_recovery: [2, 0, 2],
+    direct: [2, 0, 2],
     image: [1, 0, 1],
     inbox: [1, 1, 2],
     question: [1, 1, 2],
@@ -1589,7 +1750,6 @@ function validateProviderTrace(state: ProviderState): boolean {
     read: [1, 1, 2],
     write_allow: [1, 1, 2],
     write_deny: [1, 0, 1],
-    cancel: [1, 0, 1],
     crash_inference: [1, 0, 1],
     crash_effect: [1, 0, 1],
     crash_projection: [1, 1, 2]
@@ -1604,9 +1764,11 @@ function validateProviderTrace(state: ProviderState): boolean {
     ) return false;
   }
   const cancelled = state.scenarios.cancel;
-  return cancelled !== undefined
-    && cancelled.responses === 0
-    && cancelled.aborted === 1
+  const cancelTraceValid = cancelled !== undefined && (
+    (cancelled.requests === 0 && cancelled.responses === 0 && cancelled.aborted === 0)
+    || (cancelled.requests === 1 && cancelled.responses === 0 && cancelled.aborted === 1)
+  );
+  return cancelTraceValid
     && state.scenarios.crash_inference?.responses === 0
     && state.scenarios.crash_inference?.aborted === 1
     && state.scenarios.crash_effect?.responses === 1
@@ -1619,9 +1781,10 @@ function validateProviderTrace(state: ProviderState): boolean {
     && state.scenarios.question?.aborted === 0
     && state.scenarios.crash_question?.responses === 2
     && state.scenarios.crash_question?.aborted === 0
-    && state.requests === 18
-    && state.responses === 16
-    && state.aborted === 2;
+    && state.scenarios.stream_recovery?.responses === 2
+    && (state.requests === 20 || state.requests === 21)
+    && state.responses === 19
+    && (state.aborted === 1 || state.aborted === 2);
 }
 
 function requireSmokeEnvironment(name: string): string {

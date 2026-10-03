@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../types.js";
+import type { ModelToolSpec, ToolCall } from "../types.js";
 
 export interface RuntimeLoadPayload {
   modelId: string;
@@ -12,6 +13,7 @@ export interface RuntimeGeneratePayload {
   messages: ChatMessage[];
   temperature?: number;
   maxTokens?: number;
+  tools?: ModelToolSpec[];
 }
 
 export interface RuntimeCountTokensPayload {
@@ -47,6 +49,7 @@ export type RuntimeEventMessage =
 
 export interface RuntimeGenerateResult {
   content: string;
+  toolCalls: ToolCall[];
   inputTokens?: number;
   outputTokens?: number;
 }

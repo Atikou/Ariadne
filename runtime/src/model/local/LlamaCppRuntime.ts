@@ -71,6 +71,7 @@ export class LlamaCppRuntime implements LocalModelRuntime {
         "generate",
         {
           messages: request.messages,
+          tools: request.tools,
           temperature: request.temperature,
           maxTokens: request.maxTokens ?? model.maxTokens ?? 1_024,
         },
@@ -89,7 +90,7 @@ export class LlamaCppRuntime implements LocalModelRuntime {
     }
     return {
       content: result.content,
-      toolCalls: [],
+      toolCalls: result.toolCalls,
       clientName: model.id,
       modelName: model.displayName,
       location: "local",

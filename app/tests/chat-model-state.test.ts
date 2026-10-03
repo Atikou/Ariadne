@@ -63,12 +63,13 @@ describe('Chat model state', () => {
       name: 'plan model lacks Agent support',
       input: {
         planModeEnabled: true,
-        models: [model('plain-chat', { supportsAgent: false })]
+        executionMode: 'plan',
+        models: [model('plain-chat', { supportsAgent: false, supportsPlan: false })]
       },
-      expectedKind: 'agent-incompatible',
+      expectedKind: 'plan-incompatible',
       expectedCanChat: false,
-      expectedStatus: '模型不支持 Agent',
-      expectedPlaceholder: '已配置模型不支持 Agent 协议'
+      expectedStatus: '模型不支持计划模式',
+      expectedPlaceholder: '已配置模型未通过计划控制能力检测'
     },
     {
       name: 'privacy-first has only remote models',
@@ -88,7 +89,7 @@ describe('Chat model state', () => {
     },
     {
       name: 'plan Chat has an Agent-capable ready model',
-      input: { planModeEnabled: true, models: [REMOTE_READY] },
+      input: { planModeEnabled: true, executionMode: 'plan', models: [REMOTE_READY] },
       expectedKind: 'ready',
       expectedCanChat: true,
       expectedStatus: '就绪',
@@ -107,6 +108,7 @@ describe('Chat model state', () => {
       runtimeAvailability: 'ready',
       planModeAvailable: true,
       planModeEnabled: false,
+      executionMode: 'chat',
       routingStrategy: 'local-first',
       models: [],
       ...input
@@ -124,6 +126,7 @@ describe('Chat model state', () => {
       runtimeAvailability: 'ready',
       planModeAvailable: true,
       planModeEnabled: false,
+      executionMode: 'chat',
       routingStrategy: 'local-first',
       models: [
         model('checking', { availability: 'checking' }),
@@ -135,6 +138,20 @@ describe('Chat model state', () => {
     expect(state.readyModels.map((candidate) => candidate.id)).toEqual(['remote-ready']);
     expect(state.eligibleModels.map((candidate) => candidate.id)).toEqual(['remote-ready']);
   });
+
+  it('keeps a disabled local model out of chat candidates', () => {
+    const state = deriveChatModelState({
+      runtimeAvailability: 'ready',
+      planModeAvailable: true,
+      planModeEnabled: false,
+      executionMode: 'chat',
+      routingStrategy: 'local-first',
+      models: [LOCAL_READY, model('local-disabled', { location: 'local', enabled: false }), REMOTE_READY]
+    });
+
+    expect(state.readyModels.map((candidate) => candidate.id)).toEqual(['local-ready', 'remote-ready']);
+    expect(state.eligibleModels.map((candidate) => candidate.id)).toEqual(['local-ready', 'remote-ready']);
+  });
 });
 
 function model(id: string, overrides: Partial<ModelSummary> = {}): ModelSummary {
@@ -143,8 +160,11 @@ function model(id: string, overrides: Partial<ModelSummary> = {}): ModelSummary 
     label: `Model ${id}`,
     location: 'remote',
     availability: 'ready',
+    supportsTextChat: true,
     supportsAgent: true,
+    supportsPlan: true,
     supportsVision: false,
+    qualificationState: 'qualified',
     ...overrides
   };
 }

@@ -129,8 +129,7 @@ export function buildModelProfiles(clients: ModelClientConfig[]): ModelProfile[]
     const supportsTools = rp?.supportsTools
       ?? rp?.capabilities?.toolCalling
       ?? (client.kind === "api"
-        && (client.qualification.nativeTools === "supported"
-          || client.qualification.textFallback === "supported"));
+        && client.qualification.nativeTools === "supported");
     const supportsJsonMode = rp?.supportsJsonMode
       ?? rp?.capabilities?.jsonMode
       ?? inferred.supportsJsonMode;

@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { AUTO_MODEL_ID, permissionModeOptions } from '../src/renderer/src/modules/chat/ChatComposerPolicy';
 
 const rendererRoot = join(process.cwd(), 'src', 'renderer', 'src');
 
@@ -97,11 +98,12 @@ describe('Chat module composition', () => {
     expect(styles).toMatch(/\.conversation-details-popover\s*\{[^}]*position:\s*fixed;/);
   });
 
-  it('gives the Chat content its own clipped rounded boundary beside the conversation sidebar', async () => {
+  it('separates the sidebar without nesting another rounded frame inside Chat', async () => {
     const styles = await readFile(join(rendererRoot, 'app', 'styles.css'), 'utf8');
 
     expect(styles).toMatch(/\.chat-panel\s*\{[^}]*background:\s*var\(--bg-1\);/);
-    expect(styles).toMatch(/\.chat-conversation\s*\{[^}]*overflow:\s*hidden;[^}]*border:\s*1px solid var\(--border-strong\);[^}]*border-right:\s*0;[^}]*border-radius:\s*var\(--radius-lg\) 0 0 var\(--radius-lg\);/);
+    expect(styles).toMatch(/\.chat-sidebar-slot\s*\{[^}]*border-right:\s*1px solid var\(--border-subtle\);/);
+    expect(styles).toMatch(/\.chat-conversation\s*\{[^}]*overflow:\s*hidden;[^}]*border:\s*0;[^}]*border-radius:\s*0;/);
   });
 
   it('renders custom select menus in a viewport-aware portal with compact options', async () => {
@@ -110,11 +112,11 @@ describe('Chat module composition', () => {
       readFile(join(rendererRoot, 'app', 'styles.css'), 'utf8')
     ]);
 
-    expect(selectMenu).toContain('createPortal(<>{popover}{submenu}</>, document.body)');
+    // Parent-modal ownership and keyboard containment are exercised in renderer-ui-smoke.
+    expect(selectMenu).toContain('createPortal(');
     expect(selectMenu).toContain('calculateSelectMenuLayout');
     expect(selectMenu).toContain('calculateSelectSubmenuLayout');
     expect(selectMenu).toContain("onMouseEnter={() => {");
-    expect(selectMenu).toContain("document.addEventListener('scroll', scheduleUpdate, true)");
     expect(styles).toMatch(/\.select-menu-popover\s*\{[^}]*position:\s*fixed;[^}]*overflow-y:\s*auto;/);
     expect(styles).toMatch(/\.select-menu-option\s*\{[^}]*min-height:\s*34px;[^}]*padding:\s*6px 9px;/);
     expect(styles).toMatch(/\.select-menu-trigger:focus-visible\s*\{[^}]*border-color:\s*var\(--accent\);[^}]*box-shadow:/);
@@ -135,10 +137,10 @@ describe('Chat module composition', () => {
     expect(chat).toContain('value={modelSelectionValue}');
     expect(chat).toContain('className="composer-action-controls"');
     expect(chat).toContain('className="composer-permission-mode-menu"');
-    expect(chat).toContain("value: 'full-access'");
-    expect(chat).toContain('自定义 (settings.toml)');
+    expect(permissionModeOptions.map(option => option.value)).toContain('full-access');
+    expect(permissionModeOptions.find(option => option.value === 'custom')?.label).toBe('自定义 (settings.toml)');
     expect(chat).toContain("routingStrategy,");
-    expect(chat).toContain("const AUTO_MODEL_ID = '__auto__';");
+    expect(AUTO_MODEL_ID).toBe('__auto__');
     expect(chat).toContain('services.agentSettings.apply({');
     expect(chat).toContain('expectedRevision: settings.revision');
     expect(chat).toContain("operations: [{ kind: 'permissions.set', mode: nextPermissionMode }]");
@@ -165,12 +167,11 @@ describe('Chat module composition', () => {
     expect(chat).toContain('ref={composerInputRef}');
     expect(chat).toContain('syncComposerTextareaHeight(composerInputRef.current)');
     expect(chat).toContain('observer.observe(composer)');
-    expect(chat).toContain('calculateComposerTextareaLayout(');
     expect(styles).toMatch(/\.composer \{[^}]*border-radius:\s*var\(--radius-lg\);/);
     expect(styles).toMatch(/\.composer textarea \{[^}]*overflow-y:\s*hidden;[^}]*min-height:\s*49px;[^}]*max-height:\s*144px;/);
   });
 
-  it('uses a filled circular stop control while a run is active', async () => {
+  it('keeps the stop control on the shared composer-control geometry while a run is active', async () => {
     const [chat, styles] = await Promise.all([
       readFile(join(rendererRoot, 'modules', 'chat', 'ChatPanel.tsx'), 'utf8'),
       readFile(join(rendererRoot, 'app', 'styles.css'), 'utf8')
@@ -178,8 +179,11 @@ describe('Chat module composition', () => {
 
     expect(chat).toContain('<span className="send-stop-glyph" aria-hidden="true" />');
     expect(chat).not.toContain('CircleStop');
-    expect(styles).toMatch(/\.send-button--stop,[^{]+?\{[^}]*width:\s*40px;[^}]*height:\s*40px;[^}]*background:\s*#17181c;[^}]*border-radius:\s*50%;/);
-    expect(styles).toMatch(/\.send-stop-glyph\s*\{[^}]*width:\s*11px;[^}]*height:\s*11px;[^}]*background:\s*currentColor;/);
+    expect(styles).toMatch(/\.composer-mic-button, \.send-button \{[^}]*width:\s*29px;[^}]*height:\s*29px;[^}]*flex:\s*0 0 29px;/);
+    expect(styles).toMatch(/\.composer-mic-button, \.send-button \{[^}]*box-sizing:\s*border-box;[^}]*border-radius:\s*var\(--radius-md\);[^}]*box-shadow:\s*none;/);
+    expect(styles).toMatch(/\.send-button--stop,[^{]+?\{[^}]*background:\s*#17181c;/);
+    expect(styles).not.toMatch(/\.send-button--stop[^{}]*\{[^}]*(?:width|height|border-radius|box-shadow|transform):/);
+    expect(styles).toMatch(/\.send-stop-glyph\s*\{[^}]*width:\s*8px;[^}]*height:\s*8px;[^}]*background:\s*currentColor;/);
   });
 
   it('shows turn-level waiting and failure states in Chat while keeping global Runtime failures in Logs', async () => {
@@ -191,17 +195,17 @@ describe('Chat module composition', () => {
 
     expect(chat).not.toContain('runtime.lastError');
     expect(chat).not.toContain('composer-error');
-    expect(chat).toContain("message.status === 'streaming' ? '正在处理…' : ''");
-    expect(chat).toContain('<RunProcessingDisclosure');
+    // Message waiting, partial content and failures are asserted by message-actions rendering tests.
+    expect(chat).toContain('<ConversationMessageRow');
     expect(styles).toMatch(/\.run-processing-disclosure\s*\{/);
-    expect(chat).toContain("node.error?.message ?? (node.status === 'failed'");
     expect(styles).toMatch(/\.message-status-notice\s*\{/);
     expect(logs).toContain("useState<LogViewFilter>('important')");
     expect(logs).toContain('traceMatchesView(entry, view)');
     expect(logs).toContain('coalesceTraceLogs(');
     expect(logs).toContain("entry.level === 'error' ? ' is-error'");
     expect(styles).not.toContain('.composer-error');
-    expect(styles).toMatch(/\.log-row\.is-error\s+svg,\s*\.log-row\.is-error\s+p\s*\{[^}]*color:\s*var\(--danger\);/);
+    const logStyles = await readFile(join(rendererRoot, 'modules', 'logs', 'logs.css'), 'utf8');
+    expect(logStyles).toMatch(/\.log-row\.is-error\s+svg,\s*\.log-row\.is-error\s+p\s*\{[^}]*color:\s*var\(--danger\);/);
   });
 
   it('invalidates persisted layouts that still contain the removed conversations panel', async () => {

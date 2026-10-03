@@ -16,6 +16,10 @@ const deadline = Date.now() + 240_000;
 
 try {
   while (Date.now() < deadline) {
+    if (!agentScenarioStarted(providerStatePath)) {
+      await delay(5);
+      continue;
+    }
     agent ??= openWhenReady(agentDatabasePath);
     projection ??= openWhenReady(projectionDatabasePath);
     try {
@@ -34,13 +38,19 @@ try {
       ) {
         writeFileSync(questionMarkerPath, 'user_question_waiting_authority_committed', 'utf8');
       }
-      if (agent !== null && !existsSync(effectMarkerPath) && effectStarted(agent)) {
+      if (
+        agent !== null
+        && !existsSync(effectMarkerPath)
+        && scenarioRequested(providerStatePath, 'crash_effect')
+        && effectStarted(agent)
+      ) {
         writeFileSync(effectMarkerPath, 'effect_started_authority_committed', 'utf8');
       }
       if (
         agent !== null
         && projection !== null
         && !existsSync(projectionMarkerPath)
+        && scenarioRequested(providerStatePath, 'crash_projection')
         && terminalRunAwaitingProjection(agent, projection)
       ) {
         writeFileSync(projectionMarkerPath, 'terminal_authority_projection_pending', 'utf8');
@@ -63,11 +73,25 @@ try {
   agent?.close();
 }
 
-function crashQuestionRequested(path) {
+function agentScenarioStarted(path) {
   if (!existsSync(path)) return false;
   try {
     const state = JSON.parse(readFileSync(path, 'utf8'));
-    return state?.scenarios?.crash_question?.requests >= 1;
+    return Number.isSafeInteger(state?.requests) && state.requests > 0;
+  } catch {
+    return false;
+  }
+}
+
+function crashQuestionRequested(path) {
+  return scenarioRequested(path, 'crash_question');
+}
+
+function scenarioRequested(path, scenario) {
+  if (!existsSync(path)) return false;
+  try {
+    const state = JSON.parse(readFileSync(path, 'utf8'));
+    return state?.scenarios?.[scenario]?.requests >= 1;
   } catch {
     return false;
   }
@@ -110,7 +134,8 @@ function effectStarted(database) {
       SELECT json_extract(event_json, '$.payload.effect.effectId') AS effect_id
         FROM agent_v3_outbox
        WHERE json_extract(event_json, '$.payload.type')='effect.registered'
-         AND json_extract(event_json, '$.payload.effect.toolCallId')='smoke-crash-effect-call'
+         AND json_extract(event_json, '$.payload.effect.tool.toolName')='browser.wait'
+       ORDER BY cursor DESC
        LIMIT 1
     )
     SELECT 1 AS observed
@@ -126,7 +151,8 @@ function terminalRunAwaitingProjection(agentDatabase, projectionDatabase) {
   const source = agentDatabase.prepare(`
     SELECT aggregate_id AS run_id
       FROM agent_v3_outbox
-     WHERE event_json LIKE '%"toolCallId":"smoke-crash-projection-call"%'
+     WHERE json_extract(event_json, '$.payload.type')='effect.registered'
+       AND json_extract(event_json, '$.payload.effect.tool.toolName')='workspace.write_file'
      ORDER BY cursor DESC
      LIMIT 1
   `).get();
