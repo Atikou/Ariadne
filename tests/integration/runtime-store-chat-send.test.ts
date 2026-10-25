@@ -150,7 +150,7 @@ describe('RuntimeStore bounded chat boundary', () => {
     fixture.request = async (command, read) => {
       if (command.kind === 'conversation.session.create') { expect(command.title).toBe('First message'); return { kind: 'conversation.session.created', sessionId: command.sessionId, version: 1 }; }
       if (command.kind === 'conversation.message.accept') {
-        expect(command).toMatchObject({ expectedSessionVersion: 1, execution: { mode: 'plan', modelId: 'model-selected', inference: { reasoningMode: 'on', reasoningEffort: 'high' }, routingStrategy: 'quality-first' } });
+        expect(command).toMatchObject({ expectedSessionVersion: 1, execution: { mode: 'plan', modelId: 'model-selected', inference: { reasoningMode: 'on', reasoningEffort: 'high' }, localFallbackModelId: null } });
         return accepted(command);
       }
       if (command.kind === 'conversation.session.title.generate') return { kind: 'conversation.session.title.generated', sessionId: command.sessionId, sessionVersion: command.expectedSessionVersion, title: '模型生成的标题' };
@@ -158,7 +158,7 @@ describe('RuntimeStore bounded chat boundary', () => {
       return read();
     };
     const store = await ready(fixture, [], ''); store.sessions.setPlanModeEnabled(true, null);
-    const result = await store.messages.send('First message', { workspaceId: 'workspace-primary', modelId: 'model-selected', inference: { reasoningMode: 'on', reasoningEffort: 'high' }, routingStrategy: 'quality-first' });
+    const result = await store.messages.send('First message', { workspaceId: 'workspace-primary', modelId: 'model-selected', inference: { reasoningMode: 'on', reasoningEffort: 'high' }, localFallbackModelId: null });
     expect(store.getSnapshot()).toMatchObject({ selectedSessionId: result.sessionId, sessions: [] });
     await vi.waitFor(() => expect(fixture.commands.filter(command => command.kind === 'conversation.session.rename')).toHaveLength(1));
     const writes = fixture.commands.filter(command => command.kind.startsWith('conversation.')).map(command => command.kind);
@@ -264,7 +264,8 @@ describe('RuntimeStore bounded chat boundary', () => {
     const command = { kind: 'agent.inbox.enqueue' as const, contractVersion: '5.0' as const, runId: 'run-restored', sessionId: 'session-a',
       inputId: 'input-restored', delivery: 'next_turn' as const, content: 'Resume this exact delivery after Renderer reload.' };
     const settle = vi.fn(async () => undefined), sent: { command: RuntimeCommand; commandId?: string }[] = [];
-    const fixture = new ProjectionRuntimeHarness({ list: async () => [{ commandId: 'command-restored', command, createdAt: '2026-07-30T23:59:00.000Z' }], stage: async () => { throw new Error('stage_not_expected'); }, settle });
+    const fixture = new ProjectionRuntimeHarness({ list: async () => [{ commandId: 'command-restored', command, createdAt: '2026-07-30T23:59:00.000Z' }],
+      stage: async () => { throw new Error('stage_not_expected'); }, stageBatch: async () => { throw new Error('stage_batch_not_expected'); }, settle });
     fixture.request = async (request, read, options) => {
       if (request.kind !== 'agent.inbox.enqueue') return read(); sent.push({ command: request, commandId: options?.commandId });
       return { kind: 'agent.inbox.enqueued', runId: request.runId, runVersion: 5, inputId: request.inputId, inputVersion: 1 };

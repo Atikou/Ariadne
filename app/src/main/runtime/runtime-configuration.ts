@@ -27,6 +27,7 @@ export function createDesktopRuntimeConfiguration(
   for (const id of AGENT_PROVIDER_IDS) {
     delete environment[AGENT_PROVIDER_CATALOG[id].apiKeyEnvironmentVariable];
   }
+  delete environment.ARIADNE_CONFIGURED_MODEL_KEY;
   const allowDevelopmentOverrides = !input.packaged;
   const overrideEntry = allowDevelopmentOverrides
     ? environment.ARIADNE_RUNTIME_ENTRY?.trim()
@@ -58,8 +59,7 @@ export function createDesktopRuntimeConfiguration(
   delete environment.ARIADNE_MODEL_ROOTS;
   delete environment.ARIADNE_RUNTIME_PROFILE;
   delete environment.ARIADNE_WORKSPACE_ROOT;
-  const modelProviders = AGENT_PROVIDER_IDS.map((providerId) => {
-    const definition = AGENT_PROVIDER_CATALOG[providerId];
+  const modelProviders = Object.entries(input.agentSettings.providers).map(([providerId, provider]) => {
     const {
       enabled,
       baseUrl,
@@ -67,18 +67,21 @@ export function createDesktopRuntimeConfiguration(
       contextWindowTokens,
       maxOutputTokens,
       inference
-    } = input.agentSettings.providers[providerId];
+    } = provider;
     return {
       providerId,
-      name: definition.runtimeModelId,
-      protocol: definition.protocol,
-      usageReporting: definition.usageReporting,
-      credentialEnvironmentVariable: definition.apiKeyEnvironmentVariable,
+      name: provider.modelId,
+      protocol: provider.protocol,
+      usageReporting: provider.protocol === 'anthropic-messages' ? 'anthropic-events' as const : 'openai-stream-options' as const,
+      credentialEnvironmentVariable: 'ARIADNE_CONFIGURED_MODEL_KEY',
       credentialRef: `model:${providerId}`,
       enabled,
       baseUrl,
-      model,
-      supportsVision: definition.supportsVision,
+      model: provider.modelId,
+      apiModel: model,
+      label: provider.label,
+      inferenceDialect: provider.inferenceDialect,
+      supportsVision: provider.supportsVision,
       contextWindowTokens,
       maxOutputTokens,
       inference
@@ -137,7 +140,7 @@ export function createDesktopRuntimeConfiguration(
     disabledLocalModelIds: [...new Set(input.agentSettings.disabledLocalModelIds ?? [])],
     modelProviders,
     subagentProviders,
-    routingStrategy: input.agentSettings.routingStrategy,
+    modelSelection: input.agentSettings.modelSelection,
     assistantProfile: structuredClone(input.agentSettings.assistant),
     agentPermissions: structuredClone(input.agentSettings.permissions),
     agentAdmissionAuthoritySource,

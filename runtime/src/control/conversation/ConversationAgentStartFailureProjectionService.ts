@@ -12,7 +12,7 @@ import {
   transitionConversationRunHandoff,
   type FailAgentStartCommand
 } from '../../conversation/ConversationRunHandoffSaga.js';
-import type { ConversationAuthorityUnitOfWork } from '../ports/ConversationAuthorityPersistence.js';
+import type { ConversationAuthorityUnitOfWork } from '../ports/ConversationAuthorityPersistenceV2.js';
 
 export interface ProjectConversationAgentStartFailureInput {
   readonly kind: 'conversation.project_agent_start_failure';

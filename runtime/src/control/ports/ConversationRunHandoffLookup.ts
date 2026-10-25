@@ -3,7 +3,7 @@ import type {
 } from '../../conversation/ConversationRunHandoffSaga.js';
 import type {
   CommittedConversationAuthorityCommand
-} from './ConversationAuthorityPersistence.js';
+} from './ConversationAuthorityPersistenceV2.js';
 import type {
   ConversationSession
 } from '../../conversation/ConversationAuthority.js';

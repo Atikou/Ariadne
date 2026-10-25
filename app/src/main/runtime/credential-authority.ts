@@ -1,6 +1,5 @@
 import type { CredentialCapabilityOperation } from '@ariadne/protocol/host';
 import {
-  AGENT_PROVIDER_IDS,
   type AgentProviderId,
   type AgentSettingsMutation,
   type AgentSettingsMutationResult
@@ -75,7 +74,7 @@ export class MainCredentialAuthority {
     operation: Extract<CredentialCapabilityOperation, { readonly kind: 'credential.resolve' }>
   ): Record<string, unknown> {
     const providerId = modelProviderId(operation.credentialRef);
-    if (operation.purpose !== 'model_inference' || providerId === undefined) {
+    if (operation.purpose !== 'model_inference' || providerId === undefined || !this.settings.hasProvider(providerId)) {
       throw new Error('credential_resolution_not_authorized');
     }
     const credential = this.settings.resolveProviderApiKey(providerId);
@@ -85,7 +84,7 @@ export class MainCredentialAuthority {
 
   private describe(credentialRef: string): Record<string, unknown> {
     const providerId = modelProviderId(credentialRef);
-    if (providerId !== undefined) return {
+    if (providerId !== undefined && this.settings.hasProvider(providerId)) return {
       configured: this.settings.describeProviderApiKey(providerId) === 'configured',
       source: 'os_secure_storage',
       writable: true
@@ -109,7 +108,7 @@ export class MainCredentialAuthority {
 function modelProviderId(credentialRef: string): AgentProviderId | undefined {
   if (!credentialRef.startsWith('model:')) return undefined;
   const candidate = credentialRef.slice('model:'.length);
-  return (AGENT_PROVIDER_IDS as readonly string[]).includes(candidate)
-    ? candidate as AgentProviderId
+  return /^[a-z][a-z0-9_-]{1,127}$/u.test(candidate) && !['constructor', 'prototype', '__proto__'].includes(candidate)
+    ? candidate
     : undefined;
 }

@@ -99,6 +99,10 @@ export const modelProviderBootstrapSchema = z.object({
     'Runtime model providers require HTTPS.'
   ),
   model: z.string().trim().min(1).max(256),
+  /** Optional wire name for connection-specific model identities. Older hosts use model for both. */
+  apiModel: z.string().trim().min(1).max(256).optional(),
+  label: z.string().trim().min(1).max(128).optional(),
+  inferenceDialect: z.enum(['openai', 'deepseek', 'kimi', 'anthropic']).optional(),
   supportsVision: z.boolean().optional(),
   contextWindowTokens: z.number().int().min(8_192).max(10_000_000),
   maxOutputTokens: z.number().int().min(256).max(1_000_000),
@@ -128,12 +132,7 @@ export const runtimeBootstrapSchema = z
     disabledLocalModelIds: z.array(nonEmptyIdSchema).max(256).optional(),
     modelProviders: z.array(modelProviderBootstrapSchema).max(16).optional(),
     subagentProviders: z.array(subagentProviderBootstrapSchema).max(8).optional(),
-    routingStrategy: z.enum([
-      'local-first',
-      'cloud-first',
-      'privacy-first',
-      'quality-first'
-    ]).optional(),
+    modelSelection: z.object({ modelId: z.string().trim().max(256), localFallbackModelId: z.string().trim().max(256) }).strict().optional(),
     agentPermissions: agentPermissionsBootstrapSchema.optional(),
     agentAdmissionAuthoritySource: agentAdmissionAuthoritySourceSchema,
     assistantProfile: assistantChatProfileSchema.optional(),

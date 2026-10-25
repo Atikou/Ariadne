@@ -30,7 +30,7 @@ Run 已终止、模型 Turn 预算已耗尽或 deadline 已到时，拒绝新输
 
 ```text
 Renderer composer
-  -> agent.inbox.enqueue/replace/remove.v3
+  -> agent.inbox.enqueue/replace/remove
   -> Electron Main -> Node IPC -> Runtime public command router
   -> AgentRun command + receipt + outbox (single SQLite transaction)
   -> AgentRunWorkClassifier

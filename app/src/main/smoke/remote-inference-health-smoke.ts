@@ -1,3 +1,4 @@
+import { remoteProviderSettingsFixture } from './remote-provider-settings-fixture';
 import type { BrowserWindow } from 'electron';
 import { readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
@@ -27,9 +28,7 @@ export async function readRemoteInferenceHealthWindow(window: BrowserWindow, wor
       const policy = { ...settings.runtimePolicy, providerResilience: { ...settings.runtimePolicy.providerResilience,
         maxAttempts: 1, circuitFailureThreshold: 10 } };
       const configured = await api.agentSettings.apply({ expectedRevision: settings.revision, operations: [
-        { kind: 'provider.update', providerId: 'openai', patch: { enabled: true, baseUrl: ${JSON.stringify(baseUrl)},
-          model: ${JSON.stringify(model)}, apiKey: 'ariadne-electron-smoke-key' } },
-        ...['deepseek','kimi','anthropic'].map(providerId => ({ kind: 'provider.update', providerId, patch: { enabled: false } })),
+        ${remoteProviderSettingsFixture(baseUrl, model)},
         { kind: 'runtimePolicy.replace', policy }
       ] });
       if (!configured.ok) throw new Error('remote_health_configuration_failed');

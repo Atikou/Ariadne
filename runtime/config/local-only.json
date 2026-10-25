@@ -9,9 +9,5 @@
     "maxLoadedModels": 1,
     "idleUnloadMs": 600000,
     "clients": []
-  },
-  "routing": {
-    "strategy": "privacy-first",
-    "fallback": true
   }
 }

@@ -1,0 +1,13 @@
+{
+  "contractVersion": 2,
+  "policy": "Same Conversation owner and Schema 4. Explicit model selection and optional local fallback replace automatic routes only in new commands. V1 interface, historical payloads and their digests remain unchanged.",
+  "contracts": [
+    {
+      "owner": "conversationSelectionV2",
+      "file": "runtime/src/control/ports/ConversationAuthorityPersistenceV2.ts",
+      "export": "ConversationAuthorityUnitOfWorkV2",
+      "digest": "sha256:90062b3273ef5ef24165d80f4a598486632d3315dea5c505b6af7a5cf8f83d55",
+      "graphNodes": 92
+    }
+  ]
+}

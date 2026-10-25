@@ -29,7 +29,11 @@
       "realModel": "not_applicable",
       "realWindow": "verified",
       "realMachine": "not_accepted",
-      "status": "verified",
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_applicable",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
       "evidence": [
         "artifacts/todo-remediation/electron-t09a-settled-source-final/electron-runtime-smoke.json",
         "artifacts/todo-remediation/electron-t09a-settled-source-final/desktop-restart-delivery.json",
@@ -188,22 +192,6 @@
       "realWindow": "verified",
       "realMachine": "not_accepted",
       "notes": "Production File Explorer opens, saves, creates, moves and deletes UTF-8 text through four strict owner-scoped commands and the same file-service instance used by Agent Tools. Actual Electron saves CRLF, executes real pinned Agent read/replace through the external HTTPS fixture, rejects stale editor save while retaining the draft, reloads external content, moves/deletes/creates and verifies the actual disk and Tool records read-only after Main restart. A 175-check renderer run covers drafts, pending operations and narrow layout; the final 1647-test whole suite passes. Limits: 256 KiB, mixed newlines read-only, 32 in-memory buffers, no durable draft recovery, filesystem watch, LSP editor UI or complete Git review workbench. Unknown filesystem mutation outcomes remain uncertain and cannot be blindly replayed. Evidence: artifacts/global-review-2026-10-04/repair-batch-14.json; repair-documents-electron-final/workspace-documents-execution.json and documents-post-restart-durability.json. No real user files or database changed. T07 now adds private recovery and native quit/crash evidence; see private-file-draft-protection for current acceptance limits. The earlier no-durable-draft statement describes its earlier recorded build."
-    },
-    {
-      "module": "measured-text-quality-routing",
-      "source": [
-        "runtime/src/model/capability/ModelQualityBenchmark.ts",
-        "runtime/src/model/capability/ModelQualityContracts.ts",
-        "runtime/src/application/RuntimeKernelModelInferenceGateway.ts",
-        "runtime/src/projection/ModelCatalogPublicProjectionPublisher.ts",
-        "app/src/renderer/src/modules/settings/ModelQualityControl.tsx"
-      ],
-      "unit": "verified",
-      "integration": "verified",
-      "realModel": "verified",
-      "realWindow": "verified",
-      "realMachine": "not_accepted",
-      "notes": "Six fixed synthetic text tasks, exact JSON equality, 512 output tokens each, 60-second joined cancellation and 30-day fingerprint-bound evidence. Quality-first ranks current scores only after execution and vision qualification; explicit model selection takes precedence. Actual local Qwen GGUF scored 2/6 (Chinese constraint and code reasoning passed); this is a narrow model result, not a general capability claim. Actual Settings -> six HTTPS fixture requests -> public score -> quality-first Agent Run and Main restart durability passed. The deterministic fixture scored 6/6 and does not measure a commercial model. No real user database/settings were changed. Evidence: artifacts/global-review-2026-10-04/repair-batch-12.json; repair-quality-real-local/result.json; repair-quality-electron/model-quality-execution.json and quality-post-restart-durability.json. Signed clean-machine and commercial-provider acceptance remain pending."
     },
     {
       "module": "protocol-and-public-projection",
@@ -668,7 +656,11 @@
         "app/src/renderer/src/core/conversations/chat-draft-delivery.ts",
         "app/src/renderer/src/modules/chat/ChatPanel.tsx"
       ],
-      "status": "verified",
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_applicable",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
       "evidence": [
         "artifacts/todo-remediation/t05-known-receipt-full-app.log",
         "artifacts/todo-remediation/t05-final-native-ui-app-build-fixed.log",
@@ -687,7 +679,11 @@
         "app/src/renderer/src/modules/chat/ChatPanel.tsx",
         "app/src/renderer/src/core/conversations/chat-draft-store.ts"
       ],
-      "status": "verified",
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_applicable",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
       "evidence": [
         "artifacts/todo-remediation/t06-keyboard-full-app.log",
         "artifacts/todo-remediation/t06-final-keyboard-types.log",
@@ -711,7 +707,11 @@
       "realModel": "not_accepted",
       "realWindow": "verified",
       "realMachine": "not_accepted",
-      "status": "verified",
+      "unit": "verified",
+      "integration": "verified",
+      "realModel": "not_applicable",
+      "realWindow": "verified",
+      "realMachine": "not_accepted",
       "evidence": [
         "artifacts/todo-remediation/t10-source-relations-full-runtime-tests.log",
         "artifacts/todo-remediation/t10-original-decision-full-app-tests.log",

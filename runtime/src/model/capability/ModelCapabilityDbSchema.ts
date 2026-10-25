@@ -2,6 +2,14 @@ import type { DatabaseSync } from 'node:sqlite';
 import { markAuthorityIntegrityError, markAuthorityUnavailableError } from '../../adapters/persistence/SqliteAuthorityHealth.js';
 
 export const MODEL_CAPABILITY_DB_SCHEMA_VERSION = 1;
+export const MODEL_CAPABILITY_TABLES = Object.freeze({
+  model_capability_metadata: 'CREATE TABLE model_capability_metadata (singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL)',
+  model_capability_qualification: `CREATE TABLE model_capability_qualification (
+    provider_id TEXT NOT NULL,model_id TEXT NOT NULL,fingerprint TEXT NOT NULL,
+    adapter_protocol_version INTEGER NOT NULL,report_json TEXT NOT NULL,tested_at TEXT,
+    PRIMARY KEY(provider_id,model_id,fingerprint)
+  )`
+});
 /** Recognize the old metadata-1 cache without treating unknown databases as disposable. */
 export function initializeModelCapabilitySchema(database: DatabaseSync, audit?: (database: DatabaseSync) => void): void {
   const version = Number(database.prepare('PRAGMA user_version').get()!.user_version);
@@ -21,12 +29,7 @@ export function initializeModelCapabilitySchema(database: DatabaseSync, audit?: 
   database.exec('BEGIN IMMEDIATE;');
   try {
     database.exec(`
-      CREATE TABLE model_capability_metadata (singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL);
-      CREATE TABLE model_capability_qualification (
-        provider_id TEXT NOT NULL,model_id TEXT NOT NULL,fingerprint TEXT NOT NULL,
-        adapter_protocol_version INTEGER NOT NULL,report_json TEXT NOT NULL,tested_at TEXT,
-        PRIMARY KEY(provider_id,model_id,fingerprint)
-      );
+      ${Object.values(MODEL_CAPABILITY_TABLES).join(';')};
       INSERT INTO model_capability_metadata VALUES(1,1);
       PRAGMA user_version=1;
     `);

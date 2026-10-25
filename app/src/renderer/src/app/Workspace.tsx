@@ -263,7 +263,9 @@ function addModulePanel(api: DockviewApi, definition: FeatureModuleDefinition): 
   }
   const position = edge
     ? { referenceGroup: edge.groupId }
-    : defaultPlacement.referenceModuleId
+    // Placement references are preferred anchors, not prerequisites for opening.
+    // Closed/optional panels cannot be passed to Dockview as live references.
+    : defaultPlacement.referenceModuleId && api.getPanel(defaultPlacement.referenceModuleId)
     ? {
         referencePanel: defaultPlacement.referenceModuleId,
         ...(defaultPlacement.direction ? { direction: defaultPlacement.direction } : {})

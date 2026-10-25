@@ -8,7 +8,7 @@ export const chatModule: FeatureModuleDefinition = {
   icon: 'message',
   component: ChatPanel,
   consumes: [
-    'agentSettings', 'applicationProfile', 'clipboard', 'conversationNavigation', 'events',
+    'agentSettings', 'applicationProfile', 'clipboard', 'conversationNavigation', 'dataManagement', 'events',
     'decisions', 'diagnostics', 'drafts', 'draftDelivery', 'messages', 'models', 'runs',
     'sessions', 'speech', 'system', 'toolResults'
   ],

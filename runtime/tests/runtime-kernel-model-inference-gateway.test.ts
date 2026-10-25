@@ -10,38 +10,49 @@ import type {
 } from '../src/control/ports/AgentModelInference.js';
 import type { LocalModelService } from '../src/model/local/LocalModelService.js';
 import type { ModelClient } from '../src/model/types.js';
-import type { ModelQualitySummary } from '@ariadne/protocol/public';
+
 
 describe('RuntimeKernelModelInferenceGateway', () => {
-  function rankedGateway(scores:Record<string,ModelQualitySummary|null>,unqualified=new Set<string>(),disableLocal=false) {
-    const remote:ExactAgentModelInferenceRuntime={inferExact:async()=>({status:'binding_unavailable'}),countRequestTokens:async()=>({tokens:1,exact:false,tokenizer:'fixture'}),
-      hasExactBinding:()=>true,resolveBinding:()=>null,describeContextCapacity:()=>null,
-      describeExecutionQualification:(binding)=>({supportsTextResponse:!unqualified.has(binding.modelId),supportsAgent:!unqualified.has(binding.modelId),supportsPlan:false,supportsVision:false})};
-    const providers=['cloud-a','cloud-b'].map(model=>({providerId:'fixture',model,enabled:true}));
-    const locals={clients:()=>[{name:'local',toolCallCapability:'native'}]} as unknown as LocalModelService;
-    return new RuntimeKernelModelInferenceGateway(remote,locals,providers as never,'quality-first',undefined,()=>true,new Set(disableLocal?['local']:[]),(_provider,model)=>scores[model]??null);
-  }
-  const score=(passed:number,state:'current'|'expired'='current'):ModelQualitySummary=>({benchmarkId:'ariadne-text-quality-v1',benchmarkDigest:`sha256:${'a'.repeat(64)}`,
-    passed,total:6,score:passed/6,state,evaluatedAt:'2026-10-04T03:00:00.000Z',validUntil:'2026-11-03T03:00:00.000Z'});
-  it('quality-first selects measured local quality above cloud order',()=>{
-    expect(rankedGateway({'cloud-a':score(2),'cloud-b':score(4),local:score(6)}).resolveBinding(1)?.modelId).toBe('local');
+  it('checks only the chosen remote connection before admission, falling back on failure but not cancellation', async () => {
+    const remote = { describeExecutionQualification: () => ({ supportsTextResponse: true, supportsAgent: true, supportsPlan: true, supportsVision: false }) } as unknown as ExactAgentModelInferenceRuntime;
+    const locals = { clients: () => [{ name: 'local', toolCallCapability: 'native' }] } as unknown as LocalModelService;
+    const check = vi.fn(async () => false);
+    const gateway = new RuntimeKernelModelInferenceGateway(remote, locals,
+      [{ providerId: 'fixture', model: 'remote', enabled: true }] as never,
+      { modelId: 'remote', localFallbackModelId: 'local' }, undefined, () => true,
+      new Set(), () => {}, check);
+    const signal = new AbortController().signal;
+    expect(await gateway.prepareBinding(3, {}, signal)).toEqual({ providerId: 'ariadne.local', modelId: 'local', settingsRevision: 3 });
+    expect(check).toHaveBeenCalledExactlyOnceWith('remote', signal);
+    check.mockResolvedValue(true);
+    expect(await gateway.prepareBinding(3, {}, signal)).toMatchObject({ modelId: 'remote' });
+    check.mockClear();
+    expect(await gateway.prepareBinding(3, { localFallbackModelId: null }, signal)).toMatchObject({ modelId: 'remote' });
+    expect(check).not.toHaveBeenCalled();
+    const controller = new AbortController();
+    check.mockImplementation(async () => { controller.abort(); return false; });
+    await expect(gateway.prepareBinding(3, {}, controller.signal)).rejects.toThrow();
   });
-  it('excludes expired, missing and unqualified scores and retains deterministic ties',()=>{
-    expect(rankedGateway({'cloud-a':score(6,'expired'),'cloud-b':score(4),local:score(4)}).resolveBinding(1)?.modelId).toBe('cloud-b');
-    expect(rankedGateway({'cloud-a':score(6),'cloud-b':score(3)},new Set(['cloud-a'])).resolveBinding(1)?.modelId).toBe('cloud-b');
-  });
-  it('reports missing current evidence rather than silently choosing the first cloud model',()=>{
-    expect(()=>rankedGateway({local:score(6,'expired')}).resolveBinding(1)).toThrow('model_quality_evaluation_required');
-  });
-  it('preserves explicit selection and other strategies without requiring quality evidence',()=>{
-    const gateway=rankedGateway({});expect(gateway.resolveBinding(1,{modelId:'local'})?.modelId).toBe('local');
-    expect(gateway.resolveBinding(1,{routingStrategy:'cloud-first'})?.modelId).toBe('cloud-a');
-    expect(gateway.resolveBinding(1,{routingStrategy:'privacy-first'})?.modelId).toBe('local');
-  });
-  it('does not allow quality scores to replace missing vision or Plan qualification',()=>{
-    const gateway=rankedGateway({'cloud-a':score(6),local:score(6)});
-    expect(()=>gateway.resolveBinding(1,{requiresVision:true})).toThrow('model_vision_qualification_required');
-    expect(()=>rankedGateway({'cloud-a':score(6)},new Set(),true).resolveBinding(1,{executionMode:'plan'})).toThrow('model_plan_qualification_required');
+  it('uses exactly the selected model and only its explicit local fallback when remote is unavailable', () => {
+    let available = true;
+    const remote = { describeExecutionQualification: () => ({ supportsTextResponse: true, supportsAgent: true, supportsPlan: false, supportsVision: false }) } as unknown as ExactAgentModelInferenceRuntime;
+    const locals = { clients: () => [{ name: 'local', toolCallCapability: 'native' }, { name: 'disabled', toolCallCapability: 'native' }] } as unknown as LocalModelService;
+    const gateway = new RuntimeKernelModelInferenceGateway(remote, locals,
+      [{ providerId: 'fixture', model: 'remote', enabled: true }] as never,
+      { modelId: '', localFallbackModelId: '' }, undefined, () => available, new Set(['disabled']));
+    expect(gateway.resolveBinding(1)).toBeNull();
+    expect(gateway.resolveBinding(1, { modelId: 'remote' })?.modelId).toBe('remote');
+    expect(gateway.resolveBinding(1, { modelId: 'local' })?.modelId).toBe('local');
+    expect(() => gateway.resolveBinding(1, { modelId: 'remote', executionMode: 'plan', localFallbackModelId: 'local' })).toThrow('model_plan_qualification_required');
+    available = false;
+    expect(gateway.resolveBinding(1, { modelId: 'remote' })).toBeNull();
+    expect(gateway.resolveBinding(1, { modelId: 'remote', localFallbackModelId: null })).toBeNull();
+    expect(gateway.resolveBinding(1, { modelId: 'remote', localFallbackModelId: 'local' })).toMatchObject({ providerId: 'ariadne.local', modelId: 'local' });
+    for (const localFallbackModelId of ['remote', 'missing', 'disabled']) {
+      expect(gateway.resolveBinding(1, { modelId: 'remote', localFallbackModelId })).toBeNull();
+    }
+    expect(gateway.resolveBinding(1, { modelId: 'missing', localFallbackModelId: 'local' })).toBeNull();
+    expect(() => gateway.resolveBinding(1, { modelId: 'remote', localFallbackModelId: 'local', requiresVision: true })).toThrow('model_vision_qualification_required');
   });
   it('projects typed Tool history to the embedded model native Chat boundary', async () => {
     const chat = vi.fn<ModelClient['chat']>(async () => ({
@@ -82,7 +93,7 @@ describe('RuntimeKernelModelInferenceGateway', () => {
       remote,
       localModels,
       [],
-      'local-first',
+      { modelId: 'local-exact', localFallbackModelId: '' },
       undefined,
       () => false
     );

@@ -19,7 +19,7 @@ import {
   Sparkles,
   X
 } from 'lucide-react';
-import type { ChatRoutingStrategy, ModelInferenceOptions } from '@ariadne/protocol/public';
+import type { ModelInferenceOptions } from '@ariadne/protocol/public';
 import {
   IMAGE_ATTACHMENT_MEDIA_TYPES,
   PERSONAL_ASSISTANT_WORKSPACE_ID
@@ -49,20 +49,16 @@ import { chatDraftOwnerKey } from '@shared/chat-drafts';
 import { useChatDraftImages } from '@renderer/core/conversations/use-chat-draft-images';
 import { composerKeyAction } from './ChatComposerKeyboard';
 import {
-  AUTO_MODEL_ID,
   defaultInference,
   inferenceSupported,
   modelCapabilityLabel,
-  parseRoutingSelectionValue,
   permissionModeOptions,
   reasoningEffortLabel,
-  reasoningModeLabel,
-  routingOptions
+  reasoningModeLabel
 } from './ChatComposerPolicy';
 import {
   EmptyConversation,
   agentInputDeliveryLabel,
-  routingSelectionValue,
   syncComposerTextareaHeight
 } from './ChatPresentation';
 import { toConversationNode } from './ChatMessageProjection';
@@ -86,8 +82,9 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   const [draftImageError, setDraftImageError] = useState<string | null>(null);
   const [conversationActionError, setConversationActionError] = useState<string | null>(null);
   const [notificationTarget, setNotificationTarget] = useState<{ sessionId: string; decisionId: string } | null>(null);
-  const [selectedModelId, setSelectedModelId] = useState(AUTO_MODEL_ID);
-  const [routingStrategy, setRoutingStrategy] = useState<ChatRoutingStrategy>('local-first');
+  const [selectedModelId, setSelectedModelId] = useState('');
+  const [localFallbackModelId, setLocalFallbackModelId] = useState('');
+  const [savingModelSelection, setSavingModelSelection] = useState(false);
   const [permissionMode, setPermissionMode] = useState<AgentPermissionMode>('request');
   const [settingsSnapshot, setSettingsSnapshot] = useState<AgentSettingsView | null>(null);
   const [workspaces, setWorkspaces] = useState<readonly ConversationWorkspace[]>([]);
@@ -120,7 +117,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
     data: imageBodies.bodies.get(reference.attachmentId)?.data ?? '' }));
   const draftBlocked = !draftSnapshot.ready || Boolean(draftSnapshot.error) || currentDraft.submissions.some(row => row.status !== 'recoverable');
   useEffect(() => { services.drafts.select(draftOwner); services.messages.selectDraftOwner(draftOwner.target.kind === 'new' ? draftOwnerKey : null);
-    setDraftImageError(null); }, [services.drafts, services.messages, draftOwnerKey]);
+    setDraftImageError(null); setConversationActionError(null); }, [services.drafts, services.messages, draftOwnerKey]);
   const assistantMode = composerWorkspaceId === PERSONAL_ASSISTANT_WORKSPACE_ID;
   const planModeAvailable = runtime.status.availability === 'ready'
     && runtime.status.capabilities.includes('companion.agent-plan')
@@ -133,7 +130,8 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
     planModeAvailable,
     planModeEnabled,
     executionMode,
-    routingStrategy,
+    selectedModelId,
+    localFallbackModelId,
     modelsReadReady: runtime.modelsReadReady,
     models: runtime.models
   }), [
@@ -141,49 +139,52 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
     planModeAvailable,
     planModeEnabled,
     executionMode,
-    routingStrategy,
+    selectedModelId,
+    localFallbackModelId,
     runtime.modelsReadReady,
     runtime.models
   ]);
   const availableModels = modelState.readyModels;
   const eligibleModels = modelState.eligibleModels;
-  const selectedModel = eligibleModels.find((model) => model.id === selectedModelId);
-  const automaticVisionModel = eligibleModels.find((model) => model.supportsVision);
-  const effectiveVisionModel = selectedModelId === AUTO_MODEL_ID
-    ? automaticVisionModel
-    : selectedModel?.supportsVision
-      ? selectedModel
-      : undefined;
+  const selectedModel = runtime.models.find((model) => model.id === selectedModelId);
+  const effectiveVisionModel = selectedModel?.supportsVision ? selectedModel : undefined;
   const selectedInference = selectedModel
     ? inferenceByModel[selectedModel.id] ?? defaultInference(selectedModel)
     : undefined;
   const reasoning = selectedModel?.inference?.reasoning;
-  const canChat = modelState.canChat;
-  const modelOptions = useMemo<readonly SelectMenuOption<string>[]>(() => [
-    {
-      value: AUTO_MODEL_ID,
-      label: '自动选择模型',
-      description: executionMode === 'chat' ? '按路由策略选择' : `按${executionMode === 'plan' ? '计划' : ' Agent'}能力选择`,
-      ...(executionMode !== 'chat'
-        ? {}
-        : {
-            children: routingOptions.map((option) => ({
-              ...option,
-              value: routingSelectionValue(option.value)
-            }))
-          })
-    },
-    ...eligibleModels.map((model) => ({
-      value: model.id,
-      label: model.label,
-      description: `${model.location === 'local' ? '本地模型' : '远程模型'} · ${modelCapabilityLabel(model)}`
+  const canChat = modelState.canChat && !savingModelSelection;
+  const modelOptions = useMemo<readonly SelectMenuOption<string>[]>(() => (
+    (['local', 'remote'] as const).map(location => ({
+      value: `__${location}__`,
+      label: location === 'local' ? '本地模型' : '远程 API',
+      children: runtime.models.filter(model => model.location === location && model.enabled !== false).map(model => ({
+        value: model.id, label: model.label,
+        description: `${modelCapabilityLabel(model)}${model.availability === 'ready' ? '' : ' · 暂不可用'}`
+      }))
+    })).filter(group => group.children.length > 0)
+  ), [runtime.models]);
+  const fallbackOptions = useMemo<readonly SelectMenuOption<string>[]>(() => [
+    { value: '', label: '不使用本地备用', description: '远程 API 不可用时停止' },
+    ...eligibleModels.filter(model => model.location === 'local').map(model => ({
+      value: model.id, label: model.label, description: '远程 API 不可用时使用此模型'
     }))
-  ], [eligibleModels, executionMode]);
-  const modelSelectionValue = selectedModelId === AUTO_MODEL_ID
-    ? executionMode !== 'chat'
-      ? AUTO_MODEL_ID
-      : routingSelectionValue(routingStrategy)
-    : selectedModelId;
+  ], [eligibleModels]);
+  const saveModelSelection = async (modelId: string, fallbackId: string): Promise<void> => {
+    if (savingModelSelection) return;
+    setSavingModelSelection(true);
+    setConversationActionError(null);
+    try {
+      const current = await services.agentSettings.load();
+      const result = await services.agentSettings.apply({ expectedRevision: current.revision,
+        operations: [{ kind: 'modelSelection.set', selection: { modelId, localFallbackModelId: fallbackId } }] });
+      if (!result.ok) throw new Error(result.error.message);
+      setSettingsSnapshot(result.settings);
+      setSelectedModelId(modelId);
+      setLocalFallbackModelId(fallbackId);
+    } catch (error) {
+      setConversationActionError(error instanceof Error ? error.message : '保存模型选择失败');
+    } finally { setSavingModelSelection(false); }
+  };
   const workspaceOptions = useMemo<readonly SelectMenuOption<string>[]>(() => {
     return [
       {
@@ -228,7 +229,8 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
     if (defaultsLoadedRef.current) return;
     defaultsLoadedRef.current = true;
     void services.agentSettings.load().then((settings) => {
-      setRoutingStrategy(settings.routingStrategy);
+      setSelectedModelId(settings.modelSelection.modelId);
+      setLocalFallbackModelId(settings.modelSelection.localFallbackModelId);
       setPermissionMode(settings.permissionMode);
       setSettingsSnapshot(settings);
     }).catch(() => undefined);
@@ -333,11 +335,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
     }
   };
 
-  useEffect(() => {
-    if (selectedModelId !== AUTO_MODEL_ID && !eligibleModels.some((model) => model.id === selectedModelId)) {
-      setSelectedModelId(AUTO_MODEL_ID);
-    }
-  }, [eligibleModels, selectedModelId]);
+
 
   useEffect(() => {
     setInferenceByModel((current) => {
@@ -465,19 +463,16 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
       return;
     }
     setDraftImageError(null);
+    setConversationActionError(null);
     setFollowingLatest(true);
     try {
       if (activeRun && !inboxAvailable) {
         throw new Error('runtime_capability_missing:agent.inbox');
       }
       await services.draftDelivery.send(draftOwner, {
-          ...(images.length > 0
-            ? { modelId: effectiveVisionModel!.id }
-            : selectedModelId !== AUTO_MODEL_ID
-              ? { modelId: selectedModelId }
-              : {}),
+          modelId: selectedModelId,
+          localFallbackModelId: selectedModel?.location === 'remote' ? localFallbackModelId || null : null,
           ...(selectedInference ? { inference: selectedInference } : {}),
-          ...(planModeEnabled ? {} : { routingStrategy }),
         }, activeRun, delivery);
     } catch (error) {
       if (services.drafts.isSelected(draftOwner)) setConversationActionError(error instanceof Error ? error.message : '发送未完成，请核对草稿。');
@@ -749,18 +744,20 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                   className="composer-model-menu"
                   ariaLabel="选择模型"
                   placement="top"
-                  value={modelSelectionValue}
+                  value={selectedModelId}
+                  triggerLabel={selectedModel?.label ?? '请选择模型'}
+                  disabled={savingModelSelection}
                   options={modelOptions}
-                  onChange={(nextValue) => {
-                    const nextStrategy = parseRoutingSelectionValue(nextValue);
-                    if (nextStrategy) {
-                      setRoutingStrategy(nextStrategy);
-                      setSelectedModelId(AUTO_MODEL_ID);
-                    } else {
-                      setSelectedModelId(nextValue);
-                    }
-                  }}
+                  onChange={(modelId) => { void saveModelSelection(modelId, localFallbackModelId); }}
                 />
+                {selectedModel?.location === 'remote' && (
+                  <SelectMenu<string>
+                    className="composer-fallback-menu" ariaLabel="远程不可用时" placement="top"
+                    value={localFallbackModelId} options={fallbackOptions} disabled={savingModelSelection}
+                    triggerLabel={localFallbackModelId ? `备用：${runtime.models.find(model => model.id === localFallbackModelId)?.label ?? '模型不可用'}` : '远程失败：停止'}
+                    onChange={(modelId) => { void saveModelSelection(selectedModelId, modelId); }}
+                  />
+                )}
                 {reasoning && reasoning.modes.length > 1 && selectedInference?.reasoningMode && (
                   <SelectMenu
                     className="composer-inference-menu"

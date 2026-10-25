@@ -12,6 +12,31 @@ const SECRET = 'credential-must-never-appear';
 const DIGEST = `sha256:${'a'.repeat(64)}`;
 
 describe('ProductionExactAgentModelInferenceGateway', () => {
+  it('keeps connection identities separate from identical upstream names, addresses and credentials', async () => {
+    const providers = ['primary', 'backup'].map(id => provider({ providerId: id, model: `remote-${id}`,
+      apiModel: 'deepseek-flash', inferenceDialect: 'deepseek', baseUrl: `https://${id}.example/v1`,
+      credentialRef: `model:${id}`, inference: { reasoning: { modes: ['off', 'on'], defaultMode: 'on', efforts: [] } } }));
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => jsonResponse({ id: 'response', model: 'deepseek-flash',
+      choices: [{ index: 0, message: { role: 'assistant', content: 'READY' } }] }));
+    const gateway = new ProductionExactAgentModelInferenceGateway({ modelProviders: providers,
+      agentAdmissionAuthoritySource: { sourceVersion: 1, status: 'enabled', manifests: authority('remote-primary', 'primary').manifests.map(m => ({
+        ...m, modelCandidates: providers.map(p => ({ providerId: p.providerId, modelId: p.model, settingsRevision: 7 }))
+      })) }, resiliencePolicy: createDefaultRuntimePolicySnapshot().providerResilience,
+      credentialEnvironment: {}, credentialResolver: {
+        resolve: async ref => `${ref}-key`,
+        describe: async () => ({ configured: true, source: 'os_secure_storage', writable: true })
+      }, fetch });
+    for (const p of providers) {
+      expect(gateway.resolveBinding(7, { modelId: p.model })).toMatchObject({ modelId: p.model, providerId: p.providerId });
+      await expect(gateway.inferExact(request({ modelId: p.model, providerId: p.providerId, inference: { reasoningMode: 'off' } })))
+        .resolves.toMatchObject({ status: 'completed', contentBlocks: [{ type: 'text', text: 'READY' }] });
+    }
+    expect(fetch.mock.calls.map(([url, init]) => ({ url, key: new Headers(init?.headers).get('authorization'),
+      body: JSON.parse(String(init?.body)) }))).toEqual(providers.map(p => ({
+        url: `${p.baseUrl}/chat/completions`, key: `Bearer model:${p.providerId}-key`,
+        body: expect.objectContaining({ model: 'deepseek-flash', thinking: { type: 'disabled' } })
+      })));
+  });
   it('observes actual failed transport and clears it only after a later complete response', async () => {
     let fail = true;
     const gateway = gatewayFixture({ fetch: async () => fail ? new Response('private credential body', { status: 401 })
@@ -47,10 +72,10 @@ describe('ProductionExactAgentModelInferenceGateway', () => {
     await gateway.inferExact(request()); expect(gateway.hasExternalFailure()).toBe(false);
   });
   it('admits image turns only through a binding declared as vision-capable', () => {
-    expect(gatewayFixture().resolveBinding(7, { requiresVision: true })).toBeNull();
+    expect(gatewayFixture().resolveBinding(7, { modelId: 'model-exact', requiresVision: true })).toBeNull();
     expect(gatewayFixture({
       providers: [provider({ supportsVision: true })]
-    }).resolveBinding(7, { requiresVision: true })).toEqual({
+    }).resolveBinding(7, { modelId: 'model-exact', requiresVision: true })).toEqual({
       providerId: 'provider-exact',
       modelId: 'model-exact',
       settingsRevision: 7

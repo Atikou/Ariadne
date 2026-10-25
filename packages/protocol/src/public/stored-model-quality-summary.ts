@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { canonicalUtcTimestampSchema } from '../common.js';
 
-/** A reproducible small benchmark, not a claim about general intelligence. */
+/** Historical projection evidence. Read compatibility only; no live evaluator. */
 export const modelQualitySummarySchema = z.object({
   benchmarkId: z.literal('ariadne-text-quality-v1'), benchmarkDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
   score: z.number().min(0).max(1), passed: z.number().int().min(0).max(6), total: z.literal(6),

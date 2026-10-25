@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
-import { AlertTriangle, ArchiveRestore, BellRing, CheckCircle2, ChevronRight, Database, FolderArchive, KeyRound, Laptop, MessageCircle, Mic, Moon, PackageOpen, Plus, RotateCcw, Save, Sun, X } from 'lucide-react';
+import { AlertTriangle, ArchiveRestore, BellRing, CheckCircle2, Database, FolderArchive, KeyRound, Laptop, MessageCircle, Mic, Moon, PackageOpen, Plus, RotateCcw, Save, Sun, X } from 'lucide-react';
 import type { ModelSummary } from '@ariadne/protocol/public';
 import type {
   AgentSubagentProviderSettingsView,
@@ -13,8 +13,6 @@ import type {
   UserPreferences
 } from '@shared/contract';
 import {
-  AGENT_PROVIDER_CATALOG,
-  AGENT_PROVIDER_IDS,
   createDefaultAssistantChatProfile
 } from '@shared/contract';
 import { useFeatureSnapshot } from '@renderer/core/runtime/features/feature-snapshot-store';
@@ -25,9 +23,9 @@ import { createEditableLocalModelRoots, moveLocalModelRoot, normalizeLocalModelR
 import { useSpeechSnapshot } from '@renderer/core/speech/speech-coordinator';
 import { applicationProfileComponents } from '@shared/application-profile';
 import { SelectMenu } from '@renderer/shared/ui/SelectMenu';
-import { ModelQualityControl } from './ModelQualityControl';
 import { TaskNotificationSettings } from '@renderer/shared/ui/TaskNotificationSettings';
 import { DataManagementSettings } from './DataManagementSettings';
+import { RemoteProviderSettings } from './RemoteProviderSettings';
 
 const themeOptions: Array<{ value: ThemePreference; label: string; icon: typeof Sun }> = [
   { value: 'system', label: '跟随系统', icon: Laptop },
@@ -35,9 +33,9 @@ const themeOptions: Array<{ value: ThemePreference; label: string; icon: typeof 
   { value: 'light', label: '浅色', icon: Sun }
 ];
 
-const emptyKeys = Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => [id, ''])) as Record<AgentProviderId, string>;
-const noClearRequests = Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => [id, false])) as Record<AgentProviderId, boolean>;
-const initialProviderExpansion = Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => [id, false])) as Record<AgentProviderId, boolean>;
+const emptyKeys: Record<string, string> = {};
+const noClearRequests: Record<string, boolean> = {};
+const initialProviderExpansion: Record<string, boolean> = {};
 const SETTINGS_CATEGORY_STORAGE_KEY = 'ariadne.settings.category.v1';
 
 type SettingsCategory = 'agent' | 'chat' | 'speech' | 'archives' | 'data' | 'desktop';
@@ -92,6 +90,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
   const [qualifyingModelIds, setQualifyingModelIds] = useState<ReadonlySet<string>>(() => new Set());
   const [checkingAllProviders, setCheckingAllProviders] = useState(false);
   const [qualificationResult, setQualificationResult] = useState<string | null>(null);
+  const [localModelResult, setLocalModelResult] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>(() => {
     const saved = window.localStorage.getItem(SETTINGS_CATEGORY_STORAGE_KEY);
     return availableSettingsCategories.some((category) => category.id === saved)
@@ -138,9 +137,9 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
     });
   };
   const qualifyModel = async (modelId: string): Promise<void> => {
-    if (qualifyingModelIds.size > 0 || checkingAllProviders) return;
+    if (qualifyingModelIds.size > 0 || checkingAllProviders || saving) return;
     markQualification(modelId, true);
-    setQualificationResult(null);
+    setLocalModelResult(null);
     try {
       const result = await services.models.qualify(modelId);
       const capability = result.supportsPlan
@@ -150,9 +149,9 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
           : result.supportsTextChat
             ? '仅文本'
             : '未通过';
-      setQualificationResult(`${modelId}：${capability}`);
+      setLocalModelResult(`${modelId}：${capability}`);
     } catch (error) {
-      setQualificationResult(`${modelId}：${errorMessage(error)}`);
+      setLocalModelResult(`${modelId}：${errorMessage(error)}`);
     } finally {
       markQualification(modelId, false);
     }
@@ -207,11 +206,11 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
   };
 
   const updateProvider = (id: AgentProviderId, patch: Partial<AgentProviderSettingsView>): void => {
-    setAgentSettings((current) => current ? {
+    setAgentSettings((current) => current?.providers[id] ? {
       ...current,
       providers: {
         ...current.providers,
-        [id]: { ...current.providers[id], ...patch }
+        [id]: { ...current.providers[id]!, ...patch }
       }
     } : current);
   };
@@ -358,18 +357,18 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
       setAgentSettings((current) => {
         if (!current) return current;
         const providers = { ...current.providers };
-        for (const id of AGENT_PROVIDER_IDS) {
+        for (const id of Object.keys(changes)) {
           const nextEnabled = changes[id];
-          if (nextEnabled !== undefined) {
+          if (nextEnabled !== undefined && providers[id]) {
             providers[id] = { ...providers[id], enabled: nextEnabled };
           }
         }
         return { ...current, providers };
       });
     };
-    const operations: AgentSettingsOperation[] = AGENT_PROVIDER_IDS.flatMap((id) => {
+    const operations: AgentSettingsOperation[] = Object.keys(changes).flatMap((id) => {
       const enabled = changes[id];
-      return enabled !== undefined && enabled !== baseline.providers[id].enabled
+      return enabled !== undefined && enabled !== baseline.providers[id]?.enabled
         ? [{ kind: 'provider.update' as const, providerId: id, patch: { enabled } }]
         : [];
     });
@@ -400,11 +399,30 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
     }
   };
 
+  const providerHasUnsavedChanges = (id: AgentProviderId): boolean => (
+    !sameJsonValue(agentSettings?.providers[id], persistedAgentSettings.current?.providers[id])
+    || (apiKeys[id] ?? '').trim().length > 0
+    || clearRequests[id] === true
+  );
+  const requireSavedProviders = (ids: readonly AgentProviderId[]): boolean => {
+    if (ids.some(providerHasUnsavedChanges)) {
+      setQualificationResult('请先保存 Agent 设置，再检测 Provider。');
+      return false;
+    }
+    if (diagnostics.status.availability !== 'ready') {
+      setQualificationResult('请等待 Runtime 就绪后再检测 Provider。');
+      return false;
+    }
+    return true;
+  };
+
   const checkProvider = async (id: AgentProviderId): Promise<void> => {
     if (!agentSettings || checkingAllProviders || qualifyingModelIds.size > 0 || saving) return;
     const provider = agentSettings.providers[id];
-    if (!provider.enabled) return;
-    const { label, runtimeModelId } = AGENT_PROVIDER_CATALOG[id];
+    if (!provider?.enabled) return;
+    if (!requireSavedProviders([id])) return;
+    const { label } = provider;
+    const runtimeModelId = provider.modelId;
     markQualification(runtimeModelId, true);
     setQualificationResult(null);
     try {
@@ -427,18 +445,19 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
 
   const checkAllEnabledProviders = async (): Promise<void> => {
     if (!agentSettings || checkingAllProviders || qualifyingModelIds.size > 0 || saving) return;
-    const enabledIds = AGENT_PROVIDER_IDS.filter((id) => agentSettings.providers[id].enabled);
+    const enabledIds = Object.keys(agentSettings.providers).filter((id) => agentSettings.providers[id]!.enabled);
     if (enabledIds.length === 0) {
       setQualificationResult('没有已启用的 Provider 可检测。');
       return;
     }
+    if (!requireSavedProviders(enabledIds)) return;
     setCheckingAllProviders(true);
     setQualificationResult(null);
-    const modelIds = enabledIds.map((id) => AGENT_PROVIDER_CATALOG[id].runtimeModelId);
+    const modelIds = enabledIds.map((id) => agentSettings.providers[id]!.modelId);
     modelIds.forEach((modelId) => markQualification(modelId, true));
     try {
       const outcomes = await Promise.all(enabledIds.map(async (id) => {
-        const { runtimeModelId } = AGENT_PROVIDER_CATALOG[id];
+        const runtimeModelId = agentSettings.providers[id]!.modelId;
         try {
           const result = await services.models.checkAvailability(runtimeModelId);
           return { id, usable: result.available, error: null };
@@ -460,61 +479,75 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
     }
   };
 
-  const saveAgentSettings = async (event: FormEvent): Promise<void> => {
+  const saveAgentSettings = async (event: FormEvent, category: 'agent' | 'chat'): Promise<void> => {
     event.preventDefault();
-    if (!agentSettings || saving) return;
+    if (!agentSettings || saving || qualifyingModelIds.size > 0 || checkingAllProviders) return;
     const baseline = persistedAgentSettings.current;
     if (!baseline) return;
     setSaving(true);
     setSaveResult(null);
     try {
-      const normalizedRoots = normalizeLocalModelRoots(localModelRoots);
+      const normalizedRoots = category === 'agent' ? normalizeLocalModelRoots(localModelRoots) : baseline.localModelRoots;
       const operations: AgentSettingsOperation[] = [];
-      if (!sameJsonValue(agentSettings.assistant, baseline.assistant)) {
+      if (category === 'chat' && !sameJsonValue(agentSettings.assistant, baseline.assistant)) {
         operations.push({
           kind: 'assistant.replace',
           assistant: structuredClone(agentSettings.assistant)
         });
       }
-      if (!sameJsonValue(normalizedRoots, baseline.localModelRoots)) {
-        operations.push({ kind: 'modelRoots.replace', roots: normalizedRoots });
-      }
-      const disabledLocalModelIds = [...new Set(agentSettings.disabledLocalModelIds ?? [])];
-      if (!sameJsonValue(disabledLocalModelIds, baseline.disabledLocalModelIds ?? [])) {
-        operations.push({ kind: 'localModels.replace', disabledModelIds: disabledLocalModelIds });
-      }
-      for (const id of AGENT_PROVIDER_IDS) {
-        const provider = agentSettings.providers[id];
-        const previous = baseline.providers[id];
-        const patch: AgentProviderSettingsPatch = {};
-        if (provider.enabled !== previous.enabled) patch.enabled = provider.enabled;
-        if (provider.baseUrl !== previous.baseUrl) patch.baseUrl = provider.baseUrl;
-        if (provider.model !== previous.model) patch.model = provider.model;
-        if (provider.contextWindowTokens !== previous.contextWindowTokens) {
-          patch.contextWindowTokens = provider.contextWindowTokens;
+      if (category === 'agent') {
+        if (!sameJsonValue(normalizedRoots, baseline.localModelRoots)) {
+          operations.push({ kind: 'modelRoots.replace', roots: normalizedRoots });
         }
-        if (provider.maxOutputTokens !== previous.maxOutputTokens) {
-          patch.maxOutputTokens = provider.maxOutputTokens;
+        const disabledLocalModelIds = [...new Set(agentSettings.disabledLocalModelIds ?? [])];
+        if (!sameJsonValue(disabledLocalModelIds, baseline.disabledLocalModelIds ?? [])) {
+          operations.push({ kind: 'localModels.replace', disabledModelIds: disabledLocalModelIds });
         }
-        if (!sameJsonValue(provider.inference, previous.inference)) patch.inference = provider.inference;
-        const apiKey = apiKeys[id].trim();
-        if (clearRequests[id]) patch.clearApiKey = true;
-        else if (apiKey) patch.apiKey = apiKey;
-        if (Object.keys(patch).length > 0) {
-          operations.push({ kind: 'provider.update', providerId: id, patch });
+        for (const id of Object.keys(baseline.providers)) {
+          if (!agentSettings.providers[id]) operations.push({ kind: 'provider.remove', providerId: id });
         }
-      }
-      if (!sameJsonValue(agentSettings.subagentProviders, baseline.subagentProviders)) {
-        operations.push({
-          kind: 'subagentProviders.replace',
-          providers: agentSettings.subagentProviders.map((provider) => ({
-            ...provider,
-            args: [...provider.args]
-          }))
-        });
+        for (const [id, provider] of Object.entries(agentSettings.providers)) {
+          const previous = baseline.providers[id];
+          if (!previous) {
+            const { apiKeyStatus: _status, ...configuration } = provider;
+            operations.push({ kind: 'provider.add', providerId: id, provider: configuration,
+              ...((apiKeys[id] ?? '').trim() ? { apiKey: apiKeys[id]!.trim() } : {}) });
+            continue;
+          }
+          const patch: AgentProviderSettingsPatch = {};
+          if (provider.label !== previous.label) patch.label = provider.label;
+          if (provider.protocol !== previous.protocol) patch.protocol = provider.protocol;
+          if (provider.inferenceDialect !== previous.inferenceDialect) patch.inferenceDialect = provider.inferenceDialect;
+          if (provider.supportsVision !== previous.supportsVision) patch.supportsVision = provider.supportsVision;
+          if (provider.enabled !== previous.enabled) patch.enabled = provider.enabled;
+          if (provider.baseUrl !== previous.baseUrl) patch.baseUrl = provider.baseUrl;
+          if (provider.model !== previous.model) patch.model = provider.model;
+          if (provider.contextWindowTokens !== previous.contextWindowTokens) {
+            patch.contextWindowTokens = provider.contextWindowTokens;
+          }
+          if (provider.maxOutputTokens !== previous.maxOutputTokens) {
+            patch.maxOutputTokens = provider.maxOutputTokens;
+          }
+          if (!sameJsonValue(provider.inference, previous.inference)) patch.inference = provider.inference;
+          const apiKey = (apiKeys[id] ?? '').trim();
+          if (clearRequests[id]) patch.clearApiKey = true;
+          else if (apiKey) patch.apiKey = apiKey;
+          if (Object.keys(patch).length > 0) {
+            operations.push({ kind: 'provider.update', providerId: id, patch });
+          }
+        }
+        if (!sameJsonValue(agentSettings.subagentProviders, baseline.subagentProviders)) {
+          operations.push({
+            kind: 'subagentProviders.replace',
+            providers: agentSettings.subagentProviders.map((provider) => ({
+              ...provider,
+              args: [...provider.args]
+            }))
+          });
+        }
       }
       if (operations.length === 0) {
-        setSaveResult({ tone: 'success', message: activeCategory === 'chat' ? '聊天设置没有变更。' : 'Agent 设置没有变更。' });
+        setSaveResult({ tone: 'success', message: category === 'chat' ? '聊天设置没有变更。' : 'Agent 设置没有变更。' });
         return;
       }
       const result = await services.agentSettings.apply({
@@ -529,10 +562,14 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
       }
       const saved = result.settings;
       persistedAgentSettings.current = saved;
-      setAgentSettings(saved);
-      setLocalModelRoots(createEditableLocalModelRoots(saved.localModelRoots));
-      setApiKeys({ ...emptyKeys });
-      setClearRequests({ ...noClearRequests });
+      setAgentSettings(current => category === 'chat'
+        ? { ...(current ?? saved), revision: saved.revision, assistant: saved.assistant }
+        : { ...saved, assistant: current?.assistant ?? saved.assistant });
+      if (category === 'agent') {
+        setLocalModelRoots(createEditableLocalModelRoots(saved.localModelRoots));
+        setApiKeys({ ...emptyKeys });
+        setClearRequests({ ...noClearRequests });
+      }
       setSaveResult({ tone: 'success', message: settingsEffectMessage(result.effect) });
     } catch (error) {
       setSaveResult({ tone: 'error', message: errorMessage(error) });
@@ -606,6 +643,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
 
       <div className={`settings-content${activeCategory === 'agent' || activeCategory === 'chat' ? ' settings-content--with-actions' : ''}`}>
         <div className="settings-content-scroll" key={activeCategory}>
+      {preferenceError && <p className="is-danger" role="alert">{preferenceError}</p>}
       {activeCategory === 'data' && <DataManagementSettings api={services.dataManagement} />}
       {activeCategory === 'agent' && <section className="settings-section" aria-labelledby={`${moduleId}-model-settings`}>
         <div className="settings-section-heading">
@@ -617,9 +655,8 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
         </div>
 
         {agentSettings ? (
-          <form id={`${moduleId}-agent-settings-form`} className="agent-settings-form" onSubmit={(event) => void saveAgentSettings(event)}>
+          <form id={`${moduleId}-agent-settings-form`} className="agent-settings-form" onSubmit={(event) => void saveAgentSettings(event, 'agent')}>
             <div className="agent-settings-grid">
-              <ModelQualityControl models={models.models} services={services} />
               <div className="settings-field settings-field--wide local-model-roots-field">
                 <span id={`${moduleId}-local-model-roots-label`}>本地模型目录</span>
                 <div className="local-model-roots-control" aria-labelledby={`${moduleId}-local-model-roots-label`}>
@@ -667,7 +704,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
               <div className="setting-block setting-block--wide local-model-catalog">
                   <div className="local-model-catalog-heading">
                     <strong>本地模型列表</strong>
-                    <p>勾选后模型会出现在聊天模型下拉列表，并参与自动路由。能力由 Runtime 自动检测；图片生成当前未接入 Runtime。</p>
+                    <p>勾选后模型会出现在聊天模型下拉列表，由你选择使用。能力由 Runtime 自动检测；图片生成当前未接入 Runtime。</p>
                 </div>
                 <div className="local-model-list">
                   {models.models.filter((model) => model.location === 'local').map((model) => <article className="local-model-card" key={model.id}>
@@ -684,7 +721,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
                         <button
                           type="button"
                           className="secondary-button"
-                          disabled={model.availability !== 'ready' || qualifyingModelIds.size > 0 || checkingAllProviders}
+                          disabled={saving || model.enabled === false || model.availability !== 'ready' || qualifyingModelIds.size > 0 || checkingAllProviders}
                           onClick={() => void qualifyModel(model.id)}
                         >{qualifyingModelIds.has(model.id) ? '检测中…' : '重新检测'}</button>
                       </div>
@@ -699,93 +736,35 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
                   </article>)}
                   {models.models.every((model) => model.location !== 'local') && <small className="local-model-list-empty">当前未发现本地模型。</small>}
                 </div>
+                {localModelResult && <div className="provider-check-result" role="status" aria-live="polite">{localModelResult}</div>}
               </div>
             </div>
 
-            <div className="provider-settings-list">
-              <div className="provider-list-heading">
-                <div className="settings-section-copy">
-                  <h3>远程 Provider</h3>
-                  <p>检测会调用已启用 Provider 的 API；完成后，能正常文本聊天的 Provider 自动保持启用，其余自动关闭。</p>
-                </div>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  disabled={checkingAllProviders || qualifyingModelIds.size > 0 || saving}
-                  onClick={() => void checkAllEnabledProviders()}
-                >{checkingAllProviders ? '统一检测中…' : '检测全部已启用'}</button>
-              </div>
-              {qualificationResult && <div className="provider-check-result" role="status" aria-live="polite">{qualificationResult}</div>}
-              {AGENT_PROVIDER_IDS.map((id) => {
-                const { label, runtimeModelId, apiKeyLabel } = AGENT_PROVIDER_CATALOG[id];
-                const provider = agentSettings.providers[id];
-                const health = modelHealth.get(runtimeModelId);
-                const expanded = expandedProviders[id];
-                const detailsId = `${moduleId}-${id}-provider-details`;
-                const keyStatus = clearRequests[id]
-                  ? '保存后清除'
-                  : apiKeys[id]
-                    ? '待保存'
-                    : provider.apiKeyStatus === 'configured'
-                      ? '已安全保存'
-                      : provider.apiKeyStatus === 'unavailable'
-                        ? '密文不可用'
-                        : '未配置';
-                return <fieldset className={`provider-settings-card${expanded ? ' is-expanded' : ' is-collapsed'}`} key={id}>
-                  <legend>
-                    <button
-                      type="button"
-                      className="provider-disclosure"
-                      aria-expanded={expanded}
-                      aria-controls={detailsId}
-                      onClick={() => setExpandedProviders((current) => ({ ...current, [id]: !current[id] }))}
-                    >
-                      <ChevronRight size={14} aria-hidden="true" />
-                      <span>{label}</span>
-                    </button>
-                    <label className="provider-enable"><input type="checkbox" aria-label={`启用 ${label}`} checked={provider.enabled} onChange={(event) => updateProvider(id, { enabled: event.target.checked })} /><span>启用</span></label>
-                  </legend>
-                  <div id={detailsId} className="provider-settings-body" hidden={!expanded}>
-                    <div className="provider-health"><span className={`provider-health-dot provider-health-dot--${health?.availability ?? 'unavailable'}`} />{health ? modelAvailabilityLabel(health.availability) : '等待 Runtime 检查'} · API Key {keyStatus}
-                      <button
-                        type="button"
-                        className="secondary-button provider-check-button"
-                        disabled={!provider.enabled || checkingAllProviders || qualifyingModelIds.size > 0 || saving}
-                        onClick={() => void checkProvider(id)}
-                      >{qualifyingModelIds.has(runtimeModelId) ? '检测中…' : '检查此 Provider'}</button>
-                    </div>
-                    <div className="agent-settings-grid">
-                      <label className="settings-field"><span>模型</span><input value={provider.model} onChange={(event) => {
-                        const model = event.target.value;
-                        updateProvider(id, {
-                          model,
-                          ...(model === AGENT_PROVIDER_CATALOG[id].defaultModel
-                            ? {
-                                contextWindowTokens: AGENT_PROVIDER_CATALOG[id].defaultContextWindowTokens,
-                                maxOutputTokens: AGENT_PROVIDER_CATALOG[id].defaultMaxOutputTokens
-                              }
-                            : {}),
-                          inference: model === AGENT_PROVIDER_CATALOG[id].defaultModel
-                            ? structuredClone(AGENT_PROVIDER_CATALOG[id].defaultInference)
-                            : {}
-                        });
-                      }} /><small>{inferenceDescription(provider.inference)}</small></label>
-                      <label className="settings-field"><span>上下文窗口（tokens）</span><input type="number" min={8192} max={10000000} step={1024} value={provider.contextWindowTokens} onChange={(event) => updateProvider(id, { contextWindowTokens: Number(event.target.value) })} /><small>必须填写精确模型容量；用于 v3 压力压缩。</small></label>
-                      <label className="settings-field"><span>最大输出（tokens）</span><input type="number" min={256} max={1000000} step={256} value={provider.maxOutputTokens} onChange={(event) => updateProvider(id, { maxOutputTokens: Number(event.target.value) })} /><small>在输入预算之前预留。</small></label>
-                      <label className="settings-field settings-field--wide"><span>API 地址</span><input type="url" value={provider.baseUrl} onChange={(event) => updateProvider(id, { baseUrl: event.target.value })} /></label>
-                      <label className="settings-field settings-field--wide"><span>{apiKeyLabel}</span><div className="api-key-input"><input type="password" autoComplete="off" value={apiKeys[id]} onChange={(event) => {
-                        setApiKeys((current) => ({ ...current, [id]: event.target.value }));
-                        if (event.target.value) setClearRequests((current) => ({ ...current, [id]: false }));
-                      }} placeholder={provider.apiKeyStatus === 'configured' ? '已安全保存；输入新值可替换' : '输入 API Key'} />
-                      <button type="button" disabled={provider.apiKeyStatus === 'missing' && !apiKeys[id]} onClick={() => {
-                        setApiKeys((current) => ({ ...current, [id]: '' }));
-                        setClearRequests((current) => ({ ...current, [id]: true }));
-                      }}>清除</button></div></label>
-                    </div>
-                  </div>
-                </fieldset>;
-              })}
-            </div>
+            <RemoteProviderSettings moduleId={moduleId} providers={agentSettings.providers}
+              keys={apiKeys} clearRequests={clearRequests} expanded={expandedProviders}
+              health={modelHealth} checking={qualifyingModelIds}
+              busy={saving || checkingAllProviders || qualifyingModelIds.size > 0} result={qualificationResult}
+              onChange={updateProvider} onCheck={id => { void checkProvider(id); }}
+              onCheckAll={() => { void checkAllEnabledProviders(); }}
+              onExpand={id => setExpandedProviders(current => ({ ...current, [id]: !current[id] }))}
+              onKey={(id, value) => { setApiKeys(current => ({ ...current, [id]: value }));
+                if (value) setClearRequests(current => ({ ...current, [id]: false })); }}
+              onClearKey={id => { setApiKeys(current => ({ ...current, [id]: '' }));
+                setClearRequests(current => ({ ...current, [id]: true })); }}
+              onAdd={() => {
+                const id = `remote-${crypto.randomUUID()}`;
+                setAgentSettings(current => current ? { ...current, providers: { ...current.providers, [id]: {
+                  label: '新连接', modelId: id, enabled: true, protocol: 'openai-compatible', inferenceDialect: 'openai',
+                  baseUrl: '', model: '', supportsVision: false, contextWindowTokens: 32768,
+                  maxOutputTokens: 4096, inference: {}, apiKeyStatus: 'missing'
+                } } } : current);
+                setExpandedProviders(current => ({ ...current, [id]: true }));
+              }}
+              onRemove={id => setAgentSettings(current => {
+                if (!current) return current;
+                const providers = { ...current.providers }; delete providers[id];
+                return { ...current, providers };
+              })} />
 
             <div className="provider-settings-list" aria-label="外部 SubAgent Provider">
               <div className="settings-section-copy">
@@ -938,7 +917,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
           <div className="settings-section-title"><span className="settings-section-icon"><MessageCircle size={16} /></span><div className="settings-section-copy"><h2 id={`${moduleId}-chat-settings`}>聊天与人设</h2><p>控制个人助手的称呼、回答风格，以及可选的用户背景。个人助手始终直接回答。</p></div></div>
         </div>
         {agentSettings ? (
-          <form id={`${moduleId}-chat-settings-form`} className="agent-settings-form assistant-settings-form" onSubmit={(event) => void saveAgentSettings(event)}>
+          <form id={`${moduleId}-chat-settings-form`} className="agent-settings-form assistant-settings-form" onSubmit={(event) => void saveAgentSettings(event, 'chat')}>
             <div className="agent-settings-grid">
               <label className="settings-field"><span>助手名称</span><input
                 required
@@ -1085,7 +1064,6 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
 
       {activeCategory === 'desktop' && <section className="settings-section" aria-labelledby={`${moduleId}-desktop-settings`}>
         <div className="settings-section-heading"><div className="settings-section-title"><span className="settings-section-icon"><Laptop size={16} /></span><div className="settings-section-copy"><h2 id={`${moduleId}-desktop-settings`}>外观与桌面行为</h2><p>这些设置不会触发 Runtime 重启。</p></div></div></div>
-        {preferenceError && <p className="is-danger" role="alert">{preferenceError}</p>}
         <div className="setting-block"><div><strong>主题</strong><p>默认跟随系统，也可以单独覆盖 Ariadne 外观。</p></div><div className="theme-options">{themeOptions.map(({ value, label, icon: Icon }) => <button type="button" key={value} className={preferences?.theme === value ? 'is-active' : ''} onClick={() => preferences && savePreferences({ ...preferences, theme: value })}><Icon size={17} />{label}</button>)}</div></div>
         <div className="setting-block"><div><strong>后台常驻</strong><p>关闭主窗口时保留托盘中的桌面应用。</p></div><label className="switch"><input type="checkbox" checked={preferences?.runInBackground ?? true} onChange={(event) => preferences && savePreferences({ ...preferences, runInBackground: event.target.checked })} /><span /></label></div>
         <div className="setting-block"><div><strong>启动时运行</strong><p>登录系统后自动启动桌面应用。</p></div><label className="switch"><input type="checkbox" checked={preferences?.startAtLogin ?? false} onChange={(event) => preferences && savePreferences({ ...preferences, startAtLogin: event.target.checked })} /><span /></label></div>
@@ -1105,7 +1083,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
         </div>
         {(activeCategory === 'agent' || activeCategory === 'chat') && agentSettings && <footer className="agent-settings-actions settings-floating-actions">
           {saveResult && <span className={saveResult.tone === 'success' ? 'is-success' : 'is-error'}>{saveResult.tone === 'success' ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}{saveResult.message}</span>}
-          <button type="submit" form={`${moduleId}-${activeCategory}-settings-form`} className="primary-button" disabled={saving}><Save size={14} />{saving ? '正在保存并重启…' : activeCategory === 'chat' ? '保存聊天设置' : '保存 Agent 设置'}</button>
+          <button type="submit" form={`${moduleId}-${activeCategory}-settings-form`} className="primary-button" disabled={saving || qualifyingModelIds.size > 0 || checkingAllProviders}><Save size={14} />{saving ? '正在保存并重启…' : activeCategory === 'chat' ? '保存聊天设置' : '保存 Agent 设置'}</button>
         </footer>}
       </div>
       </div>

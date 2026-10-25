@@ -453,7 +453,7 @@ describe('RuntimeSupervisor', () => {
 
     await supervisor.restart({
       ...options,
-      routingStrategy: 'cloud-first',
+      modelSelection: { modelId: '', localFallbackModelId: '' },
       modelProviders: [{
         providerId: 'openai',
         name: 'cloud-openai',
@@ -769,7 +769,7 @@ function createSupervisorOptions(
     dataRoot,
     modelRoots: [path.join(dataRoot, 'models')],
     modelProviders: [],
-    routingStrategy: 'local-first',
+    modelSelection: { modelId: '', localFallbackModelId: '' },
     assistantProfile: createDefaultAssistantChatProfile(),
     agentPermissions: {
       approvalPolicy: 'request',

@@ -50,7 +50,7 @@ Renderer 当前只发送：
 - `conversation.message.accept`；
 - `agent.decision.resolve`；
 - `agent.run.cancel`；
-- `agent.inbox.*.v3` 与 direct-parent SubAgent 控制命令。
+- `agent.inbox.*` 与 direct-parent SubAgent 控制命令。
 
 此外，模型检测使用 `model.qualification.run`，会话导航、分支和消息解析使用相应 query/reference API，工具正文使用 protected detail API，目标/工作流模块使用 productivity 命令。以上是按职责归类的入口，不是完整协议命令白名单；完整集合由 `packages/protocol` schema 和 Main/Runtime router 校验。
 

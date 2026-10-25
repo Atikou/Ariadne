@@ -1,0 +1,48 @@
+module.exports = async ({ evaluate, wait, check, window }) => {
+  window.setContentSize(1200, 900);
+  await evaluate("window.__uiFixture.show('settings-app')");
+  await wait("!!document.querySelector('.activity-bar [aria-label=\"设置\"]')");
+  await evaluate("document.querySelector('.activity-bar [aria-label=\"设置\"]').click()");
+  await wait("!!document.querySelector('.settings-navigation')");
+  const inputValue = async (selector, value) => evaluate(`(() => {
+    const input = document.querySelector(${JSON.stringify(selector)});
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)});
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await evaluate("document.querySelector('[title=\"Agent 与模型\"]').click()");
+  await wait("!!document.querySelector('.local-model-roots-control input')");
+  await inputValue('.local-model-roots-control input', 'E:\\FixtureModels');
+  await evaluate("document.querySelector('[title=\"聊天与人设\"]').click()");
+  await wait("!!document.querySelector('.assistant-settings-form input')");
+  await evaluate(`(() => {
+    const input = document.querySelector('.assistant-settings-form input');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'UNSAVED_FIXTURE_NAME');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    window.__settingsLoads = window.__settingsAppFixture.loads;
+  })()`);
+  await evaluate('window.__settingsAppFixture.pulse()');
+  await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  await check('Runtime status updates preserve the settings draft without reloading it', "document.querySelector('.assistant-settings-form input').value === 'UNSAVED_FIXTURE_NAME' && window.__settingsAppFixture.loads === window.__settingsLoads");
+  await evaluate("document.querySelector('.settings-floating-actions button').click()");
+  await wait('window.__settingsAppFixture.saves.length === 1');
+  await check('save dispatches the visible draft', "window.__settingsAppFixture.saves[0].operations.find(operation => operation.kind === 'assistant.replace')?.assistant.name === 'UNSAVED_FIXTURE_NAME'");
+  await check('save chat does not commit unfinished Agent configuration', "window.__settingsAppFixture.saves[0].operations.every(operation => operation.kind === 'assistant.replace')");
+  await evaluate("document.querySelector('[title=\"Agent 与模型\"]').click()");
+  await wait("!!document.querySelector('.local-model-roots-control input')");
+  await check('chat save preserves the unsaved Agent draft', "document.querySelector('.local-model-roots-control input').value === 'E:\\\\FixtureModels'");
+  await evaluate("document.querySelector('[title=\"聊天与人设\"]').click()");
+  await inputValue('.assistant-settings-form input', 'SECOND_UNSAVED_CHAT_NAME');
+  await evaluate("document.querySelector('[title=\"Agent 与模型\"]').click()");
+  await evaluate("document.querySelector('.settings-floating-actions button').click()");
+  await wait('window.__settingsAppFixture.saves.length === 2');
+  await check('save Agent dispatches only Agent changes', "window.__settingsAppFixture.saves[1].operations.length === 1 && window.__settingsAppFixture.saves[1].operations[0].kind === 'modelRoots.replace'");
+  await evaluate("document.querySelector('[title=\"聊天与人设\"]').click()");
+  await check('Agent save preserves the unsaved chat draft', "document.querySelector('.assistant-settings-form input').value === 'SECOND_UNSAVED_CHAT_NAME'");
+  await evaluate("document.querySelector('[title=\"本地语音\"]').click(); window.__settingsAppFixture.failPreferences = true");
+  await wait("!!document.querySelector('.speech-settings-grid input[type=checkbox]')");
+  await evaluate("document.querySelector('.speech-settings-grid input[type=checkbox]').click()");
+  await wait('window.__settingsAppFixture.preferenceWrites.length > 0');
+  await wait("!document.querySelector('.speech-settings-grid input[type=checkbox]').checked");
+  await wait("document.querySelector('.settings-content-scroll [role=alert]')?.textContent.includes('FIXTURE_PREFERENCE_SAVE_FAILED')");
+  await check('failed speech preference saves are visible and restore the persisted switch', "!document.querySelector('.speech-settings-grid input[type=checkbox]').checked");
+};

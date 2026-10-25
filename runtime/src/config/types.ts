@@ -37,13 +37,7 @@ export type EmbeddedModelRuntime = z.infer<typeof EmbeddedModelRuntimeSchema>;
 
 export const ModelLocationSchema = z.enum(["local", "remote"]);
 
-export const RoutingStrategySchema = z.enum([
-  "local-first",
-  "cloud-first",
-  "privacy-first",
-  "quality-first",
-]);
-export type RoutingStrategy = z.infer<typeof RoutingStrategySchema>;
+
 
 export const ModelDeclaredCapabilitiesSchema = z
   .object({
@@ -539,10 +533,6 @@ export const AppConfigSchema = z.object({
       }
     }).optional(),
     clients: z.array(ModelClientConfigSchema).default([]),
-  }),
-  routing: z.object({
-    strategy: RoutingStrategySchema,
-    fallback: z.boolean(),
   }),
   codeIntelligence: CodeIntelligenceConfigSchema,
   mcp: McpConfigSchema,

@@ -17,7 +17,7 @@ import {
 } from '../../../../conversation/ConversationAuthority.js';
 import type {
   CommittedConversationAuthorityCommand
-} from '../../../../control/ports/ConversationAuthorityPersistence.js';
+} from '../../../../control/ports/ConversationAuthorityPersistenceV2.js';
 
 export interface SessionRow {
   session_id: string;

@@ -1,3 +1,4 @@
+import { addFixtureProvider, fixtureProvider } from './support/remote-provider-fixture';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +10,8 @@ import {
 } from '../src/main/persistence/agent-settings-repository';
 import { shouldRestartRuntimeForAgentSettings } from '../src/main/settings/agent-settings-effects';
 import type { SecretCipher } from '../src/main/persistence/secret-cipher';
+import { MainCredentialAuthority } from '../src/main/runtime/credential-authority';
+import type { McpOAuthCredentialVault } from '../src/main/persistence/mcp-oauth-credential-vault';
 import type {
   AgentCustomPermissions,
   AgentSettingsMutationResult
@@ -28,6 +31,91 @@ afterEach(async () => {
 });
 
 describe('AgentSettingsRepository', () => {
+  it.each(['local-first', 'cloud-first', 'privacy-first', 'quality-first'])('retires the saved %s route once without resetting other settings or credentials', async (route) => {
+    const directory = await mkdtemp(join(tmpdir(), 'ariadne-retired-routing-'));
+    temporaryDirectories.push(directory);
+    const file = join(directory, 'settings.toml');
+    const initial = new AgentSettingsRepository(file, cipher);
+    await initial.initialize();
+    const document = parseToml(await readFile(file, 'utf8'));
+    document.schemaVersion = 8;
+    delete document.modelSelection;
+    document.routingStrategy = route;
+    document.localModelRoots = ['E:\\Models'];
+    document.providers = { saved: { ...fixtureProvider('openai'), encryptedApiKey: cipher.encrypt('retained-fixture-key') } };
+    await writeFile(file, stringifyToml(document));
+    const migrated = new AgentSettingsRepository(file, cipher);
+    await migrated.initialize();
+    expect(migrated.getView()).toMatchObject({ modelSelection: { modelId: '', localFallbackModelId: '' }, revision: 1, localModelRoots: ['E:\\Models'] });
+    expect(migrated.getRuntimeSettings().revision).toBe(document.revision);
+    expect(migrated.resolveProviderApiKey('saved')).toBe('retained-fixture-key');
+    expect(parseToml(await readFile(file, 'utf8')).routingStrategy).toBeUndefined();
+    const reopened = new AgentSettingsRepository(file, cipher);
+    await reopened.initialize();
+    expect(reopened.getView()).toEqual(migrated.getView());
+    expect(reopened.resolveProviderApiKey('saved')).toBe('retained-fixture-key');
+  });
+  it('isolates credentials and identities for two connections using the same API model across reopen and deletion', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ariadne-remote-connections-'));
+    temporaryDirectories.push(directory);
+    const file = join(directory, 'settings.toml');
+    let repository = new AgentSettingsRepository(file, cipher);
+    await repository.initialize();
+    await expectApplied(repository.mutate({ expectedRevision: 1, operations: ['primary', 'backup'].map(id => ({
+      kind: 'provider.add' as const, providerId: id, apiKey: `${id}-fixture-key`,
+      provider: { ...fixtureProvider('deepseek'), modelId: `remote-${id}`, label: id,
+        baseUrl: `https://${id}.example/v1`, model: 'same-model' }
+    })) }));
+    repository = new AgentSettingsRepository(file, cipher);
+    await repository.initialize();
+    const authority = new MainCredentialAuthority(repository, {} as McpOAuthCredentialVault);
+    for (const id of ['primary', 'backup']) {
+      expect(authority.handle({ kind: 'credential.resolve', credentialRef: `model:${id}`, purpose: 'model_inference' }))
+        .toEqual({ credential: `${id}-fixture-key` });
+      expect(repository.getView().providers[id]).toMatchObject({ modelId: `remote-${id}`, model: 'same-model', apiKeyStatus: 'configured' });
+    }
+    expect(JSON.stringify(repository.getView())).not.toContain('fixture-key');
+    await expectApplied(repository.mutate({ expectedRevision: repository.getView().revision, operations: [
+      { kind: 'provider.remove', providerId: 'primary' },
+      { kind: 'provider.update', providerId: 'backup', patch: { model: 'updated-model' } }
+    ] }));
+    expect(() => authority.handle({ kind: 'credential.resolve', credentialRef: 'model:primary', purpose: 'model_inference' }))
+      .toThrow('credential_resolution_not_authorized');
+    expect(authority.handle({ kind: 'credential.resolve', credentialRef: 'model:backup', purpose: 'model_inference' }))
+      .toEqual({ credential: 'backup-fixture-key' });
+    const reopened = new AgentSettingsRepository(file, cipher);
+    await reopened.initialize();
+    expect(Object.keys(reopened.getView().providers)).toEqual(['backup']);
+    expect(reopened.getView().providers.backup).toMatchObject({ modelId: 'remote-backup', model: 'updated-model' });
+    expect(await readFile(file, 'utf8')).not.toContain(cipher.encrypt('primary-fixture-key'));
+  });
+
+  it('migrates v7 secrets, DeepSeek wire aliases and duplicate upstream names without losing connections', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ariadne-legacy-connections-'));
+    temporaryDirectories.push(directory);
+    const file = join(directory, 'settings.toml');
+    const initial = new AgentSettingsRepository(file, cipher);
+    await initial.initialize();
+    const document = parseToml(await readFile(file, 'utf8'));
+    const legacy = (id: 'deepseek' | 'openai') => {
+      const { label, modelId, protocol, inferenceDialect, supportsVision, ...saved } = fixtureProvider(id);
+      return { ...saved, model: 'deepseek-v4-flash', encryptedApiKey: cipher.encrypt(`${id}-fixture-key`) };
+    };
+    document.schemaVersion = 7;
+    document.providers = { deepseek: legacy('deepseek'), openai: legacy('openai') };
+    await writeFile(file, stringifyToml(document));
+    const migrated = new AgentSettingsRepository(file, cipher);
+    await migrated.initialize();
+    expect(migrated.getView()).toMatchObject({ schemaVersion: 9, revision: 2, providers: {
+      deepseek: { modelId: 'deepseek-v4-flash', model: 'deepseek-flash', apiKeyStatus: 'configured' },
+      openai: { modelId: 'remote-legacy-openai', model: 'deepseek-v4-flash', apiKeyStatus: 'configured' }
+    } });
+    expect(migrated.resolveProviderApiKey('deepseek')).toBe('deepseek-fixture-key');
+    expect(migrated.resolveProviderApiKey('openai')).toBe('openai-fixture-key');
+    const reopened = new AgentSettingsRepository(file, cipher);
+    await reopened.initialize();
+    expect(reopened.getView()).toEqual(migrated.getView());
+  });
   it('compares AI capability requests with the configured user permission boundary', () => {
     const custom: AgentCustomPermissions = {
       approvalPolicy: 'full-access',
@@ -61,7 +149,7 @@ describe('AgentSettingsRepository', () => {
     await repository.initialize();
 
     const defaults = repository.getView();
-    expect(defaults.schemaVersion).toBe(7);
+    expect(defaults.schemaVersion).toBe(9);
     expect(defaults.assistant).toEqual({
       name: 'Ariadne',
       systemPrompt: expect.any(String),
@@ -69,18 +157,14 @@ describe('AgentSettingsRepository', () => {
     });
     expect(defaults.subagentProviders).toEqual([]);
     expect(defaults.revision).toBe(1);
-    expect(defaults.routingStrategy).toBe('cloud-first');
+    expect(defaults.modelSelection).toEqual({ modelId: '', localFallbackModelId: '' });
     expect(defaults.runtimePolicy).toMatchObject({
       schemaVersion: 1,
       mcp: { servers: [], legacySseFallback: false },
       browser: { sessionMode: 'temporary', allowSensitiveInput: false },
       telemetry: { enabled: false }
     });
-    expect(defaults.providers.openai.apiKeyStatus).toBe('missing');
-    expect(defaults.providers.openai).toMatchObject({
-      contextWindowTokens: 128_000,
-      maxOutputTokens: 16_384
-    });
+    expect(defaults.providers).toEqual({});
     expect(parseToml(await readFile(file, 'utf8'))).toMatchObject({
       permissionMode: 'request',
       workspaceAccess: 'write',
@@ -90,20 +174,15 @@ describe('AgentSettingsRepository', () => {
     await expectApplied(repository.mutate({
       expectedRevision: defaults.revision,
       operations: [{
-        kind: 'provider.update',
-        providerId: 'openai',
-        patch: {
-          apiKey: 'sk-test-not-a-real-secret',
-          contextWindowTokens: 64_000,
-          maxOutputTokens: 8_000
-        }
+        kind: 'provider.add', providerId: 'openai', apiKey: 'sk-test-not-a-real-secret',
+        provider: { ...fixtureProvider(), contextWindowTokens: 64_000, maxOutputTokens: 8_000 }
       }]
     }));
     const serialized = await readFile(file, 'utf8');
     expect(serialized).not.toContain('sk-test-not-a-real-secret');
     expect(serialized).toContain('cipher:');
-    expect(repository.getView().providers.openai.apiKeyStatus).toBe('configured');
-    expect(repository.getRuntimeSettings().providers.openai.apiKey).toBe('sk-test-not-a-real-secret');
+    expect(repository.getView().providers.openai!.apiKeyStatus).toBe('configured');
+    expect(repository.getRuntimeSettings().providers.openai!.apiKey).toBe('sk-test-not-a-real-secret');
     expect(repository.getRuntimeSettings().providers.openai).toMatchObject({
       contextWindowTokens: 64_000,
       maxOutputTokens: 8_000
@@ -123,7 +202,7 @@ describe('AgentSettingsRepository', () => {
     });
     await expect(repository.addWorkspaceRoot(openedWorkspace)).resolves.toMatchObject({ added: false });
     expect(repository.getRuntimeSettings().workspaces).toHaveLength(1);
-    expect(repository.getRuntimeSettings().providers.openai.apiKey).toBe('sk-test-not-a-real-secret');
+    expect(repository.getRuntimeSettings().providers.openai!.apiKey).toBe('sk-test-not-a-real-secret');
 
     const beforeWorkspaceUpdate = repository.getView();
     const workspaceMutation = await expectApplied(repository.mutate({
@@ -150,7 +229,7 @@ describe('AgentSettingsRepository', () => {
 
     const reloaded = new AgentSettingsRepository(file, cipher);
     await reloaded.initialize();
-    expect(reloaded.getView().providers.openai.apiKeyStatus).toBe('configured');
+    expect(reloaded.getView().providers.openai!.apiKeyStatus).toBe('configured');
     expect(reloaded.getView().providers.openai).toMatchObject({
       contextWindowTokens: 64_000,
       maxOutputTokens: 8_000
@@ -216,7 +295,7 @@ describe('AgentSettingsRepository', () => {
     await upgraded.initialize();
 
     expect(upgraded.getView()).toMatchObject({
-      schemaVersion: 7,
+      schemaVersion: 9,
       revision: 2,
       assistant: {
         name: '旧助手',
@@ -288,9 +367,7 @@ describe('AgentSettingsRepository', () => {
     await expectApplied(repository.mutate({
       expectedRevision: defaults.revision,
       operations: [{
-        kind: 'provider.update',
-        providerId: 'deepseek',
-        patch: { apiKey: 'deepseek-test-secret' }
+...addFixtureProvider('deepseek', 'deepseek-test-secret')
       }]
     }));
     const configured = repository.getView();
@@ -299,10 +376,10 @@ describe('AgentSettingsRepository', () => {
       operations: [{
         kind: 'provider.update',
         providerId: 'deepseek',
-        patch: { model: configured.providers.deepseek.model }
+        patch: { model: configured.providers.deepseek!.model }
       }]
     }));
-    expect(repository.getRuntimeSettings().providers.deepseek.apiKey).toBe('deepseek-test-secret');
+    expect(repository.getRuntimeSettings().providers.deepseek!.apiKey).toBe('deepseek-test-secret');
     const beforeClear = repository.getView();
     await expectApplied(repository.mutate({
       expectedRevision: beforeClear.revision,
@@ -312,7 +389,7 @@ describe('AgentSettingsRepository', () => {
         patch: { clearApiKey: true }
       }]
     }));
-    expect(repository.getView().providers.deepseek.apiKeyStatus).toBe('missing');
+    expect(repository.getView().providers.deepseek!.apiKeyStatus).toBe('missing');
   });
 
   it('rejects stale revisions so Chat and Settings cannot overwrite each other', async () => {
@@ -320,6 +397,7 @@ describe('AgentSettingsRepository', () => {
     temporaryDirectories.push(directory);
     const repository = new AgentSettingsRepository(join(directory, 'settings.toml'), cipher);
     await repository.initialize();
+    await expectApplied(repository.mutate({ expectedRevision: repository.getView().revision, operations: [addFixtureProvider()] }));
     const sharedSnapshot = repository.getView();
 
     const permissionResult = await expectApplied(repository.mutate({
@@ -347,7 +425,7 @@ describe('AgentSettingsRepository', () => {
     });
     expect(repository.getView()).toMatchObject({
       permissionMode: 'risk-based',
-      providers: { openai: { model: sharedSnapshot.providers.openai.model } }
+      providers: { openai: { model: sharedSnapshot.providers.openai!.model } }
     });
 
     if (staleSettingsPanelResult.ok) throw new Error('Expected a revision conflict.');
@@ -388,14 +466,14 @@ describe('AgentSettingsRepository', () => {
       ],
       providers: currentDocument.providers
     };
-    (previousDocument.providers as Record<string, Record<string, unknown>>).openai!.model = 'legacy-openai';
+    previousDocument.providers = { openai: { ...fixtureProvider(), model: 'legacy-openai' }, kimi: fixtureProvider('kimi'), deepseek: fixtureProvider('deepseek') };
     await writeFile(file, stringifyToml(previousDocument));
 
     const repository = new AgentSettingsRepository(file, cipher);
     await repository.initialize();
     const migrated = repository.getView();
-    expect(migrated.routingStrategy).toBe('local-first');
-    expect(migrated.schemaVersion).toBe(7);
+    expect(migrated.modelSelection).toEqual({ modelId: '', localFallbackModelId: '' });
+    expect(migrated.schemaVersion).toBe(9);
     expect(migrated.revision).toBe(2);
     expect(migrated.runtimePolicy.embedding).toEqual({ provider: 'lexical' });
     expect(migrated.workspaceAccess).toBe('write');
@@ -407,10 +485,10 @@ describe('AgentSettingsRepository', () => {
       },
       { workspaceId: 'workspace-kept', rootPath: join(directory, 'kept'), access: 'write' }
     ]);
-    expect(migrated.providers.openai.model).toBe('legacy-openai');
-    expect(migrated.providers.kimi.model).toBe('kimi-k3');
-    expect(migrated.providers.deepseek.inference.reasoning?.efforts).toEqual(['high', 'max']);
-    expect(await readFile(file, 'utf8')).toContain('routingStrategy = "local-first"');
+    expect(migrated.providers.openai!.model).toBe('legacy-openai');
+    expect(migrated.providers.kimi!.model).toBe('kimi-k3');
+    expect(migrated.providers.deepseek!.inference.reasoning?.efforts).toEqual(['high', 'max']);
+    expect(await readFile(file, 'utf8')).not.toContain('routingStrategy');
   });
 
   it('migrates the legacy JSON file without restoring an implicit workspace', async () => {
@@ -436,13 +514,13 @@ describe('AgentSettingsRepository', () => {
     await repository.initialize();
 
     expect(repository.getView()).toMatchObject({
-      schemaVersion: 7,
+      schemaVersion: 9,
       revision: 2,
-      routingStrategy: 'local-first',
+      modelSelection: { modelId: '', localFallbackModelId: '' },
       workspaces: [],
       providers: { openai: { model: 'legacy-openai', apiKeyStatus: 'configured' } }
     });
-    expect(repository.getRuntimeSettings().providers.openai.apiKey).toBe('legacy-secret');
+    expect(repository.getRuntimeSettings().providers.openai!.apiKey).toBe('legacy-secret');
     expect((await readdir(directory)).some((name) => name.startsWith('agent-settings.json.migrated-'))).toBe(true);
     await expect(readFile(legacyFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
@@ -462,7 +540,7 @@ describe('AgentSettingsRepository', () => {
     await upgraded.initialize();
 
     expect(upgraded.getView()).toMatchObject({
-      schemaVersion: 7,
+      schemaVersion: 9,
       revision: 2,
       assistant: { name: 'Ariadne', userPersona: '' }
     });
@@ -479,9 +557,7 @@ describe('AgentSettingsRepository', () => {
     await expectApplied(original.mutate({
       expectedRevision: defaults.revision,
       operations: [{
-        kind: 'provider.update',
-        providerId: 'openai',
-        patch: { apiKey: 'schema-two-secret' }
+...addFixtureProvider('openai', 'schema-two-secret')
       }]
     }));
 
@@ -493,12 +569,12 @@ describe('AgentSettingsRepository', () => {
     const upgraded = new AgentSettingsRepository(file, cipher);
     await upgraded.initialize();
     expect(upgraded.getView()).toMatchObject({
-      schemaVersion: 7,
+      schemaVersion: 9,
       revision: 2,
       providers: { openai: { apiKeyStatus: 'configured' } }
     });
-    expect(upgraded.getRuntimeSettings().providers.openai.apiKey).toBe('schema-two-secret');
-    expect(parseToml(await readFile(file, 'utf8'))).toMatchObject({ schemaVersion: 7, revision: 2 });
+    expect(upgraded.getRuntimeSettings().providers.openai!.apiKey).toBe('schema-two-secret');
+    expect(parseToml(await readFile(file, 'utf8'))).toMatchObject({ schemaVersion: 9, revision: 2 });
     expect((await readdir(directory)).some((name) => name.startsWith('settings.toml.invalid-'))).toBe(false);
   });
 
@@ -514,23 +590,23 @@ describe('AgentSettingsRepository', () => {
     await mkdir(file);
     await expect(repository.mutate({
       expectedRevision: initial.revision,
-      operations: [{ kind: 'routing.set', strategy: 'local-first' }]
+      operations: [{ kind: 'modelSelection.set', selection: { modelId: 'selected', localFallbackModelId: 'local' } }]
     })).rejects.toBeInstanceOf(Error);
-    expect(repository.getView().routingStrategy).toBe(initial.routingStrategy);
+    expect(repository.getView().modelSelection).toEqual(initial.modelSelection);
 
     await rm(file, { recursive: true });
     await expectApplied(repository.mutate({
       expectedRevision: initial.revision,
-      operations: [{ kind: 'routing.set', strategy: 'local-first' }]
+      operations: [{ kind: 'modelSelection.set', selection: { modelId: 'selected', localFallbackModelId: 'local' } }]
     }));
 
-    expect(repository.getView().routingStrategy).toBe('local-first');
-    expect(parseToml(await readFile(file, 'utf8'))).toMatchObject({ routingStrategy: 'local-first' });
+    expect(repository.getView().modelSelection).toEqual({ modelId: 'selected', localFallbackModelId: 'local' });
+    expect(parseToml(await readFile(file, 'utf8'))).toMatchObject({ modelSelection: { modelId: 'selected', localFallbackModelId: 'local' } });
 
     await repository.restore(checkpoint);
-    expect(repository.getView().routingStrategy).toBe(initial.routingStrategy);
+    expect(repository.getView().modelSelection).toEqual(initial.modelSelection);
     expect(parseToml(await readFile(file, 'utf8'))).toMatchObject({
-      routingStrategy: initial.routingStrategy
+      modelSelection: initial.modelSelection
     });
   });
 
@@ -612,7 +688,7 @@ describe('AgentSettingsRepository', () => {
     const previousDocument = {
       schemaVersion: 3,
       revision: currentDocument.revision,
-      routingStrategy: currentDocument.routingStrategy,
+      routingStrategy: 'cloud-first',
       permissionMode: currentDocument.permissionMode,
       workspaceRoot: directory,
       workspaceAccess: currentDocument.workspaceAccess,

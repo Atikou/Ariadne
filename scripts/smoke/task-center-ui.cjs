@@ -30,6 +30,10 @@ module.exports = async ({ window, wc, evaluate, wait, check, key, outputRoot }) 
   await wait("window.__taskCenterFixture.navigation.some(item=>item.kind==='module')");
   await check('task decision opens the exact Session, Run, Decision and original permission module', "window.__taskCenterFixture.navigation.slice(-4).map(item=>item.id).join(',')==='session-a,waiting-run,exact-decision,permissions'");
   const firstCursor = await evaluate("window.__taskCenterFixture.tasks.view.getSnapshot().page.pageCursor");
+  await evaluate("window.__taskCenterFixture.setQueryFailure(true);document.querySelector('.task-center-pager button:last-of-type').click()");
+  await wait("document.querySelector('.task-center-feedback')?.textContent.includes('读取失败')");
+  await check('failed task pagination retains the displayed page and cursor history', "document.querySelector('.task-center-pager').textContent.includes('第 1 页')&&document.querySelector('.task-center-pager button:first-of-type').disabled&&document.querySelector('.task-center-row').textContent.includes('waiting-run')");
+  await evaluate("window.__taskCenterFixture.setQueryFailure(false)");
   await evaluate("document.querySelector('.task-center-pager button:last-of-type').click()");
   await wait("window.__taskCenterFixture.tasks.view.getSnapshot().pageNumber===2&&!window.__taskCenterFixture.tasks.view.getSnapshot().loading");
   await evaluate("document.querySelector('.task-center-pager button:first-of-type').click()");
@@ -49,6 +53,7 @@ module.exports = async ({ window, wc, evaluate, wait, check, key, outputRoot }) 
   await evaluate("Array.from(document.querySelectorAll('.task-center-detail button')).find(item=>item.textContent==='查看恢复入口').click()");
   await wait("window.__taskCenterFixture.navigation.at(-1).id==='productivity.control'");
   await check('unknown occurrence returns to original productivity owner without mutation', "window.__taskCenterFixture.commands.every(item=>['tasks.query','tasks.navigate'].includes(item.kind))");
+  await wait("Array.from(document.querySelectorAll('.task-center-detail button')).some(item=>item.textContent==='打开所属会话'&&!item.disabled)");
   await evaluate("window.__taskCenterFixture.setStale(true);Array.from(document.querySelectorAll('.task-center-detail button')).find(item=>item.textContent==='打开所属会话').click()");
   await wait("document.querySelector('.task-center-feedback')?.textContent.includes('状态已变化')");
   await check('stale source never navigates or silently retries an operation', "window.__taskCenterFixture.tasks.view.getSnapshot().error.includes('状态已变化')");

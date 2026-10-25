@@ -10,6 +10,7 @@ describe('production packaging pipeline', () => {
     const rootPackage = JSON.parse(await readFile(path.join(projectRoot, 'package.json'), 'utf8')) as {
       scripts: Record<string, string>;
       workspaces: string[];
+      engines: { node: string };
     };
     const appPackage = JSON.parse(await readFile(path.join(process.cwd(), 'package.json'), 'utf8')) as {
       scripts: Record<string, string>;
@@ -63,8 +64,8 @@ describe('production packaging pipeline', () => {
     expect(runtimeDistributionLock.packages['node_modules/@ariadne/live-work']?.resolved).toBe(
       'file:../../packages/live-work'
     );
-    expect(prepareScript).toContain("const NODE_VERSION = '22.23.1'");
-    expect(prepareScript).toContain('7df0bc9375723f4a86b3aa1b7cc73342423d9677a8df4538aca31a049e309c29');
+    expect(prepareScript).toContain(`const NODE_VERSION = '${rootPackage.engines.node}'`);
+    expect(prepareScript).toContain('edaca9bd58ec8e92037dac4e877d52f6b8f430b81c18b57e264b4e2fb111cd56');
     expect(prepareScript).toContain("return value?.trim() || 'x64'");
     expect(prepareScript).toContain("'--trusted', '--self-contained'");
     expect(prepareScript).toContain('verifyProductionAssets()');

@@ -7,6 +7,9 @@ const retiredFamilies = ['agent', 'app', 'assistant', 'background', 'companion',
   'lifecycle', 'model-orchestrator', 'model-router', 'notifications', 'orchestrator', 'plan', 'run', 'subagent', 'tools'];
 const retiredCli = ['main', 'storage', 'LegacyLongMemoryImport', 'import-legacy-long-memory', 'migrate-scheduler-v3'];
 const retiredFiles = ['config/workspaceCatalog', 'core/correlation', 'core/index', 'core/permissions', 'core/runTypes',
+  'core/apiResult', 'core/jsonContracts', 'ingress/RuntimeCommandContext', 'model/local/index',
+  'sandbox/RestrictedProcessRunner', 'util/publicError', 'util/publicPathProjection', 'util/strictJsonDocument',
+  'model/capability/ModelQualityBenchmark', 'model/capability/ModelQualityContracts',
   'ingress/RuntimeCommandJournal',
   'model/MetricsRegistry', 'model/ModelObservabilityContracts', 'model/prepareChatRequestForModel',
   'model/prepareRemoteChatRequest', 'model/routeOptions', 'model/taskType', 'platform/NativeDirectoryPicker',

@@ -298,6 +298,9 @@ export class RendererProjectionRepository {
   async openDecision(decisionId: string): Promise<void> {
     this.requireIntegrity();
     if (this.selectedSession === null) throw new Error('projection_decision_session_required');
+    // An explicit reopen is a new focus request even if this Decision is already
+    // visible in another panel. Publish selection again after the scoped read.
+    this.selectedDecisionId = null; this.rebuild();
     this.viewGeneration += 1;
     const generation = this.generation, view = this.viewGeneration;
     const current = () => generation === this.generation && view === this.viewGeneration;

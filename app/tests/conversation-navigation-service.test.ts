@@ -185,10 +185,10 @@ function createService(
     access: 'write'
   }];
   const settings = (): AgentSettingsView => ({
-    schemaVersion: 7,
+    schemaVersion: 9,
     revision: 1,
     assistant: createDefaultAssistantChatProfile(),
-    routingStrategy: 'cloud-first',
+    modelSelection: { modelId: '', localFallbackModelId: '' },
     permissionMode: 'request',
     customPermissions: {
       approvalPolicy: 'risk-based',

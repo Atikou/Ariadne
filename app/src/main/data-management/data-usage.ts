@@ -2,8 +2,7 @@ import { lstat, opendir, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { dataUsageViewSchema, type DataUsageView } from '@shared/data-management';
 import { BACKUP_FIXED_FILES, MAX_BACKUP_FILES } from './backup-manifest';
-import { RUNTIME_DERIVED_DATABASE_PATHS } from '../runtime/runtime-storage-layout';
-import { isUnpublishedConversationAttachmentObjectName } from '@ariadne/protocol/host';
+import { RUNTIME_DERIVED_DATABASE_PATHS, isUnpublishedConversationAttachmentObjectName } from '../runtime/runtime-storage-layout';
 
 /** Metadata-only inventory of the current owners' exact files. Measurements
  * are logical file lengths sampled while the application is live, including

@@ -42,7 +42,7 @@ const rows: TaskDirectoryRow[] = [
   decisions: index === 0 ? [{ workspaceId: 'workspace-a', sessionId: 'session-a', runId: input.id, decisionId: 'exact-decision', version: 2, kind: 'permission' }] : [],
   result: index === 2 ? 'available' : 'none' })) as TaskDirectoryRow[];
 const snapshots = new Map<string, { filter: TaskCenterFilter; rows: TaskDirectoryRow[] }>();
-let sequence = 0, staleNavigation = false;
+let sequence = 0, staleNavigation = false, failQuery = false;
 function query(command: Extract<RuntimeCommand, { kind: 'tasks.query' }>): TaskCenterPage {
   let snapshotId: string, offset = 0;
   if (command.cursor) { const cursor = command.cursor.split('.'); snapshotId = cursor[0]!; offset = Number(cursor[1]); }
@@ -62,7 +62,10 @@ function query(command: Extract<RuntimeCommand, { kind: 'tasks.query' }>): TaskC
 }
 const tasks = new TaskCenterFeatureStore({ execute: async input => {
   const command = runtimeCommandSchema.parse(input); commands.push(command);
-  if (command.kind === 'tasks.query') return query(command);
+  if (command.kind === 'tasks.query') {
+    if (failQuery) throw new Error('fixture_query_unavailable');
+    return query(command);
+  }
   if (command.kind === 'tasks.relations') return { kind: 'tasks.relations_result', contractVersion: '1.0',
     reference: command.reference, workspaceId: command.workspaceId, sessionId: command.sessionId,
     expectedVersion: command.expectedVersion, expectedAttempts: command.expectedAttempts, expectedSourceStatus: command.expectedSourceStatus,
@@ -95,7 +98,8 @@ const services = { tasks,
   messages: { showWindow: async (input: { anchorMessageId: string }) => { navigation.push({ kind: 'message', id: input.anchorMessageId }); } },
   events: { emit: (_event: string, id: string) => { navigation.push({ kind: 'module', id }); } }
 } as unknown as ModuleServices;
-Object.assign(window, { __taskCenterFixture: { tasks, commands, navigation, preferences: () => structuredClone(preferences), setStale: (value: boolean) => { staleNavigation = value; } } });
+Object.assign(window, { __taskCenterFixture: { tasks, commands, navigation, preferences: () => structuredClone(preferences),
+  setQueryFailure: (value: boolean) => { failQuery = value; }, setStale: (value: boolean) => { staleNavigation = value; } } });
 export function TaskCenterFixture({ page }: { page: string }) {
   return page === 'task-center' ? <TaskCenterPanel moduleId={moduleId('tasks.center')} services={services} /> : null;
 }

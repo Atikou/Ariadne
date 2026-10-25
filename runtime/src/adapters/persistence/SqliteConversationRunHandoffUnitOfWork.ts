@@ -10,7 +10,7 @@ import type {
   CommittedConversationAuthorityCommand,
   ConversationAuthorityTransaction,
   ConversationAuthorityUnitOfWork
-} from '../../control/ports/ConversationAuthorityPersistence.js';
+} from '../../control/ports/ConversationAuthorityPersistenceV2.js';
 import type { ConversationRunHandoffTransaction, ConversationRunHandoffUnitOfWork } from '../../control/ports/ConversationRunHandoffPersistence.js';
 import type {
   ClaimedConversationOutboxMessage,

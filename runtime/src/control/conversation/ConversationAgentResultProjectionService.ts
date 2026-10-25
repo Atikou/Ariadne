@@ -23,7 +23,7 @@ import type {
   CommittedConversationAuthorityCommand,
   ConversationAuthorityTransaction,
   ConversationAuthorityUnitOfWork
-} from '../ports/ConversationAuthorityPersistence.js';
+} from '../ports/ConversationAuthorityPersistenceV2.js';
 
 export interface ProjectConversationAgentResultInput {
   readonly kind: 'conversation.project_agent_result';

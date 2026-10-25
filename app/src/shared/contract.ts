@@ -178,11 +178,12 @@ export type SpeechEvent =
   | { kind: 'error'; operation: string; message: string; retryable: boolean };
 
 export const AGENT_PROVIDER_IDS = ['openai', 'deepseek', 'kimi', 'anthropic'] as const;
-export type AgentProviderId = (typeof AGENT_PROVIDER_IDS)[number];
+export type AgentProviderPreset = (typeof AGENT_PROVIDER_IDS)[number];
+export type AgentProviderId = string;
 export type AgentProviderProtocol = 'openai-compatible' | 'anthropic-messages';
 
 export interface AgentProviderDefinition {
-  id: AgentProviderId;
+  id: AgentProviderPreset;
   label: string;
   runtimeModelId: string;
   protocol: AgentProviderProtocol;
@@ -198,8 +199,8 @@ export interface AgentProviderDefinition {
 }
 
 /**
- * Provider 身份、传输协议与默认配置的唯一注册表。
- * 新增远程 Provider 时，桌面设置、Runtime bootstrap 与凭据映射都从这里派生。
+ * 接口模板和旧版固定 Provider 的迁移默认值；连接身份由独立配置持有。
+ * Runtime bootstrap 与凭据映射读取已保存连接，不依赖模板中的厂商 ID。
  */
 export const AGENT_PROVIDER_CATALOG = {
   openai: {
@@ -226,7 +227,7 @@ export const AGENT_PROVIDER_CATALOG = {
     apiKeyEnvironmentVariable: 'DEEPSEEK_API_KEY',
     apiKeyLabel: 'DeepSeek API Key',
     defaultBaseUrl: 'https://api.deepseek.com',
-    defaultModel: 'deepseek-v4-flash',
+    defaultModel: 'deepseek-flash',
     supportsVision: false,
     defaultContextWindowTokens: 128_000,
     defaultMaxOutputTokens: 8_192,
@@ -276,9 +277,9 @@ export const AGENT_PROVIDER_CATALOG = {
     defaultMaxOutputTokens: 16_384,
     defaultInference: {}
   }
-} as const satisfies Record<AgentProviderId, AgentProviderDefinition>;
+} as const satisfies Record<AgentProviderPreset, AgentProviderDefinition>;
 
-export type AgentRoutingStrategy = 'local-first' | 'cloud-first' | 'privacy-first' | 'quality-first';
+
 export type ApiKeyStatus = 'missing' | 'configured' | 'unavailable';
 export const AGENT_PERMISSION_MODES = ['request', 'risk-based', 'full-access', 'custom'] as const;
 export type AgentPermissionMode = (typeof AGENT_PERMISSION_MODES)[number];
@@ -296,6 +297,12 @@ export interface AgentCustomPermissions {
 }
 
 export interface AgentProviderSettingsView {
+  label: string;
+  /** Stable connection-specific model identity; independent of the upstream name. */
+  modelId: string;
+  protocol: AgentProviderProtocol;
+  inferenceDialect: 'openai' | 'deepseek' | 'kimi' | 'anthropic';
+  supportsVision: boolean;
   enabled: boolean;
   baseUrl: string;
   model: string;
@@ -308,14 +315,12 @@ export interface AgentProviderSettingsView {
 export type AgentSubagentProviderSettingsView = SubagentProviderConfiguration & {
   enabled: boolean;
 };
-/** @deprecated Use AgentSubagentProviderSettingsView. */
-export type AgentAcpSubagentProviderSettingsView = AgentSubagentProviderSettingsView;
 
 export interface AgentSettingsView {
-  schemaVersion: 7;
+  schemaVersion: 9;
   revision: number;
   assistant: AssistantChatProfile;
-  routingStrategy: AgentRoutingStrategy;
+  modelSelection: import('@ariadne/protocol/public').ModelSelection;
   permissionMode: AgentPermissionMode;
   customPermissions: AgentCustomPermissions;
   workspaceAccess: 'read' | 'write';
@@ -346,6 +351,10 @@ export interface AgentWorkspacePinUpdate extends AgentWorkspaceRequest {
 }
 
 export interface AgentProviderSettingsPatch {
+  label?: string | undefined;
+  protocol?: AgentProviderProtocol | undefined;
+  inferenceDialect?: AgentProviderSettingsView['inferenceDialect'] | undefined;
+  supportsVision?: boolean | undefined;
   enabled?: boolean | undefined;
   baseUrl?: string | undefined;
   model?: string | undefined;
@@ -362,7 +371,7 @@ export type AgentSettingsOperation =
       mode: AgentPermissionMode;
       customPermissions?: AgentCustomPermissions | undefined;
     }
-  | { kind: 'routing.set'; strategy: AgentRoutingStrategy }
+  | { kind: 'modelSelection.set'; selection: import('@ariadne/protocol/public').ModelSelection }
   | { kind: 'assistant.replace'; assistant: AssistantChatProfile }
   | { kind: 'modelRoots.replace'; roots: string[] }
   | { kind: 'localModels.replace'; disabledModelIds: string[] }
@@ -371,9 +380,11 @@ export type AgentSettingsOperation =
       providerId: AgentProviderId;
       patch: AgentProviderSettingsPatch;
     }
+  | { kind: 'provider.add'; providerId: AgentProviderId; provider: Omit<AgentProviderSettingsView, 'apiKeyStatus'>; apiKey?: string | undefined }
+  | { kind: 'provider.remove'; providerId: AgentProviderId }
   | {
       kind: 'subagentProviders.replace';
-      providers: AgentAcpSubagentProviderSettingsView[];
+      providers: AgentSubagentProviderSettingsView[];
     }
   | { kind: 'runtimePolicy.replace'; policy: RuntimePolicySnapshot };
 

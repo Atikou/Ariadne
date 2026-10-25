@@ -1,3 +1,4 @@
+import { addFixtureProvider } from './support/remote-provider-fixture';
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -31,14 +32,14 @@ it('validates the actual current settings writer and credentials without migrati
   const file = join(await root(), 'settings.toml'), owner = new AgentSettingsRepository(file, cipher);
   await owner.initialize(); owner.validateBackup(await readFile(file, 'utf8'));
   const mutation = await owner.mutate({ expectedRevision: owner.getView().revision,
-    operations: [{ kind: 'provider.update', providerId: 'openai', patch: { apiKey: 'PRIVATE_UNIT_FIXTURE' } }] });
+    operations: [addFixtureProvider('openai', 'PRIVATE_UNIT_FIXTURE')] });
   expect(mutation.ok).toBe(true);
   const raw = await readFile(file, 'utf8'), before = owner.getView(); owner.validateBackup(raw);
   const damaged = parse(raw); (damaged.providers as Record<string, Record<string, unknown>>).openai!.encryptedApiKey = randomBytes(64).toString('base64');
   expect(() => owner.validateBackup(stringify(damaged))).toThrow();
   const old = parse(raw); old.schemaVersion = 6;
   expect(() => owner.validateBackup(stringify(old))).toThrow('current_format_required');
-  const missing = parse(raw); delete (missing.providers as Record<string, unknown>).openai;
+  const missing = parse(raw); delete ((missing.providers as Record<string, Record<string, unknown>>).openai!).modelId;
   expect(() => owner.validateBackup(stringify(missing))).toThrow();
   expect(await readFile(file, 'utf8')).toBe(raw); expect(owner.getView()).toEqual(before);
 });

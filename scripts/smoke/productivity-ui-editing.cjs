@@ -47,6 +47,7 @@ module.exports=async function({window,wc,evaluate,wait,check,key,outputRoot}) {
   await check('keyboard activation carries trusted native events',"window.__t09Keys.some(e=>e.type==='keypress'&&e.trusted) && window.__t09Keys.some(e=>e.type==='click'&&e.trusted)");
   await fill('[aria-label=待办编辑标题]','LOCAL-SECOND');
   await refresh("window.__t09Snapshot.todoRevision=11;window.__t09Snapshot.todos[1]={...window.__t09Snapshot.todos[1],title:'REMOTE-SECOND'}");
+  await wait("!!document.querySelector('[aria-label=待办版本冲突]')");
   await check('Todo refresh preserves local editing and displays a concrete difference',"document.querySelector('[aria-label=待办编辑标题]').value==='LOCAL-SECOND' && document.querySelector('[aria-label=待办版本冲突]').textContent.includes('REMOTE-SECOND') && document.querySelector('dialog [type=submit]').disabled");
   await click('保留输入，采用当前版本','dialog');
   const editAction=await evaluate('window.__productivityFixture.actions.length');

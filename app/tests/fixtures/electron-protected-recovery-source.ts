@@ -1,3 +1,4 @@
+import { addFixtureProvider } from '../support/remote-provider-fixture';
 import { app, safeStorage } from 'electron';
 import { realpathSync, lstatSync } from 'node:fs';
 import { basename, dirname, join, isAbsolute } from 'node:path';
@@ -54,7 +55,7 @@ void app.whenReady().then(async () => {
   const workspaceRoot = join(dirname(destination), 'workspace'); await mkdir(workspaceRoot);
   const workspaceId = (await settings.addWorkspaceRoot(workspaceRoot)).workspace.workspaceId;
   const changed = await settings.mutate({ expectedRevision: settings.getView().revision,
-    operations: [{ kind: 'provider.update', providerId: 'openai', patch: { apiKey: 'SYNTHETIC_NATIVE_PRIVATE_KEY', enabled: false } }] });
+    operations: [addFixtureProvider('openai', 'SYNTHETIC_NATIVE_PRIVATE_KEY')] });
   if (!changed.ok) throw new Error('protected_native_fixture_settings_failed');
   await state.savePreferences({ ...state.getPreferences(), theme: 'dark' });
   await vault.saveTokens('mcp:native-fixture', { access_token: 'SYNTHETIC_NATIVE_TOKEN', token_type: 'Bearer' });

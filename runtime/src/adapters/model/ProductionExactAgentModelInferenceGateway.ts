@@ -59,6 +59,8 @@ export interface ProductionExactAgentModelInferenceGatewayOptions {
 interface ExactTransportBinding {
   readonly providerId: string;
   readonly modelId: string;
+  readonly apiModel: string;
+  readonly inferenceDialect: string;
   readonly settingsRevision: number;
   readonly supportsVision: boolean;
   readonly protocol: ModelProviderBootstrap['protocol'];
@@ -147,9 +149,7 @@ implements ExactAgentModelInferenceRuntime {
       (binding) => binding.settingsRevision === settingsRevision
         && (!preference.requiresVision || binding.supportsVision)
     );
-    const selected = preference.modelId === undefined
-      ? bindings[0]
-      : bindings.find((binding) => binding.modelId === preference.modelId);
+    const selected = bindings.find((binding) => binding.modelId === preference.modelId);
     return selected === undefined ? null : publicBinding(selected);
   }
 
@@ -259,8 +259,8 @@ implements ExactAgentModelInferenceRuntime {
     ));
     if (binding === undefined) throw new Error('agent_model_tokenizer_binding_unavailable');
     const result = countRemoteRequestTokens({
-      providerId: binding.providerId,
-      modelId: binding.modelId,
+      providerId: binding.inferenceDialect,
+      modelId: binding.apiModel,
       protocol: binding.protocol,
       messages: validateMessages(request.messages, new Set(
         request.tools.map((tool) => tool.providerToolName)
@@ -307,7 +307,7 @@ implements ExactAgentModelInferenceRuntime {
     try {
       const streamed = await readExactAgentProviderStream(response, {
         protocol: binding.protocol,
-        exactModelId: binding.modelId,
+        exactModelId: binding.apiModel,
         signal: request.signal,
         maxContentBytes: MAX_RESPONSE_BYTES,
         maxReasoningBytes: MAX_RESPONSE_BYTES,
@@ -525,6 +525,8 @@ function compileExactBindings(
       const exact = Object.freeze({
         providerId: authorized.providerId,
         modelId: authorized.modelId,
+        apiModel: provider.apiModel ?? provider.model,
+        inferenceDialect: provider.inferenceDialect ?? provider.providerId,
         settingsRevision: authorized.settingsRevision,
         supportsVision: provider.supportsVision === true,
         protocol: provider.protocol,
@@ -590,13 +592,13 @@ function openAiRequest(
   signal: AbortSignal
 ): RequestInit {
   return jsonRequest({
-    model: binding.modelId,
+    model: binding.apiModel,
     messages: openAiMessages(messages),
-    ...(binding.providerId === 'openai'
+    ...(binding.inferenceDialect === 'openai'
       ? { max_completion_tokens: sampling?.maxOutputTokens ?? binding.maxOutputTokens }
       : { max_tokens: sampling?.maxOutputTokens ?? binding.maxOutputTokens }),
     ...(sampling?.temperature === undefined ? {} : { temperature: sampling.temperature }),
-    ...openAiInference(binding.providerId, binding.modelId, inference),
+    ...openAiInference(binding.inferenceDialect, binding.apiModel, inference),
     ...(tools.length === 0
       ? {}
       : {
@@ -639,7 +641,7 @@ function anthropicRequest(
   const conversation = coalesceAnthropicMessages(messages);
   if (conversation.length === 0) throw invalidRequest();
   return jsonRequest({
-    model: binding.modelId,
+    model: binding.apiModel,
     max_tokens: sampling?.maxOutputTokens ?? binding.maxOutputTokens,
     ...(sampling?.temperature === undefined ? {} : { temperature: sampling.temperature }),
     ...(system.length > 0 ? { system } : {}),
@@ -1064,6 +1066,8 @@ function bindingKey(providerId: string, modelId: string, settingsRevision: numbe
 
 function sameTransport(left: ExactTransportBinding, right: ExactTransportBinding): boolean {
   return left.protocol === right.protocol
+    && left.apiModel === right.apiModel
+    && left.inferenceDialect === right.inferenceDialect
     && left.usageReporting === right.usageReporting
     && left.endpoint === right.endpoint
     && left.credentialRef === right.credentialRef

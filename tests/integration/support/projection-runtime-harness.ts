@@ -30,7 +30,7 @@ export class ProjectionRuntimeHarness {
   request: (command: RuntimeCommand, read: () => Promise<RuntimeResult>, options?: RuntimeDesktopRequestOptions) => Promise<RuntimeResult> = async (_command, read) => read();
   requestFailure: (command: RuntimeCommand, options?: RuntimeDesktopRequestOptions) => Result<RuntimeResult> | null = () => null;
 
-  constructor(persistence?: AriadneApi['agentInputDeliveryOutbox'], clock?: PublicProjectionPersistenceClock) {
+  constructor(persistence?: AriadneApi['inputDeliveryOutbox'], clock?: PublicProjectionPersistenceClock) {
     this.backend = new SqlitePublicProjectionStore(this.root, clock);
     const api = successfulRuntimeApi({
       getStatus: () => this.queryStatus(),

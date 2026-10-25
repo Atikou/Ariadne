@@ -2,7 +2,6 @@ import type {
   ConversationAuthorityCommandReceipt,
   ConversationAuthorityEvent,
   ConversationMessageHead,
-  ConversationMessageVersion,
   ConversationSession,
   MutatedConversationSession
 } from '../../conversation/ConversationAuthority.js';
@@ -10,6 +9,27 @@ import type {
   ConversationRunHandoffCommit,
   ConversationRunHandoffTransaction
 } from './ConversationRunHandoffPersistence.js';
+
+/** Released V1 DTO is frozen independently of the live Public command schema. */
+interface ConversationMessageVersion {
+  readonly messageId: string;
+  readonly version: number;
+  readonly sessionId: string;
+  readonly workspaceId: string;
+  readonly role: 'user' | 'assistant';
+  readonly contentDigest: string;
+  readonly createdAt: string;
+  readonly payload: {
+    readonly content: string;
+    readonly attachments?: readonly import('@ariadne/protocol/public').ImageAttachmentRef[];
+    readonly execution?: {
+      mode: 'chat' | 'agent' | 'plan';
+      modelId?: string | undefined;
+      inference?: import('@ariadne/protocol/public').ModelInferenceOptions | undefined;
+      routingStrategy?: 'local-first' | 'cloud-first' | 'privacy-first' | 'quality-first' | undefined;
+    };
+  };
+};
 
 export interface CommittedConversationAuthorityCommand {
   readonly receipt: ConversationAuthorityCommandReceipt;

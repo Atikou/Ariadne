@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { AUTO_MODEL_ID, permissionModeOptions } from '../src/renderer/src/modules/chat/ChatComposerPolicy';
+import { permissionModeOptions } from '../src/renderer/src/modules/chat/ChatComposerPolicy';
 
 const rendererRoot = join(process.cwd(), 'src', 'renderer', 'src');
 
@@ -123,7 +123,7 @@ describe('Chat module composition', () => {
     expect(styles).toMatch(/\.select-menu-trigger:focus-visible\s*\{[^}]*border-color:\s*var\(--accent\);[^}]*box-shadow:/);
   });
 
-  it('nests routing under automatic model selection and keeps permission modes at the right edge', async () => {
+  it('groups explicitly selected models by location and keeps permission modes at the right edge', async () => {
     const [chat, settings, styles] = await Promise.all([
       readFile(join(rendererRoot, 'modules', 'chat', 'ChatPanel.tsx'), 'utf8'),
       readFile(join(rendererRoot, 'modules', 'settings', 'SettingsPanel.tsx'), 'utf8'),
@@ -133,15 +133,15 @@ describe('Chat module composition', () => {
     expect(chat).not.toContain('className="composer-runtime-controls"');
     expect(chat).toContain('className="composer-model-controls"');
     expect(chat).not.toContain('className="composer-routing-menu"');
-    expect(chat).toContain('children: routingOptions.map');
-    expect(chat).toContain('parseRoutingSelectionValue(nextValue)');
-    expect(chat).toContain('value={modelSelectionValue}');
+    expect(chat).toContain("['local', 'remote']");
+    expect(chat).not.toContain('parseRoutingSelectionValue');
+    expect(chat).toContain('value={selectedModelId}');
     expect(chat).toContain('className="composer-action-controls"');
     expect(chat).toContain('className="composer-permission-mode-menu"');
     expect(permissionModeOptions.map(option => option.value)).toContain('full-access');
     expect(permissionModeOptions.find(option => option.value === 'custom')?.label).toBe('自定义 (settings.toml)');
-    expect(chat).toContain("routingStrategy,");
-    expect(AUTO_MODEL_ID).toBe('__auto__');
+    expect(chat).toContain("localFallbackModelId:");
+    expect(chat).not.toContain('自动选择模型');
     expect(chat).toContain('services.agentSettings.apply({');
     expect(chat).toContain('expectedRevision: settings.revision');
     expect(chat).toContain("operations: [{ kind: 'permissions.set', mode: nextPermissionMode }]");

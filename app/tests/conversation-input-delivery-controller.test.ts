@@ -69,6 +69,12 @@ describe('original conversation input delivery owner', () => {
     const f = fixture(); f.gateway.execute.mockRejectedValueOnce(new PublicResultError({ code: 'version_conflict', message: 'rejected', retryable: false, correlationId: 'create-original' }));
     const error = await f.controller.send(requests(), f.binding).catch(error => error);
     expect(error).toBeInstanceOf(ConversationDeliveryError); expect(error.uncertain).toBe(false); expect(f.records.size).toBe(2);
+    expect(error.message).toContain('rejected（version_conflict）');
     expect(f.persistence.settle).not.toHaveBeenCalled();
+  });
+  it('does not expose private persistence errors in the composer', async () => {
+    const f = fixture(); f.persistence.stageBatch.mockRejectedValueOnce(new Error('private path and input'));
+    await expect(f.controller.send(requests(), f.binding)).rejects.toMatchObject({ uncertain: false, message: '消息未提交，请恢复原草稿。' });
+    expect(f.gateway.execute).not.toHaveBeenCalled();
   });
 });

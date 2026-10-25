@@ -5,6 +5,16 @@ import {
   type ConversationMessageExecution
 } from '@ariadne/protocol/public';
 import type { ConversationRunResultStatus } from './ConversationRunHandoffSaga.js';
+import { z } from 'zod';
+
+// Immutable messages retain their original execution metadata. Retired routing
+// values are accepted only on stored records; new commands use the public schema.
+const storedConversationMessageExecutionSchema = z.union([
+  conversationMessageExecutionSchema,
+  conversationMessageExecutionSchema.omit({ localFallbackModelId: true }).extend({
+    routingStrategy: z.enum(['local-first', 'cloud-first', 'privacy-first', 'quality-first'])
+  })
+]);
 
 export interface ConversationSession {
   readonly sessionId: string;
@@ -943,7 +953,9 @@ export function assertValidConversationMessageVersion(
     if (message.role !== 'user') {
       throw invariant('Only user messages may carry execution preferences.');
     }
-    assertConversationMessageExecution(message.payload.execution);
+    if (!storedConversationMessageExecutionSchema.safeParse(message.payload.execution).success) {
+      throw invariant('Stored conversation message execution preferences are invalid.');
+    }
   }
   assertDigest(message.contentDigest, 'messageVersion.contentDigest');
   assertTimestamp(message.createdAt, 'messageVersion.createdAt');

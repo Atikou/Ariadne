@@ -12,6 +12,7 @@ import {
 import {
   compileBootstrapAgentAdmissionAuthoritySource
 } from '../src/composition/BootstrapAgentAdmissionAuthorityBundleProvider.js';
+import type { ExactAgentModelInferenceRuntime } from '../src/control/ports/AgentModelInference.js';
 
 const future = '2099-08-01T00:00:00.000Z';
 const query: AgentAdmissionAuthorityQueryV2 = {
@@ -27,6 +28,24 @@ const query: AgentAdmissionAuthorityQueryV2 = {
 };
 
 describe('bootstrap Agent admission authority provider', () => {
+  it('pins the authorized local fallback selected by connection admission without remote inference options', async () => {
+    const source = enabledSource();
+    const local = { providerId: 'ariadne.local', modelId: 'local-chosen', settingsRevision: 13 };
+    source.manifests[0]!.modelCandidates = [source.manifests[0]!.model, local];
+    const models = { prepareBinding: async () => local, hasExactBinding: () => true } as unknown as ExactAgentModelInferenceRuntime;
+    const provider = compileBootstrapAgentAdmissionAuthoritySource(source, {
+      now: () => Date.parse('2099-07-31T00:00:00.000Z')
+    }, models);
+    const bundle = await provider.readAuthorityBundle({ ...query, execution: {
+      mode: 'agent', modelId: 'model-1', localFallbackModelId: 'local-chosen',
+      inference: { reasoningMode: 'on', reasoningEffort: 'high' }
+    } }, new AbortController().signal);
+    expect(bundle?.model).toEqual(local);
+    const unauthorized = compileBootstrapAgentAdmissionAuthoritySource(enabledSource(), {
+      now: () => Date.parse('2099-07-31T00:00:00.000Z')
+    }, models);
+    expect(await unauthorized.readAuthorityBundle(query, new AbortController().signal)).toBeNull();
+  });
   it('binds a complete first-party source to the exact immutable query', async () => {
     const provider = compileBootstrapAgentAdmissionAuthoritySource(enabledSource(), {
       now: () => Date.parse('2099-07-31T00:00:00.000Z')

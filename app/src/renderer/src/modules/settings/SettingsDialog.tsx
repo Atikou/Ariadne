@@ -1,6 +1,7 @@
 import { useId, useRef } from 'react';
 import { Settings, X } from 'lucide-react';
 import type { FeatureDialogProps } from '@renderer/core/modules/module-contract';
+import { ModulePanelErrorBoundary } from '@renderer/core/modules/module-registry';
 import { SettingsPanel } from './SettingsPanel';
 import { ModalSurface } from '@renderer/shared/ui/ModalSurface';
 
@@ -22,7 +23,9 @@ export function SettingsDialog({
           <button ref={closeButtonRef} type="button" aria-label="关闭设置" title="关闭设置" onClick={onClose}><X size={17} /></button>
         </header>
         <div className="settings-dialog-body">
-          <SettingsPanel moduleId={moduleId} services={services} />
+          <ModulePanelErrorBoundary moduleId={moduleId} moduleName="设置">
+            <SettingsPanel moduleId={moduleId} services={services} />
+          </ModulePanelErrorBoundary>
         </div>
       </section>
     </ModalSurface>

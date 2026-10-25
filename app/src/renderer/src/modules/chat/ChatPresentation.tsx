@@ -1,12 +1,6 @@
 import { Sparkles } from 'lucide-react';
-import type { ChatRoutingStrategy } from '@ariadne/protocol/public';
 import { calculateComposerTextareaLayout } from '@shared/composer-textarea-layout';
 import { type ChatModelState } from './chat-model-state';
-import { AUTO_ROUTING_PREFIX } from './ChatComposerPolicy';
-
-export function routingSelectionValue(strategy: ChatRoutingStrategy): string {
-  return `${AUTO_ROUTING_PREFIX}${strategy}`;
-}
 
 export function syncComposerTextareaHeight(input: HTMLTextAreaElement): void {
   input.style.height = 'auto';

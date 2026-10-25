@@ -84,7 +84,7 @@ async function run() {
         model: deepseek.model,
         inference: deepseek.inference ?? {},
       }],
-      routingStrategy: "cloud-first",
+      modelSelection: { modelId: '', localFallbackModelId: '' },
       agentPermissions: {
         approvalPolicy: "request",
         proposalApproval: "manual",

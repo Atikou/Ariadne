@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { RotateCcw, Search, Waypoints } from 'lucide-react';
 import type { DockviewApi } from 'dockview-react';
 import { PERSONAL_ASSISTANT_WORKSPACE_ID } from '@ariadne/protocol/public';
@@ -99,13 +99,13 @@ export function App({
   const dialogDefinition = dialogModuleId === null
     ? undefined
     : registry.get(dialogModuleId);
-  const activeDialog = dialogDefinition?.presentation?.kind === 'dialog'
+  const activeDialog = useMemo(() => dialogDefinition?.presentation?.kind === 'dialog'
     ? {
         moduleId: dialogDefinition.id,
         Component: dialogDefinition.presentation.component,
         services: registry.servicesFor(dialogDefinition.id, services)
       }
-    : undefined;
+    : undefined, [dialogDefinition, registry, services]);
 
   useEffect(() => services.events.subscribe('module:open', (id) => {
     const definition = registry.get(id);

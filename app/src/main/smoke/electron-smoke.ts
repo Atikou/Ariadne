@@ -1,3 +1,4 @@
+import { remoteProviderSettingsFixture } from './remote-provider-settings-fixture';
 import { app, BrowserWindow } from 'electron';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
@@ -15,8 +16,8 @@ import { verifyTaskCenter } from './task-center-ui-smoke';
 import { TASK_CENTER_DECISION_UI_PROBE } from './task-center-decision-ui-smoke';
 import { verifyGoalAutonomy } from './goal-autonomy-smoke';
 import { verifyLongMemory } from './long-memory-smoke';
-import { verifyModelQuality } from './model-quality-smoke';
 import { verifyWorkspaceDocuments } from './workspace-documents-smoke';
+import { verifyModuleOpening } from './module-opening-smoke';
 import { installSmokeProjectionProbe } from './projection-probe';
 import { verifyOversizedRunRecovery, type OversizedRunSmokeRecord } from './run-document-capacity-smoke';
 
@@ -50,7 +51,6 @@ interface SmokeResult {
   agentStatusDirectoryVerified: boolean;
   goalAutonomyVerified: boolean;
   longMemoryVerified: boolean;
-  modelQualityVerified: boolean;
   workspaceDocumentsVerified: boolean;
   directStreamRenderedBeforeCompletion: boolean;
   directStreamPartialText: string;
@@ -215,7 +215,7 @@ export async function runElectronSmokeTest(
       await new Promise(resolve=>setTimeout(resolve,100));}throw new Error('task_reminder_restart_bootstrap_timeout');})()`,true);
     return verifyTaskNotificationRestart(window, outputRoot);
   }
-  if (['1', 'memory', 'tasks'].includes(process.env.ARIADNE_SMOKE_MODULE_UI_REVISIT ?? '')) {
+  if (['1', 'memory', 'tasks', 'all', 'decisions'].includes(process.env.ARIADNE_SMOKE_MODULE_UI_REVISIT ?? '')) {
     await mkdir(outputRoot, { recursive: true });
     if (window.webContents.isLoading()) await waitForLoad(window);
     showSmokeWindow(window);
@@ -225,6 +225,22 @@ export async function runElectronSmokeTest(
     if (process.env.ARIADNE_SMOKE_MODULE_UI_REVISIT === 'memory') {
       const sessionId = requireSmokeEnvironment('ARIADNE_SMOKE_MEMORY_REVISIT_SESSION');
       await verifyLongMemory(window, requireSmokeEnvironment('ARIADNE_SMOKE_WORKSPACE_ID'), outputRoot, sessionId);
+    } else if (process.env.ARIADNE_SMOKE_MODULE_UI_REVISIT === 'all') await verifyModuleOpening(window, outputRoot);
+    else if (process.env.ARIADNE_SMOKE_MODULE_UI_REVISIT === 'decisions') {
+      const evidence = await window.webContents.executeJavaScript(`(async()=>{
+        const tasks=window.__ariadneRendererCompositionRootV1.services.tasks;
+        await tasks.refresh(true); const decisions=[];
+        for(let page=0;page<32;page++){
+          const state=tasks.view.getSnapshot(); if(state.error)throw new Error(state.error);
+          for(const row of state.page?.rows??[])for(const item of row.decisions)decisions.push(item);
+          if(!state.page?.nextCursor)break; await tasks.navigatePage('next');
+        }
+        if(!decisions.length)throw new Error('pending_decision_revisit_fixture_missing');
+        const evidence=[];
+        for(const item of decisions)evidence.push(await ${TASK_CENTER_DECISION_UI_PROBE}(item.workspaceId,item.sessionId,item.runId,item.decisionId,item.kind));
+        return {passed:true,decisions:evidence};
+      })()`, true);
+      await writeFile(join(outputRoot, 'pending-decisions.json'), JSON.stringify(evidence, null, 2));
     } else if (process.env.ARIADNE_SMOKE_MODULE_UI_REVISIT === 'tasks') await verifyTaskCenter(window, outputRoot);
     else await verifyAgentStatusDirectory(window, outputRoot);
     return true;
@@ -384,19 +400,7 @@ export async function runElectronSmokeTest(
         const configured = await api.agentSettings.apply({
           expectedRevision: settings.revision,
           operations: [
-            {
-              kind: 'provider.update',
-              providerId: 'openai',
-              patch: {
-                enabled: true,
-                baseUrl: ${JSON.stringify(providerBaseUrl)},
-                model: ${JSON.stringify(providerModel)},
-                apiKey: 'ariadne-electron-smoke-key'
-              }
-            },
-            { kind: 'provider.update', providerId: 'deepseek', patch: { enabled: false } },
-            { kind: 'provider.update', providerId: 'kimi', patch: { enabled: false } },
-            { kind: 'provider.update', providerId: 'anthropic', patch: { enabled: false } }
+            ${remoteProviderSettingsFixture(providerBaseUrl, providerModel)}
           ]
         });
         if (!configured.ok) throw new Error('settings_apply_failed:' + JSON.stringify(configured));
@@ -453,6 +457,15 @@ export async function runElectronSmokeTest(
         const composerWorkspaceSelectorVisible = Boolean(
           document.querySelector('.composer-workspace-menu .select-menu-trigger')
         );
+
+        // Settings were installed after this Composer mounted. Exercise the
+        // explicit model picker so its local selection matches the saved choice.
+        (await waitUntil(() => document.querySelector('button[aria-label="选择模型"]'))).click();
+        (await waitUntil(() => [...document.querySelectorAll('[role="option"]')]
+          .find(option => option.textContent?.includes('远程 API') && !option.disabled))).click();
+        (await waitUntil(() => [...document.querySelectorAll('[role="listbox"] [role="option"]')]
+          .find(option => option.textContent?.includes('Smoke fixture') && !option.disabled))).click();
+        await waitUntil(() => document.querySelector('button[aria-label="选择模型"]')?.textContent?.includes('Smoke fixture'));
 
         const setValue = Object.getOwnPropertyDescriptor(
           HTMLTextAreaElement.prototype,
@@ -606,6 +619,7 @@ export async function runElectronSmokeTest(
           '置顶聊天',
           '重命名聊天',
           '归档聊天',
+          '导出会话正文',
           '标记为未读'
         ]);
         const clickMenuItem = (label) => {
@@ -1323,7 +1337,6 @@ export async function runElectronSmokeTest(
     let agentStatusDirectoryVerified = false;
     let goalAutonomyVerified = false;
     let longMemoryVerified = false;
-    let modelQualityVerified = false;
     let workspaceDocumentsVerified = false;
     if (observation.fatalError === undefined) {
       try { inferenceStreamDeliveryRecovered = await verifyInferenceStreamRecovery(window, providerModel, outputRoot); }
@@ -1378,11 +1391,11 @@ export async function runElectronSmokeTest(
       catch (error) { observation.fatalError = error instanceof Error ? error.message : String(error); }
     }
     if (observation.fatalError === undefined) {
-      try { await verifyModelQuality(window,workspaceId,providerModel,outputRoot); modelQualityVerified=true; }
+      try { await verifyWorkspaceDocuments(window,workspaceId,outputRoot); workspaceDocumentsVerified=true; }
       catch(error) { observation.fatalError=error instanceof Error?error.message:String(error); }
     }
     if (observation.fatalError === undefined) {
-      try { await verifyWorkspaceDocuments(window,workspaceId,outputRoot); workspaceDocumentsVerified=true; }
+      try { await verifyModuleOpening(window, outputRoot); }
       catch(error) { observation.fatalError=error instanceof Error?error.message:String(error); }
     }
     // The Provider persists counters after closing each response. The final
@@ -1420,7 +1433,6 @@ export async function runElectronSmokeTest(
       agentStatusDirectoryVerified,
       goalAutonomyVerified,
       longMemoryVerified,
-      modelQualityVerified,
       workspaceDocumentsVerified,
       directStreamRenderedBeforeCompletion:
         observation.directStreamRenderedBeforeCompletion === true,
@@ -1482,7 +1494,6 @@ export async function runElectronSmokeTest(
       && result.agentStatusDirectoryVerified
       && result.goalAutonomyVerified
       && result.longMemoryVerified
-      && result.modelQualityVerified
       && result.workspaceDocumentsVerified
       && result.directStreamRenderedBeforeCompletion
       && result.directStreamChunkCount >= 2
@@ -1996,7 +2007,6 @@ function validateProviderTrace(state: ProviderState): boolean {
   const expected: Record<string, readonly [number, number, number]> = {
     stream_recovery: [2, 0, 2],
     direct: [2, 0, 2],
-    quality_benchmark: [6, 0, 6], quality_route: [1, 0, 1],
     document_edit_conflict: [1, 2, 3],
     image: [1, 0, 1],
     inbox: [1, 1, 2],
@@ -2014,6 +2024,7 @@ function validateProviderTrace(state: ProviderState): boolean {
     crash_inference: [1, 0, 1],
     crash_effect: [1, 0, 1],
     crash_projection: [1, 1, 2],
+    workflow_complete: [3, 0, 3], workflow_cancel: [1, 0, 1],
     workflow_context_seed: [1, 0, 1],
     workflow_context_later: [1, 0, 1],
     goal_context_seed: [2, 0, 2], goal_context_later: [1, 0, 1], goal_plan: [3, 5, 8],
@@ -2033,6 +2044,9 @@ function validateProviderTrace(state: ProviderState): boolean {
     (cancelled.requests === 0 && cancelled.responses === 0 && cancelled.aborted === 0)
     || (cancelled.requests === 1 && cancelled.responses === 0 && cancelled.aborted === 1)
   );
+  const expectedRequests = Object.values(expected).reduce((sum, scenario) => sum + scenario[2], 0)
+    + (cancelled?.requests ?? 0);
+  const expectedAborted = 3 + (cancelled?.aborted ?? 0);
   return cancelTraceValid
     && state.scenarios.crash_inference?.responses === 0
     && state.scenarios.crash_inference?.aborted === 1
@@ -2074,12 +2088,10 @@ function validateProviderTrace(state: ProviderState): boolean {
     && state.scenarios.goal_context_later?.responses === 1 && state.scenarios.goal_context_later?.aborted === 0
     && ['memory_stage','memory_read','memory_forget'].every(scenario => state.scenarios[scenario]?.aborted === 0
       && state.scenarios[scenario]?.responses === (scenario === 'memory_stage' ? 4 : 2))
-    && state.scenarios.quality_benchmark?.responses===6 && state.scenarios.quality_benchmark?.aborted===0
-    && state.scenarios.quality_route?.responses===1 && state.scenarios.quality_route?.aborted===0
     && state.scenarios.document_edit_conflict?.responses===3 && state.scenarios.document_edit_conflict?.aborted===0
-    && (state.requests === 69 || state.requests === 70)
-    && state.responses === 66
-    && (state.aborted === 3 || state.aborted === 4);
+    && state.requests === expectedRequests
+    && state.responses === expectedRequests - expectedAborted
+    && state.aborted === expectedAborted;
 }
 
 function requireSmokeEnvironment(name: string): string {

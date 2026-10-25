@@ -1,7 +1,6 @@
 import { createServer } from 'node:https';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import { MODEL_QUALITY_CASES } from '../runtime/dist/model/capability/ModelQualityContracts.js';
 import { createSmokeJsonSnapshotWriter } from './smoke-json-snapshot.mjs';
 
 const options = parseArguments(process.argv.slice(2));
@@ -16,8 +15,6 @@ const agentDatabasePath = requireOption(options, 'agent-db');
 
 const scenarios = [
   'direct',
-  'quality_benchmark',
-  'quality_route',
   'document_edit_conflict',
   'stream_recovery',
   'image',
@@ -94,14 +91,6 @@ const server = createServer({
   if (probeOutput !== null) {
     await writeNativeSseResponse(response, probeOutput);
     return;
-  }
-  const qualityTask=MODEL_QUALITY_CASES.find(task=>messages.length===2 && messageText([messages[1]])===task.prompt);
-  if(qualityTask) {
-    if(requestTools(body).length!==0 || body.temperature!==0 || (body.max_tokens??body.max_completion_tokens)!==512)
-      throw new Error('quality_smoke_synthetic_envelope_invalid');
-    const trace=state.scenarios.quality_benchmark;state.requests++;trace.requests++;trace.initialRequests++;persistState();
-    await writeNativeSseResponse(response,textOutput(JSON.stringify(qualityTask.expected)));
-    state.responses++;trace.responses++;persistState();return;
   }
   const scenario = identifyScenario(messages);
   if (
@@ -270,8 +259,6 @@ function createNativeOutput(
       });
     case 'direct':
       return textOutput('ARIADNE_SMOKE_DIRECT_OK');
-    case 'quality_route':
-      return textOutput('ARIADNE_SMOKE_QUALITY_ROUTE_OK');
     case 'schedule_complete':
       return textOutput('ARIADNE_SMOKE_SCHEDULE_ACTUAL_RESULT');
     case 'workflow_context_seed':

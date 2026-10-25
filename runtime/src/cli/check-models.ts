@@ -20,7 +20,6 @@ async function main(): Promise<void> {
 
   console.log(`Profile      : ${profile}`);
   console.log(`Workspace    : ${workspaceRoot}`);
-  console.log(`路由策略     : ${config.routing.strategy}（fallback=${config.routing.fallback}）`);
   console.log(`默认模型     : ${config.models.default}`);
   console.log("");
   console.log("模型可用性探测：");

@@ -32,7 +32,9 @@ export class TerminalSessionService {
   });
   private readonly owners = new Map<number, WebContents>();
   private readonly sessionOwners = new Map<string, LiveWorkOwner>();
-  private readonly ownerDestroyedListeners = new Map<number, { owner: WebContents; listener: () => void }>();
+  private readonly ownerLifecycleListeners = new Map<number, () => void>();
+  private readonly pending = new Map<string, { ownerId: number; cancelled: boolean; done: Promise<void> }>();
+  private disposed = false;
   private readonly removeOutputListener: () => void;
   private readonly removeDoneListener: () => void;
 
@@ -76,20 +78,25 @@ export class TerminalSessionService {
 
   public async create(owner: WebContents, request: CreateTerminalSessionRequest): Promise<TerminalSession> {
     if (process.platform !== 'win32') throw new Error('PowerShell and CMD terminals require Windows.');
+    if (this.disposed || owner.isDestroyed()) throw new Error('terminal_owner_unavailable');
+    if (this.pending.has(request.sessionId) || this.sessionOwners.has(request.sessionId)) throw new Error('terminal_session_identity_conflict');
     const cwd = this.resolveWorkingDirectory(request.workspaceId);
     const shell = resolveShell(request.shell);
+    let finishPending!: () => void;
+    const pending = { ownerId: owner.id, cancelled: false, done: new Promise<void>(resolve => { finishPending = resolve; }) };
+    this.pending.set(request.sessionId, pending);
     this.owners.set(owner.id, owner);
     this.watchOwner(owner);
-    await this.journal.start({
-      sessionId: request.sessionId,
-      workspaceId: request.workspaceId,
-      shell: request.shell,
-      ...(request.restartOf === undefined ? {} : { restartOf: request.restartOf })
-    });
-
     let cancelled = false;
+    let journaled = false;
     let work: LiveWorkSnapshot;
     try {
+      await this.journal.start({
+        sessionId: request.sessionId, workspaceId: request.workspaceId, shell: request.shell,
+        ...(request.restartOf === undefined ? {} : { restartOf: request.restartOf })
+      });
+      journaled = true;
+      if (pending.cancelled || this.disposed || owner.isDestroyed()) throw new Error('terminal_owner_unavailable');
       work = this.registry.start({
       kind: 'terminal',
       label: `${request.shell}:${cwd}`.slice(0, 1_024),
@@ -140,15 +147,18 @@ export class TerminalSessionService {
         };
       }
       });
+      this.sessionOwners.set(work.id, work.owner);
     } catch (error) {
-      await this.journal.finish(request.sessionId, {
-        status: 'failed',
+      if (journaled) await this.journal.finish(request.sessionId, {
+        status: pending.cancelled ? 'killed' : 'failed',
         detail: error instanceof Error ? error.message.slice(0, 4_096) : String(error).slice(0, 4_096)
       });
-      this.releaseOwnerIfIdle(owner.id);
       throw error;
+    } finally {
+      this.pending.delete(request.sessionId);
+      this.releaseOwnerIfIdle(owner.id);
+      finishPending();
     }
-    this.sessionOwners.set(work.id, work.owner);
 
     return { id: work.id, workspaceId: request.workspaceId, shell: request.shell, cwd, work };
   }
@@ -172,23 +182,27 @@ export class TerminalSessionService {
   }
 
   public async close(ownerId: number, sessionId: string): Promise<void> {
+    const pending = this.pending.get(sessionId);
+    if (pending?.ownerId === ownerId) pending.cancelled = true;
     const snapshot = this.findOwned(ownerId, sessionId);
     if (snapshot === undefined) return;
     await this.registry.kill(snapshot.owner, sessionId, 'renderer_requested');
   }
 
   public async closeOwnedBy(ownerId: number): Promise<void> {
+    for (const pending of this.pending.values()) if (pending.ownerId === ownerId) pending.cancelled = true;
     await this.registry.closeAuthorityOwner('renderer', String(ownerId));
   }
 
   public async dispose(): Promise<void> {
+    this.disposed = true;
+    for (const pending of this.pending.values()) pending.cancelled = true;
+    await Promise.all([...this.pending.values()].map(pending => pending.done));
+    await this.registry.close();
     this.removeOutputListener();
     this.removeDoneListener();
-    await this.registry.close();
-    for (const { owner, listener } of this.ownerDestroyedListeners.values()) {
-      owner.removeListener('destroyed', listener);
-    }
-    this.ownerDestroyedListeners.clear();
+    for (const remove of this.ownerLifecycleListeners.values()) remove();
+    this.ownerLifecycleListeners.clear();
     this.owners.clear();
     this.sessionOwners.clear();
     await this.journal.flush();
@@ -216,20 +230,26 @@ export class TerminalSessionService {
   }
 
   private watchOwner(owner: WebContents): void {
-    if (this.ownerDestroyedListeners.has(owner.id)) return;
+    if (this.ownerLifecycleListeners.has(owner.id)) return;
     const listener = (): void => { void this.closeOwnedBy(owner.id); };
-    this.ownerDestroyedListeners.set(owner.id, { owner, listener });
+    const navigate = (details: { isMainFrame: boolean; isSameDocument: boolean }): void => {
+      if (details.isMainFrame && !details.isSameDocument) listener();
+    };
     owner.once('destroyed', listener);
+    owner.on('render-process-gone', listener);
+    owner.on('did-start-navigation', navigate);
+    this.ownerLifecycleListeners.set(owner.id, () => {
+      owner.removeListener('destroyed', listener);
+      owner.removeListener('render-process-gone', listener);
+      owner.removeListener('did-start-navigation', navigate);
+    });
   }
 
   private releaseOwnerIfIdle(ownerId: number): void {
     const hasLive = [...this.sessionOwners.values()].some((owner) => owner.ownerId === String(ownerId));
-    if (hasLive) return;
-    const watched = this.ownerDestroyedListeners.get(ownerId);
-    if (watched) {
-      watched.owner.removeListener('destroyed', watched.listener);
-      this.ownerDestroyedListeners.delete(ownerId);
-    }
+    if (hasLive || [...this.pending.values()].some(pending => pending.ownerId === ownerId)) return;
+    this.ownerLifecycleListeners.get(ownerId)?.();
+    this.ownerLifecycleListeners.delete(ownerId);
     this.owners.delete(ownerId);
   }
 }

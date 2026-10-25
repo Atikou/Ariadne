@@ -48,6 +48,9 @@ import type { AgentProcessSandbox } from '../src/control/ports/AgentProcessSandb
 import type { AgentInstructionAssemblyService } from '../src/control/ports/AgentInstructionAssembly.js';
 import type { RuntimeCommandEnvelope } from '../src/ingress/RuntimeIngress.js';
 import { createShutdownContext } from '../src/ingress/ShutdownContext.js';
+import { RuntimeKernelModelInferenceGateway } from '../src/application/RuntimeKernelModelInferenceGateway.js';
+import type { ExactAgentModelInferenceRuntime } from '../src/control/ports/AgentModelInference.js';
+import type { LocalModelService } from '../src/model/local/LocalModelService.js';
 
 const roots: string[] = [];
 const NOW = Date.parse('2026-01-01T00:00:00.000Z');
@@ -62,6 +65,27 @@ afterEach(() => {
 });
 
 describe('ProductionAgentControlExecutionPipelineFactory', () => {
+  it('resolves a local selection grant before exact admission and preserves chat qualification and disabled-model gates', async () => {
+    const catalog = trustedCatalog(), source = enabledSource(catalog);
+    source.manifests[0]!.model = { providerId: 'ariadne.local', modelId: '__runtime_selected_local__', settingsRevision: 7 };
+    const remote: ExactAgentModelInferenceRuntime = {
+      hasExactBinding: () => false, resolveBinding: () => null, describeContextCapacity: () => null,
+      describeExecutionQualification: () => null, inferExact: async () => ({ status: 'binding_unavailable' }),
+      countRequestTokens: async () => ({ tokens: 1, exact: false, tokenizer: 'fixture' })
+    };
+    const local = { clients: () => [{ name: 'local-text-only', toolCallCapability: 'unsupported' }] } as unknown as LocalModelService;
+    const disabled = new Set<string>();
+    const models = new RuntimeKernelModelInferenceGateway(remote, local, [], { modelId: 'local-text-only', localFallbackModelId: '' }, undefined, () => false, disabled);
+    await withStores(async ({ unitOfWork, conversation }) => {
+      const pipeline = requirePipeline(await factory([catalog]).create({ unitOfWork, conversation,
+        agentAdmissionAuthoritySource: source, modelProviders: [], modelInferenceGateway: models, runtimePolicy: RUNTIME_POLICY }));
+      expect(() => pipeline.assertConversationMessageAdmission('workspace-v3', { executionMode: 'chat' })).not.toThrow();
+      expect(() => pipeline.assertConversationMessageAdmission('workspace-v3', { executionMode: 'agent' })).toThrow('model_agent_qualification_required');
+      expect(() => pipeline.assertConversationMessageAdmission('workspace-v3', { executionMode: 'chat', requiresVision: true })).toThrow('model_vision_qualification_required');
+      disabled.add('local-text-only');
+      expectAdmissionFailure(() => pipeline.assertConversationMessageAdmission('workspace-v3', { executionMode: 'chat' }), 'model_binding_unavailable');
+    });
+  });
   it('represents disabled first-party authority as no execution pipeline', async () => {
     await withStores(async ({ unitOfWork, conversation }) => {
       const result = await factory([]).create({
@@ -1159,7 +1183,7 @@ function messageEnvelope(
     expectedSessionVersion: 1,
     messageId,
     content: 'Execute the exact pure Ariadne v3 objective.',
-    execution: { mode }
+    execution: { mode, modelId: 'model-v3' }
   }, `accept-${messageId}`);
 }
 

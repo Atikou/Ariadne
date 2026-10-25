@@ -45,15 +45,12 @@ import type { ModelCapabilityRegistry } from '../model/capability/ModelCapabilit
 import { composeProductionModelCapabilitySource, type ProductionModelCapabilitySource } from './ProductionModelCapabilitySource.js';
 import { readOwnedAuthorityFault } from '../adapters/persistence/SqliteAuthorityHealth.js';
 import { MODEL_CAPABILITY_DB_SCHEMA_VERSION } from '../model/capability/ModelCapabilityDbSchema.js';
-import { ModelQualityBenchmark } from '../model/capability/ModelQualityBenchmark.js';
-import { modelQualitySummary } from '../model/capability/ModelQualityContracts.js';
 import { fingerprintLocalModel } from '../model/capability/LocalModelFingerprint.js';
 import { LocalTextCapabilityProbe } from '../model/capability/LocalTextCapabilityProbe.js';
 import { ModelCapabilityProbeHarness } from '../model/capability/ModelCapabilityProbeHarness.js';
 import { HostCredentialResolver } from '../composition/HostCredentialResolver.js';
 import type { CredentialResolver } from '../control/ports/CredentialResolver.js';
 import type {
-  AgentModelSelectionPreference,
   ExactAgentModelInferenceMessage
 } from '../control/ports/AgentModelInference.js';
 
@@ -95,7 +92,6 @@ class RuntimeKernelApplication implements RuntimeApplication {
   private readonly capabilityTools?: {
     readonly text: LocalTextCapabilityProbe;
     readonly full: ModelCapabilityProbeHarness;
-    readonly quality: ModelQualityBenchmark;
   };
   private readonly localQualificationRuns = new Map<string, Promise<void>>();
   private readonly localQualificationAbort = new AbortController();
@@ -126,7 +122,7 @@ class RuntimeKernelApplication implements RuntimeApplication {
       );
       return Object.freeze({
         id: provider.model,
-        label: provider.model,
+        label: provider.label ?? provider.model,
         providerId: provider.providerId,
         enabled: provider.enabled,
         supportsVision: provider.supportsVision === true,
@@ -177,22 +173,18 @@ class RuntimeKernelApplication implements RuntimeApplication {
       remoteInference,
       this.localModels,
       input.bootstrap.modelProviders,
-      input.bootstrap.routingStrategy ?? 'cloud-first',
+      input.bootstrap.modelSelection ?? { modelId: '', localFallbackModelId: '' },
       registry,
       (providerId, modelId) => this.remoteCredentialAvailability.get(
         remoteModelKey(providerId, modelId)
       ) === 'ready',
       this.disabledLocalModelIds,
-      (providerId,modelId) => {
-        const quality = this.modelCapabilities.current(providerId,modelId)?.quality;
-        return quality ? modelQualitySummary(quality) : null;
-      },
-      () => this.inferenceHealth.assertHealthy()
+      () => this.inferenceHealth.assertHealthy(),
+      (modelId, signal) => this.checkRemoteModelAvailability(modelId, signal)
     );
     if (registry !== undefined) this.capabilityTools = {
       text: new LocalTextCapabilityProbe(registry),
-      full: new ModelCapabilityProbeHarness(this.modelInferenceGateway, registry),
-      quality: new ModelQualityBenchmark(this.modelInferenceGateway, registry)
+      full: new ModelCapabilityProbeHarness(this.modelInferenceGateway, registry)
     };
     this.publicEventSink = Object.freeze({
       append: async (event: RuntimePublicEventAppend): Promise<void> => {
@@ -220,21 +212,8 @@ class RuntimeKernelApplication implements RuntimeApplication {
   public async execute(
     envelope: RuntimeCommandEnvelope
   ): Promise<RuntimeApplicationCommandResult> {
-    if (['model.quality.evaluate', 'model.qualification.run', 'model.availability.check', 'conversation.session.title.generate']
+    if (['model.qualification.run', 'model.availability.check', 'conversation.session.title.generate']
       .includes(envelope.command.kind)) this.inferenceHealth.assertHealthy();
-    if (envelope.command.kind === 'model.quality.evaluate') {
-      try {
-        const binding=this.qualityBinding(envelope.command.modelId);
-        const fingerprint=this.modelCapabilities.currentFingerprint(binding.providerId,binding.modelId);
-        if(fingerprint===null)throw new Error('model_capability_fingerprint_missing');
-        const quality=modelQualitySummary(await this.qualityBenchmark.run({binding,fingerprint,signal:envelope.signal}));
-        return {outcome:{ok:true,result:{kind:'model.quality.completed',modelId:envelope.command.modelId,quality}},settlement:'completed'};
-      } catch(error) {
-        if(envelope.signal.aborted)throw error;
-        if (readOwnedAuthorityFault(error) !== null) throw error;
-        return {outcome:{ok:false,error:{code:'model_quality_evaluation_failed',message:'模型质量测评未完成，请先确认模型可用并通过文本能力检测。',retryable:true,correlationId:envelope.correlationId}},settlement:'completed'};
-      }
-    }
     if (envelope.command.kind === 'runtime.status.get') {
       return {
         outcome: { ok: true, result: { kind: 'runtime.status', status: this.status() } },
@@ -393,48 +372,16 @@ class RuntimeKernelApplication implements RuntimeApplication {
   private resolveTitleBinding(
     execution: ConversationMessageExecution | undefined
   ): import('@ariadne/agent-core').AgentRunBinding['model'] | null {
-    const modelId = execution?.modelId;
-    const routingStrategy = execution?.routingStrategy
-      ?? this.input.bootstrap.routingStrategy
-      ?? 'cloud-first';
-    const preference: AgentModelSelectionPreference = {
-      ...(execution?.routingStrategy === undefined
-        ? {}
-        : { routingStrategy: execution.routingStrategy }),
-      executionMode: 'chat'
-    };
-    const revisions = new Map<string, number>();
-    for (const model of this.remoteModels) {
-      const revision = remoteSettingsRevision(this.input.bootstrap, model.providerId, model.id);
-      if (revision !== null) revisions.set(model.id, revision);
-    }
-    const localCandidates = this.localModels.clients().map((model) => ({
-      id: model.name,
-      revision: 1
-    }));
-    const remoteCandidates = this.remoteModels.map((model) => ({
-      id: model.id,
-      revision: revisions.get(model.id) ?? 1
-    }));
-    const candidates = modelId === undefined
-      ? routingStrategy === 'privacy-first'
-        ? localCandidates
-        : routingStrategy === 'local-first'
-          ? [...localCandidates, ...remoteCandidates]
-          : [...remoteCandidates, ...localCandidates]
-      : [{ id: modelId, revision: revisions.get(modelId) ?? 1 }];
-    for (const candidate of candidates) {
-      try {
-        const binding = this.modelInferenceGateway.resolveBinding(candidate.revision, {
-          ...preference,
-          modelId: candidate.id
-        });
-        if (binding !== null) return binding;
-      } catch {
-        // Continue with another configured model. The renderer keeps its local fallback.
-      }
-    }
-    return null;
+    const modelId = execution?.modelId ?? this.input.bootstrap.modelSelection?.modelId;
+    if (!modelId) return null;
+    const remote = this.remoteModels.find(model => model.id === modelId);
+    const revision = remote === undefined ? 1
+      : remoteSettingsRevision(this.input.bootstrap, remote.providerId, modelId) ?? 1;
+    return this.modelInferenceGateway.resolveBinding(revision, {
+      modelId,
+      executionMode: 'chat',
+      ...(execution?.localFallbackModelId === undefined ? {} : { localFallbackModelId: execution.localFallbackModelId })
+    });
   }
 
   public status(): RuntimeStatus {
@@ -485,12 +432,11 @@ class RuntimeKernelApplication implements RuntimeApplication {
         id: model.id,
         label: model.label,
         location: 'remote' as const,
-        enabled: true,
+        enabled: model.enabled,
         availability: reports === null ? 'unavailable' as const : this.remoteCredentialAvailability.get(
           remoteModelKey(model.providerId, model.id)
         ) ?? 'error',
         ...deriveModelCapabilities(report),
-        ...(report.quality===undefined?{}:{quality:modelQualitySummary(report.quality)})
       });
     });
     const localModels = this.localSnapshot.models.map((model) => {
@@ -511,7 +457,6 @@ class RuntimeKernelApplication implements RuntimeApplication {
             ? 'error' as const
             : 'unavailable' as const,
         ...deriveModelCapabilities(report),
-        ...(report.quality===undefined?{}:{quality:modelQualitySummary(report.quality)})
       });
     });
     return Object.freeze([...remoteModels, ...localModels]);
@@ -562,17 +507,6 @@ class RuntimeKernelApplication implements RuntimeApplication {
       });
       this.localQualificationRuns.set(model.id, run);
     }
-  }
-
-  private qualityBinding(modelId:string):DispatchExactAgentModelInferenceRequest['binding'] {
-    const local=this.localSnapshot.models.find(model=>model.id===modelId);
-    const remote=this.remoteModels.find(model=>model.id===modelId);
-    if(local && (local.status!=='ready'||this.localRuntimeAvailability.get(local.runtime)!=='ready'))
-      throw new Error('model_runtime_unavailable');
-    const revision=local ? 1 : remote ? remoteSettingsRevision(this.input.bootstrap,remote.providerId,remote.id) : null;
-    if(revision===null)throw new Error('model_quality_target_unknown');
-    const binding=this.modelInferenceGateway.resolveBinding(revision,{modelId,executionMode:'chat'});
-    if(binding===null)throw new Error('model_quality_binding_unavailable');return binding;
   }
 
   private async qualifyModel(
@@ -654,14 +588,24 @@ class RuntimeKernelApplication implements RuntimeApplication {
     );
     if (settingsRevision === null) return false;
 
+    // Availability tests basic text transport, not the configured reasoning budget.
+    const provider = this.input.bootstrap.modelProviders?.find((candidate) => (
+      candidate.providerId === remote.providerId && candidate.model === remote.id
+    ));
+    const inference = provider?.inference?.reasoning?.modes.includes('off')
+      ? { reasoningMode: 'off' as const }
+      : undefined;
+
     const timeoutSignal = AbortSignal.timeout(REMOTE_AVAILABILITY_PROBE_TIMEOUT_MS);
     const probeSignal = AbortSignal.any([signal, timeoutSignal]);
     try {
+      const chunks: string[] = [];
       const result = await this.modelInferenceGateway.inferExact({
         binding: {
           providerId: remote.providerId,
           modelId: remote.id,
-          settingsRevision
+          settingsRevision,
+          ...(inference === undefined ? {} : { inference })
         },
         messages: [{
           role: 'user',
@@ -669,16 +613,32 @@ class RuntimeKernelApplication implements RuntimeApplication {
         }],
         tools: [],
         signal: probeSignal,
-        sampling: { temperature: 0, maxOutputTokens: 16 }
+        chunkObserver: { observe: (chunk) => { if (chunk.channel === 'token') chunks.push(chunk.text); } },
+        sampling: { maxOutputTokens: 256 }
       });
       probeSignal.throwIfAborted();
-      return result.status === 'completed'
-        && result.replay.finishReason === 'stop'
-        && result.contentBlocks.some((block) => (
-          block.type === 'text' && block.text.trim().length > 0
-        ));
+      if (result.status !== 'completed' || result.replay.finishReason !== 'stop'
+        || result.contentBlocks.some(block => block.type === 'tool_call')) return false;
+      const text = result.contentBlocks.filter(block => block.type === 'text').map(block => block.text).join('');
+      if (!text.trim()) return false;
+      const prior = this.modelCapabilities.current(remote.providerId, remote.id);
+      if (prior === null) throw new Error('model_capability_fingerprint_missing');
+      const streamed = chunks.length > 0 && chunks.join('') === text;
+      // This single synthetic response proves text chat only. Tool/Plan/vision
+      // qualification remains owned by the separate full capability probe.
+      this.modelCapabilities.write({
+        ...prior,
+        textResponse: 'qualified',
+        streamingText: streamed ? 'qualified' : prior.streamingText,
+        testedAt: new Date().toISOString(),
+        evidenceDigest: `sha256:${createHash('sha256').update(JSON.stringify({
+          probe: 'remote-text-availability-v1', text: true, streamed
+        })).digest('hex')}`
+      });
+      return true;
     } catch (error) {
       if (signal.aborted) throw error;
+      if (readOwnedAuthorityFault(error) !== null) throw error;
       return false;
     }
   }
@@ -763,7 +723,6 @@ class RuntimeKernelApplication implements RuntimeApplication {
   }
   private get localTextProbe(): LocalTextCapabilityProbe { return this.requireCapabilityTools().text; }
   private get fullCapabilityProbe(): ModelCapabilityProbeHarness { return this.requireCapabilityTools().full; }
-  private get qualityBenchmark(): ModelQualityBenchmark { return this.requireCapabilityTools().quality; }
 
   /** A catalog can still describe discovered/configured models when their
    * qualification authority is unavailable. It never uses old evidence or
@@ -794,6 +753,8 @@ function fingerprintRemoteProvider(
     protocol: provider.protocol,
     endpoint: endpoint.toString(),
     modelId: provider.model,
+    apiModel: provider.apiModel ?? provider.model,
+    inferenceDialect: provider.inferenceDialect ?? provider.providerId,
     providerAdapterVersion: 1,
     supportsVision: provider.supportsVision === true,
     inference: provider.inference

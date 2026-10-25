@@ -12,13 +12,14 @@ if (!process.versions.electron) {
       entryPoints: ['app/tests/renderer-ui.fixture.tsx'],
       outfile: join(directory, 'fixture.js'),
       tsconfig: 'app/tsconfig.web.json', bundle: true, platform: 'browser',
-      define: { 'process.env.NODE_ENV': '"production"' }
+      define: { 'process.env.NODE_ENV': process.argv.includes('--settings-only') ? '"development"' : '"production"' }
     });
     writeFileSync(join(directory, 'index.html'), '<!doctype html><meta charset="utf-8"><title>Ariadne UI fixture</title><link rel="stylesheet" href="fixture.css"><div id="root"></div><script src="fixture.js"></script>');
     copyFileSync(resolve(__dirname, '../app/src/renderer/public/popout.html'), join(directory, 'popout.html'));
     const env = { ...process.env };
     delete env.ELECTRON_RUN_AS_NODE;
-    const result = require('node:child_process').spawnSync(require('electron'), [__filename, directory, ...process.argv.slice(2)], { env, stdio: 'inherit', windowsHide: true, timeout: 60000 });
+    const timeout = process.argv.some(argument => argument.endsWith('-only')) ? 60000 : 180000;
+    const result = require('node:child_process').spawnSync(require('electron'), [__filename, directory, ...process.argv.slice(2)], { env, stdio: 'inherit', windowsHide: true, timeout });
     if (result.error) throw result.error;
     process.exitCode = result.status ?? 1;
   } finally { rmSync(directory, { recursive: true, force: true }); }
@@ -40,7 +41,7 @@ if (!process.versions.electron) {
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     app.on('will-quit', () => server.close());
-    const window = new BrowserWindow({ width: 1000, height: 600, useContentSize: true, show: false, webPreferences: { sandbox: true, contextIsolation: true } });
+    const window = new BrowserWindow({ width: 1000, height: 600, useContentSize: true, show: false, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } });
     const wc = window.webContents;
     const rendererErrors = [];
     wc.on('console-message', details => {
@@ -70,15 +71,50 @@ if (!process.versions.electron) {
       await new Promise(resolve => setTimeout(resolve, 30));
     };
     await window.loadURL(`http://127.0.0.1:${server.address().port}/index.html`);
+    if (process.argv.includes('--headless')) wc.focus();
     await evaluate("window.addEventListener('error',event=>console.error('UI fixture uncaught stack:',event.error?.stack??event.message));window.addEventListener('unhandledrejection',event=>console.error('UI fixture uncaught rejection:',event.reason?.stack??String(event.reason)))");
     const dataOnly = process.argv.includes('--data-only');
-    if (!dataOnly) { window.show(); window.focus(); }
+    const settingsOnly = process.argv.includes('--settings-only');
+    const settingsActionsOnly = process.argv.includes('--settings-actions-only');
+    const settingsModelsOnly = process.argv.includes('--settings-models-only');
+    const modelSelectionOnly = process.argv.includes('--model-selection-only');
+    if (!dataOnly && !settingsOnly && !settingsActionsOnly && !process.argv.includes('--headless')) { window.show(); window.focus(); }
     const documentsOnly = process.argv.includes('--documents-only');
     const memoryOnly = process.argv.includes('--memory-only');
     const productivityOnly=process.argv.includes('--productivity-only');
     const agentOnly=process.argv.includes('--agent-only');
     const tasksOnly=process.argv.includes('--tasks-only');
-    if([documentsOnly,memoryOnly,productivityOnly,agentOnly,tasksOnly,dataOnly].filter(Boolean).length>1)throw new Error('UI scopes cannot be combined');
+    const moduleOpeningOnly=process.argv.includes('--module-opening-only');
+    if([documentsOnly,memoryOnly,productivityOnly,agentOnly,tasksOnly,dataOnly,moduleOpeningOnly,settingsOnly,settingsActionsOnly,settingsModelsOnly,modelSelectionOnly].filter(Boolean).length>1)throw new Error('UI scopes cannot be combined');
+    if(modelSelectionOnly) {
+      await require('./smoke/model-selection-ui.cjs')({window,wc,evaluate,wait,check,key});
+      if(rendererErrors.length)throw new Error('Model selection renderer errors: '+JSON.stringify(rendererErrors));
+      window.destroy();app.exit(0);return;
+    }
+    if(settingsModelsOnly){
+      await require('./smoke/settings-models-ui.cjs')({window,wc,evaluate,wait,check});
+      if(rendererErrors.length)throw new Error('Settings model controls reported renderer errors.');
+      window.destroy();app.exit(0);return;
+    }
+    if(settingsActionsOnly){
+      wc.setBackgroundThrottling(false);
+      await require('./smoke/settings-actions-ui.cjs')({window,wc,evaluate,wait,check,key});
+      await require('./smoke/provider-settings-ui.cjs')({window,wc,evaluate,wait,check,key});
+      if(rendererErrors.length)throw new Error('Settings actions reported renderer errors.');
+      window.destroy();app.exit(0);return;
+    }
+    if(settingsOnly){
+      wc.setBackgroundThrottling(false);
+      await require('./smoke/settings-dialog-ui.cjs')({window,wc,evaluate,wait,check,key});
+      if(rendererErrors.length)throw new Error('Settings UI fixture reported renderer errors.');
+      console.log('Scoped settings dialog UI passed with production components and fixture services.');
+      window.destroy();app.exit(0);return;
+    }
+    if(moduleOpeningOnly){
+      await require('./smoke/module-opening-ui.cjs')({evaluate,wait,check,wc});
+      if(rendererErrors.length)throw new Error('Module opening renderer errors: '+JSON.stringify(rendererErrors));
+      window.destroy();app.exit(0);return;
+    }
     if(dataOnly){
       await require('./smoke/data-management-ui.cjs')({evaluate,wait,check,window,reviewDirectory:process.env.ARIADNE_DATA_UI_REVIEW_DIRECTORY});
       await require('./smoke/attachment-cleanup-ui.cjs')({evaluate,wait,check,window,reviewDirectory:process.env.ARIADNE_DATA_UI_REVIEW_DIRECTORY});
@@ -804,20 +840,8 @@ if (!process.versions.electron) {
     }
     await require('./smoke/memory-editing-ui.cjs')({evaluate,wait,check});
     if(!memoryOnly){
-    await evaluate("window.__uiFixture.show('quality')");
-    await wait("document.querySelectorAll('[data-quality-model]').length === 2");
-    await check('quality UI identifies synthetic tasks and disables unavailable models', "document.querySelector('[aria-label=模型质量测评]').textContent.includes('六个固定文本任务') && document.querySelector('[data-quality-model=fixture-offline] button').disabled");
-    await evaluate("document.querySelector('[data-quality-model=fixture-ready] button').click();document.querySelector('[data-quality-model=fixture-ready] button').click()");
-    await wait('window.__qualityFixture.count() === 1');
-    await check('quality UI owns one pending measurement and prevents duplicate starts', "Array.from(document.querySelectorAll('[data-quality-model] button')).every(button => button.disabled)");
-    await evaluate('window.__qualityFixture.reject(0)');
-    await wait("document.querySelector('[role=alert]')?.textContent.includes('测评失败')");
-    await check('quality failures release the model control for retry', "!document.querySelector('[data-quality-model=fixture-ready] button').disabled");
-    await evaluate("document.querySelector('[data-quality-model=fixture-ready] button').click()");
-    await wait('window.__qualityFixture.count() === 2');
-    await evaluate('window.__qualityFixture.resolve(1)');
-    await wait("document.querySelector('[data-quality-model=fixture-ready]').textContent.includes('4/6')");
-    await check('quality UI reports expired evidence and fits the narrow viewport', "document.querySelector('[data-quality-model=fixture-ready]').textContent.includes('成绩过期') && document.querySelector('[aria-label=模型质量测评]').scrollWidth <= document.querySelector('[aria-label=模型质量测评]').clientWidth");
+    await require('./smoke/model-selection-ui.cjs')({window,wc,evaluate,wait,check,key});
+    await require('./smoke/settings-models-ui.cjs')({window,wc,evaluate,wait,check});
     }
     }
     if(!memoryOnly){
@@ -863,7 +887,8 @@ if (!process.versions.electron) {
     await evaluate("document.querySelector('form.action-dialog').requestSubmit()");
     await wait('window.__documentsFixture.count() === 6');
     await evaluate('window.__documentsFixture.resolveMutation(5)');
-    await wait("document.querySelector('.workspace-document-editor header strong')?.textContent === 'folder/moved.txt'");
+    // The header changes before the moved document finishes restoring its draft.
+    await wait("document.querySelector('.workspace-document-editor header strong')?.textContent === 'folder/moved.txt' && document.querySelector('[aria-label=文件正文]')?.value === '草稿保留\\n'");
     await check('moving a file transfers its unsaved draft and fresh version together', "document.querySelector('[aria-label=文件正文]').value === '草稿保留\\n' && window.__documentsFixture.draft('workspace-a','folder/moved.txt').version.endsWith('5') && !window.__documentsFixture.draft('workspace-a','first.txt')");
     await documentButton('保存文件');
     await wait('window.__documentsFixture.count() === 7');

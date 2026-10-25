@@ -311,7 +311,6 @@ function projectChange(
     supportsPlan: change.entry.supportsPlan,
     supportsVision: change.entry.supportsVision,
     qualificationState: change.entry.qualificationState,
-    ...(change.entry.quality===undefined?{}:{quality:change.entry.quality}),
     updatedAt: projectedAt
   });
   return {
@@ -338,12 +337,7 @@ function samePublicState(
     && entry.supportsPlan === current.supportsPlan
     && entry.supportsVision === current.supportsVision
     && entry.qualificationState === current.qualificationState
-    && sameQuality(entry.quality,current.quality);
-}
-function sameQuality(left:ModelCatalogProjectionEntry['quality'],right:PublicModelProjection['quality']):boolean {
-  if(!left||!right)return left===right;
-  return (['benchmarkId','benchmarkDigest','score','passed','total','evaluatedAt','validUntil','state'] as const)
-    .every(key=>left[key]===right[key]);
+    && current.quality === undefined;
 }
 
 function canonicalNow(now: () => Date): string {

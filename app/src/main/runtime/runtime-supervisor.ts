@@ -54,7 +54,7 @@ export interface RuntimeSupervisorOptions {
   disabledLocalModelIds?: string[];
   modelProviders: ModelProviderBootstrap[];
   subagentProviders?: SubagentProviderBootstrap[];
-  routingStrategy: 'local-first' | 'cloud-first' | 'privacy-first' | 'quality-first';
+  modelSelection: NonNullable<RuntimeBootstrap['modelSelection']>;
   assistantProfile: AssistantChatProfile;
   agentPermissions: AgentPermissionsBootstrap;
   agentAdmissionAuthoritySource: AgentAdmissionAuthoritySource;
@@ -586,7 +586,7 @@ export class RuntimeSupervisor {
               args: [...provider.args]
             }))
           }),
-      routingStrategy: this.options.routingStrategy,
+      modelSelection: this.options.modelSelection,
       assistantProfile: structuredClone(this.options.assistantProfile),
       agentPermissions: structuredClone(this.options.agentPermissions),
       agentAdmissionAuthoritySource: structuredClone(

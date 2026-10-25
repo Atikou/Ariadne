@@ -1,3 +1,4 @@
+import { remoteProviderSettingsFixture } from './remote-provider-settings-fixture';
 import { app, shell, type BrowserWindow } from 'electron';
 import { readFile, mkdir, writeFile, access, unlink } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
@@ -67,8 +68,7 @@ export async function verifyDecisionNotificationWindow(window: BrowserWindow, ou
       }
       const settings = await api.agentSettings.load();
       const configured = await api.agentSettings.apply({expectedRevision:settings.revision, operations:[
-        {kind:'provider.update',providerId:'openai',patch:{enabled:true,baseUrl:${JSON.stringify(baseUrl)},model:${JSON.stringify(model)},apiKey:'ariadne-electron-smoke-key'}},
-        ...['deepseek','kimi','anthropic'].map(providerId=>({kind:'provider.update',providerId,patch:{enabled:false}}))]});
+        ${remoteProviderSettingsFixture(baseUrl, model)}]});
       if(!configured.ok) throw new Error('notification_settings_failed');
       await wait(async () => (await api.runtime.getStatus()).value?.availability==='ready','configured_ready');
       const qualification=await api.runtime.request({kind:'model.qualification.run',contractVersion:'5.0',modelId:${JSON.stringify(model)}});

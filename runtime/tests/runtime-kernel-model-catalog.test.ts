@@ -103,7 +103,7 @@ describe('RuntimeKernelApplication model catalog', () => {
     ]));
     expect(application.status().capabilities).toContain('models.local');
     expect(() => application.modelInferenceGateway?.resolveBinding(1, {
-      executionMode: 'chat'
+      executionMode: 'chat', modelId: 'qwen-local'
     })).toThrow('model_text_qualification_required');
 
     const shutdown = createShutdownContext(Date.now() + 5_000);

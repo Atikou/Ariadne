@@ -80,7 +80,7 @@ describe('Ariadne Runtime protocol', () => {
         timeoutMs: 60_000,
         disposeGraceMs: 2_000
       }],
-      routingStrategy: 'cloud-first',
+      modelSelection: { modelId: '', localFallbackModelId: '' },
       agentAdmissionAuthoritySource: {
         sourceVersion: 1,
         status: 'disabled',

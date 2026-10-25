@@ -13,7 +13,10 @@ function walk(directory) {
       : /\.tsx?$/u.test(file) && !file.endsWith('.d.ts') ? [file] : [];
   });
 }
-const files = ['runtime/src', 'app/src', 'packages'].flatMap(directory => walk(path.join(root, directory)));
+const packageRoots = readdirSync(path.join(root, 'packages')).filter(name => existsSync(path.join(root, 'packages', name, 'src')))
+  .map(name => `packages/${name}`);
+const files = ['runtime/src', 'app/src', ...packageRoots.map(directory => `${directory}/src`)]
+  .flatMap(directory => walk(path.join(root, directory)));
 const keys = new Map(files.map(file => [file.toLowerCase(), file]));
 const edges = new Map();
 const dynamic = [];
@@ -22,6 +25,8 @@ const unresolved = [];
 function resolve(from, specifier) {
   let target;
   if (specifier.startsWith('.')) target = path.resolve(path.dirname(from), specifier);
+  else if (specifier.startsWith('@renderer/')) target = path.join(root, 'app/src/renderer/src', specifier.slice('@renderer/'.length));
+  else if (specifier.startsWith('@shared/')) target = path.join(root, 'app/src/shared', specifier.slice('@shared/'.length));
   else if (specifier.startsWith('@ariadne/')) {
     const [name, ...subpath] = specifier.slice('@ariadne/'.length).split('/');
     target = path.join(root, 'packages', name, 'src', subpath.length ? subpath.join('/') : 'index');
@@ -55,7 +60,7 @@ for (const file of files) {
     if (literal && ts.isStringLiteralLike(literal)) {
       const target = resolve(file, literal.text);
       if (target) targets.add(target);
-      else if ((literal.text.startsWith('.') || literal.text.startsWith('@ariadne/')) && !literal.text.endsWith('.css')) unresolved.push({ file: relative(file), specifier: literal.text });
+      else if ((literal.text.startsWith('.') || /^@(ariadne|renderer|shared)\//u.test(literal.text)) && !literal.text.endsWith('.css')) unresolved.push({ file: relative(file), specifier: literal.text });
     }
     ts.forEachChild(node, visit);
   }
@@ -65,7 +70,24 @@ for (const file of files) {
 const runtimePackage = JSON.parse(readFileSync(path.join(root, 'runtime/package.json'), 'utf8'));
 const cli = [...new Set(Object.values(runtimePackage.scripts).flatMap(command =>
   [...command.matchAll(/(?:src|dist)\/(cli\/[^\s]+)\.(?:ts|js)/gu)].map(match => `runtime/src/${match[1]}.ts`)))];
-const roots = ['app/src/main/index.ts', 'runtime/src/entry/runtime-process.ts', 'runtime/src/entry/headless.ts', ...cli];
+// These helpers are launched by explicit filesystem paths, not JS imports.
+// Keep the concrete registration alongside the entry so it can be reviewed.
+const processEntries = [
+  { file: 'app/src/preload/index.ts', owner: 'app/electron.vite.config.ts' },
+  { file: 'app/src/renderer/src/main.tsx', owner: 'app/src/renderer/index.html' },
+  { file: 'app/src/main/runtime/data-root-switch-process.ts', owner: 'app/electron.vite.config.ts' },
+  { file: 'runtime/src/entry/storage-maintenance-process.ts', owner: 'app/src/main/application.ts' }
+];
+const packageEntries = packageRoots.flatMap(directory => {
+  const manifest = JSON.parse(readFileSync(path.join(root, directory, 'package.json'), 'utf8'));
+  const targets = Object.values(manifest.exports ?? {}).map(value => typeof value === 'string' ? value : value.default);
+  if (manifest.main) targets.push(manifest.main);
+  return [...new Set(targets.filter(value => typeof value === 'string' && value.startsWith('./dist/'))
+    .map(value => `${directory}/${value.replace('./dist/', 'src/').replace(/\.js$/u, '.ts')}`))];
+});
+const roots = [...new Set(['app/src/main/index.ts', 'runtime/src/entry/runtime-process.ts', 'runtime/src/entry/headless.ts',
+  ...processEntries.map(entry => entry.file), ...cli, ...packageEntries])];
+for (const entry of roots) if (!existsSync(path.join(root, entry))) throw new Error(`source_entry_missing:${entry}`);
 function closure(entries) {
   const reached = new Set();
   const queue = entries.map(entry => path.join(root, entry));
@@ -81,7 +103,8 @@ const desktopRuntime = closure(roots.slice(0, 3));
 const allSupportedEntries = closure(roots);
 const runtimeFiles = files.map(relative).filter(file => file.startsWith('runtime/src/'));
 const unreachable = runtimeFiles.filter(file => !allSupportedEntries.includes(file));
-const report = { roots, runtimeFileCount: runtimeFiles.length,
+const allUnreachable = files.map(relative).filter(file => !allSupportedEntries.includes(file));
+const report = { roots, processEntries, runtimeFileCount: runtimeFiles.length, sourceFileCount: files.length, allUnreachable,
   desktopRuntimeFileCount: desktopRuntime.filter(file => file.startsWith('runtime/')).length,
   supportedEntryFileCount: allSupportedEntries.filter(file => file.startsWith('runtime/')).length,
   desktopRuntime, allSupportedEntries, unreachable, dynamic, resources, unresolved,
@@ -91,4 +114,5 @@ mkdirSync(path.dirname(output), { recursive: true });
 writeFileSync(output, JSON.stringify(report, null, 2) + '\n');
 console.log(JSON.stringify({ roots, runtimeFiles: runtimeFiles.length, desktopRuntime: report.desktopRuntimeFileCount,
   supportedEntries: report.supportedEntryFileCount, unreachable: unreachable.length,
+  allSourceFiles: files.length, allUnreachable,
   nonliteralDynamic: dynamic.filter(item => !item.literal), unresolved, output: relative(output) }, null, 2));

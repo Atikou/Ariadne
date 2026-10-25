@@ -1,6 +1,6 @@
 # Provider 协议与模型推理配置
 
-> 核对日期：2026-08-26
+> 接入边界核对日期：2026-10-25
 > 本文只记录 Ariadne 的稳定接入规则，不维护容易过期的第三方模型能力表。
 
 ## 分层
@@ -24,7 +24,7 @@ Conversation message execution
 ## 当前生产边界
 
 - 远程 Provider 配置由 Main 从 `settings.toml` 读取并转换为 Host bootstrap；
-- API Key 由 Main 使用系统安全存储保护，Renderer 只看到状态，Runtime 通过受控环境槽位读取；
+- API Key 由 Main Credential Authority 使用系统安全存储保护；Runtime 在操作边界通过 opaque credential reference 解析，密钥不进入 Renderer、bootstrap 或公开投影；
 - 本地模型由 Runtime 扫描授权的只读模型目录并通过 embedded runtime 加载，不依赖外部常驻 HTTP 服务；
 - `RuntimeKernelModelInferenceGateway` 根据持久模型绑定选择本地或远程实现；
 - `ProductionExactAgentModelInferenceGateway` 校验 Provider、模型、容量、推理选项和稳定幂等身份，并把有界的 context-overflow 响应规范化为一次显式恢复证据；
@@ -46,7 +46,25 @@ interface ModelInferenceOptions {
 }
 ```
 
-`conversation.message.accept.v3` 的 `execution` 可携带 `modelId`、`inference` 和 `routingStrategy`。Runtime 必须再次验证选项是否属于当前模型 profile；Renderer 不能仅根据模型名称猜测能力。
+`conversation.message.accept` 的 `execution` 可携带 `modelId`、`inference` 和 `localFallbackModelId`。Runtime 必须再次验证选项是否属于当前模型 profile；Renderer 不能仅根据模型名称猜测能力。
+
+## 模型能力与设置入口
+
+模型可用性与能力资格分别维护：文件可加载、连接可用不代表模型支持 Agent 或 Plan。`ModelCapabilityRegistry` 保存精确 Provider/model/fingerprint 的报告，`RuntimeKernelModelInferenceGateway` 对用户选定的主模型和本地备用模型校验所需能力；改变指纹后旧报告不能证明新绑定具备能力。
+
+同一 Runtime 的文本通道只请求普通文本；Agent 通道使用 Provider 或本地模型原生 Tool Calls，由 Ariadne 转为内部 Directive。Agent/Plan 失败不切换模型、不降级到文本、不从普通文本猜测控制调用。会话、Run、权限和持久化始终沿同一生产主干。
+
+设置页的本地模型使用统一卡片，显示启用状态、文本/视觉/Agent/Plan 能力和“重新检测”。重新检测发送 `model.qualification.run`，更新原资格报告并同步模型投影；失败显示在本地列表下方。启用状态随 Agent 设置保存，通过 `disabledLocalModelIds` 同时约束聊天候选和 Runtime 精确执行。图片生成显示“未接入”，不推断为模型支持。
+
+远程连接可用性检查使用 `model.availability.check`，与完整能力资格检测分开。六题质量测评命令、执行器、页面及所有自动路由已下线。聊天菜单只分“本地模型”和“远程 API”，用户必须指定模型；能力卡片不显示分数或排名。远程模型可选择“不使用本地备用”或一个明确的本地模型。
+
+备用关闭时，Runtime 只使用所选模型。启用备用时，新任务准入前对该远程连接执行一次有界可用性检查（最长 15 秒），失败才将指定本地模型固化为实际 Run 绑定；用户取消、内部权威错误不会触发切换。本地备用仍须启用且满足文本／工具／计划／视觉资格。远程参数不会继承到本地备用。任务开始执行后不换模型或自动重放工具，后续调用失败正常报错。
+
+`settings.toml` schema 9 使用 `modelSelection.modelId` 和 `modelSelection.localFallbackModelId`；空字符串分别表示尚未选择、禁用备用。schemas 1–8 的旧 `routingStrategy` 仅在设置读取升级边界接受，升级时移除策略并保留模型连接、凭据、目录及其他设置，不替用户选择模型；revision 只增加一次。新设置写入、Host bootstrap 和 Public 执行命令不接受旧策略。
+
+会话持久化沿用同一 SQLite Schema 4，新执行元数据通过 `ConversationAuthorityPersistenceV2` 访问；原 V1 接口和冻结摘要保持不变。
+
+已有质量报告、历史 Projection、会话执行元数据和命令回执保留只读校验，以便恢复现有数据库；它们不触发请求、显示排名或影响选择。当前模型投影会移除旧分数字段，不改写历史提交。已排队的旧策略执行元数据不按新选择重解释，须重新提交任务。
 
 ## 设置与凭据
 

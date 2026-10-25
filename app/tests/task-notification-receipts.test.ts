@@ -40,7 +40,7 @@ describe('Main-owned native task display bookkeeping', () => {
     store.close(); const reopened = new TaskNotificationReceipts(path); await reopened.initialize();
     expect(reopened.eligible(reference('run-0'))).toBe(false); expect(reopened.eligible(reference('run-2099'))).toBe(false);
     reopened.close();
-  });
+  }, 15_000); // 2,100 separately durable disk commits also run under full-suite I/O contention.
   it('preserves unknown schemas byte for byte and fails closed for task reminders', async () => {
     const path = await fixture(); const database = new DatabaseSync(path);
     database.exec("CREATE TABLE private_owner (content TEXT); INSERT INTO private_owner VALUES ('retained'); PRAGMA user_version=9"); database.close();

@@ -44,9 +44,15 @@
         "model": "deepseek-v4-flash",
         "inference": {
           "reasoning": {
-            "modes": ["off", "on"],
+            "modes": [
+              "off",
+              "on"
+            ],
             "defaultMode": "on",
-            "efforts": ["high", "max"],
+            "efforts": [
+              "high",
+              "max"
+            ],
             "defaultEffort": "high"
           }
         },
@@ -55,7 +61,12 @@
           "relativeCost": "medium",
           "canDraft": true,
           "canReview": true,
-          "allowedRoles": ["primary", "draft", "review", "final"],
+          "allowedRoles": [
+            "primary",
+            "draft",
+            "review",
+            "final"
+          ],
           "capabilities": {
             "text": true,
             "code": true,
@@ -78,9 +89,15 @@
         "model": "kimi-k3",
         "inference": {
           "reasoning": {
-            "modes": ["on"],
+            "modes": [
+              "on"
+            ],
             "defaultMode": "on",
-            "efforts": ["low", "high", "max"],
+            "efforts": [
+              "low",
+              "high",
+              "max"
+            ],
             "defaultEffort": "max"
           }
         },
@@ -90,7 +107,12 @@
           "supportsVision": true,
           "canDraft": true,
           "canReview": true,
-          "allowedRoles": ["primary", "draft", "review", "final"],
+          "allowedRoles": [
+            "primary",
+            "draft",
+            "review",
+            "final"
+          ],
           "capabilities": {
             "text": true,
             "code": true,
@@ -133,9 +155,5 @@
         }
       }
     ]
-  },
-  "routing": {
-    "strategy": "cloud-first",
-    "fallback": true
   }
 }

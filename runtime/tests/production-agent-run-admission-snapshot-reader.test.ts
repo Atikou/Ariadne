@@ -42,7 +42,7 @@ import type {
   ConversationAuthorityUnitOfWork,
   CreateConversationSessionCommit,
   ProjectConversationAgentResultCommit
-} from '../src/control/ports/ConversationAuthorityPersistence.js';
+} from '../src/control/ports/ConversationAuthorityPersistenceV2.js';
 import type {
   ConversationRunHandoffCommit
 } from '../src/control/ports/ConversationRunHandoffPersistence.js';
@@ -184,7 +184,7 @@ describe('ProductionAgentRunAdmissionSnapshotReader', () => {
       execution: {
         mode: 'plan',
         modelId: 'model-production',
-        routingStrategy: 'quality-first'
+        localFallbackModelId: null
       }
     });
     const catalogSnapshot = compileTrustedAgentToolCatalog({
@@ -221,7 +221,7 @@ describe('ProductionAgentRunAdmissionSnapshotReader', () => {
     expect(authorityQuery?.execution).toEqual({
       mode: 'plan',
       modelId: 'model-production',
-      routingStrategy: 'quality-first'
+      localFallbackModelId: null
     });
     expect(snapshot.input.messages).toEqual([
       expect.objectContaining({

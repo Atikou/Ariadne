@@ -36,13 +36,13 @@ Runtime 不启动入站 HTTP Server。远程 MCP HTTP/OAuth 和系统凭据由 M
 
 Host 与 Headless 协议当前均使用版本 `3.0`。所有入站消息执行严格 schema、版本、实例、尺寸、deadline 和 command identity 校验。
 
-Public 契约版本为 `5.0`，Host/Headless 传输版本仍为 `3.0`。命令、结果、当前 schema/type 和协议文件使用固定名称；版本只描述真正的协议或持久格式。以下是全部 49 个当前公共命令：
+Public 契约版本为 `5.0`，Host/Headless 传输版本仍为 `3.0`。命令、结果、当前 schema/type 和协议文件使用固定名称；版本只描述真正的协议或持久格式。以下按所有者列出主要入口；完整命令集合以 `packages/protocol/src/public.ts` 及其组合的 schema 为准：
 
 | 所有者 | 命令 |
 |---|---|
 | Runtime Kernel | `runtime.status.get` |
-| Model Capability | `model.qualification.run`、`model.availability.check`、`model.quality.evaluate` |
-| Public Projection | `projection.snapshot.get`、`projection.commits.read` |
+| Model Capability | `model.qualification.run`、`model.availability.check` |
+| Public Projection | `projection.catalog.*`、`projection.view.*`、`projection.scope.read` 及授权有界查询 |
 | Conversation Authority | `conversation.session.create`、`conversation.session.title.generate`、`conversation.session.rename`、`conversation.session.archive`、`conversation.session.restore`、`conversation.session.fork`、`conversation.sessions.query`、`conversation.message.accept`、`conversation.message.resolve` |
 | Agent Control | `agent.decision.resolve`、`agent.run.cancel`、`agent.inbox.enqueue`、`agent.inbox.replace`、`agent.inbox.remove`、`agent.subagent.send`、`agent.subagent.interrupt`、`agent.tool_result.detail.get` |
 | Human Skills | `skill.commands.query`、`skill.command.load`、`skill.command.resource.read` |
@@ -71,7 +71,7 @@ dataRoot/data/
 - Agent Control Store 是 Run、Turn、Inference Attempt、Decision、Effect、Plan、Budget、Delegation、Checkpoint、Receipt 和 Outbox 的唯一 Writer。
 - Public Projection 是可重建读模型，只由 Conversation、Agent Run、Model、inference stream 和 observability publisher 更新。
 - Productivity 拥有 Goal/Todo/Workflow/Schedule、持久执行身份、依赖结果和调度提交退避；其 Worker 经普通 Conversation/Agent 路径执行任务。
-- Model Capability 拥有 qualification、模型 fingerprint 和有时效的实测质量；Long Memory 原权威拥有正文、审核、作用域、FTS、命令回执和忘记 tombstone。独立派生记忆索引保存元数据、向量空间、桶和增量任务；后台补算，前台有界检索并回读原权威，不作为第二个正文写入者。见 [ADR 0041](adr/0041-incremental-memory-search-index.md)。
+- Model Capability 拥有 qualification 和模型 fingerprint。六题测评及质量路由已退出生产；已保存的质量字段只用于旧记录完整性验证，不参与当前投影或路由。Long Memory 原权威拥有正文、审核、作用域、FTS、命令回执和忘记 tombstone。独立派生记忆索引保存元数据、向量空间、桶和增量任务；后台补算，前台有界检索并回读原权威，不作为第二个正文写入者。见 [ADR 0041](adr/0041-incremental-memory-search-index.md)。
 - `DatabasePaths.ts` 固定七个数据库名称，`database-layout.json` 固定表、索引和约束，`persistence-contract.json` 固定九个业务访问契约。普通功能更新不改这些基线；大改必须经过明确离线迁移、记录保留和恢复验收。
 - Trace、Renderer cache 和进程内队列都不能驱动恢复。
 
@@ -103,7 +103,7 @@ Plan、Budget、Delegation 和 Child Run 已进入 Agent Core/Control 权威模�
 
 ## 5. Public Projection 与 Renderer
 
-Renderer 冷启动读取 `projection.snapshot.get`，随后通过 `projection.commits.read` 按 cursor 拉取持久 commit。当前生产 publisher 覆盖：
+Renderer 冷启动通过 `projection.catalog.begin/page` 和 `projection.view.begin/page` 读取授权目录及所选范围，校验 manifest、页顺序与摘要后原子发布。后续通过 `projection.catalog.read` 与 `projection.scope.read` 增量同步；过期或 reset 时重建相应视图。当前生产 publisher 覆盖：
 
 - Conversation Session/Message；
 - Agent Run/Decision/Activity；

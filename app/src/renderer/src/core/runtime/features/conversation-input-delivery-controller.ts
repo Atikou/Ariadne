@@ -2,10 +2,12 @@ import type { AriadneApi, InputDeliveryOutboxRecord, InputDeliveryOutboxStageReq
 import { shouldReconcileInput } from './input-delivery-outcome';
 import type { RuntimeFeatureCommandGateway } from './runtime-feature-command-gateway';
 import type { DraftDeliveryBinding } from './input-delivery-binding';
+import { PublicResultError } from '../public-result';
 
 export class ConversationDeliveryError extends Error {
   constructor(readonly uncertain: boolean, readonly commandIds: readonly string[], readonly cause: unknown) {
-    super(uncertain ? '消息结果尚未确认，请核对原发送。' : '消息未提交，请恢复原草稿。');
+    const recovery = uncertain ? '消息结果尚未确认，请核对原发送。' : '消息未提交，请恢复原草稿。';
+    super(cause instanceof PublicResultError ? `${recovery} ${cause.publicError.message}（${cause.publicError.code}）` : recovery);
   }
 }
 /** Conversation input owner. Replay always comes from the sealed original

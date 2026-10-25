@@ -2,7 +2,7 @@
 
 - 状态：Accepted
 - 日期：2026-08-31
-- 依据：`docs/entity-component-architecture-roadmap.md`
+- 当前生产结构：[实现架构](../architecture.md)；UI 接线：[Renderer UI 架构](../ui-architecture.md)。
 
 ## 决策
 
@@ -25,6 +25,12 @@ Ariadne 使用 Entity–Component Assembly（ECA）组织产品能力：Agent、
 ## 被替换的错误前提
 
 新增能力不再依靠修改多个中央数组、巨型 Factory、Activity Bar 特判和集中 Router 分支来完成装配。共享 Component Kernel 替换散落在各实体中的重复图校验、依赖解析和生命周期规则；已有正确的领域 Owner、事务与恢复实现不重写成 ECS Store。
+
+## 组件接入
+
+Agent、UI、Speech 的静态组件分别由 `generate:agent-components`、`generate:ui-components`、`generate:speech-components` 生成 Catalog；Runtime Provider bundle 使用 `generate:runtime-capabilities`。新增组件先在所属实体目录声明依赖、消费与提供的服务，再生成 Catalog；需要默认启用时修改 Application Profile。不要手工维护生成文件，也不要在 Shell 中新增按模块 ID 分派的分支。
+
+`check:architecture` 校验生成文件与声明一致、依赖方向及组件边界；`test:electron-profiles` 验证 Profile 的窗口行为。组件数与文件行数以当前生成器和门禁输出为准，旧路线图中的固定计数与阶段性验收不作为当前状态。
 
 ## 后果
 

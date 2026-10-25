@@ -1,5 +1,4 @@
 import type {
-  ChatRoutingStrategy,
   ModelSummary,
   RuntimeStatus
 } from '@ariadne/protocol/public';
@@ -15,7 +14,7 @@ export type ChatModelStateKind =
   | 'text-incompatible'
   | 'agent-incompatible'
   | 'plan-incompatible'
-  | 'privacy-unavailable'
+  | 'selection-required'
   | 'ready';
 
 export interface ChatModelStateInput {
@@ -23,7 +22,8 @@ export interface ChatModelStateInput {
   readonly planModeAvailable: boolean;
   readonly planModeEnabled: boolean;
   readonly executionMode: 'chat' | 'agent' | 'plan';
-  readonly routingStrategy: ChatRoutingStrategy;
+  readonly selectedModelId: string;
+  readonly localFallbackModelId?: string;
   readonly models: readonly ModelSummary[];
   readonly modelsReadReady: boolean;
 }
@@ -41,7 +41,7 @@ export interface ChatModelState {
 }
 
 /**
- * Separates model configuration, health, routing and Agent eligibility. A
+ * Separates model configuration, health, explicit selection and Agent eligibility. A
  * configured model that is still checking or unavailable must never collapse
  * back into the unconfigured state.
  */
@@ -55,16 +55,19 @@ export function deriveChatModelState(input: ChatModelStateInput): ChatModelState
         ? model.supportsAgent
         : model.supportsPlan
   ));
-  const routeConfiguredModels = input.routingStrategy === 'privacy-first'
-    ? modeConfiguredModels.filter((model) => model.location === 'local')
-    : modeConfiguredModels;
-  const eligibleModels = routeConfiguredModels.filter((model) => model.availability === 'ready');
+  const eligibleModels = modeConfiguredModels.filter((model) => model.availability === 'ready');
+  const selected = enabledModels.find(model => model.id === input.selectedModelId);
+  const fallback = selected?.location === 'remote'
+    ? eligibleModels.find(model => model.location === 'local' && model.id === input.localFallbackModelId)
+    : undefined;
+  const selectionReady = selected !== undefined && eligibleModels.includes(selected);
 
   let kind: ChatModelStateKind;
   if (input.runtimeAvailability !== 'ready') kind = 'runtime-unavailable';
   else if (!input.modelsReadReady) kind = 'loading';
   else if (input.planModeEnabled && !input.planModeAvailable) kind = 'plan-unavailable';
   else if (input.models.length === 0) kind = 'unconfigured';
+  else if (!input.selectedModelId) kind = 'selection-required';
   else if (
     modeConfiguredModels.length === 0
     && enabledModels.some((model) => model.qualificationState === 'testing')
@@ -76,10 +79,8 @@ export function deriveChatModelState(input: ChatModelStateInput): ChatModelState
         ? 'agent-incompatible'
         : 'plan-incompatible';
   }
-  else if (input.routingStrategy === 'privacy-first' && routeConfiguredModels.length === 0) {
-    kind = 'privacy-unavailable';
-  } else if (eligibleModels.length > 0) kind = 'ready';
-  else if (routeConfiguredModels.some((model) => model.availability === 'checking')) kind = 'checking';
+  else if (selectionReady || (selected !== undefined && selected.availability !== 'ready' && fallback !== undefined)) kind = 'ready';
+  else if (selected?.availability === 'checking') kind = 'checking';
   else kind = 'unavailable';
 
   return {
@@ -172,13 +173,12 @@ function presentation(
         emptyTitle: '需要支持计划模式的模型',
         emptyDescription: '计划模式只会使用通过 Agent 与计划控制检测的模型。'
       };
-    case 'privacy-unavailable':
+    case 'selection-required':
       return {
-        statusTone: 'warning',
-        statusLabel: '无可用本地模型',
-        composerPlaceholder: '隐私优先仅使用本地模型，请配置或启用可用本地模型',
-        emptyTitle: '隐私优先需要本地模型',
-        emptyDescription: '当前路由不会使用远程模型，请配置或启用可用本地模型。'
+        statusTone: 'warning', statusLabel: '请选择模型',
+        composerPlaceholder: '请先选择本地模型或远程 API',
+        emptyTitle: '选择一个模型开始对话',
+        emptyDescription: '在输入框下方选择模型；远程 API 可指定一个本地备用模型。'
       };
     case 'ready':
       return {

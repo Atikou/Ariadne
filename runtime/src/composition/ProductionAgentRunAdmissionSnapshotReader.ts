@@ -1,3 +1,4 @@
+import { conversationMessageExecutionSchema } from '@ariadne/protocol/public';
 import {
   assertValidAgentRunBinding,
   cloneAgentAvailableTool,
@@ -26,7 +27,7 @@ import {
 } from '../control/ports/AgentAdmissionAuthority.js';
 import type {
   ConversationAuthorityUnitOfWork
-} from '../control/ports/ConversationAuthorityPersistence.js';
+} from '../control/ports/ConversationAuthorityPersistenceV2.js';
 import type {
   AgentInstructionAssemblyRequest,
   AgentInstructionAssemblyService
@@ -99,6 +100,9 @@ implements AgentRunAdmissionSnapshotReader {
     const runId = await deriveAgentAdmissionRunId(request);
     signal.throwIfAborted();
     const objective = await this.readExactConversationObjective(request, signal);
+    // Historical messages remain readable, but retired execution policies cannot
+    // be reinterpreted as a new task under the user's current selection.
+    conversationMessageExecutionSchema.parse(objective.execution);
     const query = Object.freeze<AgentAdmissionAuthorityQueryV2>({
       queryVersion: 2,
       subjectVersion: 2,

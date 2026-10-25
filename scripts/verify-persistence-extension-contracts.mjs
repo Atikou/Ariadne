@@ -6,6 +6,10 @@ import { persistenceContractShape } from './persistence-contract-shape.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const groups = [
+  { version: 2, baseline: 'persistence-conversation-selection-contract-v2.json', initialize: '--initialize-conversation-selection', name: 'conversation-selection',
+    policy: 'Same Conversation owner and Schema 4. Explicit model selection and optional local fallback replace automatic routes only in new commands. V1 interface, historical payloads and their digests remain unchanged.',
+    entries: [['conversationSelectionV2', 'runtime/src/control/ports/ConversationAuthorityPersistenceV2.ts', 'ConversationAuthorityUnitOfWorkV2']],
+    message: 'conversation selection V2 verified.' },
   { version: 1, baseline: 'persistence-extension-contracts-v1.json', initialize: '--initialize', name: 'extension',
     policy: 'Explicit versioned replacements; released V1 contracts remain unchanged. Ingress validates replay settlements and projection pages retain strict public DTO validation.',
     entries: [

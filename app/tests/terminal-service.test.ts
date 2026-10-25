@@ -1,4 +1,5 @@
 import type { WebContents } from 'electron';
+import { EventEmitter } from 'node:events';
 import { mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -41,6 +42,52 @@ import { TerminalSessionService } from '../src/main/services/terminal-service.js
 
 describe('TerminalSessionService live-work boundary', () => {
   beforeEach(() => pty.reset());
+
+  it.each(['did-start-navigation', 'render-process-gone', 'destroyed'])('releases live terminal ownership on %s', async event => {
+    const owner = rendererOwner(11, []), service = await createService();
+    const request = { sessionId: '8a74a717-d9c7-4a09-a038-83c138362f1e', workspaceId: 'workspace-main', shell: 'cmd' as const, columns: 80, rows: 24 };
+    await service.create(owner, request);
+    owner.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false });
+    owner.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
+    expect(pty.terminal.kill).not.toHaveBeenCalled();
+    owner.emit(event, { isMainFrame: true, isSameDocument: false });
+    expect(pty.terminal.kill).toHaveBeenCalledTimes(1);
+    pty.exit({ exitCode: 1 });
+    await vi.waitFor(() => expect(service.listRecoveryRecords()[0]?.status).toBe('killed'));
+    expect(owner.listenerCount('did-start-navigation')).toBe(0);
+    await service.dispose();
+  });
+
+  it.each(['close', 'navigation', 'dispose'])('fences a pending durable create when ownership ends through %s', async action => {
+    const root = await mkdtemp(join(tmpdir(), 'ariadne-terminal-pending-'));
+    const journal = new TerminalSessionJournal(join(root, 'terminal-sessions.json'));
+    const service = new TerminalSessionService(() => 'E:\\workspace', journal), owner = rendererOwner(12, []);
+    await service.initialize();
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const start = journal.start.bind(journal);
+    vi.spyOn(journal, 'start').mockImplementationOnce(async input => { await barrier; return start(input); });
+    const sessionId = '8a74a717-d9c7-4a09-a038-83c138362f1e';
+    const creating = service.create(owner, { sessionId, workspaceId: 'workspace-main', shell: 'cmd', columns: 80, rows: 24 });
+    const rejected = expect(creating).rejects.toThrow('terminal_owner_unavailable');
+    let disposal: Promise<void> | undefined;
+    if (action === 'close') await service.close(owner.id, sessionId);
+    else if (action === 'navigation') owner.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    else disposal = service.dispose();
+    release(); await rejected; await disposal;
+    expect(pty.spawn).not.toHaveBeenCalled();
+    expect(service.listRecoveryRecords()[0]?.status).toBe('killed');
+    expect(owner.listenerCount('did-start-navigation')).toBe(0);
+    await service.dispose();
+  });
+
+  it('persists terminal completion during orderly shutdown', async () => {
+    const service = await createService(), owner = rendererOwner(13, []);
+    await service.create(owner, { sessionId: '8a74a717-d9c7-4a09-a038-83c138362f1e', workspaceId: 'workspace-main', shell: 'cmd', columns: 80, rows: 24 });
+    pty.terminal.kill.mockImplementationOnce(() => pty.exit({ exitCode: 1 }));
+    await service.dispose();
+    expect(service.listRecoveryRecords()[0]?.status).toBe('killed');
+  });
 
   it('publishes PTY output and completion through the shared cursor lifecycle', async () => {
     const sent: { channel: string; payload: unknown }[] = [];
@@ -165,11 +212,9 @@ function rendererOwner(
   id: number,
   sent: { channel: string; payload: unknown }[]
 ): WebContents {
-  return {
+  return Object.assign(new EventEmitter(), {
     id,
     isDestroyed: () => false,
     send: (channel: string, payload: unknown) => { sent.push({ channel, payload }); },
-    once: vi.fn(),
-    removeListener: vi.fn()
-  } as unknown as WebContents;
+  }) as unknown as WebContents;
 }

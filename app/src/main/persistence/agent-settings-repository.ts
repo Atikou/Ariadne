@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { parse as parseToml, stringify as stringifyToml, type TomlTable } from 'smol-toml';
 import { z } from 'zod';
 import { unrestrictedMainWrites, type MainWriteAdmission } from '../data-management/main-maintenance-gate';
-import { modelInferenceProfileSchema, type ModelInferenceProfile } from '@ariadne/protocol/public';
+import { modelInferenceProfileSchema, modelSelectionSchema, type ModelInferenceProfile } from '@ariadne/protocol/public';
 import {
   acpSubagentProviderConfigurationSchema,
   claudeSubagentProviderConfigurationSchema,
@@ -30,6 +30,8 @@ import {
   type AgentCustomPermissions,
   type AgentPermissionMode,
   type AgentProviderId,
+  type AgentProviderPreset,
+  type AgentProviderSettingsView,
   type AgentProviderSettingsPatch,
   type AgentSandboxMode,
   type AgentSettingsEffect,
@@ -41,7 +43,7 @@ import {
   type AgentWorkspaceSettingsView,
   type ApiKeyStatus
 } from '@shared/contract';
-import { agentProviderIdSchema, agentRoutingStrategySchema, agentSettingsMutationSchema } from '@shared/schemas';
+import { agentProviderIdSchema, agentProviderMetadataSchema, agentSettingsMutationSchema } from '@shared/schemas';
 import type { SecretCipher } from './secret-cipher';
 
 const encryptedApiKeySchema = z.string().min(1).max(32_768).nullable();
@@ -65,6 +67,7 @@ const persistedWorkspaceSchema = z.object({
   }
 });
 const persistedProviderSchema = z.object({
+  ...agentProviderMetadataSchema.shape,
   enabled: z.boolean(),
   baseUrl: z.string().url().max(2_048).refine((value) => new URL(value).protocol === 'https:'),
   model: z.string().trim().min(1).max(256),
@@ -77,6 +80,7 @@ const persistedProviderSchema = z.object({
   'Provider maxOutputTokens must be smaller than contextWindowTokens.'
 );
 const persistedProviderFileSchema = z.object({
+  ...agentProviderMetadataSchema.partial().shape,
   enabled: z.boolean(),
   baseUrl: z.string().url().max(2_048).refine((value) => new URL(value).protocol === 'https:'),
   model: z.string().trim().min(1).max(256),
@@ -101,7 +105,7 @@ const persistedAssistantChatProfileFileSchema = z.union([
 ]);
 const persistedAgentSettingsBase = {
   revision: z.number().int().positive(),
-  routingStrategy: agentRoutingStrategySchema,
+  modelSelection: modelSelectionSchema,
   localModelRoots: z.array(z.string().min(1).max(32_768).refine(
     (value) => /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value)
   )).max(8),
@@ -109,22 +113,27 @@ const persistedAgentSettingsBase = {
 };
 const persistedAgentSettingsSchema = z.object({
   ...persistedAgentSettingsBase,
-  schemaVersion: z.literal(7),
+  schemaVersion: z.literal(9),
   assistant: assistantChatProfileSchema,
   permissionMode: z.enum(AGENT_PERMISSION_MODES),
   customPermissions: customPermissionsSchema,
   workspaceAccess: z.enum(['read', 'write']),
   workspaces: z.array(persistedWorkspaceSchema).max(32),
-  providers: z.record(agentProviderIdSchema, persistedProviderSchema),
+  providers: z.record(agentProviderIdSchema, persistedProviderSchema).refine(providers => (
+    Object.keys(providers).length <= 16
+    && new Set(Object.values(providers).map(provider => provider.modelId)).size === Object.keys(providers).length
+  ), 'Remote model identities must be unique; at most 16 connections are supported.'),
   subagentProviders: z.array(persistedSubagentProviderSchema).max(8),
   runtimePolicy: runtimePolicySnapshotSchema
 }).strict();
 const persistedAgentSettingsFileSchema = z.object({
   schemaVersion: z.union([
-    z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6), z.literal(7)
+    z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6), z.literal(7), z.literal(8), z.literal(9)
   ]),
   revision: z.number().int().positive().optional(),
-  routingStrategy: agentRoutingStrategySchema,
+  // Released schemas 1-8 used automatic routes. They migrate without choosing a model.
+  routingStrategy: z.enum(['local-first', 'cloud-first', 'privacy-first', 'quality-first']).optional(),
+  modelSelection: modelSelectionSchema.optional(),
   localModelRoots: z.array(z.string().min(1).max(32_768).refine(
     (value) => /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value)
   )).max(8),
@@ -135,10 +144,13 @@ const persistedAgentSettingsFileSchema = z.object({
   workspaceRoot: absoluteWorkspacePathSchema.optional(),
   workspaceAccess: z.enum(['read', 'write']).optional(),
   workspaces: z.array(persistedWorkspaceSchema).max(32).optional(),
-  providers: z.partialRecord(agentProviderIdSchema, persistedProviderFileSchema),
+  providers: z.record(agentProviderIdSchema, persistedProviderFileSchema),
   subagentProviders: z.array(persistedSubagentProviderSchema).max(8).optional(),
   runtimePolicy: runtimePolicySnapshotSchema.optional()
 }).strict().superRefine((settings, context) => {
+  if (settings.schemaVersion === 9 && (settings.routingStrategy !== undefined || settings.modelSelection === undefined)) {
+    context.addIssue({ code: 'custom', message: 'Current settings require explicit model selection.' });
+  }
   if (settings.schemaVersion >= 4 && settings.workspaceRoot !== undefined) {
     context.addIssue({ code: 'custom', path: ['workspaceRoot'], message: 'Current settings do not use workspaceRoot.' });
   }
@@ -150,7 +162,7 @@ export interface AgentSettingsCheckpoint {
   readonly serialized: string;
 }
 
-export interface RuntimeAgentProviderSettings {
+export interface RuntimeAgentProviderSettings extends Omit<AgentProviderSettingsView, 'apiKeyStatus'> {
   enabled: boolean;
   baseUrl: string;
   model: string;
@@ -171,7 +183,7 @@ export interface RuntimeAgentPermissionProfile {
 export interface RuntimeAgentSettings {
   revision: number;
   assistant: AssistantChatProfile;
-  routingStrategy: AgentSettingsView['routingStrategy'];
+  modelSelection: AgentSettingsView['modelSelection'];
   permissionMode: AgentPermissionMode;
   permissions: RuntimeAgentPermissionProfile;
   workspaceAccess: 'read' | 'write';
@@ -224,10 +236,10 @@ export class AgentSettingsRepository {
 
   getView(): AgentSettingsView {
     return {
-      schemaVersion: 7,
+      schemaVersion: 9,
       revision: this.settings.revision,
       assistant: structuredClone(this.settings.assistant),
-      routingStrategy: this.settings.routingStrategy,
+      modelSelection: structuredClone(this.settings.modelSelection),
       permissionMode: this.settings.permissionMode,
       customPermissions: structuredClone(this.settings.customPermissions),
       workspaceAccess: this.settings.workspaceAccess,
@@ -235,6 +247,8 @@ export class AgentSettingsRepository {
       localModelRoots: [...this.settings.localModelRoots],
       disabledLocalModelIds: [...this.settings.disabledLocalModelIds],
       providers: mapProviders(this.settings, (provider) => ({
+        label: provider.label, modelId: provider.modelId, protocol: provider.protocol,
+        inferenceDialect: provider.inferenceDialect, supportsVision: provider.supportsVision,
         enabled: provider.enabled,
         baseUrl: provider.baseUrl,
         model: provider.model,
@@ -255,7 +269,7 @@ export class AgentSettingsRepository {
     return {
       revision: this.settings.revision,
       assistant: structuredClone(this.settings.assistant),
-      routingStrategy: this.settings.routingStrategy,
+      modelSelection: structuredClone(this.settings.modelSelection),
       permissionMode: this.settings.permissionMode,
       permissions: resolveRuntimePermissionProfile(this.settings.permissionMode, this.settings.customPermissions),
       workspaceAccess: this.settings.workspaceAccess,
@@ -267,6 +281,8 @@ export class AgentSettingsRepository {
       providers: mapProviders(this.settings, (provider) => {
         const apiKey = this.tryDecrypt(provider.encryptedApiKey);
         return {
+          label: provider.label, modelId: provider.modelId, protocol: provider.protocol,
+          inferenceDialect: provider.inferenceDialect, supportsVision: provider.supportsVision,
           enabled: provider.enabled,
           baseUrl: provider.baseUrl,
           model: provider.model,
@@ -284,12 +300,16 @@ export class AgentSettingsRepository {
     };
   }
 
+  hasProvider(providerId: AgentProviderId): boolean {
+    return Object.hasOwn(this.settings.providers, providerId);
+  }
+
   resolveProviderApiKey(providerId: AgentProviderId): string | undefined {
-    return this.tryDecrypt(this.settings.providers[providerId].encryptedApiKey);
+    return this.tryDecrypt(this.settings.providers[providerId]?.encryptedApiKey ?? null);
   }
 
   describeProviderApiKey(providerId: AgentProviderId): ApiKeyStatus {
-    return this.apiKeyStatus(this.settings.providers[providerId].encryptedApiKey);
+    return this.apiKeyStatus(this.settings.providers[providerId]?.encryptedApiKey ?? null);
   }
 
   createCheckpoint(): AgentSettingsCheckpoint {
@@ -334,7 +354,7 @@ export class AgentSettingsRepository {
         }
         const next = persistedAgentSettingsSchema.parse({
           ...mutated,
-          schemaVersion: 7,
+          schemaVersion: 9,
           revision: this.settings.revision + 1
         });
         await this.writeSnapshot(next);
@@ -415,9 +435,9 @@ export class AgentSettingsRepository {
    * normalization, migration, rewriting or changes to in-memory settings. */
   validateBackup(raw: string): void {
     const input = persistedAgentSettingsFileSchema.parse(parseToml(raw));
-    if (input.schemaVersion !== 7) throw new Error('settings_backup_current_format_required');
+    if (input.schemaVersion !== 9) throw new Error('settings_backup_current_format_required');
     const settings = persistedAgentSettingsSchema.parse({ ...input,
-      providers: Object.fromEntries(AGENT_PROVIDER_IDS.map(id => {
+      providers: Object.fromEntries(Object.keys(input.providers).map(id => {
         const provider = input.providers[id];
         if (!provider) throw new Error('settings_backup_provider_missing');
         return [id, { ...provider, encryptedApiKey: provider.encryptedApiKey ?? null }];
@@ -488,7 +508,7 @@ export class AgentSettingsRepository {
         if (samePersistedSettings(mutated, this.settings)) return;
         const next = persistedAgentSettingsSchema.parse({
           ...mutated,
-          schemaVersion: 7,
+          schemaVersion: 9,
           revision: this.settings.revision + 1
         });
         await this.writeSnapshot(next);
@@ -527,7 +547,7 @@ export function effectForSettingsOperations(
   let effect: AgentSettingsEffect = 'hot_applied';
   for (const operation of operations) {
     const operationEffect: AgentSettingsEffect = operation.kind === 'permissions.set'
-      || operation.kind === 'routing.set'
+      || operation.kind === 'modelSelection.set'
       ? 'reload_scheduled'
       : operation.kind === 'provider.update' && isCredentialOnlyProviderPatch(operation.patch)
         ? 'hot_applied'
@@ -563,8 +583,8 @@ function applySettingsOperations(
         );
         break;
       }
-      case 'routing.set':
-        next.routingStrategy = operation.strategy;
+      case 'modelSelection.set':
+        next.modelSelection = structuredClone(operation.selection);
         break;
       case 'assistant.replace':
         next.assistant = structuredClone(operation.assistant);
@@ -577,7 +597,12 @@ function applySettingsOperations(
         break;
       case 'provider.update': {
         const target = next.providers[operation.providerId];
+        if (!target) throw new Error('remote_provider_not_found');
         const patch = operation.patch;
+        if (patch.label !== undefined) target.label = patch.label;
+        if (patch.protocol !== undefined) target.protocol = patch.protocol;
+        if (patch.inferenceDialect !== undefined) target.inferenceDialect = patch.inferenceDialect;
+        if (patch.supportsVision !== undefined) target.supportsVision = patch.supportsVision;
         if (patch.enabled !== undefined) target.enabled = patch.enabled;
         if (patch.baseUrl !== undefined) target.baseUrl = patch.baseUrl;
         if (patch.model !== undefined) target.model = patch.model;
@@ -590,6 +615,15 @@ function applySettingsOperations(
         else if (patch.apiKey) target.encryptedApiKey = cipher.encrypt(patch.apiKey);
         break;
       }
+      case 'provider.add':
+        if (Object.hasOwn(next.providers, operation.providerId)) throw new Error('remote_provider_already_exists');
+        next.providers[operation.providerId] = { ...structuredClone(operation.provider),
+          encryptedApiKey: operation.apiKey ? cipher.encrypt(operation.apiKey) : null };
+        break;
+      case 'provider.remove':
+        if (!Object.hasOwn(next.providers, operation.providerId)) throw new Error('remote_provider_not_found');
+        delete next.providers[operation.providerId];
+        break;
       case 'subagentProviders.replace':
         next.subagentProviders = operation.providers.map((provider) => ({
           ...provider,
@@ -615,25 +649,17 @@ function createDefaultAgentSettings(): PersistedAgentSettings {
     allowedPermissions: [...AGENT_TOOL_PERMISSIONS]
   };
   return {
-    schemaVersion: 7,
+    schemaVersion: 9,
     revision: 1,
     assistant: createDefaultAssistantChatProfile(),
-    routingStrategy: 'cloud-first',
+    modelSelection: { modelId: '', localFallbackModelId: '' },
     permissionMode: 'request',
     customPermissions,
     workspaceAccess: 'write',
     workspaces: [],
     localModelRoots: [],
     disabledLocalModelIds: [],
-    providers: Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => [id, {
-      enabled: true,
-      baseUrl: AGENT_PROVIDER_CATALOG[id].defaultBaseUrl,
-      model: AGENT_PROVIDER_CATALOG[id].defaultModel,
-      contextWindowTokens: AGENT_PROVIDER_CATALOG[id].defaultContextWindowTokens,
-      maxOutputTokens: AGENT_PROVIDER_CATALOG[id].defaultMaxOutputTokens,
-      inference: structuredClone(AGENT_PROVIDER_CATALOG[id].defaultInference),
-      encryptedApiKey: null
-    }])) as PersistedAgentSettings['providers'],
+    providers: {},
     subagentProviders: [],
     runtimePolicy: createDefaultRuntimePolicySnapshot()
   };
@@ -643,12 +669,12 @@ function mapProviders<T>(
   settings: PersistedAgentSettings,
   project: (provider: PersistedAgentSettings['providers'][AgentProviderId]) => T
 ): Record<AgentProviderId, T> {
-  return Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => [id, project(settings.providers[id])])) as Record<AgentProviderId, T>;
+  return Object.fromEntries(Object.keys(settings.providers).map((id) => [id, project(settings.providers[id]!)])) as Record<AgentProviderId, T>;
 }
 
 function parsePersistedAgentSettings(input: unknown): PersistedAgentSettings {
   const parsed = persistedAgentSettingsFileSchema.parse(input);
-  const { workspaceRoot: _retiredWorkspaceRoot, ...supported } = parsed;
+  const { workspaceRoot: _retiredWorkspaceRoot, routingStrategy: _retiredRoutingStrategy, ...supported } = parsed;
   const defaults = createDefaultAgentSettings();
   const permissionMode = parsed.permissionMode ?? defaults.permissionMode;
   const customPermissions = parsed.customPermissions ?? defaults.customPermissions;
@@ -659,28 +685,47 @@ function parsePersistedAgentSettings(input: unknown): PersistedAgentSettings {
   return persistedAgentSettingsSchema.parse({
     ...defaults,
     ...supported,
-    schemaVersion: 7,
-    revision: (parsed.revision ?? 1) + (parsed.schemaVersion === 7 ? 0 : 1),
+    schemaVersion: 9,
+    // v8 -> v9 only replaces the selection preference. The exact Provider
+    // transports are unchanged, so keep the revision pinned by existing Runs.
+    revision: (parsed.revision ?? 1) + (parsed.schemaVersion >= 8 ? 0 : 1),
+    modelSelection: parsed.modelSelection ?? defaults.modelSelection,
     assistant: migrateAssistantChatProfile(parsed.assistant, defaults.assistant),
     permissionMode,
     customPermissions,
     workspaceAccess,
     workspaces: normalizeWorkspaceCatalog(workspaceAccess, workspaces),
     disabledLocalModelIds: parsed.disabledLocalModelIds ?? defaults.disabledLocalModelIds,
-    providers: Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => {
-      const saved = parsed.providers[id];
-      return [id, saved
-        ? {
-            ...defaults.providers[id],
-            ...saved,
-            inference: saved.inference ?? defaults.providers[id].inference,
-            encryptedApiKey: saved.encryptedApiKey ?? null
-          }
-        : defaults.providers[id]];
-    })),
+    providers: parsed.schemaVersion >= 8 ? Object.fromEntries(Object.entries(parsed.providers).map(([id, provider]) => [id, {
+      ...provider, encryptedApiKey: provider.encryptedApiKey ?? null
+    }])) : migrateLegacyProviders(parsed.providers),
     subagentProviders: parsed.subagentProviders ?? defaults.subagentProviders,
     runtimePolicy: parsed.runtimePolicy ?? defaults.runtimePolicy
   });
+}
+
+/** Released schemas 1-7 used four vendor slots. Preserve their IDs and secrets
+ * while turning each saved slot into an independent connection. */
+function migrateLegacyProviders(providers: z.infer<typeof persistedAgentSettingsFileSchema>['providers']) {
+  const usedModelIds = new Set<string>();
+  const reservedModelIds = new Set(Object.values(providers).map(provider => provider.model));
+  return Object.fromEntries(Object.entries(providers).map(([id, saved]) => {
+    if (!(AGENT_PROVIDER_IDS as readonly string[]).includes(id)) throw new Error('legacy_provider_unknown');
+    const preset = AGENT_PROVIDER_CATALOG[id as AgentProviderPreset];
+    const model = id === 'deepseek' && new URL(saved.baseUrl).hostname === 'api.deepseek.com'
+      && ['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'].includes(saved.model) ? 'deepseek-flash' : saved.model;
+    let modelId = saved.model;
+    if (usedModelIds.has(modelId)) {
+      modelId = `remote-legacy-${id}`;
+      while (usedModelIds.has(modelId) || reservedModelIds.has(modelId)) modelId += '-copy';
+    }
+    usedModelIds.add(modelId);
+    return [id, { ...saved, label: preset.label, modelId, protocol: preset.protocol,
+      inferenceDialect: id, supportsVision: preset.supportsVision, model,
+      contextWindowTokens: saved.contextWindowTokens ?? preset.defaultContextWindowTokens,
+      maxOutputTokens: saved.maxOutputTokens ?? preset.defaultMaxOutputTokens,
+      inference: saved.inference ?? structuredClone(preset.defaultInference), encryptedApiKey: saved.encryptedApiKey ?? null }];
+  }));
 }
 
 function migrateAssistantChatProfile(
@@ -700,7 +745,7 @@ function toTomlDocument(settings: PersistedAgentSettings): TomlTable {
     schemaVersion: settings.schemaVersion,
     revision: settings.revision,
     assistant: structuredClone(settings.assistant),
-    routingStrategy: settings.routingStrategy,
+    modelSelection: structuredClone(settings.modelSelection),
     permissionMode: settings.permissionMode,
     workspaceAccess: settings.workspaceAccess,
     localModelRoots: settings.localModelRoots,
@@ -708,9 +753,10 @@ function toTomlDocument(settings: PersistedAgentSettings): TomlTable {
     customPermissions: structuredClone(settings.customPermissions),
     runtimePolicy: structuredClone(settings.runtimePolicy),
     workspaces: settings.workspaces.map((workspace) => ({ ...workspace })),
-    providers: Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => {
-      const provider = settings.providers[id];
+    providers: Object.fromEntries(Object.entries(settings.providers).map(([id, provider]) => {
       return [id, {
+        label: provider.label, modelId: provider.modelId, protocol: provider.protocol,
+        inferenceDialect: provider.inferenceDialect, supportsVision: provider.supportsVision,
         enabled: provider.enabled,
         baseUrl: provider.baseUrl,
         model: provider.model,

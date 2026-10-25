@@ -1,4 +1,4 @@
-import type { PublicModelProjection, ModelQualitySummary } from '@ariadne/protocol/public';
+import type { PublicModelProjection } from '@ariadne/protocol/public';
 
 import type { PublicProjectionCommitSink } from './PublicProjectionPorts.js';
 
@@ -14,7 +14,6 @@ export interface ModelCatalogProjectionEntry {
   readonly supportsPlan: boolean;
   readonly supportsVision: boolean;
   readonly qualificationState: 'unknown' | 'testing' | 'qualified' | 'rejected';
-  readonly quality?: ModelQualitySummary;
 }
 
 /**

@@ -117,7 +117,6 @@ export class ModelExecutionQualificationError extends Error {
       | 'model_text_qualification_required'
       | 'model_agent_qualification_required'
       | 'model_plan_qualification_required'
-      | 'model_quality_evaluation_required'
       | 'model_vision_qualification_required',
     public readonly modelId?: string
   ) {
@@ -183,6 +182,9 @@ extends ExactAgentModelInferenceGateway {
     preference?: AgentModelSelectionPreference
   ): AgentRunBinding['model'] | null;
 
+  /** Optional bounded connection check before a Run freezes its exact binding. */
+  prepareBinding?(settingsRevision: number, preference: AgentModelSelectionPreference, signal: AbortSignal): Promise<AgentRunBinding['model'] | null>;
+
   describeContextCapacity(
     binding: AgentRunBinding['model']
   ): ExactAgentModelContextCapacity | null;
@@ -200,9 +202,5 @@ export interface AgentModelSelectionPreference {
   readonly modelId?: string;
   readonly requiresVision?: boolean;
   readonly executionMode?: 'chat' | 'agent' | 'plan';
-  readonly routingStrategy?:
-    | 'local-first'
-    | 'cloud-first'
-    | 'privacy-first'
-    | 'quality-first';
+  readonly localFallbackModelId?: string | null;
 }

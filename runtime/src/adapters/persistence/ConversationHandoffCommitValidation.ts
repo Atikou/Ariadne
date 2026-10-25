@@ -18,7 +18,7 @@ import type {
   AcceptConversationUserMessageCommit,
   ProjectConversationAgentStartFailureCommit,
   ProjectConversationAgentResultCommit
-} from '../../control/ports/ConversationAuthorityPersistence.js';
+} from '../../control/ports/ConversationAuthorityPersistenceV2.js';
 import type { ConversationRunHandoffCommit } from '../../control/ports/ConversationRunHandoffPersistence.js';
 import { assertMessageContentDigest } from './conversation/rows/ConversationAuthorityRowMapper.js';
 import {

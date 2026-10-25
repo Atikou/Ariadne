@@ -34,24 +34,24 @@ export class TaskCenterFeatureStore {
   }
   async refresh(sourceRefresh = true): Promise<void> {
     this.previous = []; this.currentCursor = null;
-    this.patch({ pageNumber: 1, hasPrevious: false, releasedPrevious: false });
+    this.patch({ page: null, pageNumber: 1, hasPrevious: false, releasedPrevious: false });
     await this.read(null, sourceRefresh);
   }
   async navigatePage(direction: 'next' | 'previous'): Promise<void> {
     if (this.state.loading) return;
+    const previous = [...this.previous];
+    let cursor: string | null, releasedPrevious = this.state.releasedPrevious;
     if (direction === 'next') {
-      const cursor = this.state.page?.nextCursor;
-      if (!cursor) return;
-      this.previous.push(this.currentCursor);
-      if (this.previous.length > 32) { this.previous.shift(); this.patch({ releasedPrevious: true }); }
-      this.currentCursor = cursor;
-      this.patch({ pageNumber: this.state.pageNumber + 1, hasPrevious: true, scrollTop: 0 });
+      if (!this.state.page?.nextCursor) return;
+      cursor = this.state.page.nextCursor;
+      previous.push(this.currentCursor);
+      if (previous.length > 32) { previous.shift(); releasedPrevious = true; }
     } else {
-      if (!this.previous.length) return;
-      this.currentCursor = this.previous.pop()!;
-      this.patch({ pageNumber: this.state.pageNumber - 1, hasPrevious: this.previous.length > 0, scrollTop: 0 });
+      if (!previous.length) return;
+      cursor = previous.pop()!;
     }
-    await this.read(this.currentCursor, false);
+    await this.read(cursor, false, { previous, releasedPrevious,
+      pageNumber: this.state.pageNumber + (direction === 'next' ? 1 : -1) });
   }
   rememberScroll(scrollTop: number): void {
     if (Number.isFinite(scrollTop)) this.patch({ scrollTop: Math.max(0, scrollTop) });
@@ -107,7 +107,9 @@ export class TaskCenterFeatureStore {
     if (result.status !== 'ok') throw new Error(navigationMessages[result.status]);
     return result;
   }
-  private async read(cursor: string | null, refresh: boolean): Promise<void> {
+  private async read(cursor: string | null, refresh: boolean, navigation?: {
+    previous: Array<string | null>; releasedPrevious: boolean; pageNumber: number;
+  }): Promise<void> {
     const generation = ++this.generation; this.navigationGeneration++;
     const filter = this.state.filter, snapshotId = cursor === null ? null : this.state.page?.snapshotId;
     this.patch({ loading: true, navigating: false, error: null });
@@ -116,7 +118,9 @@ export class TaskCenterFeatureStore {
         filter, cursor, limit: 32, refresh });
       if (generation !== this.generation) return;
       if (result.kind === 'tasks.query_reset') {
-        this.patch({ page: null, error: result.reason === 'unavailable' ? '任务目录暂时不可用，请重试。'
+        this.previous = []; this.currentCursor = null;
+        this.patch({ page: null, selected: null, selectedKey: null, pageNumber: 1, hasPrevious: false, releasedPrevious: false,
+          error: result.reason === 'unavailable' ? '任务目录暂时不可用，请重试。'
           : result.reason === 'scope_changed' ? '查询范围已变化或不可访问，请重新选择范围。' : '查询页已失效，请刷新列表。' });
         return;
       }
@@ -124,8 +128,10 @@ export class TaskCenterFeatureStore {
       if (JSON.stringify(page.filter) !== JSON.stringify(filter)
         || (snapshotId !== null && snapshotId !== undefined && page.snapshotId !== snapshotId)) throw new Error('task_page_scope_mismatch');
       this.currentCursor = page.pageCursor;
+      if (navigation) this.previous = navigation.previous;
       const selected = page.rows.find(row => taskReferenceKey(row.metadata.reference) === this.state.selectedKey) ?? this.state.selected;
-      this.patch({ page, selected });
+      this.patch({ page, selected, ...(navigation ? { pageNumber: navigation.pageNumber,
+        hasPrevious: navigation.previous.length > 0, releasedPrevious: navigation.releasedPrevious, scrollTop: 0 } : {}) });
     } catch { if (generation === this.generation) this.patch({ error: '任务目录读取失败，请重试。' }); }
     finally { if (generation === this.generation) this.patch({ loading: false }); }
   }

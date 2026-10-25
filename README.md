@@ -59,7 +59,7 @@ npm.cmd run verify:release
 
 ## 当前主要不足
 
-- 持久化 UoW 仍是大型热点，但 SQLite 串行化、事务、deadline 与 owner lease 已抽成共享 transaction owner；Factory 的执行装配也已拆出，门禁上限同步收紧到 Agent UoW 5000、Conversation UoW 2025、Factory 830 行；
+- 持久化事务、命令日志、加密载荷和恢复已拆为独立边界；剩余热点与行数限制由 `scripts/check-hotspot-boundaries.mjs` 持续校验，不以旧审计中的固定计数描述当前实现；
 - Agent inbox、运行中 steer/follow-up 和可恢复 token/reasoning 流已接入；未结算发送回执可跨 Renderer/桌面重启恢复且不会自动重放；仍缺独立 context injection；
 - exact Provider 请求和输出已形成类型化内容块：历史 Tool exchange 会从受保护 Effect 输入恢复并原生投影到 OpenAI/Anthropic/本地模型，响应侧支持 `text/reasoning/tool_call`、finish、脱敏 replay evidence 和互斥 cache usage；Conversation 图片以内容寻址引用持久化，按精确 Message owner 读取并原生发送到 OpenAI/Anthropic，仍缺可复用 adapter-private replay state；
 - v3 已接入 Conversation 历史、确定性因果语义 compaction、可恢复 Tool result spill、request-envelope-bound Provider usage anchor 和有界 Provider overflow recovery；每个精确 binding 都提供 route-local tokenizer，嵌入式 llama.cpp/Transformers 复用实际 chat-template tokenizer，source/primary/recovery 会重新计数并按硬输入上限准入。真实本地 Qwen 3.5 已完成跨进程重启长上下文验收；真实远程 Provider 因本机无 credential 尚未执行；
@@ -72,7 +72,7 @@ npm.cmd run verify:release
 - Agent pipe process、沙箱内 Agent PTY 与用户 PTY 已共用 `@ariadne/live-work` 生命周期；native Windows Sandbox runner 支持交互 write/resize 与 `interrupt/terminate/kill`，信号帧和真实长运行 PowerShell Job 已通过 Runner smoke。Main 以原子 session journal 保存无正文元数据；强杀后旧 `running` 收敛为 `interrupted/main_process_lost`，真实 Electron 窗口只允许用户显式重启并记录 `restartOf`，不会自动重放命令。live-work 终态仍先进入统一 Agent inbox，再唤醒 scheduler/projection；旧第二进程表和幽灵 Scheduler contract 已删除。
 - Workspace Tool Catalog revision 18 已提供 bounded literal `search_text`、安全 `glob`、版本化 `apply_text_edits/move_file/delete_file`，以及由沙箱内持久 `typescript-language-server` 提供的 definition/reference/hover/document-symbol 查询；全部文件变更继续要求 opaque version CAS，目标路径不允许覆盖。Tool 终态只在 Public Projection 发布 `detailAvailable` 与固定 kind/label，正文仍由 Agent Control 的受保护 Effect result owner 按 Run/Workspace/effect 和 UTF-8 cursor 提供；Renderer 已有 read/search/diff/terminal 专用详情卡，不再复制正文到公开投影。
 
-完整证据和实施顺序见 [Ariadne 与 deepseek-harness 对比审计](docs/remediation-verification.md)。
+完整证据和实施顺序见 [整改验证记录](docs/remediation-verification.md)。
 
 ## 文档
 

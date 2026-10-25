@@ -16,12 +16,6 @@ export class ModelFeatureStore {
     private readonly gateway: RuntimeFeatureCommandGateway,
     private readonly synchronize: () => Promise<void>
   ) {}
-  async evaluateQuality(modelId:string):Promise<Extract<import('@ariadne/protocol/public').RuntimeResult,{kind:'model.quality.completed'}>> {
-    const result=await this.gateway.execute({kind:'model.quality.evaluate',contractVersion:PUBLIC_PROJECTION_CONTRACT_VERSION,modelId});
-    if(result.kind!=='model.quality.completed'||result.modelId!==modelId)throw new Error('runtime_model_quality_result_invalid');
-    await this.synchronize();return result;
-  }
-
   async qualify(modelId: string): Promise<Extract<
     import('@ariadne/protocol/public').RuntimeResult,
     { kind: 'model.qualification.completed' }
@@ -31,7 +25,7 @@ export class ModelFeatureStore {
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       modelId
     });
-    if (result.kind !== 'model.qualification.completed') {
+    if (result.kind !== 'model.qualification.completed' || result.modelId !== modelId) {
       throw new Error('runtime_model_qualification_result_invalid');
     }
     await this.synchronize();
@@ -47,7 +41,7 @@ export class ModelFeatureStore {
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       modelId
     });
-    if (result.kind !== 'model.availability.completed') {
+    if (result.kind !== 'model.availability.completed' || result.modelId !== modelId) {
       throw new Error('runtime_model_availability_result_invalid');
     }
     return result;

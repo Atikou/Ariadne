@@ -143,7 +143,7 @@ describe('IPC schemas', () => {
     }).success).toBe(false);
     expect(agentSettingsMutationSchema.safeParse({
       ...valid,
-      routingStrategy: 'cloud-first'
+      localFallbackModelId: null
     }).success).toBe(false);
   });
 

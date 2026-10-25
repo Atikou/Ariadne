@@ -27,6 +27,54 @@ afterEach(() => {
 });
 
 describe('ModelCapabilityRegistry', () => {
+  it.each([0, 1])('opens the released metadata-1 DDL at user_version %i without changing qualification evidence', version => {
+    const databasePath = temporaryDatabase(), db = new DatabaseSync(databasePath);
+    const report = { ...unknownQualification({ providerId: 'fixture', modelId: 'model', fingerprint: FINGERPRINT_A }), textResponse: 'qualified' as const };
+    // Released DDL, intentionally independent of the current schema initializer.
+    db.exec(`CREATE TABLE model_capability_metadata (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      schema_version INTEGER NOT NULL
+    );
+    CREATE TABLE model_capability_qualification (
+      provider_id TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      adapter_protocol_version INTEGER NOT NULL,
+      report_json TEXT NOT NULL,
+      tested_at TEXT,
+      PRIMARY KEY (provider_id, model_id, fingerprint)
+    );
+    INSERT INTO model_capability_metadata VALUES (1, 1);
+    PRAGMA user_version=${version};`);
+    db.prepare('INSERT INTO model_capability_qualification VALUES (?,?,?,?,?,?)').run('fixture', 'model', FINGERPRINT_A, 1, JSON.stringify(report), null);
+    const originalSchema = db.prepare('SELECT sql FROM sqlite_master ORDER BY name').all();
+    db.close();
+    const registry = new ModelCapabilityRegistry(databasePath);
+    try { registry.registerFingerprint('fixture', 'model', FINGERPRINT_A); expect(registry.current('fixture', 'model')).toEqual(report); }
+    finally { registry.close(); }
+    const reopened = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      expect(reopened.prepare('SELECT sql FROM sqlite_master ORDER BY name').all()).toEqual(originalSchema);
+      expect(reopened.prepare('SELECT report_json FROM model_capability_qualification').get()!.report_json).toBe(JSON.stringify(report));
+    } finally { reopened.close(); }
+  });
+
+  it.each(['constraint', 'column-type', 'trigger', 'index'])('still rejects altered %s in model authority structure', alteration => {
+    const databasePath = temporaryDatabase(), db = new DatabaseSync(databasePath);
+    initializeModelCapabilitySchema(db);
+    if (alteration === 'constraint' || alteration === 'column-type') {
+      db.exec(`DROP TABLE model_capability_metadata;
+        CREATE TABLE model_capability_metadata (singleton INTEGER PRIMARY KEY ${alteration === 'constraint' ? '' : 'CHECK(singleton=1)'},
+          schema_version ${alteration === 'column-type' ? 'TEXT' : 'INTEGER'} NOT NULL);
+        INSERT INTO model_capability_metadata VALUES(1,1);`);
+    } else if (alteration === 'trigger') db.exec('CREATE TRIGGER unwanted AFTER DELETE ON model_capability_qualification BEGIN DELETE FROM model_capability_metadata; END;');
+    else db.exec('CREATE INDEX unwanted ON model_capability_qualification(model_id);');
+    db.close();
+    const before = readFileSync(databasePath);
+    expect(() => new ModelCapabilityRegistry(databasePath)).toThrow();
+    expect(readFileSync(databasePath)).toEqual(before);
+  });
+
   it('audits malformed rows before promoting metadata-1 stores and preserves their original bytes', () => {
     const databasePath=temporaryDatabase(), db=new DatabaseSync(databasePath);
     try { initializeModelCapabilitySchema(db); db.prepare('INSERT INTO model_capability_qualification VALUES (?,?,?,?,?,?)')

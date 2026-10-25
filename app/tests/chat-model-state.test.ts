@@ -53,7 +53,7 @@ describe('Chat model state', () => {
     },
     {
       name: 'configured model checking',
-      input: { models: [model('checking', { availability: 'checking' })] },
+      input: { selectedModelId: 'checking', models: [model('checking', { availability: 'checking' })] },
       expectedKind: 'checking',
       expectedCanChat: false,
       expectedStatus: '正在检查模型',
@@ -80,12 +80,12 @@ describe('Chat model state', () => {
       expectedPlaceholder: '已配置模型未通过计划控制能力检测'
     },
     {
-      name: 'privacy-first has only remote models',
-      input: { routingStrategy: 'privacy-first', models: [REMOTE_READY] },
-      expectedKind: 'privacy-unavailable',
+      name: 'configured models still require an explicit choice',
+      input: { selectedModelId: '', models: [REMOTE_READY] },
+      expectedKind: 'selection-required',
       expectedCanChat: false,
-      expectedStatus: '无可用本地模型',
-      expectedPlaceholder: '隐私优先仅使用本地模型'
+      expectedStatus: '请选择模型',
+      expectedPlaceholder: '请先选择本地模型或远程 API'
     },
     {
       name: 'normal Chat has a ready model',
@@ -104,8 +104,8 @@ describe('Chat model state', () => {
       expectedPlaceholder: '描述需要规划的任务'
     },
     {
-      name: 'privacy-first has a local ready model',
-      input: { routingStrategy: 'privacy-first', models: [REMOTE_READY, LOCAL_READY] },
+      name: 'explicit local model',
+      input: { selectedModelId: 'local-ready', models: [REMOTE_READY, LOCAL_READY] },
       expectedKind: 'ready',
       expectedCanChat: true,
       expectedStatus: '就绪',
@@ -118,7 +118,7 @@ describe('Chat model state', () => {
       planModeAvailable: true,
       planModeEnabled: false,
       executionMode: 'chat',
-      routingStrategy: 'local-first',
+      selectedModelId: 'remote-ready',
       models: [],
       ...input
     });
@@ -137,7 +137,7 @@ describe('Chat model state', () => {
       planModeAvailable: true,
       planModeEnabled: false,
       executionMode: 'chat',
-      routingStrategy: 'local-first',
+      selectedModelId: 'remote-ready',
       models: [
         model('checking', { availability: 'checking' }),
         model('failed', { availability: 'error' }),
@@ -156,7 +156,7 @@ describe('Chat model state', () => {
       planModeAvailable: true,
       planModeEnabled: false,
       executionMode: 'chat',
-      routingStrategy: 'local-first',
+      selectedModelId: 'remote-ready',
       models: [LOCAL_READY, model('local-disabled', { location: 'local', enabled: false }), REMOTE_READY]
     });
 

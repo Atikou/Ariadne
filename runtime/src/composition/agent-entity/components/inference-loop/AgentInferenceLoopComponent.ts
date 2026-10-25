@@ -23,7 +23,7 @@ import { V3AgentInferenceDispatchCheckpointFactory } from '../../../../control/e
 import { AgentRunExecutionDispatchController } from '../../../../control/execution/AgentRunExecutionDispatchController.js';
 import { ProductionAgentInferenceExecutionInputReader } from '../../../../control/execution/ProductionAgentInferenceExecutionInputReader.js';
 import type { AgentInstructionAssemblyService } from '../../../../control/ports/AgentInstructionAssembly.js';
-import type { ExactAgentModelInferenceRuntime } from '../../../../control/ports/AgentModelInference.js';
+import type { ExactAgentModelInferenceRuntime, AgentModelSelectionPreference } from '../../../../control/ports/AgentModelInference.js';
 import type { AgentLifecycleHooks } from '../../../../control/ports/AgentLifecycleHooks.js';
 import type { AgentRuntimeTelemetry } from '../../../../control/ports/AgentLifecycleObservability.js';
 import type { ConversationAttachmentStore } from '../../../../control/ports/ConversationAttachmentStore.js';
@@ -32,7 +32,8 @@ import { AgentRunAdmissionController } from '../../../../control/run/AgentRunAdm
 import type { InferenceStreamPublicProjectionPublisher } from '../../../../projection/InferenceStreamPublicProjectionPublisher.js';
 import {
   type AgentAdmissionAuthorityClock,
-  compileBootstrapAgentAdmissionAuthoritySource
+  compileBootstrapAgentAdmissionAuthoritySource,
+  resolveAuthorizedAgentModel
 } from '../../../BootstrapAgentAdmissionAuthorityBundleProvider.js';
 import { LifecycleHookedAgentEngine, type ProductionAgentLifecycleBridge } from '../../../ProductionAgentLifecycleBridge.js';
 import { ProductionAgentRunAdmissionSnapshotReader } from '../../../ProductionAgentRunAdmissionSnapshotReader.js';
@@ -68,7 +69,7 @@ export interface AgentInferenceLoopComponentHandle {
   readonly inputReader: ProductionAgentInferenceExecutionInputReader;
   readonly directivePlanner: DefaultAgentInferenceDirectivePlanner;
   readonly modelAvailability: Pick<ExactAgentModelInferenceRuntime, 'hasExactBinding'>;
-  hasExactModelAuthority(manifest: AgentAdmissionAuthoritySourceManifest): boolean;
+  hasExactModelAuthority(manifest: AgentAdmissionAuthoritySourceManifest, preference?: AgentModelSelectionPreference): boolean;
 }
 
 /** Owns exact model admission, inference preparation, and the required Agent loop. */
@@ -151,10 +152,8 @@ export function createAgentInferenceLoopComponent(
     inputReader,
     directivePlanner,
     modelAvailability: models,
-    hasExactModelAuthority: (manifest: AgentAdmissionAuthoritySourceManifest): boolean => {
-      return (manifest.modelCandidates ?? [manifest.model]).some((binding) => (
-        models.hasExactBinding(binding)
-      ));
+    hasExactModelAuthority: (manifest: AgentAdmissionAuthoritySourceManifest, preference?: AgentModelSelectionPreference): boolean => {
+      return resolveAuthorizedAgentModel(manifest, models, preference) !== null;
     }
   });
 }

@@ -3,11 +3,13 @@ param(
   [Parameter(Mandatory = $true)][string]$OutputRoot,
   [string]$MemorySessionId = '',
   [switch]$TaskCenter,
+  [switch]$AllModules,
+  [switch]$PendingDecisions,
   [switch]$TaskReminderRestart,
   [string]$PreviousEvidence = ''
 )
 $ErrorActionPreference = 'Stop'
-if (($TaskCenter -and $MemorySessionId) -or ($TaskReminderRestart -and ($TaskCenter -or $MemorySessionId))) { throw 'Module revisit scopes cannot be combined.' }
+if (@(@($TaskCenter, $TaskReminderRestart, $AllModules, $PendingDecisions, [bool]$MemorySessionId) | Where-Object { $_ }).Count -gt 1) { throw 'Module revisit scopes cannot be combined.' }
 if ($TaskReminderRestart -and -not $PreviousEvidence) { throw 'Task reminder restart requires previous actual native evidence.' }
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $taskDataRoot = [IO.Path]::GetFullPath($DataRoot)
@@ -35,7 +37,7 @@ $taskHasher = [Security.Cryptography.SHA256]::Create()
 try { $taskHash = [BitConverter]::ToString($taskHasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($taskIdentity))).Replace('-', '').ToLowerInvariant() }
 finally { $taskHasher.Dispose() }
 $taskEnvironment = @{
-  ARIADNE_SMOKE_TEST = '1'; ARIADNE_SMOKE_MODULE_UI_REVISIT = $(if ($TaskReminderRestart) { 'tasks-reminder-restart' } elseif ($TaskCenter) { 'tasks' } elseif ($MemorySessionId) { 'memory' } else { '1' });
+  ARIADNE_SMOKE_TEST = '1'; ARIADNE_SMOKE_MODULE_UI_REVISIT = $(if ($TaskReminderRestart) { 'tasks-reminder-restart' } elseif ($AllModules) { 'all' } elseif ($PendingDecisions) { 'decisions' } elseif ($TaskCenter) { 'tasks' } elseif ($MemorySessionId) { 'memory' } else { '1' });
   ARIADNE_SMOKE_MEMORY_REVISIT_SESSION = $(if ($MemorySessionId) { $MemorySessionId } else { $null });
   ARIADNE_SMOKE_TEST_OUTPUT = $taskOutput; ARIADNE_SMOKE_USER_DATA = $taskDataRoot;
   ARIADNE_SMOKE_WORKSPACE_ROOT = $taskWorkspace; ARIADNE_SMOKE_WORKSPACE_ID = 'workspace-' + $taskHash.Substring(0,20);
@@ -62,7 +64,7 @@ try {
   }
   [void]$taskProcess.WaitForExit()
   if ($taskProcess.ExitCode -ne 0) { throw 'Scoped module UI revisit failed.' }
-  $taskEvidenceFiles = if ($TaskReminderRestart) { @('task-notification-main-restart.json') } elseif ($TaskCenter) { @('task-center-source-execution.json','task-center-layout-1000.json','task-center-layout-1600.json') } elseif ($MemorySessionId) { @('memory-refresh-editing-execution.json') } else { @('agent-status-directory-execution.json','agent-status-layout-1000.json','agent-status-layout-1600.json') }
+  $taskEvidenceFiles = if ($TaskReminderRestart) { @('task-notification-main-restart.json') } elseif ($AllModules) { @('module-opening.json') } elseif ($PendingDecisions) { @('pending-decisions.json') } elseif ($TaskCenter) { @('task-center-source-execution.json','task-center-layout-1000.json','task-center-layout-1600.json') } elseif ($MemorySessionId) { @('memory-refresh-editing-execution.json') } else { @('agent-status-directory-execution.json','agent-status-layout-1000.json','agent-status-layout-1600.json') }
   foreach ($taskName in $taskEvidenceFiles) {
     if (-not ((Get-Content -LiteralPath (Join-Path $taskOutput $taskName) -Raw | ConvertFrom-Json).passed)) { throw ('Failed module evidence: ' + $taskName) }
   }

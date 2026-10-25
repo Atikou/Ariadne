@@ -314,7 +314,7 @@ function hello(
       dataRoot: fixture.dataRoot,
       modelRoots: [path.join(fixture.dataRoot, "models")],
       modelProviders: [],
-      routingStrategy: "privacy-first",
+      modelSelection: { modelId: '', localFallbackModelId: '' },
       agentPermissions: {
         approvalPolicy: "request",
         proposalApproval: "manual",

@@ -29,18 +29,26 @@ afterEach(async () => {
 });
 
 describe('ModelCatalogPublicProjectionPublisher', () => {
-  it('publishes measured quality changes without undefined JSON fields or key-order churn',async()=>{
-    const base=modelEntry('model-a','ready');const source=new MutableModelCatalogSource([base]);
-    const store=track(new SqlitePublicProjectionStore(tempRoot()));const publisher=new ModelCatalogPublicProjectionPublisher(source,store,{now:sequenceClock()});
-    await publisher.publishPending();expect(Object.hasOwn((await store.snapshot()).models[0]!,'quality')).toBe(false);
-    const quality={benchmarkId:'ariadne-text-quality-v1' as const,benchmarkDigest:`sha256:${'a'.repeat(64)}`,score:1,passed:6,total:6 as const,
-      evaluatedAt:'2026-10-04T03:00:00.000Z',validUntil:'2026-11-03T03:00:00.000Z',state:'current' as const};
-    source.replace([{...base,quality}]);expect((await publisher.publishPending()).publishedChanges).toBe(1);
-    expect((await store.snapshot()).models[0]).toMatchObject({version:2,quality});
-    source.replace([{...base,quality:Object.fromEntries(Object.entries(quality).reverse()) as typeof quality}]);
+  it('removes a historical quality field from the current catalog without rewriting its old commit', async () => {
+    const source = new MutableModelCatalogSource([modelEntry('model-a', 'ready')]);
+    const store = track(new SqlitePublicProjectionStore(tempRoot()));
+    const quality = { benchmarkId: 'ariadne-text-quality-v1' as const, benchmarkDigest: `sha256:${'a'.repeat(64)}`,
+      score: 1, passed: 6, total: 6 as const, evaluatedAt: '2026-10-04T03:00:00.000Z', validUntil: '2026-11-03T03:00:00.000Z', state: 'current' as const };
+    const legacy = new ModelCatalogPublicProjectionPublisher(source, {
+      readModelProjectionHeads: () => store.readModelProjectionHeads(),
+      readPublicProjectionSourceCheckpoint: id => store.readPublicProjectionSourceCheckpoint(id),
+      append: commit => store.append({ ...commit, changes: commit.changes.map(change => (
+        change.operation === 'upsert' && change.feature === 'models'
+          ? { ...change, dto: { ...change.dto, quality } } : change
+      )) })
+    }, { now: sequenceClock() });
+    await legacy.publishPending();
+    expect((await store.snapshot()).models[0]).toMatchObject({ version: 1, quality });
+    const publisher = new ModelCatalogPublicProjectionPublisher(source, store, { now: sequenceClock() });
+    expect((await publisher.publishPending()).publishedChanges).toBe(1);
+    expect((await store.snapshot()).models[0]).toMatchObject({ version: 2 });
+    expect(Object.hasOwn((await store.snapshot()).models[0]!, 'quality')).toBe(false);
     expect((await publisher.publishPending()).publishedChanges).toBe(0);
-    source.replace([{...base,quality:{...quality,state:'expired'}}]);expect((await publisher.publishPending()).publishedChanges).toBe(1);
-    expect((await store.snapshot()).models[0]?.quality?.state).toBe('expired');
   });
   it('reconciles model additions, health changes, deletion, and re-enable deterministically', async () => {
     const source = new MutableModelCatalogSource([

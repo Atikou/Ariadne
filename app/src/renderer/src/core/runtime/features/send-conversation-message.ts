@@ -1,7 +1,6 @@
 import {
   PERSONAL_ASSISTANT_WORKSPACE_ID,
   PUBLIC_PROJECTION_CONTRACT_VERSION,
-  type ChatRoutingStrategy,
   type ConversationMessageExecution,
   type EncodedImageAttachment,
   type ModelInferenceOptions,
@@ -17,7 +16,7 @@ import { ConversationInputDeliveryController } from './conversation-input-delive
 export interface SendMessageOptions {
   modelId?: string;
   inference?: ModelInferenceOptions;
-  routingStrategy?: ChatRoutingStrategy;
+  localFallbackModelId?: string | null;
   workspaceId?: string;
   sessionId?: string | null;
   selectSession?: boolean;
@@ -66,7 +65,7 @@ export async function sendConversationMessage(
     mode: workspaceId === PERSONAL_ASSISTANT_WORKSPACE_ID ? 'chat' : planMode ? 'plan' : 'agent',
     ...(options.modelId === undefined ? {} : { modelId: options.modelId }),
     ...(options.inference === undefined ? {} : { inference: options.inference }),
-    ...(options.routingStrategy === undefined ? {} : { routingStrategy: options.routingStrategy })
+    ...(options.localFallbackModelId === undefined ? {} : { localFallbackModelId: options.localFallbackModelId })
   };
   const pending = host.beginPendingChat(message, new Date().toISOString(), options.draft?.submissionId, selectedSessionId ?? null, options.draft?.draftOwnerKey);
   host.publish();

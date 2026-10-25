@@ -17,7 +17,7 @@ import type {
   MutateConversationSessionCommit,
   ProjectConversationAgentStartFailureCommit,
   ProjectConversationAgentResultCommit
-} from '../../control/ports/ConversationAuthorityPersistence.js';
+} from '../../control/ports/ConversationAuthorityPersistenceV2.js';
 import type { CommittedConversationRunHandoffCommand, ConversationRunHandoffCommit } from '../../control/ports/ConversationRunHandoffPersistence.js';
 import { insertConversationSessionVersion } from './conversation/ConversationSessionVersionStore.js';
 import { loadConversationHistoryThroughLineage } from './conversation/SqliteConversationNavigationStore.js';

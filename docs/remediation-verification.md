@@ -2,6 +2,54 @@
 
 本页记录当前整改的实际边界。每项只有实现、正式说明和对应验收都完成后才可认定完成；历史测试和模型验收不代表本次修改已验收。
 
+## 2026-10-25：全局模块复验与历史数据启动修复
+
+本轮从模块注册、服务声明、Renderer Feature Store、原始详情导航及真实 Main/Runtime 启动链路检查现有功能，修复了以下可复现问题：
+
+- 任务中心翻页先修改页码/游标、后读取远端，失败时出现页码与列表不一致且重试丢失历史。现在验证响应后原子提交分页状态；失败保留原页，筛选变化先清除旧范围列表，失效游标清除对应历史与选择。两项新回归先失败后通过，真实生产组件夹具覆盖失败后重试。
+- 明确模型选择改造后，旧消息中保存的 routingStrategy 被新的命令 Schema 拒绝，导致已有数据无法启动。Conversation Authority 的历史记录读取边界单独接受原四种严格枚举，不改写不可变消息，不恢复自动路由；新命令仍使用当前公开契约。四种旧值先失败后通过，未知字段/值继续拒绝。
+- settings v8 到 v9 只替换选择偏好、没有改变 Provider 传输，却增加 revision，导致未结束 Run 的精确 Provider/model/revision 绑定无法恢复。该升级保持原 revision；更早版本中确实改变 Provider 身份的迁移规则保持不变。四种旧策略迁移测试先失败后通过，连接和密钥保留。
+- 重复打开同一待确认详情时，选择 ID 不变，焦点仍留在任务中心。显式详情读取先发布未选择状态，核实响应后重新发布选择，使原权限卡片重新取得焦点；没有提交批准或重试。真实保留的待审批 Run 连续两次导航均通过，原 Run/Decision 版本、会话和焦点一致。
+
+验收也修正了两个夹具问题：同一 Decision 同时在聊天与权限面板出现时，必须定位实际获得焦点的原卡片；设置通过 API 安装后，原已挂载 Composer 仍需通过真实模型选择器选择测试连接。新增生产模块逐项打开门，使用当前注册模块、真实组件和声明服务，遍历设置分类，不再仅凭占位组件认为入口可用。
+
+已完成：Runtime 全套 1,227 项、App 全套 540 项（另 7 项 opt-in 跳过）、集成 137 项、最新 Renderer UI 246 项、五种桌面配置入口检查；构建、架构和持久化契约检查通过。历史执行字段进一步严格区分新旧形状后，相关 14 项回归再次通过。上述门的执行时点及范围分别记录于 `artifacts/global-modules-*.log`。实际待确认导航证据为 `artifacts/global-modules-decisions-verified/pending-decisions.json`。
+
+逐模块真实窗口复验通过：常规配置 13 个模块、预览配置包含可视化审查共 14 个模块，以及六个设置分类。证据为 `artifacts/global-modules-opening-restart/module-opening.json` 和 `artifacts/global-modules-preview-opening/module-opening.json`；均使用隔离历史测试数据和真实 Main/Runtime。长期记忆覆盖创建、编辑、审核、召回、忘记和未保存修改保护；文件覆盖读写、版本冲突、重命名和删除；前一完整流程各业务断言均通过，最终请求总数因旧测评删除而失效，已改为从现有场景计算，保留原失败证据。
+
+最终严格历史校验已重新构建 Runtime，并再次启动原隔离历史库：`artifacts/global-modules-history-final-startup/pending-decisions.json` 验证两次原权限详情导航，`artifacts/global-modules-final-14-modules/module-opening.json` 验证 14 个模块和六个设置分类，均通过。
+
+最终生产 Electron 全门及 Main 重启恢复均通过，`fatalError=null`、`consoleErrors=[]`，63 次确定性 Provider 请求、59 次响应、4 次预期取消。消息/流式/图片、权限与提问、工作流、目标、任务中心、记忆、文件、终端重启和五个 Runtime 故障边界均通过。证据为 `artifacts/global-modules-complete-20261025/electron-runtime-smoke.json`、`desktop-restart-delivery.json` 及同目录各功能回执。测试使用隔离数据和受控 HTTPS Provider；共享工作区的模型选择/旧代码清理变更保持原样，不以之前的 DeepSeek 文本聊天成功代表本轮所有外部服务能力。
+
+## 2026-10-25：独立远程连接与真实 DeepSeek 收发
+
+远程配置从固定四个厂商槽位改为可添加、命名、启停和删除的连接；每条连接独立保存地址、加密密钥和一个上游模型，并自行选择接口类型。同名上游模型使用不同连接身份，Runtime 请求、凭据引用和能力记录分别隔离。settings.toml 升至 v8，迁移 v1—v7 的保存配置及密文；重复上游名获得不同连接身份，既有唯一模型身份保留。官方 DeepSeek 的旧 flash 别名迁移到实际响应使用的 deepseek-flash。
+
+DeepSeek 原故障包含设置页使用错误模型 ID、16-token 探测被默认推理耗尽、服务端返回模型名与旧别名不一致，以及检测成功没有形成文本资格。现在检测按已保存连接身份调用，使用有限的 256-token 文本探测并在支持时关闭推理；只有完整文本响应才记录文本/流式资格，不授予 Agent、Plan 或图片资格。修正隐藏配置字段 step=1024 导致整个设置表单无法提交的问题。新增隔离测试补齐重试/限流策略，旧折叠测试改为检查提取后的远程连接组件。
+
+本轮自动验证按工作区及集成门完成：component-contracts 5、protocol 110、agent-core 114、live-work 5、Runtime 1,243、App 539、集成 136、Dockview 2 项通过，合计 2,154 项；7 项 opt-in 跳过。App 构建及四套类型检查通过，架构检查通过。完整 Renderer UI 235 项、独立设置操作/连接 UI 15 项通过。首轮全量测试曾停在新增测试夹具缺失策略和旧组件路径断言，修正后对应 Runtime/App 全套均通过；未重新运行生产 Electron 夹具全门或发布签名安装包。
+
+真实桌面用户配置成功迁移至 v8，DeepSeek 加密密钥保留。通过实际设置页启用、保存、检测后显示“1 个可用，0 个已关闭”。新建独立验收会话并明确选择 DeepSeek，点击发送收到“DeepSeek 点击发送正常。”，再按 Enter 收到“DeepSeek 回车发送正常。”；两轮界面均完成，无失败提示。验收会话与已启用连接保留。此结论针对文本聊天，不代表 Agent/Plan/图片能力完成验收。
+
+证据：`artifacts/remote-config-20261025/actual-deepseek-chat.png`、同目录筛选后的 UI 文本；`artifacts/remote-config-{full-tests,app-tests,integration,dockview,renderer-full,ui,build,typecheck,architecture}.log`。full-tests 保留初轮失败记录，最终 App 通过结果在 app-tests 日志，Runtime 通过结果在 full-tests 日志。
+
+## 2026-10-25：模块打开、消息提交及桌面生命周期复核
+
+针对真实用户窗口中“长期记忆打不开、点击发送或 Enter 没反应”沿 UI、Main、Runtime、模型准入和持久化链路复核，修复以下已复现问题：
+
+- Dockview 默认定位不再引用尚未打开的可选模块；长期记忆可独立打开，已有面板复用。
+- 模型资格库原先对 sqlite_master 的 SQL 排版做摘要，误拒绝已发布的同版本有效数据库。现在共享所有者 DDL 并比较词法单元；仍拒绝约束、类型、额外索引和触发器变化，保留原资格记录。
+- 本地模型授权占位符不再作为具体模型 ID 做准入检查。预提交与 Run 授权共用选择、授权范围和精确绑定校验，传入 chat/agent/plan、模型选择、路由和图片要求；禁用模型及不足的执行资格仍拒绝。
+- 发送失败保留可公开错误的原因和代码，不展示私有持久化异常正文；新发送和切换会话清除上一轮交互错误。
+- Main 在主文档重载、渲染进程退出和窗口销毁时释放终端；创建尚在持久化阶段也受取消约束。正常退出保留完成监听直到 PTY 结算，防止关闭后仍登记运行中。
+- 修正 Main 存储边界导入、Node 打包版本测试、耐久回执压力测试时限、已过期的输入 outbox 测试契约和新增会话导出菜单的冒烟预期。
+
+验证：完整 `npm test` 通过 2,145 项（含 Runtime 1,238、App 535、集成 136、Dockview 2）；7 项 opt-in 测试跳过。完整 `npm run build`（含 App 四套类型门）、架构/生成目录、Runtime independence、持久化契约均通过。Renderer UI 门 229 项通过。生产 Electron 独立数据目录端到端门 passed=true，包含 70 次确定性 Provider 请求、66 次响应、4 次预期取消，消息/流式/附件/权限/任务/长期记忆/文件及崩溃恢复通过，fatalError=null、consoleErrors=[]。该 Provider 是受控夹具，不代表外部 API 验收。
+
+真实用户数据环境保留原库，实际本地 Qwen 模型分别通过鼠标发送和 Enter 提交，界面收到“发送正常”“回车正常”；最新进程终端正常启动。实际菜单可打开长期记忆，选择会话后成功读取列表并显示新增/筛选/召回入口（当前范围为空，无新建或修改真实记忆）。原新会话中的 `hi` 草稿保留，没有发送或覆盖。验收会话保留供复核。
+
+证据：`artifacts/global-review-20261025-final/` 中的完整检查日志、`electron-runtime-smoke.json`、实际窗口 `actual-local-chat.jpg`。初轮全量门暴露的旧测试契约和初轮 Electron 菜单预期失败已修正后复验。此次未执行签名安装包发布、全部 opt-in 备份恢复/系统通知及真实远端 Provider 门，不将既有 T11—T16 未完成项改为完成，也不据此宣称项目不存在其他缺陷。
+
 ## 2026-10-05：唯一生产主干清理
 
 状态：清理实现与生产主流程验证完成，安装包验收待发布环境。真实 Windows 通知的完整验收归属 T04，仍未完成。
@@ -1041,3 +1089,14 @@ Settings 提供影响预览、保留引用数量、分类选择、有效期和�
 安装包依赖暂存与固定版本 Transformers 环境已安装/导入校验。发现 Sandbox manifest 仍为 development_unsigned；未改变信任要求，也未把本机开发资产标为发行通过。Python 环境的 relocation 与签名/完整安装包资产留在原发行门验收。旧 18 文件认证备份保留；为恢复界面验收另生成原设置中登记工作区的独立备份，修正测试数据范围，不绕过生产导航授权。
 
 尚未完成：完整 ApplicationController 的备份/恢复原维护 hooks、目录交接后的生产 packaged 冷启动/历史及附件/受保护载荷和无重复副作用演练、中断启动选择、原生 picker 与安装包/发行资产门。T11 四项仍未勾选，ADR Proposed；T12—T16 按顺序保留。全部完成、正式文档收敛、最后删除 TODO 后直接关机，不询问；当前不关机。
+# 2026-10-25：旧组件清理与用户明确选择模型
+
+以用户最后的范围决定为准：移除全部自动优先策略，聊天模型只分本地模型和远程 API，由用户选择。远程备用默认关闭，可指定一个本地模型；启用后在新任务准入前进行一次最长 15 秒的连接检查，失败才固化本地绑定。用户取消不触发备用，已经开始的 Run 不换模型、不重放工具。能力检测仍验证文本、视觉、工具和计划资格，不评分或排名。
+
+删除六题测评页面、执行器、题库、命令入口、排名及旧冒烟场景；删除确认无生产消费者的 visual-review mock、旧审批状态工具、Runtime context/barrel/util、RestrictedProcessRunner 及专属测试。旧双推理通道方案／总结和旧 ECA roadmap 的有效约束并入当前文档；移除一次性 T10/T11 状态重写脚本和内部废弃类型别名。源码审计补齐 Renderer/Preload、别名、子进程及独立 CLI 的入口，保留有效的本地记忆索引验收 CLI。验收矩阵中退役功能行移除，两个历史验收条目改为现行分维度格式，原证据路径保留。
+
+设置升级到 schema 9：旧优先策略退出配置，模型和凭据等字段保留，不替用户选择模型。已保存的质量报告、会话执行元数据、Projection 和回执只保留读取与完整性校验；新命令拒绝旧策略。Conversation 物理 Schema 4 不变，新增 `ConversationAuthorityPersistenceV2` 承载当前执行元数据，冻结的 V1 类型与原九个持久化摘要保持不变；旧策略任务不按新选择自动重解释。
+
+验证记录：`artifacts/source-cleanup/verification-summary.json`。全量 2,140 测试通过、7 项原有跳过；V2 接线后 Runtime 164 文件／1,228 测试再次通过。App/Runtime 类型、全量构建、架构、持久化、发布契约、文档链接与 Runtime 独立性检查通过。完整隔离 Electron UI 243 检查通过，之后模型选择 10 检查和设置卡片 10 检查通过；窄屏模型菜单在收起会话侧栏后验证，并保存实际截图。923 个源码文件的支持入口审计无不可达文件或未解析引用；Runtime 打包 dry-run 1,534 文件不含被删除模块。
+
+边界：本次没有调用商业 API 或真实 GGUF 进行验收，没有替换安装版或进行签名发布。现有用户数据与无关工作区改动保留。后续未完成的整体整改仍以 TODO 为准。

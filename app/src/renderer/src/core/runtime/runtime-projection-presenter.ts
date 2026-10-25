@@ -425,7 +425,6 @@ export function presentModel(model: PublicModelProjection): ModelSummary {
     supportsPlan: model.supportsPlan,
     supportsVision: model.supportsVision,
     qualificationState: model.qualificationState,
-    ...(model.quality===undefined?{}:{quality:model.quality})
   };
 }
 

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   modelInferenceProfileSchema,
+  modelSelectionSchema,
   runtimeCommandSchema,
   runtimeResultSchema,
   runtimeStatusSchema
@@ -21,13 +22,20 @@ import type {
 import {
   AGENT_APPROVAL_POLICIES,
   AGENT_PERMISSION_MODES,
-  AGENT_PROVIDER_IDS,
   AGENT_SANDBOX_MODES,
   AGENT_TOOL_PERMISSIONS,
   SYSTEM_CAPABILITIES
 } from './contract';
 
-export const agentProviderIdSchema = z.enum(AGENT_PROVIDER_IDS);
+export const agentProviderIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{1,127}$/u)
+  .refine(value => !['constructor', 'prototype', '__proto__'].includes(value));
+export const agentProviderMetadataSchema = z.object({
+  label: z.string().trim().min(1).max(128),
+  modelId: z.string().trim().min(1).max(256),
+  protocol: z.enum(['openai-compatible', 'anthropic-messages']),
+  inferenceDialect: z.enum(['openai', 'deepseek', 'kimi', 'anthropic']),
+  supportsVision: z.boolean()
+});
 
 export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
   z.union([
@@ -162,12 +170,6 @@ export const userPreferencesSchema = z
   })
   .strict();
 
-export const agentRoutingStrategySchema = z.enum([
-  'local-first',
-  'cloud-first',
-  'privacy-first',
-  'quality-first'
-]);
 
 const absolutePathSchema = z.string().trim().min(1).max(32_768).refine(
   (value) => /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value),
@@ -211,6 +213,10 @@ const httpsUrlSchema = z.string().trim().url().max(2_048).refine(
 
 const agentProviderSettingsPatchSchema = z
   .object({
+    label: agentProviderMetadataSchema.shape.label.optional(),
+    protocol: agentProviderMetadataSchema.shape.protocol.optional(),
+    inferenceDialect: agentProviderMetadataSchema.shape.inferenceDialect.optional(),
+    supportsVision: z.boolean().optional(),
     enabled: z.boolean().optional(),
     baseUrl: httpsUrlSchema.optional(),
     model: z.string().trim().min(1).max(256).optional(),
@@ -243,7 +249,7 @@ export const agentSettingsOperationSchema = z.discriminatedUnion('kind', [
       allowedPermissions: z.array(z.enum(AGENT_TOOL_PERMISSIONS)).min(1).max(5)
     }).strict().optional()
   }).strict(),
-  z.object({ kind: z.literal('routing.set'), strategy: agentRoutingStrategySchema }).strict(),
+  z.object({ kind: z.literal('modelSelection.set'), selection: modelSelectionSchema }).strict(),
   z.object({ kind: z.literal('assistant.replace'), assistant: assistantChatProfileSchema }).strict(),
   z.object({ kind: z.literal('modelRoots.replace'), roots: z.array(absolutePathSchema).max(8) }).strict(),
   z.object({
@@ -255,6 +261,14 @@ export const agentSettingsOperationSchema = z.discriminatedUnion('kind', [
     providerId: agentProviderIdSchema,
     patch: agentProviderSettingsPatchSchema
   }).strict(),
+  z.object({ kind: z.literal('provider.add'), providerId: agentProviderIdSchema,
+    provider: agentProviderMetadataSchema.extend({
+      enabled: z.boolean(), baseUrl: httpsUrlSchema, model: z.string().trim().min(1).max(256),
+      contextWindowTokens: z.number().int().min(8192).max(10000000),
+      maxOutputTokens: z.number().int().min(256).max(1000000), inference: modelInferenceProfileSchema
+    }).strict(), apiKey: z.string().trim().min(8).max(8192).optional()
+  }).strict(),
+  z.object({ kind: z.literal('provider.remove'), providerId: agentProviderIdSchema }).strict(),
   z.object({
     kind: z.literal('subagentProviders.replace'),
     providers: z.array(agentSubagentProviderSettingsSchema).max(8)
@@ -264,12 +278,12 @@ export const agentSettingsOperationSchema = z.discriminatedUnion('kind', [
 
 export const agentSettingsMutationSchema = z.object({
   expectedRevision: z.number().int().positive(),
-  operations: z.array(agentSettingsOperationSchema).min(1).max(16)
+  operations: z.array(agentSettingsOperationSchema).min(1).max(40)
 }).strict().superRefine((mutation, context) => {
   const identities = new Set<string>();
   for (const [index, operation] of mutation.operations.entries()) {
-    const identity = operation.kind === 'provider.update'
-      ? `${operation.kind}:${operation.providerId}`
+    const identity = 'providerId' in operation
+      ? `provider:${operation.providerId}`
       : operation.kind;
     if (identities.has(identity)) {
       context.addIssue({
@@ -293,6 +307,7 @@ export const agentWorkspacePinUpdateSchema = agentWorkspaceRequestSchema.extend(
 export const apiKeyStatusSchema = z.enum(['missing', 'configured', 'unavailable']);
 
 const agentProviderSettingsViewSchema = z.object({
+  ...agentProviderMetadataSchema.shape,
   enabled: z.boolean(),
   baseUrl: httpsUrlSchema,
   model: z.string().trim().min(1).max(256),
@@ -314,10 +329,10 @@ const agentWorkspaceSettingsViewSchema = z.object({
 }).strict();
 
 export const agentSettingsViewSchema = z.object({
-  schemaVersion: z.literal(7),
+  schemaVersion: z.literal(9),
   revision: z.number().int().positive(),
   assistant: assistantChatProfileSchema,
-  routingStrategy: agentRoutingStrategySchema,
+  modelSelection: modelSelectionSchema,
   permissionMode: z.enum(AGENT_PERMISSION_MODES),
   customPermissions: z.object({
     approvalPolicy: z.enum(AGENT_APPROVAL_POLICIES),

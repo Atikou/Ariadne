@@ -214,6 +214,19 @@ describe('RuntimeStore command routing', () => {
     expect(commands).toEqual([]);
   });
 
+  it('publishes a new focus selection when reopening the same pending decision', async () => {
+    const store = await initializedDecisionStore([], [permissionDecision()]);
+    await store.decisions.openDetail('decision-permission');
+    const opened: Array<string | null> = [];
+    const unsubscribe = store.decisions.view.subscribe(() => opened.push(store.decisions.view.getSnapshot().openedDecisionId));
+    try {
+      await store.decisions.openDetail('decision-permission');
+      expect(opened).toContain(null);
+      expect(opened.at(-1)).toBe('decision-permission');
+      expect(store.decisions.isPendingDecisionLoaded('decision-permission', 'run-permission', 1)).toBe(true);
+    } finally { unsubscribe(); }
+  });
+
   it('constructs exact v3 Permission, Plan, and user-answer commands from verified scoped details', async () => {
     const commands: RuntimeCommand[] = [];
     const decisions = [permissionDecision(), planDecision(), userQuestionDecision()];
@@ -372,8 +385,10 @@ describe('RuntimeStore command routing', () => {
     const error = await store.messages.send('Hello', { workspaceId: 'workspace-a' })
       .catch((caught: unknown) => caught);
 
-    expect(error).toBeInstanceOf(PublicResultError);
-    expect((error as PublicResultError).publicError.code).toBe('runtime_unavailable');
+    // The durable sender retains uncertainty and the original public failure.
+    // An unavailable Runtime after dispatch cannot authorize a fresh submission.
+    expect(error).toMatchObject({ uncertain: true, cause: expect.any(PublicResultError) });
+    expect((error as { cause: PublicResultError }).cause.publicError.code).toBe('runtime_unavailable');
     expect(runtimeRequestErrorMessage(new Error(
       "Error invoking remote method 'runtime:request': Error: safe message"
     ))).toBe('safe message');

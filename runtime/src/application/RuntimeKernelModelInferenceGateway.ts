@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import type { ModelQualitySummary } from '@ariadne/protocol/public';
 
 import { cloneCanonicalAgentToolInput } from '@ariadne/agent-core';
 import type {
@@ -32,70 +31,60 @@ implements ExactAgentModelInferenceRuntime {
     private readonly remote: ExactAgentModelInferenceRuntime,
     private readonly localModels: LocalModelService,
     private readonly modelProviders: RuntimeBootstrap['modelProviders'],
-    private readonly defaultRoutingStrategy: NonNullable<RuntimeBootstrap['routingStrategy']>,
+    private readonly defaultSelection: NonNullable<RuntimeBootstrap['modelSelection']>,
     private readonly modelCapabilities: ModelCapabilityAuthority | undefined,
     private readonly isRemoteAvailable: (providerId: string, modelId: string) => boolean,
     private readonly disabledLocalModelIds: ReadonlySet<string> = new Set(),
-    private readonly qualityForModel: (providerId:string,modelId:string)=>ModelQualitySummary|null = ()=>null,
-    private readonly assertInferenceHealthy: () => void = () => undefined
+    private readonly assertInferenceHealthy: () => void = () => undefined,
+    private readonly checkRemoteAvailability?: (modelId: string, signal: AbortSignal) => Promise<boolean>
   ) {}
 
   public resolveBinding(
     settingsRevision: number,
     preference: AgentModelSelectionPreference = {}
   ): DispatchExactAgentModelInferenceRequest['binding'] | null {
+    return this.resolveSelectedBinding(settingsRevision, preference);
+  }
+
+  public async prepareBinding(settingsRevision: number, preference: AgentModelSelectionPreference, signal: AbortSignal): Promise<DispatchExactAgentModelInferenceRequest['binding'] | null> {
+    signal.throwIfAborted();
+    const modelId = preference.modelId ?? this.defaultSelection.modelId;
+    const fallbackId = preference.localFallbackModelId === undefined ? this.defaultSelection.localFallbackModelId : preference.localFallbackModelId;
+    const remote = this.modelProviders?.find(provider => provider.enabled && provider.model === modelId);
+    if (!remote || !fallbackId || !this.checkRemoteAvailability) return this.resolveBinding(settingsRevision, preference);
+    // Connection failure is resolved before authority admission, never by swapping a running task's model.
+    const available = await this.checkRemoteAvailability(modelId, signal);
+    signal.throwIfAborted();
+    return this.resolveSelectedBinding(settingsRevision, preference, available);
+  }
+
+  private resolveSelectedBinding(settingsRevision: number, preference: AgentModelSelectionPreference, remoteAvailable?: boolean): DispatchExactAgentModelInferenceRequest['binding'] | null {
     this.assertInferenceHealthy();
     const executionMode = preference.executionMode ?? 'agent';
-    const local = this.localModels.clients().filter((client) => !this.disabledLocalModelIds.has(client.name)).map((client) => ({
-      providerId: LOCAL_AGENT_MODEL_PROVIDER_ID,
-      modelId: client.name,
-      settingsRevision
-    }));
-    const remote = (this.modelProviders ?? []).flatMap((provider) => (
-      provider.enabled
-      && this.isRemoteAvailable(provider.providerId, provider.model)
-        ? [{
-            providerId: provider.providerId,
-            modelId: provider.model,
-            settingsRevision
-          }]
-        : []
-    ));
-    if (preference.modelId !== undefined) {
-      const selected = [...local, ...remote].find(
-        (candidate) => candidate.modelId === preference.modelId
-      ) ?? null;
-      if (selected === null) return null;
+    const modelId = preference.modelId ?? this.defaultSelection.modelId;
+    if (!modelId) return null;
+    const binding = { providerId: LOCAL_AGENT_MODEL_PROVIDER_ID, modelId, settingsRevision };
+    const local = this.localModels.clients().find(client => client.name === modelId);
+    if (local !== undefined) {
+      if (this.disabledLocalModelIds.has(modelId)) return null;
+      this.assertQualified(binding, executionMode, preference.requiresVision === true);
+      return binding;
+    }
+    const provider = this.modelProviders?.find(provider => provider.model === modelId && provider.enabled);
+    // Deleted/disabled selections do not silently become a different model.
+    if (provider === undefined) return null;
+    if (remoteAvailable ?? this.isRemoteAvailable(provider.providerId, modelId)) {
+      const selected = { ...binding, providerId: provider.providerId };
       this.assertQualified(selected, executionMode, preference.requiresVision === true);
       return selected;
     }
-    const strategy = preference.routingStrategy ?? this.defaultRoutingStrategy;
-    const available = strategy === 'privacy-first'
-      ? local
-      : strategy === 'local-first'
-        ? [...local, ...remote]
-        : [...remote, ...local];
-    if (strategy === 'quality-first') {
-      const qualified = available.filter(candidate => this.isQualified(candidate,executionMode,preference.requiresVision===true));
-      const ranked = qualified.map((binding,index)=>({binding,index,quality:this.qualityForModel(binding.providerId,binding.modelId)}))
-        .filter(candidate=>candidate.quality?.state==='current')
-        .sort((left,right)=>right.quality!.score-left.quality!.score || left.index-right.index);
-      if (ranked.length>0) return ranked[0]!.binding;
-      if (qualified.length>0) throw new ModelExecutionQualificationError('model_quality_evaluation_required');
-    }
-    const selected = available.find((candidate) => this.isQualified(
-      candidate,
-      executionMode,
-      preference.requiresVision === true
-    ));
-    if (selected !== undefined) return selected;
-    if (available.length > 0) {
-      throw new ModelExecutionQualificationError(qualificationErrorCode(
-        executionMode,
-        preference.requiresVision === true
-      ));
-    }
-    return null;
+    const fallbackId = preference.localFallbackModelId === undefined
+      ? this.defaultSelection.localFallbackModelId : preference.localFallbackModelId;
+    if (!fallbackId || this.disabledLocalModelIds.has(fallbackId)
+      || !this.localModels.clients().some(client => client.name === fallbackId)) return null;
+    const fallback = { ...binding, modelId: fallbackId };
+    this.assertQualified(fallback, executionMode, preference.requiresVision === true);
+    return fallback;
   }
 
   private assertQualified(

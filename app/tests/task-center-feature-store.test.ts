@@ -27,6 +27,37 @@ function deferred<T>() {
 }
 
 describe('bounded task center interaction store', () => {
+  it('commits the page number and cursor history only after a successful page read', async () => {
+    let fail = false;
+    const f = fixture(async command => {
+      if (command.kind !== 'tasks.query') throw new Error('unexpected');
+      if (fail) throw new Error('offline');
+      return page(command, command.cursor === 'cursor-2' ? 2 : 1);
+    });
+    await f.store.refresh(false); f.store.rememberScroll(92);
+    fail = true; await f.store.navigatePage('next');
+    expect(f.store.view.getSnapshot()).toMatchObject({ pageNumber: 1, hasPrevious: false, scrollTop: 92,
+      page: { rows: [{ metadata: { reference: { sourceId: 'run-1' } } }] }, error: '任务目录读取失败，请重试。' });
+    fail = false; await f.store.navigatePage('next');
+    expect(f.store.view.getSnapshot()).toMatchObject({ pageNumber: 2, hasPrevious: true });
+    fail = true; await f.store.navigatePage('previous');
+    expect(f.store.view.getSnapshot()).toMatchObject({ pageNumber: 2, hasPrevious: true,
+      page: { rows: [{ metadata: { reference: { sourceId: 'run-2' } } }] } });
+    fail = false; await f.store.navigatePage('previous');
+    expect(f.execute.mock.calls.at(-1)?.[0]).toMatchObject({ cursor: 'cursor-1' });
+    expect(f.store.view.getSnapshot()).toMatchObject({ pageNumber: 1, hasPrevious: false });
+  });
+  it('does not show the old directory under a new filter when loading fails', async () => {
+    const f = fixture(async command => {
+      if (command.kind !== 'tasks.query') throw new Error('unexpected');
+      if (command.filter.states.length) throw new Error('offline');
+      return page(command);
+    });
+    await f.store.refresh(false);
+    await f.store.setFilter({ ...f.store.view.getSnapshot().filter, states: ['failed'] });
+    expect(f.store.view.getSnapshot()).toMatchObject({ page: null, selected: null, loading: false,
+      filter: { states: ['failed'] }, error: '任务目录读取失败，请重试。' });
+  });
   it('returns to the same immutable first-page cursor and retains filters, selection and scroll', async () => {
     const f = fixture(async command => {
       if (command.kind !== 'tasks.query') throw new Error('unexpected');

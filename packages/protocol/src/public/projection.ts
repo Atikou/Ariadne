@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { canonicalUtcTimestampSchema } from '../common.js';
-import { modelQualitySummarySchema } from './model-quality-summary.js';
+import { modelQualitySummarySchema } from './stored-model-quality-summary.js';
 
 import { imageAttachmentRefSchema } from './attachments.js';
 

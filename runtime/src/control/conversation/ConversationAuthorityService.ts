@@ -32,7 +32,7 @@ import type {
   CommittedConversationAuthorityCommand,
   ConversationAuthorityTransaction,
   ConversationAuthorityUnitOfWork
-} from '../ports/ConversationAuthorityPersistence.js';
+} from '../ports/ConversationAuthorityPersistenceV2.js';
 
 export interface CreateConversationSessionResult extends CreatedConversationSession {
   readonly receipt: Extract<

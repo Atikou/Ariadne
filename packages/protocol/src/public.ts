@@ -43,7 +43,7 @@ import { publicMessageMetadataWindowRequestSchema, publicMessageMetadataWindowRe
 import { publicConversationReceiptRequestSchema, publicConversationReceiptResultSchema,
   publicConversationInferenceRequestSchema, publicConversationInferenceResultSchema } from './public/projection-conversation.js';
 import { longMemoryCommandSchemas, longMemoryResultSchemas } from './public/long-memory.js';
-import { modelQualityCommandSchema, modelQualityResultSchema, modelQualitySummarySchema } from './public/model-quality.js';
+import { modelQualityResultSchema, modelQualitySummarySchema } from './public/stored-model-quality.js';
 import { workspaceDocumentCommandSchemas,workspaceDocumentResultSchemas } from './public/workspace-documents.js';
 import { runtimeHealthSchema } from './public/runtime-health.js';
 import { createTaskCenterNavigationResultSchema, taskCenterQuerySchema, taskCenterNavigationSchema,
@@ -67,7 +67,7 @@ export * from './public/decision-action.js';
 export * from './public/productivity.js';
 export * from './public/task-center.js';
 export * from './public/long-memory.js';
-export * from './public/model-quality.js';
+export * from './public/stored-model-quality.js';
 export * from './public/workspace-documents.js';
 export type { JsonValue } from './common.js';
 export { ARIADNE_RUNTIME_PROTOCOL_VERSION } from './common.js';
@@ -162,13 +162,11 @@ export const modelInferenceOptionsSchema = z.object({
 }).strict();
 export type ModelInferenceOptions = z.infer<typeof modelInferenceOptionsSchema>;
 
-export const chatRoutingStrategySchema = z.enum([
-  'local-first',
-  'cloud-first',
-  'privacy-first',
-  'quality-first'
-]);
-export type ChatRoutingStrategy = z.infer<typeof chatRoutingStrategySchema>;
+export const modelSelectionSchema = z.object({
+  modelId: z.string().trim().max(256),
+  localFallbackModelId: z.string().trim().max(256)
+}).strict();
+export type ModelSelection = z.infer<typeof modelSelectionSchema>;
 
 export const workspaceAccessModeSchema = z.enum(['read', 'write']);
 export type WorkspaceAccessMode = z.infer<typeof workspaceAccessModeSchema>;
@@ -617,7 +615,7 @@ export const conversationMessageExecutionSchema = z.object({
   mode: z.enum(['chat', 'agent', 'plan']),
   modelId: publicProjectionCanonicalIdSchema.optional(),
   inference: modelInferenceOptionsSchema.optional(),
-  routingStrategy: chatRoutingStrategySchema.optional()
+  localFallbackModelId: publicProjectionCanonicalIdSchema.nullable().optional()
 }).strict();
 export type ConversationMessageExecution = z.infer<
   typeof conversationMessageExecutionSchema
@@ -646,7 +644,6 @@ const conversationMessageAcceptCommandSchema = z.object({
 export const runtimeCommandSchema = z.discriminatedUnion('kind', [
   taskCenterQuerySchema, taskCenterNavigationSchema,
   taskCenterRelationsQuerySchema,
-  modelQualityCommandSchema,
   ...productivityCommandSchemas,
   ...productivityTaskIsolationCommandSchemas,
   ...longMemoryCommandSchemas,

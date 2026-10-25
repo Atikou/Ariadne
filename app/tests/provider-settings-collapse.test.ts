@@ -6,12 +6,12 @@ const rendererRoot = join(process.cwd(), 'src', 'renderer', 'src');
 
 describe('remote provider settings disclosure', () => {
   it('starts each provider collapsed and keeps only its name and enabled checkbox in the legend', async () => {
-    const panel = await readFile(join(rendererRoot, 'modules', 'settings', 'SettingsPanel.tsx'), 'utf8');
+    const panel = await readFile(join(rendererRoot, 'modules', 'settings', 'RemoteProviderSettings.tsx'), 'utf8');
     const legend = panel.match(/<legend>[\s\S]*?<\/legend>/)?.[0] ?? '';
 
-    expect(panel).toContain('const initialProviderExpansion');
+    expect(panel).toContain('const expanded = props.expanded[id] === true');
     expect(panel).toContain('aria-expanded={expanded}');
-    expect(panel).toContain('aria-controls={detailsId}');
+    expect(panel).toContain('aria-controls={`${props.moduleId}-${id}-details`}');
     expect(panel).toContain('hidden={!expanded}');
     expect(legend).toContain('<span>{label}</span>');
     expect(legend).toContain('className="provider-enable"');
@@ -20,7 +20,7 @@ describe('remote provider settings disclosure', () => {
   });
 
   it('uses the shared project styling instead of a native details disclosure', async () => {
-    const panel = await readFile(join(rendererRoot, 'modules', 'settings', 'SettingsPanel.tsx'), 'utf8');
+    const panel = await readFile(join(rendererRoot, 'modules', 'settings', 'RemoteProviderSettings.tsx'), 'utf8');
     const styles = await readFile(join(rendererRoot, 'app', 'styles.css'), 'utf8');
 
     expect(panel).toContain('className="provider-disclosure"');

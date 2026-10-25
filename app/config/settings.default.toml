@@ -1,54 +1,13 @@
 # Ariadne settings template. The live file is stored in Electron userData/settings.toml.
-schemaVersion = 1
-routingStrategy = "cloud-first"
+# Add connections and choose a model in the application; no automatic model selection.
+schemaVersion = 9
+revision = 1
 permissionMode = "request"
 localModelRoots = []
+disabledLocalModelIds = []
 
-[customPermissions]
-approvalPolicy = "risk-based"
-sandboxMode = "workspace-write"
-allowedPermissions = ["read", "write", "shell", "network", "dangerous"]
+[providers]
 
-[providers.openai]
-enabled = true
-baseUrl = "https://api.openai.com/v1"
-model = "gpt-4o-mini"
-contextWindowTokens = 128000
-maxOutputTokens = 16384
-
-[providers.openai.inference]
-
-[providers.deepseek]
-enabled = true
-baseUrl = "https://api.deepseek.com"
-model = "deepseek-v4-flash"
-contextWindowTokens = 128000
-maxOutputTokens = 8192
-
-[providers.deepseek.inference.reasoning]
-modes = ["off", "on"]
-defaultMode = "on"
-efforts = ["high", "max"]
-defaultEffort = "high"
-
-[providers.kimi]
-enabled = true
-baseUrl = "https://api.moonshot.ai/v1"
-model = "kimi-k3"
-contextWindowTokens = 256000
-maxOutputTokens = 32768
-
-[providers.kimi.inference.reasoning]
-modes = ["on"]
-defaultMode = "on"
-efforts = ["low", "high", "max"]
-defaultEffort = "max"
-
-[providers.anthropic]
-enabled = true
-baseUrl = "https://api.anthropic.com"
-model = "claude-sonnet-4-6"
-contextWindowTokens = 200000
-maxOutputTokens = 16384
-
-[providers.anthropic.inference]
+[modelSelection]
+modelId = ""
+localFallbackModelId = ""

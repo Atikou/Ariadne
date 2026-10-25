@@ -13,7 +13,8 @@ import {
   type AgentAdmissionAuthorityQueryV2
 } from '../control/ports/AgentAdmissionAuthority.js';
 import type {
-  ExactAgentModelInferenceRuntime
+  ExactAgentModelInferenceRuntime,
+  AgentModelSelectionPreference
 } from '../control/ports/AgentModelInference.js';
 import {
   compileEffectiveAgentExecutionAuthority
@@ -82,16 +83,19 @@ implements AgentAdmissionAuthorityBundleProvider {
       execution
     );
     if (effectiveAuthority === null) return null;
-    const model = this.models?.resolveBinding(manifest.model.settingsRevision, {
+    const preference: AgentModelSelectionPreference = {
       ...(execution.modelId === undefined ? {} : { modelId: execution.modelId }),
       ...(query.requiresVision === true ? { requiresVision: true } : {}),
       executionMode: execution.mode,
-      ...(execution.routingStrategy === undefined
+      ...(execution.localFallbackModelId === undefined
         ? {}
-        : { routingStrategy: execution.routingStrategy })
-    })
-      ?? (this.models === undefined ? manifest.model : null);
-    if (model === null || !isAuthorizedModel(manifest, model)) return null;
+        : { localFallbackModelId: execution.localFallbackModelId })
+    };
+    const model = this.models === undefined ? manifest.model
+      : this.models.prepareBinding === undefined ? resolveAuthorizedAgentModel(manifest, this.models, preference)
+      : authorizeResolvedModel(manifest, this.models,
+          await this.models.prepareBinding(manifest.model.settingsRevision, preference, signal));
+    if (model === null) return null;
     const bundleId = deriveAuthorityId('bundle', manifest, query);
     const budgetGrantId = deriveAuthorityId('budget-grant', manifest, query);
     const bundle = createAgentAdmissionAuthorityBundle({
@@ -117,7 +121,7 @@ implements AgentAdmissionAuthorityBundleProvider {
       },
       model: {
         ...model,
-        ...(execution.inference === undefined
+        ...(execution.inference === undefined || (execution.modelId !== undefined && execution.modelId !== model.modelId)
           ? {}
           : { inference: structuredClone(execution.inference) })
       },
@@ -146,6 +150,21 @@ implements AgentAdmissionAuthorityBundleProvider {
     signal.throwIfAborted();
     return bundle;
   }
+}
+
+/** Resolve selection policy before testing exact authority. Local selection in
+ * the bootstrap manifest is a grant, not an executable model identity. */
+export function resolveAuthorizedAgentModel(
+  manifest: AgentAdmissionAuthoritySourceManifest,
+  models: ExactAgentModelInferenceRuntime,
+  preference: AgentModelSelectionPreference = {}
+): ReturnType<ExactAgentModelInferenceRuntime['resolveBinding']> {
+  const model = models.resolveBinding(manifest.model.settingsRevision, preference);
+  return authorizeResolvedModel(manifest, models, model);
+}
+
+function authorizeResolvedModel(manifest: AgentAdmissionAuthoritySourceManifest, models: ExactAgentModelInferenceRuntime, model: ReturnType<ExactAgentModelInferenceRuntime['resolveBinding']>) {
+  return model !== null && isAuthorizedModel(manifest, model) && models.hasExactBinding(model) ? model : null;
 }
 
 function isAuthorizedModel(

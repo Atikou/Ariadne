@@ -79,11 +79,9 @@ export class ModelCapabilityRegistry implements ModelCapabilityAuthority {
     this.assertOpen();
     const proposed = assertQualificationReport(report);
     const existingQuality = this.read(proposed.providerId, proposed.modelId, proposed.fingerprint).quality;
-    // Qualification probes can finish after a newer benchmark. Their stale
-    // snapshot must not erase or roll back quality for this exact fingerprint.
-    const valid = existingQuality !== undefined && (proposed.quality === undefined
-      || Date.parse(existingQuality.evaluatedAt) > Date.parse(proposed.quality.evaluatedAt))
-      ? {...proposed, quality: existingQuality} : proposed;
+    // Preserve existing historical evidence when refreshing capabilities.
+    // There is no producer of new quality scores and they never affect routing.
+    const valid = existingQuality === undefined ? proposed : { ...proposed, quality: existingQuality };
     this.observe(() => this.database.prepare(`
       INSERT INTO model_capability_qualification (
         provider_id, model_id, fingerprint, adapter_protocol_version, report_json, tested_at

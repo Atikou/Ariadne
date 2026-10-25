@@ -205,7 +205,7 @@ interface ModulePanelErrorBoundaryState {
   error: Error | null;
 }
 
-class ModulePanelErrorBoundary extends Component<
+export class ModulePanelErrorBoundary extends Component<
   ModulePanelErrorBoundaryProps,
   ModulePanelErrorBoundaryState
 > {

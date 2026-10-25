@@ -20,7 +20,7 @@ describe('desktop Runtime configuration', () => {
       agentSettings: {
         revision: 9,
         assistant: createDefaultAssistantChatProfile(),
-        routingStrategy: 'cloud-first',
+        modelSelection: { modelId: '', localFallbackModelId: '' },
         permissionMode: 'risk-based',
         permissions: {
           approvalPolicy: 'risk-based',
@@ -49,10 +49,10 @@ describe('desktop Runtime configuration', () => {
         }],
         runtimePolicy: createDefaultRuntimePolicySnapshot(),
         providers: {
-          openai: { enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'openai-test', contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {}, apiKey: 'openai-secret' },
-          deepseek: { enabled: true, baseUrl: 'https://api.deepseek.com', model: 'deepseek-test', contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {}, apiKey: 'deepseek-secret' },
-          kimi: { enabled: true, baseUrl: 'https://api.moonshot.ai/v1', model: 'kimi-test', contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {}, apiKey: 'kimi-secret' },
-          anthropic: { enabled: false, baseUrl: 'https://api.anthropic.com', model: 'anthropic-test', contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {}, apiKey: 'anthropic-secret' }
+          openai: { label: 'openai', modelId: 'openai-test', protocol: 'openai-compatible', inferenceDialect: 'openai', supportsVision: true, enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'openai-test', contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {}, apiKey: 'openai-secret' },
+          deepseek: { label: 'deepseek', modelId: 'deepseek-test', protocol: 'openai-compatible', inferenceDialect: 'deepseek', supportsVision: false, enabled: true, baseUrl: 'https://api.deepseek.com', model: 'deepseek-test', contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {}, apiKey: 'deepseek-secret' },
+          kimi: { label: 'kimi', modelId: 'kimi-test', protocol: 'openai-compatible', inferenceDialect: 'kimi', supportsVision: false, enabled: true, baseUrl: 'https://api.moonshot.ai/v1', model: 'kimi-test', contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {}, apiKey: 'kimi-secret' },
+          anthropic: { label: 'anthropic', modelId: 'anthropic-test', protocol: 'anthropic-messages', inferenceDialect: 'anthropic', supportsVision: true, enabled: false, baseUrl: 'https://api.anthropic.com', model: 'anthropic-test', contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {}, apiKey: 'anthropic-secret' }
         }
       }
     });
@@ -85,10 +85,10 @@ describe('desktop Runtime configuration', () => {
     expect(configuration.environment).not.toHaveProperty('MOONSHOT_API_KEY');
     expect(configuration.environment).not.toHaveProperty('ANTHROPIC_API_KEY');
     expect(configuration.modelProviders).toEqual([
-      { providerId: 'openai', name: 'cloud-openai', protocol: 'openai-compatible', usageReporting: 'openai-stream-options', credentialEnvironmentVariable: 'OPENAI_API_KEY', credentialRef: 'model:openai', enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'openai-test', supportsVision: true, contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} },
-      { providerId: 'deepseek', name: 'cloud-deepseek', protocol: 'openai-compatible', usageReporting: 'openai-stream-options', credentialEnvironmentVariable: 'DEEPSEEK_API_KEY', credentialRef: 'model:deepseek', enabled: true, baseUrl: 'https://api.deepseek.com', model: 'deepseek-test', supportsVision: false, contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} },
-      { providerId: 'kimi', name: 'cloud-kimi', protocol: 'openai-compatible', usageReporting: 'openai-stream-options', credentialEnvironmentVariable: 'MOONSHOT_API_KEY', credentialRef: 'model:kimi', enabled: true, baseUrl: 'https://api.moonshot.ai/v1', model: 'kimi-test', supportsVision: false, contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} },
-      { providerId: 'anthropic', name: 'cloud-anthropic', protocol: 'anthropic-messages', usageReporting: 'anthropic-events', credentialEnvironmentVariable: 'ANTHROPIC_API_KEY', credentialRef: 'model:anthropic', enabled: false, baseUrl: 'https://api.anthropic.com', model: 'anthropic-test', supportsVision: true, contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} }
+      { providerId: 'openai', name: 'openai-test', label: 'openai', apiModel: 'openai-test', inferenceDialect: 'openai', protocol: 'openai-compatible', usageReporting: 'openai-stream-options', credentialEnvironmentVariable: 'ARIADNE_CONFIGURED_MODEL_KEY', credentialRef: 'model:openai', enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'openai-test', supportsVision: true, contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} },
+      { providerId: 'deepseek', name: 'deepseek-test', label: 'deepseek', apiModel: 'deepseek-test', inferenceDialect: 'deepseek', protocol: 'openai-compatible', usageReporting: 'openai-stream-options', credentialEnvironmentVariable: 'ARIADNE_CONFIGURED_MODEL_KEY', credentialRef: 'model:deepseek', enabled: true, baseUrl: 'https://api.deepseek.com', model: 'deepseek-test', supportsVision: false, contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} },
+      { providerId: 'kimi', name: 'kimi-test', label: 'kimi', apiModel: 'kimi-test', inferenceDialect: 'kimi', protocol: 'openai-compatible', usageReporting: 'openai-stream-options', credentialEnvironmentVariable: 'ARIADNE_CONFIGURED_MODEL_KEY', credentialRef: 'model:kimi', enabled: true, baseUrl: 'https://api.moonshot.ai/v1', model: 'kimi-test', supportsVision: false, contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} },
+      { providerId: 'anthropic', name: 'anthropic-test', label: 'anthropic', apiModel: 'anthropic-test', inferenceDialect: 'anthropic', protocol: 'anthropic-messages', usageReporting: 'anthropic-events', credentialEnvironmentVariable: 'ARIADNE_CONFIGURED_MODEL_KEY', credentialRef: 'model:anthropic', enabled: false, baseUrl: 'https://api.anthropic.com', model: 'anthropic-test', supportsVision: true, contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} }
     ]);
     expect(JSON.stringify(configuration.modelProviders)).not.toContain('secret');
     expect(configuration.subagentProviders).toEqual([{
@@ -128,7 +128,7 @@ describe('desktop Runtime configuration', () => {
     const userDataPath = path.resolve(process.cwd(), '.assistant-only-user-data');
     const settings = testRuntimeSettings(path.resolve(process.cwd(), 'unused-workspace'));
     settings.workspaces = [];
-    settings.providers.openai.enabled = true;
+    settings.providers.openai!.enabled = true;
     const configuration = createDesktopRuntimeConfiguration({
       appPath: path.resolve(process.cwd()),
       userDataPath,
@@ -226,7 +226,7 @@ function testRuntimeSettings(
   return {
     revision: 9,
     assistant: createDefaultAssistantChatProfile(),
-    routingStrategy: 'cloud-first',
+    modelSelection: { modelId: '', localFallbackModelId: '' },
     permissionMode: 'risk-based',
     permissions: {
       approvalPolicy: 'risk-based',
@@ -241,10 +241,10 @@ function testRuntimeSettings(
     subagentProviders: [],
     runtimePolicy: createDefaultRuntimePolicySnapshot(),
     providers: {
-      openai: { enabled: false, baseUrl: 'https://api.openai.com/v1', model: 'openai-test', contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} },
-      deepseek: { enabled: false, baseUrl: 'https://api.deepseek.com', model: 'deepseek-test', contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} },
-      kimi: { enabled: false, baseUrl: 'https://api.moonshot.ai/v1', model: 'kimi-test', contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} },
-      anthropic: { enabled: false, baseUrl: 'https://api.anthropic.com', model: 'anthropic-test', contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} }
+      openai: { label: 'openai', modelId: 'openai-test', protocol: 'openai-compatible', inferenceDialect: 'openai', supportsVision: true, enabled: false, baseUrl: 'https://api.openai.com/v1', model: 'openai-test', contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} },
+      deepseek: { label: 'deepseek', modelId: 'deepseek-test', protocol: 'openai-compatible', inferenceDialect: 'deepseek', supportsVision: false, enabled: false, baseUrl: 'https://api.deepseek.com', model: 'deepseek-test', contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} },
+      kimi: { label: 'kimi', modelId: 'kimi-test', protocol: 'openai-compatible', inferenceDialect: 'kimi', supportsVision: false, enabled: false, baseUrl: 'https://api.moonshot.ai/v1', model: 'kimi-test', contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} },
+      anthropic: { label: 'anthropic', modelId: 'anthropic-test', protocol: 'anthropic-messages', inferenceDialect: 'anthropic', supportsVision: true, enabled: false, baseUrl: 'https://api.anthropic.com', model: 'anthropic-test', contextWindowTokens: 32_768, maxOutputTokens: 4_096, inference: {} }
     }
   };
 }

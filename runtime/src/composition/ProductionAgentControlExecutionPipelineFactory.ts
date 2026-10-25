@@ -8,7 +8,8 @@ import {
   type ProductionExactAgentModelInferenceGatewayOptions
 } from '../adapters/model/ProductionExactAgentModelInferenceGateway.js';
 import type {
-  ExactAgentModelInferenceRuntime
+  ExactAgentModelInferenceRuntime,
+  AgentModelSelectionPreference
 } from '../control/ports/AgentModelInference.js';
 import type { AgentProcessSandbox } from '../control/ports/AgentProcessSandbox.js';
 import type { SqliteProductivityStore } from '../adapters/persistence/SqliteProductivityStore.js';
@@ -79,7 +80,7 @@ export interface AgentControlExecutionPipeline {
   readonly toolPresentationResolver: AgentToolPresentationResolver;
   readonly protectedEffectResultReader?: ProtectedAgentEffectResultReader;
   /** Synchronous, pre-write gate for one new Conversation objective. */
-  assertConversationMessageAdmission(workspaceId: string): void;
+  assertConversationMessageAdmission(workspaceId: string, preference?: AgentModelSelectionPreference): void;
   readonly assertGoalAutonomyAdmission?: (workspaceId: string) => void;
   observeRuntimeStop(occurredAt: string): void;
 }
@@ -271,7 +272,7 @@ implements AgentControlExecutionPipelineFactory {
           throw new ProductivityCommandRejected('goal_autonomy_unavailable');
         }
       } }),
-      assertConversationMessageAdmission: (workspaceId: string): void => {
+      assertConversationMessageAdmission: (workspaceId: string, preference?: AgentModelSelectionPreference): void => {
         const manifest = manifests.get(workspaceId);
         if (manifest === undefined) {
           throw new AgentControlConversationMessageAdmissionError(
@@ -290,7 +291,7 @@ implements AgentControlExecutionPipelineFactory {
             'tool_catalog_unavailable'
           );
         }
-        if (!loop.hasExactModelAuthority(manifest)) {
+        if (!loop.hasExactModelAuthority(manifest, preference)) {
           throw new AgentControlConversationMessageAdmissionError(
             'model_binding_unavailable'
           );

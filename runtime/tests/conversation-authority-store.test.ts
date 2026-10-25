@@ -15,6 +15,7 @@ import {
 } from '../src/adapters/persistence/SqliteConversationRunHandoffUnitOfWork.js';
 import {
   acceptConversationUserMessage,
+  assertValidConversationMessageVersion,
   createConversationAuthorityReceipt,
   digestConversationMessageContent,
   fingerprintConversationAuthorityCommand,
@@ -47,6 +48,28 @@ afterEach(async () => {
 });
 
 describe('Conversation authority store', () => {
+  it.each(['local-first', 'cloud-first', 'privacy-first', 'quality-first'])('validates stored %s preferences without rewriting immutable history', strategy => {
+    const message = { messageId: 'message-old', version: 1, sessionId: 'session-old', workspaceId: 'workspace-old',
+      role: 'user' as const, payload: { content: 'Stored message', execution: { mode: 'agent' as const, routingStrategy: strategy } },
+      contentDigest: `sha256:${'a'.repeat(64)}`, createdAt: '2030-01-01T00:00:00.000Z' };
+    const before = structuredClone(message);
+    expect(() => assertValidConversationMessageVersion(message)).not.toThrow();
+    expect(message).toEqual(before);
+    expect(() => assertValidConversationMessageVersion({ ...message, payload: { ...message.payload,
+      execution: { ...message.payload.execution, routingStrategy: 'unknown' } } })).toThrow();
+    expect(() => assertValidConversationMessageVersion({ ...message, payload: { ...message.payload,
+      execution: { ...message.payload.execution, extra: true } } } as typeof message)).toThrow();
+    expect(() => assertValidConversationMessageVersion({ ...message, payload: { ...message.payload,
+      execution: { ...message.payload.execution, localFallbackModelId: 'local-model' } } } as typeof message)).toThrow();
+  });
+  it('rejects retired routing fields on newly accepted messages', async () => {
+    const unit = track(new SqliteConversationRunHandoffUnitOfWork(tempRoot()));
+    const authority = new ConversationAuthorityService(unit);
+    await authority.createSession(createSessionCommand());
+    const execution = { mode: 'agent' as const, routingStrategy: 'cloud-first' };
+    await expect(authority.acceptUserMessage({ ...acceptMessageCommand(), execution })).rejects.toThrow();
+    expect(await unit.readMessageVersion('message-authority', 1)).toBeNull();
+  });
   it('reads immutable event, Session and Message bindings with a fixed statement set per projection batch', async () => {
     const root = tempRoot(), unit = track(new SqliteConversationRunHandoffUnitOfWork(root));
     const authority = new ConversationAuthorityService(unit);

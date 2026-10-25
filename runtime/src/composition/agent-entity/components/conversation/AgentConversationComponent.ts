@@ -2,6 +2,7 @@ import type { RuntimeApplicationCommandResult } from '../../../../ingress/Runtim
 import type { RuntimeCommandEnvelope } from '../../../../ingress/RuntimeIngress.js';
 import type { RuntimeCommandReconciliationV2 as RuntimeCommandReconciliation } from '../../../../control/ports/RuntimeCommandJournalV2.js';
 import type { ConversationAttachmentStore } from '../../../../control/ports/ConversationAttachmentStore.js';
+import { ModelExecutionQualificationError } from '../../../../control/ports/AgentModelInference.js';
 import type { SqliteConversationRunHandoffUnitOfWork } from '../../../../adapters/persistence/SqliteConversationRunHandoffUnitOfWork.js';
 import { deriveConversationAuthorityId } from '../../../../conversation/ConversationRunHandoffIds.js';
 import { ConversationAuthorityService } from '../../../../control/conversation/ConversationAuthorityService.js';
@@ -177,7 +178,7 @@ class DefaultAgentConversationComponent implements AgentConversationComponentHan
     envelope.signal.throwIfAborted();
     const committed = await this.conversation.readCommittedAuthorityCommand(envelope.commandId);
     if (committed === null) {
-      const unavailable = this.assertMessageAdmission(envelope, command.workspaceId);
+      const unavailable = this.assertMessageAdmission(envelope, command);
       if (unavailable !== null) return unavailable;
     }
     const [eventId, sagaId, handoffCommandId, handoffOutboxMessageId, occurredAt] = (
@@ -240,7 +241,7 @@ class DefaultAgentConversationComponent implements AgentConversationComponentHan
 
   private assertMessageAdmission(
     envelope: RuntimeCommandEnvelope,
-    workspaceId: string
+    command: AcceptMessageCommand
   ): RuntimeApplicationCommandResult | null {
     if (this.pipeline === undefined) {
       return completedPublicError(
@@ -253,14 +254,20 @@ class DefaultAgentConversationComponent implements AgentConversationComponentHan
     this.pipeline.executionScheduler.assertHealthy();
     this.pipeline.handoffProducer.assertHealthy();
     try {
-      this.pipeline.assertConversationMessageAdmission(workspaceId);
+      this.pipeline.assertConversationMessageAdmission(command.workspaceId, {
+        executionMode: command.execution?.mode ?? 'agent',
+        ...(command.execution?.modelId === undefined ? {} : { modelId: command.execution.modelId }),
+        ...(command.execution?.localFallbackModelId === undefined ? {} : { localFallbackModelId: command.execution.localFallbackModelId }),
+        ...(command.attachments?.length ? { requiresVision: true } : {})
+      });
       return null;
     } catch (error) {
+      if (error instanceof ModelExecutionQualificationError) {
+        return completedPublicError(envelope, error.code, 'The selected model does not have the required execution qualification.', false);
+      }
       if (!(error instanceof AgentControlConversationMessageAdmissionError)) throw error;
-      return completedPublicError(
-        envelope, 'agent_execution_unavailable',
-        'Agent execution is unavailable for this Workspace.', false
-      );
+      return completedPublicError(envelope, 'agent_execution_unavailable',
+        'Agent execution is unavailable for this Workspace.', false);
     }
   }
 
