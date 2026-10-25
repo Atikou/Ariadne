@@ -1,6 +1,6 @@
 import type { RuntimeApplicationCommandResult } from '../ingress/RuntimeApplication.js';
 import type { RuntimeCommandEnvelope } from '../ingress/RuntimeIngress.js';
-import type { RuntimeCommandReconciliation } from '../control/ports/RuntimeCommandJournal.js';
+import type { RuntimeCommandReconciliationV2 as RuntimeCommandReconciliation } from '../control/ports/RuntimeCommandJournalV2.js';
 import type {
   AgentPublicCommandOwnerTable
 } from './agent-entity/command-owners/AgentPublicCommandOwnerTable.js';

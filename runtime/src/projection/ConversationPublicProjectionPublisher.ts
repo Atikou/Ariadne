@@ -2,12 +2,12 @@ import { createHash } from 'node:crypto';
 
 import {
   PUBLIC_PROJECTION_CONTRACT_VERSION,
-  publicMessageProjectionV3Schema,
-  publicSessionProjectionV3Schema,
-  redactPublicProjectionTextV3,
-  type ProjectionCommitV3,
-  type PublicMessageProjectionV3,
-  type PublicSessionProjectionV3
+  publicMessageProjectionSchema,
+  publicSessionProjectionSchema,
+  redactPublicProjectionText,
+  type ProjectionCommit,
+  type PublicMessageProjection,
+  type PublicSessionProjection
 } from '@ariadne/protocol/public';
 
 import {
@@ -15,7 +15,7 @@ import {
   assertValidConversationMessageVersion,
   assertValidConversationSession
 } from '../conversation/ConversationAuthority.js';
-import { assertValidProjectionCommitV3 } from './PublicProjectionContractV3.js';
+import { assertValidProjectionCommit } from './PublicProjectionContract.js';
 import type {
   ConversationProjectionReader,
   ConversationProjectionRecord
@@ -99,7 +99,7 @@ export class ConversationPublicProjectionPublisher {
 
 export function projectConversationAuthorityRecordV3(
   record: ConversationProjectionRecord
-): ProjectionCommitV3 {
+): ProjectionCommit {
   const { event, session, messageVersion } = record;
   assertValidConversationAuthorityEvent(event);
   assertValidConversationSession(session);
@@ -112,7 +112,7 @@ export function projectConversationAuthorityRecordV3(
     throw new Error('conversation_projection_session_mismatch');
   }
 
-  const changes: ProjectionCommitV3['changes'][number][] = [{
+  const changes: ProjectionCommit['changes'][number][] = [{
     feature: 'sessions',
     operation: 'upsert',
     aggregateId: event.sessionId,
@@ -151,7 +151,7 @@ export function projectConversationAuthorityRecordV3(
     throw new Error('conversation_projection_unexpected_message');
   }
 
-  return assertValidProjectionCommitV3({
+  return assertValidProjectionCommit({
     contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
     eventId: conversationProjectionEventId(event.eventId),
     sourceId: conversationProjectionSourceId(event.sessionId),
@@ -172,8 +172,8 @@ export function conversationProjectionSourceId(sessionId: string): string {
 function projectPublicSession(
   event: ConversationProjectionRecord['event'],
   session: ConversationProjectionRecord['session']
-): PublicSessionProjectionV3 {
-  return publicSessionProjectionV3Schema.parse({
+): PublicSessionProjection {
+  return publicSessionProjectionSchema.parse({
     sessionId: event.sessionId,
     workspaceId: event.workspaceId,
     version: event.sessionVersion,
@@ -188,8 +188,8 @@ function projectPublicSession(
 function projectPublicMessage(
   message: NonNullable<ConversationProjectionRecord['messageVersion']>,
   event: ConversationProjectionRecord['event']
-): PublicMessageProjectionV3 {
-  return publicMessageProjectionV3Schema.parse({
+): PublicMessageProjection {
+  return publicMessageProjectionSchema.parse({
     messageId: message.messageId,
     sessionId: message.sessionId,
     ...(event.type === 'conversation.agent_result.projected'
@@ -211,7 +211,7 @@ function projectPublicMessage(
             ...attachment,
             ...(attachment.name === undefined
               ? {}
-              : { name: redactPublicProjectionTextV3(attachment.name).slice(0, 256) })
+              : { name: redactPublicProjectionText(attachment.name).slice(0, 256) })
           }))
         }),
     status: 'completed',
@@ -221,7 +221,7 @@ function projectPublicMessage(
 }
 
 function publicMessageContent(content: string): string {
-  const redacted = redactPublicProjectionTextV3(content);
+  const redacted = redactPublicProjectionText(content);
   if (redacted.length <= MAX_PUBLIC_MESSAGE_CONTENT_LENGTH) return redacted;
   return redacted.slice(
     0,

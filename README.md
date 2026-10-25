@@ -31,7 +31,7 @@ Renderer 只消费 Public DTO；Main 拥有 OS 能力、凭据和 Runtime 生命
 - v3 Run 取消；
 - v3 Agent inbox enqueue/replace/remove。
 
-目录中仍存在的旧 Memory、Embedding 和旧 SubAgent 代码，不等于这些能力已经接入 v3 产品路径。Provider Resilience 已由共享协调器进入 exact v3 transport；旧 `ModelFactory` wrapper 不再被当作生产证据。旧 Background Task 第二进程表与可执行 JSONL Scheduler 均已删除。只有具备生产 Provider、Consumer、持久权威、公开投影、恢复测试并由 Runtime status 宣告的能力，才算产品能力。
+Memory、Productivity、调度与子任务由当前 Authority、Worker 和 Adapter 接入同一生产主干。退役执行闭包和退役格式导入入口已删除。当前系统自己的 Schema 升级继续维护，旧数据原文件不自动转换或删除。实际验收状态见整改验证记录。
 
 ## 开发验证
 
@@ -47,7 +47,7 @@ npm.cmd run test:electron
 
 `test:electron` 通过真实 Electron 窗口、Preload、Main、Runtime 子进程、SQLite 和 Public Projection 执行确定性 Agent 产品门禁，覆盖完成前 token 可见、实时丢包/重复/Renderer 重载恢复、运行中 inbox、主动提问、工具与权限、取消和五个 Runtime 强杀边界。未结算 enqueue 还通过 Main-only 加密 outbox 跨完整桌面重启恢复为同 ID `reconcile`，启动时不会自动重放。该门禁使用进程外 HTTPS Provider fixture，不替代真实模型、Browser/MCP、正式签名 Sandbox Helper 或干净机器发布验收。
 
-`test:electron-profiles` 检查四个正式 Profile 与显式 `desktop-preview`；可视化审查模块只在预览 Profile 开放，并读取当前 Public Projection 的真实会话数据。CI 固定 Node 24.16.0/npm 11.13.0，分别检查架构、Main/Renderer/测试类型、单元/集成、真实窗口和独立 Speech 逻辑，并上传源码摘要、工具链与 Profile 证据。当前修复与测量维护在 [架构审阅与修复入口](docs/architecture-review-and-remediation.md)。
+`test:electron-profiles` 检查四个正式 Profile 与显式 `desktop-preview`；可视化审查模块只在预览 Profile 开放，并读取当前 Public Projection 的真实会话数据。CI 固定 Node 24.16.0/npm 11.13.0，分别检查架构、Main/Renderer/测试类型、单元/集成、真实窗口和独立 Speech 逻辑，并上传源码摘要、工具链与 Profile 证据。当前修复与测量维护在 [架构审阅与修复入口](docs/remediation-verification.md)。
 
 正式发布门禁：
 
@@ -67,18 +67,18 @@ npm.cmd run verify:release
 - bootstrap 冻结的 Capability Manifest 已统一 Tool Catalog、公开能力、Provider service 依赖解析和关机顺序；Provider 只能读取显式声明的依赖，默认 Factory 只消费类型化 Runtime service bundle；仍未接线的 Public Capability 会被自动审计但不会被宣告；
 - Skills 已具备静态 Provider、可取消 scoped snapshot/last-good、固定 package 资源读取和 model/user invocation policy；人类 Skill 命令目录从同一快照过滤并在命令面板中独立加载，不启动 Agent。8 个 typed Hooks 由 Manifest-owned 静态可信 Provider service 管理并统一关闭；外部动态 Hook 包发现仍有意不开放；
 - Main Credential Authority 统一 `resolve/describe/update`：模型只在每次推理操作边界用 opaque ref 解析一次，MCP OAuth 也经同一 Main owner 代理，ACP 保持 external/unmanaged 且不继承 ambient secret；API key 热轮换不重启 Runtime，secret 不进入 bootstrap、日志或 Public Projection；
-- Goal/Todo/Workflow/Schedule 已进入 v3：同 Session Goal CAS、完整 Todo 快照事件、带并发/转换预算/deadline/cancel/quiescence/结构化结果的受限 Workflow，以及可跨重启恢复的 durable occurrence；投递可重试，普通 Conversation Turn 由稳定 command/message ID 保证幂等接收。旧 JSONL Scheduler 仅保留显式迁移读取，生产启动不再 arm 或创建旧 `scheduled` Run；
+- Goal/Todo/Workflow/Schedule 已进入 v3：同 Session Goal CAS、完整 Todo 快照事件、带并发/转换预算/deadline/cancel/quiescence/结构化结果的受限 Workflow，以及可跨重启恢复的 durable occurrence；投递可重试，普通 Conversation Turn 由稳定 command/message ID 保证幂等接收。Schedule 只由当前 Productivity Authority 与 Worker 执行；不支持退役调度格式导入；
 - Agent 可通过 `ask_user` Directive 发起结构化问题：问题正文/选项保存在受保护载荷，Run 进入 durable `waiting/user_question`，Public Projection 只发布脱敏 `question` 展示；Renderer 的回答以精确 Decision action 写入，并与 `next_step` inbox 输入在同一事务提交。确定性 HTTPS Provider 驱动的真实 Electron 卡片回答、`waiting/user_question` 强杀恢复与同 Run 续跑已经通过；仍缺真实商业 Provider、自由文本窗口场景和取消等待问题的产品语义；
 - Agent pipe process、沙箱内 Agent PTY 与用户 PTY 已共用 `@ariadne/live-work` 生命周期；native Windows Sandbox runner 支持交互 write/resize 与 `interrupt/terminate/kill`，信号帧和真实长运行 PowerShell Job 已通过 Runner smoke。Main 以原子 session journal 保存无正文元数据；强杀后旧 `running` 收敛为 `interrupted/main_process_lost`，真实 Electron 窗口只允许用户显式重启并记录 `restartOf`，不会自动重放命令。live-work 终态仍先进入统一 Agent inbox，再唤醒 scheduler/projection；旧第二进程表和幽灵 Scheduler contract 已删除。
 - Workspace Tool Catalog revision 18 已提供 bounded literal `search_text`、安全 `glob`、版本化 `apply_text_edits/move_file/delete_file`，以及由沙箱内持久 `typescript-language-server` 提供的 definition/reference/hover/document-symbol 查询；全部文件变更继续要求 opaque version CAS，目标路径不允许覆盖。Tool 终态只在 Public Projection 发布 `detailAvailable` 与固定 kind/label，正文仍由 Agent Control 的受保护 Effect result owner 按 Run/Workspace/effect 和 UTF-8 cursor 提供；Renderer 已有 read/search/diff/terminal 专用详情卡，不再复制正文到公开投影。
 
-完整证据和实施顺序见 [Ariadne 与 deepseek-harness 对比审计](docs/deepseek-harness-comparison-audit-2026-08-28.md)。
+完整证据和实施顺序见 [Ariadne 与 deepseek-harness 对比审计](docs/remediation-verification.md)。
 
 ## 文档
 
 - [文档索引与有效性规则](docs/README.md)
 - [当前实现架构](docs/architecture.md)
-- [目标架构与不变量](docs/architecture-v3.md)
+- [目标架构与不变量](docs/architecture.md)
 - [项目结构](docs/project-structure.md)
 - [验证说明](docs/verification.md)
 - [机器可读验收矩阵](docs/verification-matrix.json)
@@ -87,6 +87,5 @@ npm.cmd run verify:release
 - [v3 长上下文生命周期](docs/long-context-v3.md)
 - [Runtime Capability Manifest](docs/capability-manifest.md)
 - [Runtime 独立性审计](docs/Runtime独立性审计.md)
-- [Companion 能力请求协议](docs/agent-proposal-protocol.md)
 
 架构决策记录位于 [`docs/adr/`](docs/adr/README.md)。

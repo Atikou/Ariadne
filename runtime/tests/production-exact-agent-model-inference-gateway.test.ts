@@ -12,6 +12,40 @@ const SECRET = 'credential-must-never-appear';
 const DIGEST = `sha256:${'a'.repeat(64)}`;
 
 describe('ProductionExactAgentModelInferenceGateway', () => {
+  it('observes actual failed transport and clears it only after a later complete response', async () => {
+    let fail = true;
+    const gateway = gatewayFixture({ fetch: async () => fail ? new Response('private credential body', { status: 401 })
+      : jsonResponse({ id: 'recovered', model: 'model-exact', choices: [{ index: 0, message: { role: 'assistant', content: 'Recovered' } }] }) });
+    expect(gateway.hasExternalFailure()).toBe(false);
+    await expect(gateway.inferExact(request())).rejects.toBeInstanceOf(ExactAgentModelInferenceTransportError);
+    expect(gateway.hasExternalFailure()).toBe(true);
+    fail = false;
+    await expect(gateway.inferExact(request())).resolves.toMatchObject({ status: 'completed' });
+    expect(gateway.hasExternalFailure()).toBe(false);
+  });
+  it('does not classify request errors, aborts, missing bindings or context limits as failed sources', async () => {
+    const gateway = gatewayFixture({ fetch: async () => new Response(JSON.stringify({ error: { code: 'context_length_exceeded', message: 'maximum context length' } }),
+      { status: 400, headers: { 'content-type': 'application/json' } }) });
+    const cancelled = new AbortController(); cancelled.abort();
+    await expect(gateway.inferExact(request({ signal: cancelled.signal }))).rejects.toBeDefined();
+    await expect(gateway.inferExact({ ...request(), binding: { providerId: 'missing', modelId: 'missing', settingsRevision: 7 } }))
+      .resolves.toMatchObject({ status: 'binding_unavailable' });
+    await expect(gateway.inferExact(request())).resolves.toMatchObject({ status: 'context_overflow' });
+    expect(gateway.hasExternalFailure()).toBe(false);
+  });
+  it('does not let an older successful response erase a newer source failure', async () => {
+    let resolveOld!: (response: Response) => void, call = 0;
+    const gateway = gatewayFixture({ fetch: async () => ++call === 1 ? new Promise<Response>(resolve => { resolveOld = resolve; })
+      : call === 2 ? new Response('private failure', { status: 401 })
+      : jsonResponse({ id: 'recovered', model: 'model-exact', choices: [{ index: 0, message: { role: 'assistant', content: 'Recovered' } }] }) });
+    const old = gateway.inferExact(request());
+    await vi.waitFor(() => expect(resolveOld).toBeTypeOf('function'));
+    await expect(gateway.inferExact(request())).rejects.toBeInstanceOf(ExactAgentModelInferenceTransportError);
+    resolveOld(jsonResponse({ id: 'older', model: 'model-exact', choices: [{ index: 0, message: { role: 'assistant', content: 'Older response' } }] }));
+    await expect(old).resolves.toMatchObject({ status: 'completed' });
+    expect(gateway.hasExternalFailure()).toBe(true);
+    await gateway.inferExact(request()); expect(gateway.hasExternalFailure()).toBe(false);
+  });
   it('admits image turns only through a binding declared as vision-capable', () => {
     expect(gatewayFixture().resolveBinding(7, { requiresVision: true })).toBeNull();
     expect(gatewayFixture({

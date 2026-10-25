@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'electron-vite';
+import { build as buildVite } from 'vite';
 
 const aliases = {
   '@shared': resolve('src/shared'),
@@ -9,7 +10,16 @@ const aliases = {
 
 export default defineConfig({
   main: {
-    resolve: { alias: aliases }
+    resolve: { alias: aliases },
+    plugins: [{ name: 'ariadne-data-root-switch-helper', async closeBundle() {
+      // Ordinary Node cannot read Electron's ASAR or import Electron Main.
+      // Emit one self-contained CJS helper with only node:* dependencies.
+      await buildVite({ configFile: false, build: { target: 'node22', minify: false,
+        emptyOutDir: false, outDir: resolve('out/main'),
+        lib: { entry: resolve('src/main/runtime/data-root-switch-process.ts'), formats: ['cjs'],
+          fileName: () => 'data-root-switch-process.cjs' },
+        rollupOptions: { external: id => id.startsWith('node:') } } });
+    } }]
   },
   preload: {
     resolve: { alias: aliases },

@@ -1,6 +1,5 @@
-import type { CompanionMessage } from '@ariadne/protocol/public';
 import type { RuntimeMessage } from './runtime-projection-presenter';
-import type { PublicRunProjectionV3 } from '@ariadne/protocol/public';
+import type { PublicRunCatalogSummary } from '@ariadne/protocol/public';
 import { compareConversationMessages } from './conversation-message-order';
 import { memoizeInputs } from './memoize-inputs';
 
@@ -11,6 +10,8 @@ interface PendingChatOverlay {
   readonly clientMessageId: string;
   readonly assistantPlaceholderId: string;
   readonly provisionalSessionId: string;
+  readonly sourceSessionId: string | null;
+  readonly draftOwnerKey: string | null;
   readonly actualSessionId?: string;
   readonly user: RuntimeMessage;
   readonly assistant: RuntimeMessage;
@@ -19,10 +20,11 @@ interface PendingChatOverlay {
 export class RuntimeUiState {
   selectedSessionId: string | null = null;
   readonly planModeSessionIds = new Set<string>();
-  private pendingChat: PendingChatOverlay | null = null;
+  private pendingChats = new Map<string, PendingChatOverlay>();
+  private selectedDraftOwnerKey: string | null = null;
   private planModes: string[] = [];
-  private readonly messageView = memoizeInputs((authoritative: readonly CompanionMessage[], runs: readonly PublicRunProjectionV3[],
-    _selected: string | null, _pending: PendingChatOverlay | null, ordered: boolean) => this.deriveMessages(authoritative, runs, ordered));
+  private readonly messageView = memoizeInputs((authoritative: readonly RuntimeMessage[], runs: readonly PublicRunCatalogSummary[],
+    _selected: string | null, _draftOwner: string | null, _pending: ReadonlyMap<string, PendingChatOverlay>, ordered: boolean) => this.deriveMessages(authoritative, runs, ordered));
 
   planModeSnapshot(): string[] {
     if (this.planModes.length !== this.planModeSessionIds.size
@@ -55,17 +57,30 @@ export class RuntimeUiState {
     this.planModeSessionIds.add(sessionId);
   }
 
-  beginPendingChat(message: string, now: string): PendingChatOverlay {
-    if (this.pendingChat !== null) throw new Error('chat_pending_overlay_exists');
-    const clientMessageId = crypto.randomUUID();
+  selectDraftOwner(key: string | null): void { this.selectedDraftOwnerKey = key; }
+
+  beginPendingChat(message: string, now: string, clientMessageId: string = crypto.randomUUID(), sessionId: string | null = this.selectedSessionId,
+    draftOwnerKey: string | null = this.selectedDraftOwnerKey): PendingChatOverlay {
+    const pendingChats = new Map(this.pendingChats);
+    for (const [id, row] of pendingChats) {
+      const sameOwner = sessionId === null ? row.sourceSessionId === null && row.draftOwnerKey === draftOwnerKey && row.actualSessionId === undefined
+        : (row.actualSessionId ?? row.provisionalSessionId) === sessionId;
+      if (!sameOwner) continue;
+      if (row.user.deliveryState !== 'failed') throw new Error('chat_pending_overlay_exists');
+      pendingChats.delete(id);
+    }
+    if (pendingChats.has(clientMessageId)) throw new Error('chat_pending_identity_exists');
+    if (pendingChats.size >= 64) throw new Error('chat_pending_overlay_capacity_exceeded');
     const overlayId = `pending-chat:${clientMessageId}`;
-    const provisionalSessionId = this.selectedSessionId ?? `pending:${clientMessageId}`;
+    const provisionalSessionId = sessionId ?? `pending:${clientMessageId}`;
     const assistantPlaceholderId = `pending-assistant:${clientMessageId}`;
     const pending: PendingChatOverlay = {
       overlayId,
       clientMessageId,
       assistantPlaceholderId,
       provisionalSessionId,
+      sourceSessionId: sessionId,
+      draftOwnerKey,
       user: {
         messageId: clientMessageId,
         sessionId: provisionalSessionId,
@@ -84,26 +99,25 @@ export class RuntimeUiState {
         createdAt: now
       }
     };
-    this.pendingChat = pending;
+    pendingChats.set(clientMessageId, pending); this.pendingChats = pendingChats;
     return pending;
   }
 
   acceptPendingChat(clientMessageId: string, sessionId: string): void {
-    const pending = this.pendingChat;
-    if (pending?.clientMessageId !== clientMessageId) return;
-    this.pendingChat = {
+    const pending = this.pendingChats.get(clientMessageId);
+    if (!pending) return;
+    this.pendingChats = new Map(this.pendingChats).set(clientMessageId, {
       ...pending,
       actualSessionId: sessionId,
       user: { ...pending.user, sessionId },
       assistant: { ...pending.assistant, sessionId }
-    };
-    this.selectedSessionId = sessionId;
+    });
   }
 
   failPendingChat(clientMessageId: string, message: string): void {
-    const pending = this.pendingChat;
-    if (pending?.clientMessageId !== clientMessageId) return;
-    this.pendingChat = {
+    const pending = this.pendingChats.get(clientMessageId);
+    if (!pending) return;
+    this.pendingChats = new Map(this.pendingChats).set(clientMessageId, {
       ...pending,
       user: { ...pending.user, deliveryState: 'failed' },
       assistant: {
@@ -111,20 +125,20 @@ export class RuntimeUiState {
         status: 'failed',
         error: { code: 'chat_delivery_failed', message, retryable: true }
       }
-    };
+    });
   }
 
   projectedMessages(
-    authoritative: readonly CompanionMessage[],
-    runs: readonly PublicRunProjectionV3[],
+    authoritative: readonly RuntimeMessage[],
+    runs: readonly PublicRunCatalogSummary[],
     ordered = false
   ): RuntimeMessage[] {
-    return this.messageView(authoritative, runs, this.selectedSessionId, this.pendingChat, ordered);
+    return this.messageView(authoritative, runs, this.selectedSessionId, this.selectedDraftOwnerKey, this.pendingChats, ordered);
   }
 
   private deriveMessages(
-    authoritative: readonly CompanionMessage[],
-    runs: readonly PublicRunProjectionV3[],
+    authoritative: readonly RuntimeMessage[],
+    runs: readonly PublicRunCatalogSummary[],
     ordered: boolean
   ): RuntimeMessage[] {
     const selected = this.selectedSessionId;
@@ -132,8 +146,8 @@ export class RuntimeUiState {
       selected !== null && message.sessionId === selected
     ));
     if (!ordered) visible.sort(compareConversationMessages);
-    const pending = this.pendingChat;
-    if (pending === null) return [...visible];
+    const pending = this.visiblePending();
+    if (!pending) return [...visible];
 
     const effectiveSession = pending.actualSessionId ?? pending.provisionalSessionId;
     if (selected !== null && selected !== effectiveSession) return [...visible];
@@ -156,7 +170,9 @@ export class RuntimeUiState {
           && message.sessionId === effectiveSession
           && Date.parse(message.createdAt) >= Date.parse(projectedUser.createdAt)
         ));
-    if (userProjected && assistantProjected) this.pendingChat = null;
+    if (userProjected && assistantProjected) {
+      this.pendingChats = new Map(this.pendingChats); this.pendingChats.delete(pending.clientMessageId);
+    }
 
     const projected = [...visible];
     if (!userProjected) {
@@ -173,10 +189,16 @@ export class RuntimeUiState {
   }
 
   clearPendingOverlay(): void {
-    this.pendingChat = null;
+    this.pendingChats = new Map();
+  }
+
+  private visiblePending(): PendingChatOverlay | undefined {
+    return [...this.pendingChats.values()].find(row => this.selectedSessionId === null
+      ? row.sourceSessionId === null && row.actualSessionId === undefined && row.draftOwnerKey === this.selectedDraftOwnerKey
+      : (row.actualSessionId ?? row.provisionalSessionId) === this.selectedSessionId);
   }
 
   get pendingChatOverlayId(): string | null {
-    return this.pendingChat?.overlayId ?? null;
+    return this.visiblePending()?.overlayId ?? null;
   }
 }

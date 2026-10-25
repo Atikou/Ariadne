@@ -3,9 +3,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { assertRetiredRuntimeAbsent } from './verify-retired-runtime-absence.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const unpackedRoot = path.join(projectRoot, 'dist', 'electron', 'win-unpacked');
+const assetArguments = process.argv.slice(2);
+if (assetArguments.length && (assetArguments.length !== 2 || assetArguments[0] !== '--unpacked-root' || !path.isAbsolute(assetArguments[1])))
+  throw new Error('Usage: verify-packaged-runtime-assets.mjs [--unpacked-root <absolute directory>]');
+const unpackedRoot = assetArguments.length ? path.resolve(assetArguments[1]) : path.join(projectRoot, 'dist', 'electron', 'win-unpacked');
 const resourcesRoot = path.join(unpackedRoot, 'resources');
 const runtimeRoot = path.join(
   resourcesRoot,
@@ -17,6 +21,8 @@ const runtimeRoot = path.join(
 const runner = path.join(resourcesRoot, 'runtime-runner', 'node.exe');
 const runnerManifest = path.join(resourcesRoot, 'runtime-runner', '.ariadne-node-runtime.json');
 const runtimeEntry = path.join(runtimeRoot, 'dist', 'entry', 'runtime-process.js');
+const storageMaintenanceEntry = path.join(runtimeRoot, 'dist', 'entry', 'storage-maintenance-process.js');
+const dataRootSwitchEntry = path.join(resourcesRoot, 'app.asar.unpacked', 'out', 'main', 'data-root-switch-process.cjs');
 const headlessEntry = path.join(runtimeRoot, 'dist', 'entry', 'headless.js');
 const toolArtifactVerifier = path.join(
   runtimeRoot,
@@ -43,10 +49,18 @@ const pythonManifest = path.join(
   '.ariadne-runtime.json'
 );
 
+assertRetiredRuntimeAbsent(runtimeRoot);
+for (const dependency of ['@lancedb/lancedb', 'web-tree-sitter', 'tree-sitter-wasms']) {
+  assert(!existsSync(path.join(resourcesRoot, 'runtime', 'node_modules', dependency)),
+    `Retired dependency was included in packaged Runtime: ${dependency}`);
+}
+
 for (const file of [
   runner,
   runnerManifest,
   runtimeEntry,
+  storageMaintenanceEntry,
+  dataRootSwitchEntry,
   headlessEntry,
   toolArtifactVerifier,
   toolArtifactManifest,
@@ -73,6 +87,15 @@ const nodeVersion = run(runner, ['--version']).trim();
 const expectedNodeVersion = readJson(runnerManifest).version;
 assert(nodeVersion === `v${expectedNodeVersion}`, 'Packaged Node runner version mismatch.');
 
+// The restore switch helper is a standalone Node bundle outside ASAR. Without
+// its private owning IPC channel it must reject execution before touching data.
+const unauthenticatedHelper = spawnSync(runner, [dataRootSwitchEntry], {
+  cwd: projectRoot, encoding: 'utf8', windowsHide: true, timeout: 10000
+});
+assert(!unauthenticatedHelper.error && unauthenticatedHelper.status === 1
+  && unauthenticatedHelper.stdout === '' && unauthenticatedHelper.stderr === '',
+  'Packaged restore helper is not standalone or accepted an unowned invocation.');
+
 run(runner, [toolArtifactVerifier]);
 
 run(python, [
@@ -80,7 +103,7 @@ run(python, [
   "import torch, transformers, safetensors, accelerate; print('transformers-runtime-ok')"
 ]);
 
-console.log('packaged-runtime: native Sandbox, Node runner, model Runtime, and manifests verified');
+console.log('packaged-runtime: native Sandbox, Node runner, model Runtime, private restore helpers, and manifests verified');
 
 function readJson(file) {
   return JSON.parse(readFileSync(file, 'utf8'));

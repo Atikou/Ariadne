@@ -458,13 +458,13 @@ function readPersistedText(databasePath: string): string {
   const database = new DatabaseSync(databasePath, { readOnly: true });
   try {
     const rows = database.prepare(`
-      SELECT aggregate_json AS value FROM agent_v3_runs
-      UNION ALL SELECT result_run_json FROM agent_v3_command_runs
-      UNION ALL SELECT event_json FROM agent_v3_events
-      UNION ALL SELECT event_json FROM agent_v3_outbox
-      UNION ALL SELECT payload_json FROM agent_v3_checkpoints
-      UNION ALL SELECT input_payload_json FROM agent_v3_effect_payloads
-      UNION ALL SELECT result_payload_json FROM agent_v3_effect_payloads
+      SELECT aggregate_json AS value FROM agent_runs
+      UNION ALL SELECT result_run_json FROM agent_command_runs
+      UNION ALL SELECT event_json FROM agent_events
+      UNION ALL SELECT event_json FROM agent_outbox
+      UNION ALL SELECT payload_json FROM agent_checkpoints
+      UNION ALL SELECT input_payload_json FROM agent_effect_payloads
+      UNION ALL SELECT result_payload_json FROM agent_effect_payloads
     `).all() as Array<{ value: string | null }>;
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
     return rows.map((row) => row.value ?? '').join('\n');

@@ -395,9 +395,11 @@ AgentInferenceToolContractReader {
       capabilityIds: Object.freeze([...snapshot.capabilityIds]),
       scope: Object.freeze([...snapshot.scope]),
       signal,
+      ...(this.executionServices.memory === undefined ? {} : { memory: this.executionServices.memory }),
       ...(this.executionServices.protectedEffectResults === undefined
         ? {}
-        : { protectedEffectResults: this.executionServices.protectedEffectResults })
+        : { protectedEffectResults: this.executionServices.protectedEffectResults }),
+      ...(this.executionServices.goalPlanning === undefined ? {} : { goalPlanning: this.executionServices.goalPlanning })
     };
     return entry.executable.execute(
       deepFreezeJson(cloneCanonicalAgentToolInput(durableInput)),

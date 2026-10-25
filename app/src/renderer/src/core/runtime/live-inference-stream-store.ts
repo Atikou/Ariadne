@@ -1,4 +1,4 @@
-import type { PublicInferenceStreamProjectionV3, RuntimeEventEnvelope } from '@ariadne/protocol/public';
+import type { PublicInferenceStreamProjection, RuntimeEventEnvelope } from '@ariadne/protocol/public';
 import { LiveInferenceAttempt } from './live-inference-attempt';
 
 /** Ephemeral suffixes joined to durable attempt heads; never a recovery authority. */
@@ -7,7 +7,7 @@ export class LiveInferenceStreamStore {
   private readonly attempts = new Map<string, LiveInferenceAttempt>();
   private readonly settledReasoningIds: string[] = [];
   private settledRuns: ReadonlySet<string> = new Set();
-  private snapshot: readonly PublicInferenceStreamProjectionV3[] = [];
+  private snapshot: readonly PublicInferenceStreamProjection[] = [];
 
   accept(envelope: RuntimeEventEnvelope): boolean {
     const event = envelope.event;
@@ -22,7 +22,7 @@ export class LiveInferenceStreamStore {
     return true;
   }
 
-  reconcile(heads: readonly PublicInferenceStreamProjectionV3[]): void {
+  reconcile(heads: readonly PublicInferenceStreamProjection[]): void {
     for (const head of heads) {
       if (this.settledRuns.has(head.runId)) continue;
       const attempt = this.attempts.get(head.inferenceStreamId) ?? new LiveInferenceAttempt(head.inferenceStreamId, head);
@@ -39,7 +39,7 @@ export class LiveInferenceStreamStore {
     return [...this.attempts.values()].some(attempt => attempt.head?.status === 'streaming' || attempt.needsSynchronization);
   }
 
-  getSnapshot(): readonly PublicInferenceStreamProjectionV3[] {
+  getSnapshot(): readonly PublicInferenceStreamProjection[] {
     const heads = [...this.attempts.values()].flatMap(attempt => attempt.head === undefined ? [] : [attempt.head]);
     if (heads.length !== this.snapshot.length || heads.some((head, index) => head !== this.snapshot[index])) {
       this.snapshot = heads;

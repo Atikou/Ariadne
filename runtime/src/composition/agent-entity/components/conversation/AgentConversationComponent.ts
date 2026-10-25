@@ -1,6 +1,6 @@
 import type { RuntimeApplicationCommandResult } from '../../../../ingress/RuntimeApplication.js';
 import type { RuntimeCommandEnvelope } from '../../../../ingress/RuntimeIngress.js';
-import type { RuntimeCommandReconciliation } from '../../../../control/ports/RuntimeCommandJournal.js';
+import type { RuntimeCommandReconciliationV2 as RuntimeCommandReconciliation } from '../../../../control/ports/RuntimeCommandJournalV2.js';
 import type { ConversationAttachmentStore } from '../../../../control/ports/ConversationAttachmentStore.js';
 import type { SqliteConversationRunHandoffUnitOfWork } from '../../../../adapters/persistence/SqliteConversationRunHandoffUnitOfWork.js';
 import { deriveConversationAuthorityId } from '../../../../conversation/ConversationRunHandoffIds.js';
@@ -22,21 +22,21 @@ import {
 
 type SessionCommand = Extract<RuntimeCommandEnvelope['command'], {
   readonly kind:
-    | 'conversation.session.create.v3'
-    | 'conversation.session.rename.v3'
-    | 'conversation.session.archive.v3'
-    | 'conversation.session.restore.v3';
+    | 'conversation.session.create'
+    | 'conversation.session.rename'
+    | 'conversation.session.archive'
+    | 'conversation.session.restore';
 }>;
 
 type NavigationCommand = Extract<RuntimeCommandEnvelope['command'], {
   readonly kind:
-    | 'conversation.session.fork.v3'
-    | 'conversation.sessions.query.v3'
-    | 'conversation.message.resolve.v3';
+    | 'conversation.session.fork'
+    | 'conversation.sessions.query'
+    | 'conversation.message.resolve';
 }>;
 
 type AcceptMessageCommand = Extract<RuntimeCommandEnvelope['command'], {
-  readonly kind: 'conversation.message.accept.v3';
+  readonly kind: 'conversation.message.accept';
 }>;
 
 export interface AgentConversationComponentOptions {
@@ -119,8 +119,8 @@ class DefaultAgentConversationComponent implements AgentConversationComponentHan
   public commandOwners(): readonly AgentPublicCommandOwner[] {
     return Object.freeze([
       defineAgentPublicCommandOwner('conversation.sessions', [
-        'conversation.session.create.v3', 'conversation.session.rename.v3',
-        'conversation.session.archive.v3', 'conversation.session.restore.v3'
+        'conversation.session.create', 'conversation.session.rename',
+        'conversation.session.archive', 'conversation.session.restore'
       ], (envelope, command) => this.executeSession(envelope, command),
       (envelope, command) => this.reconcileCommitted(
         envelope,
@@ -128,10 +128,10 @@ class DefaultAgentConversationComponent implements AgentConversationComponentHan
         'conversation_command_reconciliation_invalid'
       )),
       defineAgentPublicCommandOwner('conversation.navigation', [
-        'conversation.session.fork.v3', 'conversation.sessions.query.v3',
-        'conversation.message.resolve.v3'
+        'conversation.session.fork', 'conversation.sessions.query',
+        'conversation.message.resolve'
       ], (envelope, command) => this.executeNavigation(envelope, command),
-      (envelope, command) => command.kind === 'conversation.session.fork.v3'
+      (envelope, command) => command.kind === 'conversation.session.fork'
         ? this.reconcileCommitted(
             envelope,
             () => this.executeNavigation(envelope, command),
@@ -139,7 +139,7 @@ class DefaultAgentConversationComponent implements AgentConversationComponentHan
           )
         : Promise.resolve({ kind: 'not_committed' })),
       defineAgentPublicCommandOwner('conversation.message', [
-        'conversation.message.accept.v3'
+        'conversation.message.accept'
       ], (envelope, command) => this.executeAcceptMessage(envelope, command),
       (envelope, command) => this.reconcileCommitted(
         envelope,
@@ -227,7 +227,7 @@ class DefaultAgentConversationComponent implements AgentConversationComponentHan
     this.wakeProjectionDrain();
     return {
       outcome: { ok: true, result: {
-        kind: 'conversation.message.accepted.v3',
+        kind: 'conversation.message.accepted',
         sessionId: result.session.sessionId,
         sessionVersion: result.session.version,
         messageId: result.messageVersion.messageId,

@@ -22,23 +22,74 @@ import {
   sha256AgentControlData
 } from '@ariadne/agent-core';
 import {
-  projectionCommitV3Schema,
-  publicDecisionActionTokenV1,
-  type ProjectionCommitV3,
-  type PublicDecisionChoiceV3
+  publicRunDocumentCommitSchema,
+  assertPublicProjectionCommit,
+  publicDecisionActionToken,
+  type PublicRunDocumentCommit,
+  type PublicDecisionChoice,
+  RunDocumentItemAssembler
 } from '@ariadne/protocol/public';
 import { describe, expect, it } from 'vitest';
 
 import type { AgentRunVersionReader } from '../src/projection/AgentRunProjectionPorts.js';
-import type { PublicProjectionCommitSink } from '../src/projection/PublicProjectionPorts.js';
+import type { PublicProjectionRunDocumentCommitSinkV1 } from '../src/projection/PublicProjectionRunDocumentWritePortsV1.js';
+import type { RunDocumentPlan } from '../src/projection/RunDocumentPlan.js';
 import {
   AgentRunPublicProjectionPublisher,
   agentRunChangedPublicEventId,
   agentRunProjectionSourceId,
-  projectAgentRunV3
+  projectAgentRunV3,
+  projectAgentRunDocumentV1
 } from '../src/projection/AgentRunPublicProjectionPublisher.js';
 
 describe('AgentRunPublicProjectionPublisher', () => {
+  it('publishes an oversized Inbox through the document sink and waits for its final result before ACK', async () => {
+    const lifecycle = await decisionLifecycle('plan'), content = '模拟完整输入🙂'.repeat(1_000);
+    const contentDigest = await sha256AgentControlData(content);
+    const run = { ...lifecycle.requestedRun, inbox: Array.from({ length: 150 }, (_, index) => ({
+      inputId: `oversized-input-${index}`, messageId: `oversized-message-${index}`, version: 1,
+      delivery: 'next_step' as const, content, contentDigest, state: 'queued' as const,
+      queuedAt: lifecycle.requestedRun.updatedAt, updatedAt: lifecycle.requestedRun.updatedAt
+    })) };
+    const request = requestArtifacts({ ...lifecycle, requestedRun: run });
+    expect(() => assertPublicProjectionCommit({ contractVersion: '5.0', eventId: 'old-oversized-event',
+      sourceId: 'old-oversized-source', sourceCursor: 1, occurredAt: request.run.updatedAt,
+      changes: [{ feature: 'runs', operation: 'upsert', aggregateId: request.run.runId,
+        aggregateVersion: request.run.version, projectedAt: request.run.updatedAt, dto: projectAgentRunV3(request.run) }]
+    })).toThrow();
+    const outbox = new FakeAgentRunOutboxStore(messagesFor([request])), sink = new IdempotentPublicEventSink();
+    let release!: () => void, started!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    const publisher = new AgentRunPublicProjectionPublisher(outbox, new MapRunVersionReader([request]), {
+      async appendRunDocument(commit, plan) { started(); await gate; return sink.appendRunDocument(commit, plan); }
+    }, { claimIdFactory: () => 'oversized-publisher-claim' });
+    const pending = publisher.publishPending(); await ready;
+    expect(outbox.publishCalls).toEqual([]); expect(sink.persisted.size).toBe(0);
+    release(); await expect(pending).resolves.toMatchObject({ projectedVersions: 1, acknowledgedMessages: 2 });
+    expect(sink.appendCalls[0]).toMatchObject({ contractVersion: '6.0', changes: [
+      { feature: 'runs', dto: { summary: { queuedInputCount: 150 } } }, { feature: 'decisions' }
+    ] });
+    expect(JSON.stringify(sink.appendCalls[0])).not.toContain(content);
+    const restored = await restoreItem(sink.plans[0]!, 'inbox', 149);
+    expect(restored.value).toMatchObject({ content, inputId: 'oversized-input-149' });
+    expect(outbox.publishedEventIds.size).toBe(2);
+  });
+  it('keeps the released DTO limit while the same Core projector preserves a larger interaction in a bounded document', async () => {
+    const run = queuedRun('multipart-run');
+    const interaction = { messageId: 'multipart-message', turnId: 'multipart-turn', role: 'assistant' as const,
+      content: '模拟正文🙂'.repeat(160_000), occurredAt: run.updatedAt };
+    expect(() => projectAgentRunV3(run, [interaction])).toThrow();
+    const plan = projectAgentRunDocumentV1(run, [interaction]);
+    const assembler = new RunDocumentItemAssembler(plan.header, 'interactionMessages', 0);
+    let restored;
+    for (const leaf of plan.itemLeaves('interactionMessages', 0)) restored = await assembler.accept(leaf);
+    expect(restored?.collection).toBe('interactionMessages');
+    if (restored?.collection !== 'interactionMessages') throw new Error('missing_document_interaction');
+    expect(restored.value.content).toBe(interaction.content);
+    expect(restored.value.runId).toBe(run.runId);
+    expect(plan.header.collections.interactionMessages.leafCount).toBeGreaterThan(1);
+  });
   it.each([
     ['permission', ['allow_once', 'allow_run', 'deny'], 'approved'],
     ['plan', ['approve', 'reject'], 'rejected'],
@@ -120,8 +171,8 @@ describe('AgentRunPublicProjectionPublisher', () => {
       });
       expect(resolvedCommit.changes[1]!.dto).not.toHaveProperty('action');
       expect(outbox.publishCalls).toHaveLength(2);
-      expect(() => projectionCommitV3Schema.parse(requestCommit)).not.toThrow();
-      expect(() => projectionCommitV3Schema.parse(resolvedCommit)).not.toThrow();
+      expect(() => publicRunDocumentCommitSchema.parse(requestCommit)).not.toThrow();
+      expect(() => publicRunDocumentCommitSchema.parse(resolvedCommit)).not.toThrow();
     }
   );
 
@@ -222,15 +273,15 @@ describe('AgentRunPublicProjectionPublisher', () => {
 
   it('derives a stable opaque token and changes it on private decision drift', async () => {
     const lifecycle = await decisionLifecycle('recovery');
-    const token = await publicDecisionActionTokenV1(
+    const token = await publicDecisionActionToken(
       lifecycle.decision,
       lifecycle.requestedRun.binding.sessionId
     );
-    await expect(publicDecisionActionTokenV1(
+    await expect(publicDecisionActionToken(
       structuredClone(lifecycle.decision),
       lifecycle.requestedRun.binding.sessionId
     )).resolves.toBe(token);
-    await expect(publicDecisionActionTokenV1({
+    await expect(publicDecisionActionToken({
       ...lifecycle.decision,
       uncertainty: 'different private uncertainty'
     }, lifecycle.requestedRun.binding.sessionId)).resolves.not.toBe(token);
@@ -368,7 +419,8 @@ describe('AgentRunPublicProjectionPublisher', () => {
 
     await publisher.publishPending();
 
-    const runDto = sink.appendCalls[0]?.changes.find((change) => change.feature === 'runs')?.dto;
+    const toolItem = await restoreItem(sink.plans[0]!, 'toolActivities', 0);
+    const runDto = { toolActivities: [toolItem.value] };
     expect(runDto).toMatchObject({
       toolActivities: [{
         toolName: 'private-tool',
@@ -440,8 +492,8 @@ describe('AgentRunPublicProjectionPublisher', () => {
         aggregateId: advancedRun.runId,
         aggregateVersion: advancedRun.version,
         dto: expect.objectContaining({
-          status: 'waiting_decision',
-          inbox: [expect.objectContaining({ inputId: input.inputId, state: 'queued' })]
+          summary: expect.objectContaining({ status: 'waiting_decision', queuedInputCount: 1 }),
+          collections: expect.objectContaining({ inbox: expect.objectContaining({ itemCount: 1 }) })
         })
       })
     ]);
@@ -654,12 +706,14 @@ class MapRunVersionReader implements AgentRunVersionReader {
   }
 }
 
-class IdempotentPublicEventSink implements PublicProjectionCommitSink {
-  public readonly appendCalls: ProjectionCommitV3[] = [];
-  public readonly persisted = new Map<string, ProjectionCommitV3>();
+class IdempotentPublicEventSink implements PublicProjectionRunDocumentCommitSinkV1 {
+  public readonly appendCalls: PublicRunDocumentCommit[] = [];
+  public readonly persisted = new Map<string, PublicRunDocumentCommit>();
+  public readonly plans: RunDocumentPlan[] = [];
 
-  public async append(event: ProjectionCommitV3): Promise<void> {
+  public async appendRunDocument(event: PublicRunDocumentCommit, plan: RunDocumentPlan): Promise<void> {
     this.appendCalls.push(event);
+    this.plans.push(plan);
     const existing = this.persisted.get(event.eventId);
     if (existing !== undefined) {
       if (JSON.stringify(existing) !== JSON.stringify(event)) {
@@ -669,6 +723,14 @@ class IdempotentPublicEventSink implements PublicProjectionCommitSink {
     }
     this.persisted.set(event.eventId, event);
   }
+}
+
+async function restoreItem(plan: RunDocumentPlan, collection: 'toolActivities' | 'inbox' | 'interactionMessages', ordinal: number) {
+  const assembler = new RunDocumentItemAssembler(plan.header, collection, ordinal);
+  let restored = null;
+  for (const leaf of plan.itemLeaves(collection, ordinal)) restored = await assembler.accept(leaf);
+  if (restored === null) throw new Error('fixture_document_item_missing');
+  return restored;
 }
 
 async function decisionLifecycle(

@@ -285,6 +285,32 @@ describe('ProductionAgentRunAdmissionSnapshotReader', () => {
     )).rejects.toMatchObject({ code: 'AGENT_ADMISSION_INSTRUCTIONS_INVALID' });
   });
 
+  it('keeps ancestor Session identities in authority-proven fork history while binding the Run to the child objective', async () => {
+    const fixture = await createFixture({ priorMessages: [
+      { role: 'user', content: 'immutable ancestor requirement', sessionId: 'session-ancestor' },
+      { role: 'assistant', content: 'immutable ancestor answer', sessionId: 'session-ancestor' }
+    ] });
+    const catalog = compiledCatalog(); const bundle = await authorityBundle(fixture.request, catalog);
+    const snapshot = await readerWith(fixture.conversation, provider(async () => bundle),
+      catalogProvider(async () => new ImmutableAgentToolCatalog(catalog)))
+      .readAdmissionSnapshot(fixture.request, new AbortController().signal);
+    expect(snapshot.binding.sessionId).toBe(fixture.request.sessionId);
+    expect(snapshot.input.messages.map(message => message.kind === 'text' ? message.content : message.kind)).toEqual([
+      'immutable ancestor requirement', 'immutable ancestor answer', OBJECTIVE
+    ]);
+  });
+
+  it('rejects history that crosses the objective Workspace even if it comes from an ancestor Session', async () => {
+    const fixture = await createFixture({ priorMessages: [
+      { role: 'user', content: 'foreign workspace content', sessionId: 'session-ancestor', workspaceId: 'workspace-foreign' }
+    ] });
+    const catalog = compiledCatalog(); const bundle = await authorityBundle(fixture.request, catalog);
+    await expect(readerWith(fixture.conversation, provider(async () => bundle),
+      catalogProvider(async () => new ImmutableAgentToolCatalog(catalog)))
+      .readAdmissionSnapshot(fixture.request, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'AGENT_ADMISSION_CONTEXT_INVALID' });
+  });
+
   it('fails closed when an admission Hook replaces the pinned SubAgent Provider snapshot', async () => {
     const fixture = await createFixture();
     const catalogSnapshot = compiledCatalog();
@@ -447,6 +473,8 @@ interface FixtureOptions {
   readonly priorMessages?: readonly {
     readonly role: 'user' | 'assistant';
     readonly content: string;
+    readonly sessionId?: string;
+    readonly workspaceId?: string;
   }[];
 }
 
@@ -554,8 +582,8 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
     history.push({
       messageId: `message-prior-${String(index)}`,
       version: 1,
-      sessionId: commandIdentity.sessionId,
-      workspaceId: commandIdentity.workspaceId,
+      sessionId: prior.sessionId ?? commandIdentity.sessionId,
+      workspaceId: prior.workspaceId ?? commandIdentity.workspaceId,
       role: prior.role,
       payload: { content: prior.content },
       contentDigest: await digestConversationMessageContent(prior.content),

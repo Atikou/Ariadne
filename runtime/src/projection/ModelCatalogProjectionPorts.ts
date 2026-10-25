@@ -1,4 +1,4 @@
-import type { PublicModelProjectionV3 } from '@ariadne/protocol/public';
+import type { PublicModelProjection, ModelQualitySummary } from '@ariadne/protocol/public';
 
 import type { PublicProjectionCommitSink } from './PublicProjectionPorts.js';
 
@@ -14,6 +14,7 @@ export interface ModelCatalogProjectionEntry {
   readonly supportsPlan: boolean;
   readonly supportsVision: boolean;
   readonly qualificationState: 'unknown' | 'testing' | 'qualified' | 'rejected';
+  readonly quality?: ModelQualitySummary;
 }
 
 /**
@@ -31,7 +32,7 @@ export interface ModelCatalogProjectionHead {
   readonly aggregateId: string;
   readonly aggregateVersion: number;
   readonly operation: 'upsert' | 'delete';
-  readonly dto: PublicModelProjectionV3 | null;
+  readonly dto: PublicModelProjection | null;
 }
 
 /**

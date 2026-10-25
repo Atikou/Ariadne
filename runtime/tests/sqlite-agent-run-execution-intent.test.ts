@@ -8,12 +8,14 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   AgentRunAdmissionService,
   AgentRunCommandService,
+  AgentInferenceDispatchService,
   digestAgentTurnInput,
   sha256AgentControlData,
   summarizeAgentTurnInput,
-  type AdmitAgentRunRequest
+  type AdmitAgentRunRequest,
+  type DispatchAgentInferenceRequest
 } from '@ariadne/agent-core';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   AgentRunExecutionIntentStoreError,
@@ -23,6 +25,9 @@ import {
 import { resolveAgentControlDatabasePath } from '../src/adapters/persistence/agentControlDbSchema.js';
 import type { AgentRunExecutionIntent } from '../src/control/ports/AgentRunExecutionStarter.js';
 import { createShutdownContext } from '../src/ingress/ShutdownContext.js';
+import { AgentRunExecutionDispatchController } from '../src/control/execution/AgentRunExecutionDispatchController.js';
+import { AgentRunExecutionIntentScheduler } from '../src/composition/AgentRunExecutionIntentScheduler.js';
+import { cancelActiveAgentInference } from '../src/composition/agent-entity/components/run-control/AgentActiveInferenceCancellation.js';
 
 const roots: string[] = [];
 const openUnits = new Set<SqliteAgentRunUnitOfWork>();
@@ -36,6 +41,125 @@ afterEach(async () => {
 });
 
 describe('SQLite Agent execution-intent ledger', () => {
+  it.each([
+    { boundary: 'input', inbox: false }, { boundary: 'preparation', inbox: false },
+    { boundary: 'preparation', inbox: true }
+  ])(
+    'cancels during $boundary (inbox=$inbox) before durable start without Provider I/O or recovery after restart',
+    async ({ boundary, inbox }) => {
+      const root = createRoot();
+      const clock = new MutableClock(at(10));
+      const unit = track(new SqliteAgentRunUnitOfWork(root, undefined, clock));
+      const intent = executionIntent();
+      const admission = await admitExactRun(unit, intent);
+      await unit.startExecutionIntent(intent, liveSignal());
+      let reached!: () => void;
+      const entered = new Promise<void>(resolve => { reached = resolve; });
+      const waitForAbort = (signal: AbortSignal) => new Promise<never>((_resolve, reject) => {
+        reached();
+        if (signal.aborted) reject(signal.reason);
+        else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+      const provider = vi.fn(async () => ({ kind: 'respond' as const, content: 'Must not run' }));
+      const checkpoint = vi.fn(() => { throw new Error('unexpected_start_checkpoint'); });
+      const engine = {
+        prepare: async (_input: unknown, signal: AbortSignal) => {
+          if (boundary === 'preparation') await waitForAbort(signal);
+          return { modelContext: null, decide: provider };
+        }
+      };
+      // The input gate uses the dispatch's signal, just as read-only preparation does.
+      let dispatchSignal!: AbortSignal;
+      const inference = new AgentInferenceDispatchService(unit, {
+        loadInferenceExecutionInput: async (runId, turnId, attemptId) => {
+          if (boundary === 'input') await waitForAbort(dispatchSignal);
+          const run = await unit.transaction(transaction => transaction.loadRun(runId));
+          if (run === null) throw new Error('test_run_missing');
+          return { runId, turnId, attemptId, inputDigest: admission.command.turn.inputDigest,
+            input: { run, messages: admission.turnInput.messages, availableTools: admission.turnInput.availableTools } };
+        }
+      }, engine, { plan: async () => { throw new Error('unexpected_directive'); } }, { create: checkpoint });
+      const controller = new AgentRunExecutionDispatchController(unit, {
+        dispatch: (request, signal) => { dispatchSignal = signal ?? liveSignal(); return inference.dispatch(request, signal); }
+      });
+      const reporter = { reportExecutionIntentRecovery: vi.fn(async () => undefined) };
+      const scheduler = new AgentRunExecutionIntentScheduler(unit, controller, reporter, {
+        intervalMs: 60_000, clock: { now: () => clock.now().toISOString() }
+      });
+      const continuation = { interruptActiveTurn: vi.fn(async () => ({ status: 'not_active' as const })) };
+      await scheduler.start();
+      try {
+        const drain = scheduler.drainOnce();
+        await Promise.race([entered, drain.then(() => { throw new Error('dispatch_finished_before_test_boundary'); })]);
+        clock.set(at(11));
+        if (inbox) {
+          for (let index = 0; index < 2; index += 1) {
+            await new AgentRunCommandService(unit).execute({ kind: 'run.enqueue_inbox_input',
+              commandId: `cancel-inbox-command-${index}`, runId: intent.runId, expectedVersion: 1 + index,
+              occurredAt: at(11), input: { inputId: `cancel-inbox-${index}`, messageId: `cancel-message-${index}`,
+                content: 'Queued during preparation', contentDigest: digest('f'), delivery: 'next_step' }
+            }, { turnInputPayloads: [], effectPayloads: [] });
+          }
+        }
+        await expect(cancelActiveAgentInference(unit, new AgentRunCommandService(unit), {
+          executionScheduler: scheduler, runWorkScheduler: continuation
+        }, 'public-cancel-before-start', {
+          kind: 'agent.run.cancel', runId: intent.runId, expectedVersion: inbox ? 3 : 1,
+          occurredAt: at(11), reason: 'user_requested'
+        })).resolves.toBe(inbox ? 4 : 2);
+        await expect(drain).resolves.toEqual({ claimed: 1, settled: 1 });
+        const run = await unit.transaction(transaction => transaction.loadRun(intent.runId));
+        expect(run?.state.status).toBe('cancelled');
+        expect(run?.inbox).toHaveLength(inbox ? 2 : 0);
+        expect(run?.turns[0]?.attempts[0]?.state).toMatchObject({
+          status: 'cancelled', cancellation: { kind: 'before_start' }
+        });
+        expect(readIntentRow(root, intent.executionIntentId)).toMatchObject({ state: 'settled', settlement_outcome: 'cancelled' });
+        expect(provider).not.toHaveBeenCalled();
+        expect(checkpoint).not.toHaveBeenCalled();
+        expect(reporter.reportExecutionIntentRecovery).not.toHaveBeenCalled();
+        expect(continuation.interruptActiveTurn).not.toHaveBeenCalled();
+        scheduler.assertHealthy();
+      } finally {
+        await scheduler.shutdown('2099-01-01T00:00:00.000Z');
+      }
+      await closeTracked(unit);
+      const reopened = track(new SqliteAgentRunUnitOfWork(root));
+      await expect(reopened.listExecutionIntentRecovery()).resolves.toEqual({ items: [] });
+      const receipt = await reopened.loadCommittedCommandReceipt('public-cancel-before-start');
+      expect(receipt).not.toBeNull();
+    }
+  );
+
+  it('admits and dispatches the same initial Attempt after an Inbox write before intent creation', async () => {
+    const unit = track(new SqliteAgentRunUnitOfWork(createRoot()));
+    const intent = executionIntent();
+    await admitExactRun(unit, intent);
+    await new AgentRunCommandService(unit).execute({ kind: 'run.enqueue_inbox_input',
+      commandId: 'inbox-before-intent', runId: intent.runId, expectedVersion: 1, occurredAt: at(1),
+      input: { inputId: 'input-before-intent', messageId: 'message-before-intent', content: 'Next turn only',
+        contentDigest: digest('f'), delivery: 'next_step' }
+    }, { turnInputPayloads: [], effectPayloads: [] });
+    await expect(unit.startExecutionIntent(intent, liveSignal())).resolves.toMatchObject({ admittedRunVersion: 1 });
+    const historical = await unit.transaction(transaction => transaction.loadRunVersion!(intent.runId, 1));
+    expect(historical?.inbox).toEqual([]);
+    const dispatch = vi.fn(async (_request: DispatchAgentInferenceRequest) => { throw new Error('provider_boundary_reached'); });
+    const controller = new AgentRunExecutionDispatchController(unit, { dispatch });
+    await expect(controller.dispatchClaimedExecution({ intent, intentDigest: await sha256AgentControlData(intent),
+      admissionCommandId: 'command-exact-admission', dispatchAttemptId: 'dispatch-after-early-inbox', startedAt: at(2)
+    }, liveSignal())).rejects.toThrow('provider_boundary_reached');
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(dispatch.mock.calls[0]?.[0]).toMatchObject({ expectedVersion: 2, runId: intent.runId });
+    await new AgentRunCommandService(unit).execute({ kind: 'run.cancel', commandId: 'cancel-before-initial-dispatch',
+      runId: intent.runId, expectedVersion: 2, occurredAt: at(3), reason: 'user_requested'
+    }, { turnInputPayloads: [], effectPayloads: [] });
+    dispatch.mockClear();
+    await expect(controller.dispatchClaimedExecution({ intent, intentDigest: await sha256AgentControlData(intent),
+      admissionCommandId: 'command-exact-admission', dispatchAttemptId: 'dispatch-after-cancellation', startedAt: at(4)
+    }, liveSignal())).rejects.toThrow(/outside the durable inbox boundary/u);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it('commits the full canonical payload digest before returning and exact-replays after restart', async () => {
     const root = createRoot();
     const clock = new MutableClock(at(10));
@@ -304,10 +428,10 @@ describe('SQLite Agent execution-intent ledger', () => {
     legacy.exec('BEGIN IMMEDIATE;');
     try {
       legacy.exec(`
-        DROP INDEX idx_agent_v3_execution_intents_pending;
-        DROP INDEX idx_agent_v3_execution_intents_recovery;
-        DROP INDEX idx_agent_v3_execution_intents_run;
-        DROP TABLE agent_v3_execution_intents;
+        DROP INDEX idx_agent_execution_intents_pending;
+        DROP INDEX idx_agent_execution_intents_recovery;
+        DROP INDEX idx_agent_execution_intents_run;
+        DROP TABLE agent_execution_intents;
         UPDATE schema_migrations
            SET version=3, name='agent_control_v3_plan_budget_child_run_ledger'
          WHERE version=4;
@@ -324,7 +448,7 @@ describe('SQLite Agent execution-intent ledger', () => {
     }
 
     expect(() => new SqliteAgentRunUnitOfWork(root)).toThrow(
-      'agent_control_offline_migration_required:agent_control_schema:3:7'
+      'agent_control_offline_migration_required:agent_control_schema:3:8'
     );
     const unchanged = new DatabaseSync(databasePath, { readOnly: true });
     try {
@@ -334,7 +458,7 @@ describe('SQLite Agent execution-intent ledger', () => {
       ).get()).toEqual({ value: '3' });
       expect(unchanged.prepare(
         `SELECT name FROM sqlite_master
-         WHERE type='table' AND name='agent_v3_execution_intents'`
+         WHERE type='table' AND name='agent_execution_intents'`
       ).get()).toBeUndefined();
     } finally {
       unchanged.close();
@@ -504,7 +628,7 @@ function readIntentRow(root: string, executionIntentId: string): Record<string, 
   });
   try {
     const row = database.prepare(
-      'SELECT * FROM agent_v3_execution_intents WHERE execution_intent_id=?'
+      'SELECT * FROM agent_execution_intents WHERE execution_intent_id=?'
     ).get(executionIntentId) as Record<string, unknown> | undefined;
     if (row === undefined) throw new Error('execution_intent_test_row_missing');
     return row;
@@ -519,7 +643,7 @@ function readIntentCount(root: string): number {
   });
   try {
     return Number((database.prepare(
-      'SELECT COUNT(*) AS count FROM agent_v3_execution_intents'
+      'SELECT COUNT(*) AS count FROM agent_execution_intents'
     ).get() as { count: number }).count);
   } finally {
     database.close();

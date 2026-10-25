@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { RotateCcw, Search, Waypoints } from 'lucide-react';
 import type { DockviewApi } from 'dockview-react';
 import { PERSONAL_ASSISTANT_WORKSPACE_ID } from '@ariadne/protocol/public';
+import { openTaskCenterTarget } from '@renderer/core/conversations/task-center-navigation';
 import type { ThemePreference } from '@shared/contract';
 import type { ModuleRegistry } from '@renderer/core/modules/module-registry';
 import type { ModuleId, ModuleServices } from '@renderer/core/modules/module-contract';
@@ -110,6 +111,13 @@ export function App({
     const definition = registry.get(id);
     if (definition) handleOpenModule(definition.id);
   }), [services, dockviewApi]);
+
+  useEffect(() => services.system.onApprovalNavigation(({ taskNavigation }) => {
+    if (!taskNavigation) return;
+    void openTaskCenterTarget(services, taskNavigation).catch(() => {
+      services.events.emit('module:open', 'tasks.center');
+    });
+  }), [services]);
 
   return (
     <main className="app-shell">

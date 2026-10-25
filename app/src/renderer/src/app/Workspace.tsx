@@ -175,10 +175,12 @@ function getDraggedModuleId(target: EventTarget): string | null {
 
 export function openModule(api: DockviewApi, registry: ModuleRegistry, id: ModuleId): void {
   const existing = api.getPanel(id);
+  if (api.hasMaximizedGroup() && !existing?.api.isMaximized()) api.exitMaximizedGroup();
   if (existing) {
     existing.api.setActive();
     const edge = registry.get(id)?.defaultPlacement.edge;
     if (edge) api.getEdgeGroup(edge.position)?.expand();
+    revealModule(api, id);
     return;
   }
 
@@ -186,6 +188,19 @@ export function openModule(api: DockviewApi, registry: ModuleRegistry, id: Modul
   if (!definition) throw new Error(`Unknown module: ${id}`);
   addModulePanel(api, definition);
   if (definition.defaultPlacement.edge) api.getEdgeGroup(definition.defaultPlacement.edge.position)?.expand();
+  revealModule(api, id);
+}
+
+/** Explicit navigation must reveal a grid panel even when other groups' minimum widths overflow. */
+function revealModule(api: DockviewApi, id: ModuleId): void {
+  const panel = api.getPanel(id);
+  if (!panel || panel.api.location.type !== 'grid') return;
+  const element = panel.group.element;
+  const host = element.closest('.ariadne-dockview-host');
+  if (!host) return;
+  const bounds = element.getBoundingClientRect(), viewport = host.getBoundingClientRect();
+  if (bounds.left < viewport.left - 1 || bounds.right > viewport.right + 1
+    || bounds.top < viewport.top - 1 || bounds.bottom > viewport.bottom + 1) panel.api.maximize();
 }
 
 export function resetWorkspace(api: DockviewApi, registry: ModuleRegistry): void {
@@ -205,8 +220,7 @@ async function restoreLayout(api: DockviewApi, registry: ModuleRegistry): Promis
     return;
   }
   api.clear();
-  api.fromJSON(layout);
-  applyModuleConstraints(api, registry);
+  api.fromJSON(withModuleConstraints(layout, registry));
 }
 
 function addDefaultLayout(api: DockviewApi, registry: ModuleRegistry): void {
@@ -273,12 +287,14 @@ function addModulePanel(api: DockviewApi, definition: FeatureModuleDefinition): 
   api.addPanel(options);
 }
 
-function applyModuleConstraints(api: DockviewApi, registry: ModuleRegistry): void {
-  for (const definition of registry.list()) {
-    api.getPanel(definition.id)?.api.setConstraints({
-      minimumWidth: definition.layoutConstraints.minimumWidth
-    });
-  }
+function withModuleConstraints(layout: SerializedDockview, registry: ModuleRegistry): SerializedDockview {
+  // Dockview panel constraints are constructor state; its panel API setter
+  // does not update them. Supply current definitions when rebuilding panels.
+  const panels = Object.fromEntries(Object.entries(layout.panels).map(([id, panel]) => {
+    const definition = panel.contentComponent ? registry.get(panel.contentComponent) : undefined;
+    return [id, definition ? { ...panel, minimumWidth: definition.layoutConstraints.minimumWidth } : panel];
+  }));
+  return { ...layout, panels };
 }
 
 function toJsonObject(value: SerializedDockview): JsonObject {

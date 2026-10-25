@@ -1,6 +1,7 @@
 import {
   assertValidAgentRun,
   isTerminalEffect,
+  isExactPlanApprovalInput,
   type AgentEffect,
   type AgentInferenceAttempt,
   type AgentRun,
@@ -378,6 +379,8 @@ function classifyRunningRun(
     directive.kind === 'respond'
     || directive.kind === 'complete'
     || directive.kind === 'ask_user'
+    || (directive.kind === 'request_decision' && run.inbox.some(input => input.state === 'queued'
+      && isExactPlanApprovalInput(input, directive.decision)))
   ) {
     const inputIds = claimableResponseBoundaryInputs(run);
     if (inputIds.length > 0) {

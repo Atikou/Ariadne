@@ -1,4 +1,6 @@
 import { ProductionMcpAgentClient } from '../../adapters/mcp/ProductionMcpAgentClient.js';
+import { LocalWorkspaceFileService } from '../../adapters/filesystem/LocalWorkspaceFileService.js';
+import { ProductionWorkspaceDocumentAuthority } from '../ProductionWorkspaceDocumentAuthority.js';
 import { SandboxWorkspaceLspService } from '../../adapters/code-intelligence/SandboxWorkspaceLspService.js';
 import { AgentLiveWorkService } from '../../control/resources/AgentLiveWorkService.js';
 import { AgentProcessLiveWorkProducer } from '../../control/resources/AgentProcessLiveWorkProducer.js';
@@ -9,6 +11,7 @@ import { createComputerReadAgentToolRegistrations } from '../first-party-tools/C
 import { createLiveWorkAgentToolRegistrations } from '../first-party-tools/LiveWorkAgentTools.js';
 import { createMcpAgentToolRegistrations } from '../first-party-tools/McpAgentTools.js';
 import { createWorkspaceAgentToolRegistrations } from '../first-party-tools/WorkspaceAgentTools.js';
+import { createGoalPlanningAgentToolRegistrations } from '../first-party-tools/GoalPlanningAgentTools.js';
 import {
   defineRuntimeCapabilityProvider,
   type RuntimeCapabilityHandle,
@@ -30,6 +33,7 @@ export function firstPartyAgentCapabilityProviders(): readonly RuntimeCapability
     defineRuntimeCapabilityProvider({
       id: 'workspace.tools',
       dependsOn: ['computer.read-tools'],
+      provides: [{serviceId:'workspace.documents',optional:false}],
       publicCapabilities: ['workspace.read', 'workspace.write'],
       start: createWorkspaceToolCapability
     }),
@@ -74,7 +78,7 @@ export function firstPartyAgentCapabilityProviders(): readonly RuntimeCapability
       id: 'agent.tools',
       dependsOn: ['agent.control'],
       publicCapabilities: ['agent.tools'],
-      start: () => ({ publicCapabilities: ['agent.tools'] })
+      start: context => ({ publicCapabilities: ['agent.tools'], tools: createGoalPlanningAgentToolRegistrations(context.workspaceBindings) })
     }),
     defineRuntimeCapabilityProvider({
       id: 'agent.subagents',
@@ -91,6 +95,7 @@ export function firstPartyAgentCapabilityProviders(): readonly RuntimeCapability
 function createWorkspaceToolCapability(
   context: RuntimeCapabilityStartContext
 ): RuntimeCapabilityHandle {
+  const files=new LocalWorkspaceFileService();
   const lsp = context.processSandboxFactory === undefined
     ? undefined
     : new SandboxWorkspaceLspService(context.processSandboxFactory);
@@ -104,9 +109,11 @@ function createWorkspaceToolCapability(
       ...createWorkspaceAgentToolRegistrations(
         context.workspaceBindings,
         context.processSandboxFactory,
-        lsp
+        lsp,
+        files
       )
     ],
+    services: {'workspace.documents':new ProductionWorkspaceDocumentAuthority(context.workspaceBindings,files)},
     ...(lsp === undefined ? {} : {
       close: async (shutdown: ShutdownContext) => {
         await lsp.close();

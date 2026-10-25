@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import {
   AgentPlanBudgetChildRunService,
+  EMPTY_AGENT_CONTROL_COMMIT_FACTS,
   AgentRunCommandService,
   AgentRunVersionConflictError,
   digestAgentCommittedDirective,
@@ -18,10 +19,14 @@ import {
   type AgentRunCommandResult,
   type AgentRunCommitArtifacts
 } from '@ariadne/agent-core';
+import { classifyAgentRunWork } from '../src/control/execution/AgentRunWorkClassifier.js';
+import { AgentInboxContinuationController } from '../src/control/execution/AgentInboxContinuationController.js';
+import { ProtectedAgentRunInteractionMessageResolver } from '../src/composition/ProtectedAgentRunInteractionMessageResolver.js';
+import { prepareBoundModelHistory } from '../src/adapters/model/AgentModelHistory.js';
 import {
   PUBLIC_PROJECTION_CONTRACT_VERSION,
-  derivePublicDecisionActionDescriptorV1,
-  type PublicDecisionChoiceV3
+  derivePublicDecisionActionDescriptor,
+  type PublicDecisionChoice
 } from '@ariadne/protocol/public';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -52,6 +57,54 @@ afterEach(async () => {
 });
 
 describe('AgentDecisionAuthorityService', () => {
+  it('atomically approves an inferred Plan, restores its exact continuation, and claims it once', async () => {
+    const unit = createUnit();
+    const active = await seedDecision(unit, 'plan', true);
+    const request = await publicRequest(active, 'approve', 'approve-inferred-plan');
+    const service = new AgentDecisionAuthorityService(unit, () => new Date(at(20)));
+    const result = await service.execute(request);
+    const receipt = await unit.loadCommittedCommandReceipt(request.commandId);
+    const run = receipt!.mutations[0]!.run;
+    expect(run.inbox).toMatchObject([{ state: 'queued', inputId: active.decision.decisionId,
+      messageId: active.decision.decisionId }]);
+    expect(run.inbox[0]).not.toHaveProperty('source');
+    await expect(new DecisionFixtureCommandService(unit).execute({ kind: 'run.remove_inbox_input',
+      commandId: 'remove-approved-plan-input', runId: run.runId, expectedVersion: run.version, occurredAt: at(21),
+      inputId: run.inbox[0]!.inputId, expectedInputVersion: 1 })).rejects.toThrow('immutable');
+    if (active.decision.kind !== 'plan') throw new Error('expected Plan decision');
+    const decision = active.decision;
+    await expect(unit.transaction(transaction => transaction.loadCommittedCommand(request.commandId, undefined, {
+      ...EMPTY_AGENT_CONTROL_COMMIT_FACTS, planApprovals: [{ approvalId: request.commandId,
+        decisionId: decision.decisionId, runId: run.runId, checkpointVersion: decision.checkpoint.version,
+        approvedAt: at(20), plan: { planId: decision.planId, version: decision.planVersion, contentHash: decision.planHash } }]
+    }))).resolves.not.toBeNull();
+    const work = classifyAgentRunWork(run);
+    expect(work.kind).toBe('continue_inbox');
+    if (work.kind !== 'continue_inbox') throw new Error('expected Plan continuation');
+    const recovery = (await unit.listActiveRuns()).items.find(item => item.run.runId === run.runId);
+    if (!recovery?.ready || recovery.phase !== 'resumable') throw new Error('expected recoverable approval');
+    await new AgentInboxContinuationController(unit, unit).continueInbox(recovery, work.inputIds, new AbortController().signal);
+    const continued = (await unit.listActiveRuns()).items.find(item => item.run.runId === run.runId);
+    if (!continued?.ready || continued.phase !== 'resumable') throw new Error('expected recoverable continuation');
+    expect(classifyAgentRunWork(continued.run).kind).toBe('dispatch_follow_up');
+    expect(continued.run.inbox[0]?.state).toBe('claimed');
+    const input = await unit.loadTurnInputPayload(continued.turnInputPayloads.at(-1)!);
+    expect(input.messages.at(-1)).toMatchObject({ role: 'user', content: run.inbox[0]!.content });
+    expect(JSON.stringify(input.messages)).toContain('Private authority plan');
+    expect(input.availableTools).toEqual(questionAvailableTools());
+    const boundInput = { run: continued.run, messages: input.messages, availableTools: input.availableTools };
+    expect(prepareBoundModelHistory(boundInput).at(-1)).toMatchObject({ kind: 'message', message: { role: 'user' } });
+    expect(() => prepareBoundModelHistory({ ...boundInput, messages: input.messages.map((message, index) =>
+      index === input.messages.length - 1 && message.kind === 'text' ? { ...message, role: 'system' as const } : message)
+    })).toThrow();
+    const transcript = await new ProtectedAgentRunInteractionMessageResolver(unit).resolveInteractionMessages(continued.run);
+    expect(transcript).toMatchObject([{ role: 'user', content: run.inbox[0]!.content }]);
+    expect(transcript).toHaveLength(1);
+    expect(JSON.stringify(transcript)).not.toContain('Private authority plan');
+    await expect(service.execute(request)).resolves.toEqual(result);
+    await expect(new AgentInboxContinuationController(unit, unit).continueInbox(recovery, work.inputIds,
+      new AbortController().signal)).rejects.toBeInstanceOf(AgentRunVersionConflictError);
+  });
   it.each([
     ['permission', 'allow_once'],
     ['plan', 'reject'],
@@ -67,7 +120,7 @@ describe('AgentDecisionAuthorityService', () => {
     const request = await publicRequest(active, choice, `resolve-${kind}`);
 
     await expect(service.execute(request)).resolves.toEqual({
-      kind: 'agent.decision.resolved.v3',
+      kind: 'agent.decision.resolved',
       runId: active.run.runId,
       decisionId: active.decision.decisionId,
       runVersion: active.run.version + 1
@@ -77,6 +130,12 @@ describe('AgentDecisionAuthorityService', () => {
       (event) => event.payload.type === 'decision.resolved'
     )).toBe(true);
     expect(getActiveDecision(receipt!.mutations[0]!.run)).toBeNull();
+    if (kind === 'plan') {
+      expect(receipt!.mutations[0]!.run.state).toMatchObject({ status: 'cancelled', reason: 'plan_rejected' });
+      expect(receipt!.mutations[0]!.events.some(event => event.payload.type === 'run.cancelled')).toBe(true);
+      expect((await unit.listActiveRuns()).items.some(item => item.run.runId === active.run.runId)).toBe(false);
+      await expect(service.execute(request)).resolves.toMatchObject({ runVersion: active.run.version + 1 });
+    }
     if (kind === 'user_question') {
       expect(receipt!.mutations[0]!.run.inbox).toMatchObject([{
         delivery: 'next_step',
@@ -206,7 +265,7 @@ describe('AgentDecisionAuthorityService', () => {
       reopened,
       () => new Date(at(20))
     ).execute(request)).resolves.toMatchObject({
-      kind: 'agent.decision.resolved.v3',
+      kind: 'agent.decision.resolved',
       runId: run.runId,
       decisionId: decision.decisionId,
       runVersion: run.version + 1
@@ -253,7 +312,7 @@ describe('AgentDecisionAuthorityService', () => {
       unit,
       () => new Date(at(20))
     ).execute(request)).resolves.toMatchObject({
-      kind: 'agent.decision.resolved.v3',
+      kind: 'agent.decision.resolved',
       runId: removed.run.runId,
       decisionId: decision.decisionId,
       runVersion: removed.run.version + 1
@@ -263,7 +322,8 @@ describe('AgentDecisionAuthorityService', () => {
 
 async function seedDecision(
   unit: SqliteAgentRunUnitOfWork,
-  kind: AgentDecision['kind']
+  kind: AgentDecision['kind'],
+  inferredPlan = false
 ): Promise<{ readonly run: AgentRun; readonly decision: AgentDecision }> {
   const runId = `run-authority-${kind}`;
   const commands = new DecisionFixtureCommandService(unit);
@@ -282,7 +342,7 @@ async function seedDecision(
     occurredAt: at(1)
   });
 
-  if (kind === 'plan') {
+  if (kind === 'plan' && !inferredPlan) {
     const payload = {
       title: 'Private authority plan',
       steps: [{ stepId: 'private-step', body: 'Do not project this body.' }]
@@ -304,7 +364,7 @@ async function seedDecision(
         payload
       }
     });
-  } else if (kind === 'user_question') {
+  } else if (kind === 'user_question' || (kind === 'plan' && inferredPlan)) {
     const input = {
       messages: [{ kind: 'text' as const, role: 'user' as const, content: 'Choose a target.' }],
       availableTools: questionAvailableTools()
@@ -341,6 +401,24 @@ async function seedDecision(
       turnId: 'turn-user-question',
       attemptId: 'attempt-user-question'
     });
+    if (kind === 'plan') {
+      const payload = { title: 'Private authority plan', steps: [{ body: 'protected inspection' }] };
+      const contentHash = await sha256AgentControlData(payload);
+      const directive = { kind: 'request_decision' as const, decision: { kind: 'plan' as const,
+        decisionId: 'decision-inferred-plan', planId: 'plan-inferred', planVersion: 1, planHash: contentHash,
+        requestedAt: at(4) } };
+      const command = { kind: 'run.record_inference_attempt_result' as const, commandId: 'record-inferred-plan',
+        runId, expectedVersion: 4, occurredAt: at(4), turnId: 'turn-user-question', attemptId: 'attempt-user-question',
+        result: { status: 'succeeded' as const, directive, directiveDigest: await digestAgentCommittedDirective(directive) } };
+      await new AgentRunCommandService(unit).execute(command, await fixtureArtifacts(command), {
+        planVersions: [{ ref: { planId: 'plan-inferred', version: 1, contentHash }, runId, payload, createdAt: at(4) }],
+        planApprovals: [], budgetGrants: [], budgetEntries: [], delegations: [], childTerminals: []
+      });
+      const run = await unit.transaction(transaction => transaction.loadRun(runId));
+      const decision = run && getActiveDecision(run);
+      if (!run || !decision) throw new Error('inferred_plan_seed_failed');
+      return { run, decision };
+    }
     const payload = {
       format: 'ariadne.user-question' as const,
       schemaVersion: 1 as const,
@@ -439,10 +517,10 @@ async function seedDecision(
 
 async function publicRequest(
   active: { readonly run: AgentRun; readonly decision: AgentDecision },
-  choice: PublicDecisionChoiceV3,
+  choice: PublicDecisionChoice,
   commandId: string
 ): Promise<ResolvePublicAgentDecisionRequest> {
-  const action = await derivePublicDecisionActionDescriptorV1(
+  const action = await derivePublicDecisionActionDescriptor(
     active.decision,
     active.run.binding.sessionId
   );
@@ -450,7 +528,7 @@ async function publicRequest(
     commandId,
     signal: new AbortController().signal,
     command: {
-      kind: 'agent.decision.resolve.v3',
+      kind: 'agent.decision.resolve',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       runId: active.run.runId,
       decisionId: active.decision.decisionId,

@@ -1,9 +1,9 @@
 import type {
-  PublicInferenceStreamEventV1, PublicInferenceStreamIdentityV1,
-  PublicInferenceStreamProjectionV3, PublicInferenceStreamTerminatedV1
+  PublicInferenceStreamEvent, PublicInferenceStreamIdentity,
+  PublicInferenceStreamProjection, PublicInferenceStreamTerminated
 } from '@ariadne/protocol/public';
 
-type Stream = PublicInferenceStreamProjectionV3;
+type Stream = PublicInferenceStreamProjection;
 type Chunk = Stream['chunks'][number];
 const MAX_CHUNKS = 1_024;
 const MAX_BYTES = 256 * 1_024;
@@ -14,16 +14,16 @@ export class LiveInferenceAttempt {
   head: Stream | undefined;
   private readonly pending = new Map<number, Chunk>();
   private pendingBytes = 0;
-  private terminal: PublicInferenceStreamTerminatedV1 | undefined;
+  private terminal: PublicInferenceStreamTerminated | undefined;
 
-  constructor(readonly id: string, readonly identity: PublicInferenceStreamIdentityV1) {}
+  constructor(readonly id: string, readonly identity: PublicInferenceStreamIdentity) {}
 
   get needsSynchronization(): boolean {
     return this.pending.size > 0 || (this.terminal !== undefined && this.head?.status === 'streaming')
       || (this.terminal !== undefined && this.head === undefined);
   }
 
-  accept(event: PublicInferenceStreamEventV1): void {
+  accept(event: PublicInferenceStreamEvent): void {
     this.assertIdentity(event);
     const head = this.head;
     if (event.kind === 'inference.stream.terminated') {
@@ -128,7 +128,7 @@ export class LiveInferenceAttempt {
     this.pending.delete(sequence);
   }
 
-  private assertIdentity(value: PublicInferenceStreamIdentityV1): void {
+  private assertIdentity(value: PublicInferenceStreamIdentity): void {
     if (this.identity.sessionId !== value.sessionId || this.identity.runId !== value.runId
       || this.identity.turnId !== value.turnId || this.identity.attemptId !== value.attemptId) {
       throw new Error('live_inference_stream_identity_drift');

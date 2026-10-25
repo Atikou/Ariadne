@@ -20,7 +20,7 @@ export function loadEffectPayloadRow(
   effectId: string
 ): AgentEffectPayloadRow | undefined {
   return database.prepare(
-    `SELECT * FROM agent_v3_effect_payloads WHERE run_id=? AND effect_id=?`
+    `SELECT * FROM agent_effect_payloads WHERE run_id=? AND effect_id=?`
   ).get(runId, effectId) as AgentEffectPayloadRow | undefined;
 }
 
@@ -30,7 +30,7 @@ export function loadTurnInputPayloadRow(
   turnId: string
 ): AgentTurnInputPayloadRow | undefined {
   return database.prepare(
-    'SELECT * FROM agent_v3_turn_inputs WHERE run_id=? AND turn_id=?'
+    'SELECT * FROM agent_turn_inputs WHERE run_id=? AND turn_id=?'
   ).get(runId, turnId) as AgentTurnInputPayloadRow | undefined;
 }
 
@@ -61,7 +61,7 @@ export function decodePayload(
     assertJsonValue(decoded, `${source}.decoded`);
     return decoded;
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith('agent_v3_storage_corruption:')) {
+    if (error instanceof Error && error.message.startsWith('agent_storage_corruption:')) {
       throw error;
     }
     throw storageCorruption(`${source}:payload_decode_failed`, error);
@@ -80,7 +80,7 @@ export function decodeEffectColumn(
   const payloadJson = isInput ? row.input_payload_json : row.result_payload_json;
   if (commandId === null || runVersion === null || codecId === null || payloadJson === null) {
     throw storageCorruption(
-      `agent_v3_effect_payloads:${row.run_id}:${row.effect_id}:${column}_missing`
+      `agent_effect_payloads:${row.run_id}:${row.effect_id}:${column}_missing`
     );
   }
   return decodePayload(codec, codecId, payloadJson, {
@@ -90,7 +90,7 @@ export function decodeEffectColumn(
     runVersion,
     effectId: row.effect_id,
     inputDigest: row.input_digest
-  }, `agent_v3_effect_payloads:${row.run_id}:${row.effect_id}:${column}`);
+  }, `agent_effect_payloads:${row.run_id}:${row.effect_id}:${column}`);
 }
 
 export function decodeTurnInputColumn(
@@ -104,10 +104,10 @@ export function decodeTurnInputColumn(
     commandId: row.command_id,
     runVersion: row.run_version,
     inputDigest: row.input_digest
-  }, `agent_v3_turn_inputs:${row.run_id}:${row.turn_id}`);
+  }, `agent_turn_inputs:${row.run_id}:${row.turn_id}`);
   if (typeof decoded !== 'object' || decoded === null || Array.isArray(decoded)) {
     throw storageCorruption(
-      `agent_v3_turn_inputs:${row.run_id}:${row.turn_id}:invalid_payload`
+      `agent_turn_inputs:${row.run_id}:${row.turn_id}:invalid_payload`
     );
   }
   return decoded as unknown as AgentTurnInputSnapshotV1;

@@ -1,3 +1,4 @@
+import { markAuthorityIntegrityError } from '../../SqliteAuthorityHealth.js';
 import { createHash } from 'node:crypto';
 
 import {
@@ -300,9 +301,9 @@ function authorityStorageCorruption(
   message: string,
   cause?: unknown
 ): ConversationAuthorityError {
-  return new ConversationAuthorityError(
+  return markAuthorityIntegrityError('conversation', new ConversationAuthorityError(
     'CONVERSATION_STORAGE_CORRUPTION',
     `Conversation storage corruption: ${message}.`,
     cause === undefined ? undefined : { cause }
-  );
+  ));
 }

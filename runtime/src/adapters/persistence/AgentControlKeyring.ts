@@ -14,6 +14,16 @@ export async function verifyOrInitializeKeyringAnchor(
   request: AgentKeyringAnchorVerification,
   clock: AgentPersistenceClock
 ): Promise<void> {
+  verifyKeyringAnchor(database, request, clock);
+}
+
+/** Restored empty stores can be validated without installing an anchor. */
+export function verifyKeyringAnchorReadOnly(database: DatabaseSync, request: AgentKeyringAnchorVerification): void {
+  assertKeyringAnchorVerification(request);
+  verifyKeyringAnchor(database, request);
+}
+
+function verifyKeyringAnchor(database: DatabaseSync, request: AgentKeyringAnchorVerification, clock?: AgentPersistenceClock): void {
   const rows = database.prepare(
     `SELECT key, value FROM agent_control_metadata
      WHERE key IN (?, ?)
@@ -26,13 +36,13 @@ export async function verifyOrInitializeKeyringAnchor(
   if (rows.length === 0) {
     const counts = database.prepare(
       `SELECT
-         (SELECT COUNT(*) FROM agent_v3_runs) AS runs,
-         (SELECT COUNT(*) FROM agent_v3_checkpoints) AS checkpoints,
-         (SELECT COUNT(*) FROM agent_v3_turn_inputs) AS turn_inputs,
-         (SELECT COUNT(*) FROM agent_v3_effect_payloads) AS effect_payloads,
-         (SELECT COUNT(*) FROM agent_v3_directive_payloads) AS directive_payloads,
-         (SELECT COUNT(*) FROM agent_v3_plan_versions) AS plan_versions,
-         (SELECT COUNT(*) FROM agent_v3_delegations) AS delegations`
+         (SELECT COUNT(*) FROM agent_runs) AS runs,
+         (SELECT COUNT(*) FROM agent_checkpoints) AS checkpoints,
+         (SELECT COUNT(*) FROM agent_turn_inputs) AS turn_inputs,
+         (SELECT COUNT(*) FROM agent_effect_payloads) AS effect_payloads,
+         (SELECT COUNT(*) FROM agent_directive_payloads) AS directive_payloads,
+         (SELECT COUNT(*) FROM agent_plan_versions) AS plan_versions,
+         (SELECT COUNT(*) FROM agent_delegations) AS delegations`
     ).get() as {
       runs: number;
       checkpoints: number;
@@ -53,6 +63,7 @@ export async function verifyOrInitializeKeyringAnchor(
     ) {
       throw new Error('agent_keyring_anchor_missing_nonempty_store');
     }
+    if (!clock) return;
     const updatedAt = clock.now().toISOString();
     const insert = database.prepare(
       `INSERT INTO agent_control_metadata(key, value, updated_at)
@@ -143,31 +154,31 @@ function assertProtectedRecoveryPayloadKeys(
 ): void {
   const rows = database.prepare(
     `SELECT 'checkpoint' AS source, codec_id, payload_json
-       FROM agent_v3_checkpoints
+       FROM agent_checkpoints
      UNION ALL
      SELECT 'turn_input' AS source, codec_id, payload_json
-       FROM agent_v3_turn_inputs
+       FROM agent_turn_inputs
      UNION ALL
      SELECT 'effect_input' AS source, input_codec_id AS codec_id,
             input_payload_json AS payload_json
-       FROM agent_v3_effect_payloads
+       FROM agent_effect_payloads
      UNION ALL
      SELECT 'effect_result' AS source, result_codec_id AS codec_id,
             result_payload_json AS payload_json
-       FROM agent_v3_effect_payloads
+       FROM agent_effect_payloads
       WHERE result_codec_id IS NOT NULL OR result_payload_json IS NOT NULL
      UNION ALL
      SELECT 'plan_payload' AS source, codec_id, payload_json
-       FROM agent_v3_plan_versions
+       FROM agent_plan_versions
      UNION ALL
      SELECT 'delegation_objective' AS source,
             objective_codec_id AS codec_id,
             objective_payload_json AS payload_json
-       FROM agent_v3_delegations
+       FROM agent_delegations
      UNION ALL
      SELECT 'directive_response' AS source, codec_id, payload_json
-       FROM agent_v3_directive_payloads`
-  ).all() as unknown as ProtectedRecoveryPayloadRow[];
+       FROM agent_directive_payloads`
+  ).iterate() as unknown as Iterable<ProtectedRecoveryPayloadRow>;
   const available = new Set(request.availableKeyIds);
   for (const row of rows) {
     if (row.codec_id !== request.requiredCodecId) {

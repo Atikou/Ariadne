@@ -9,7 +9,7 @@ export const chatModule: FeatureModuleDefinition = {
   component: ChatPanel,
   consumes: [
     'agentSettings', 'applicationProfile', 'clipboard', 'conversationNavigation', 'events',
-    'decisions', 'diagnostics', 'messages', 'models', 'runs',
+    'decisions', 'diagnostics', 'drafts', 'draftDelivery', 'messages', 'models', 'runs',
     'sessions', 'speech', 'system', 'toolResults'
   ],
   navigation: { id: 'chat', label: '对话', icon: 'message', order: 10, position: 'primary' },

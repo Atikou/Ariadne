@@ -3,22 +3,36 @@ import {
   PUBLIC_PROJECTION_CONTRACT_VERSION,
   PUBLIC_PROJECTION_GENESIS_DIGEST,
   PUBLIC_PROJECTION_HISTORY_DOMAIN,
-  canonicalPublicProjectionJsonV3,
-  type ProjectionCommitV3,
-  type PublicMessageProjectionV3,
-  type PublicModelProjectionV3,
-  type PublicProjectionChangeV3,
-  type PublicProjectionReadBatchV3,
-  type PublicProjectionSnapshotV3,
-  type PublicRunProjectionV3,
-  type PublicSessionProjectionV3
+  canonicalPublicProjectionJson,
+  publicProjectionCatalogRow,
+  type ProjectionCommit,
+  type PublicMessageProjection,
+  type PublicModelProjection,
+  type PublicProjectionChange,
+  type PublicProjectionReadBatch,
+  type PublicProjectionSnapshot,
+  type PublicRunProjection,
+  type PublicSessionProjection
 } from '@ariadne/protocol/public';
+import type { ProjectionRun, ProjectionCollectionCoverage } from '../src/renderer/src/core/runtime/projection/projection-presentation';
 
 export const NOW = '2026-07-31T00:00:00.000Z';
 
+/** Explicit complete DTO fixture -> frontend coverage. Production derives
+ * this state from verified document pages; this helper is test-only. */
+export function presentationRun(dto: PublicRunProjection): ProjectionRun {
+  const row = publicProjectionCatalogRow({ feature: 'runs', aggregateId: dto.runId, aggregateVersion: dto.version, operation: 'upsert', projectedAt: dto.updatedAt, dto });
+  if (row.feature !== 'runs') throw new Error('run_fixture_required');
+  const coverage = (total: number): ProjectionCollectionCoverage => ({ state: 'complete', total, count: total, startOrdinal: 0, hasEarlier: false, hasMore: false });
+  const token = `sha256:${'0'.repeat(64)}`;
+  return { ...row.dto, documentToken: token, toolActivities: dto.toolActivities,
+    inbox: dto.inbox.map(input => ({ ...input, bodyState: 'loaded', bodyReadToken: token })),
+    collections: { toolActivities: coverage(dto.toolActivities.length), inbox: coverage(dto.inbox.length), interactionMessages: coverage(dto.interactionMessages.length) } };
+}
+
 export function projectionSnapshot(
-  overrides: Partial<PublicProjectionSnapshotV3> = {}
-): PublicProjectionSnapshotV3 {
+  overrides: Partial<PublicProjectionSnapshot> = {}
+): PublicProjectionSnapshot {
   return {
     contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
     streamId: 'stream-a',
@@ -40,7 +54,7 @@ export function projectionSnapshot(
 export function session(
   sessionId: string,
   version = 1
-): PublicSessionProjectionV3 {
+): PublicSessionProjection {
   return {
     sessionId,
     workspaceId: 'workspace-primary',
@@ -57,7 +71,7 @@ export function message(
   messageId: string,
   sessionId: string,
   version = 1
-): PublicMessageProjectionV3 {
+): PublicMessageProjection {
   return {
     messageId,
     sessionId,
@@ -72,9 +86,9 @@ export function message(
 
 export function run(
   runId: string,
-  status: PublicRunProjectionV3['status'] = 'running',
+  status: PublicRunProjection['status'] = 'running',
   version = 1
-): PublicRunProjectionV3 {
+): PublicRunProjection {
   return {
     runId,
     sessionId: 'session-a',
@@ -90,7 +104,7 @@ export function run(
   };
 }
 
-export function model(modelId: string, version = 1): PublicModelProjectionV3 {
+export function model(modelId: string, version = 1): PublicModelProjection {
   return {
     modelId,
     version,
@@ -107,10 +121,10 @@ export function model(modelId: string, version = 1): PublicModelProjectionV3 {
 }
 
 export function upsertChange(
-  feature: PublicProjectionChangeV3['feature'],
-  dto: PublicProjectionChangeV3['dto'] & { version: number },
+  feature: PublicProjectionChange['feature'],
+  dto: PublicProjectionChange['dto'] & { version: number },
   aggregateId: string
-): PublicProjectionChangeV3 {
+): PublicProjectionChange {
   return {
     feature,
     operation: 'upsert',
@@ -118,14 +132,14 @@ export function upsertChange(
     aggregateVersion: dto.version,
     projectedAt: NOW,
     dto
-  } as PublicProjectionChangeV3;
+  } as PublicProjectionChange;
 }
 
 export function projectionCommit(
   eventId: string,
-  changes: readonly PublicProjectionChangeV3[],
+  changes: readonly PublicProjectionChange[],
   sourceCursor = 1
-): ProjectionCommitV3 {
+): ProjectionCommit {
   return {
     contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
     eventId,
@@ -139,13 +153,13 @@ export function projectionCommit(
 export function readBatch(
   afterCursor: number,
   afterDigest: string,
-  commits: readonly ProjectionCommitV3[],
+  commits: readonly ProjectionCommit[],
   options: { streamId?: string; hasMore?: boolean } = {}
-): Extract<PublicProjectionReadBatchV3, { status: 'ok' }> {
+): Extract<PublicProjectionReadBatch, { status: 'ok' }> {
   let previous = afterDigest;
   const entries = commits.map((commit, index) => {
     const cursor = afterCursor + index + 1;
-    const payloadDigest = digest(canonicalPublicProjectionJsonV3(commit));
+    const payloadDigest = digest(canonicalPublicProjectionJson(commit));
     const cursorDigest = digest(
       `${PUBLIC_PROJECTION_HISTORY_DOMAIN}\u0000${previous}`
       + `\u0000${String(cursor)}\u0000${payloadDigest}`
@@ -167,9 +181,9 @@ export function readBatch(
 }
 
 export function snapshotAfter(
-  batch: Extract<PublicProjectionReadBatchV3, { status: 'ok' }>,
-  overrides: Partial<PublicProjectionSnapshotV3>
-): PublicProjectionSnapshotV3 {
+  batch: Extract<PublicProjectionReadBatch, { status: 'ok' }>,
+  overrides: Partial<PublicProjectionSnapshot>
+): PublicProjectionSnapshot {
   return projectionSnapshot({
     streamId: batch.streamId,
     cursor: batch.nextCursor,

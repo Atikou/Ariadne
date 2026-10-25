@@ -6,10 +6,12 @@ import { agentStatusModule } from '@renderer/modules/agent-status';
 import { chatModule } from '@renderer/modules/chat';
 import { fileExplorerModule } from '@renderer/modules/file-explorer';
 import { logsModule } from '@renderer/modules/logs';
+import { memoryModule } from '@renderer/modules/memory';
 import { permissionsModule } from '@renderer/modules/permissions';
 import { productivityModule } from '@renderer/modules/productivity';
 import { sessionActivityModule } from '@renderer/modules/session-activity';
 import { settingsModule } from '@renderer/modules/settings';
+import { taskCenterModule } from '@renderer/modules/task-center';
 import { terminalModule } from '@renderer/modules/terminal';
 import { toolOutputModule } from '@renderer/modules/tool-output';
 import { visualReviewModule } from '@renderer/modules/visual-review';
@@ -20,10 +22,12 @@ const DEFINITIONS = Object.freeze([
   chatModule,
   fileExplorerModule,
   logsModule,
+  memoryModule,
   permissionsModule,
   productivityModule,
   sessionActivityModule,
   settingsModule,
+  taskCenterModule,
   terminalModule,
   toolOutputModule,
   visualReviewModule,

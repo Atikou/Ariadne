@@ -1,0 +1,12 @@
+{
+  "contractVersion": 1,
+  "contracts": [
+    {
+      "owner": "publicProjectionFeatureWindowV1",
+      "file": "runtime/src/projection/PublicProjectionFeatureWindowQueryPortsV1.ts",
+      "export": "PublicProjectionFeatureWindowQueryStoreV1",
+      "digest": "sha256:c90dac9e6f44dbc875cbd485e1a4f9623d345b85d9d609812baeb9bda973fb36",
+      "graphNodes": 121
+    }
+  ]
+}

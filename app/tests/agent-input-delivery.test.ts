@@ -3,13 +3,32 @@ import { PUBLIC_PROJECTION_CONTRACT_VERSION } from '@ariadne/protocol/public';
 import {
   AgentInputDeliveryTracker
 } from '../src/renderer/src/core/runtime/agent-input-delivery';
-import { NOW, run } from './projection-v3-fixture';
+import { NOW } from './projection-v3-fixture';
 
 describe('Agent input delivery presentation state', () => {
+  it('requires the exact Run, Session, input and delivery identity and never infers acceptance from omission', () => {
+    const tracker = new AgentInputDeliveryTracker();
+    const command = { kind: 'agent.inbox.enqueue' as const, contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      runId: 'run-delivery', sessionId: 'session-a', inputId: 'same-input', delivery: 'next_step' as const, content: 'Exact input' };
+    tracker.begin('exact-command', command, NOW);
+    tracker.requireReconciliation('exact-command', 'unknown', NOW);
+    const input = { inputId: command.inputId, messageId: 'message-a', version: 1, delivery: command.delivery,
+      state: 'queued' as const, queuedAt: NOW, updatedAt: NOW };
+    const exact = { runId: command.runId, sessionId: command.sessionId, runVersion: 5, input };
+    for (const candidates of [[], [{ ...exact, runId: 'other-run' }], [{ ...exact, sessionId: 'other-session' }],
+      [{ ...exact, input: { ...input, delivery: 'next_turn' as const } }], [{ ...exact, input: null }],
+      [{ ...exact, runVersion: 0 }], [{ ...exact, input: { ...input, version: 0 } }],
+      [{ ...exact, input: { ...input, source: { kind: 'live_work' as const, jobId: 'job-a', workKind: 'fixture', status: 'completed' as const } } }]]) {
+      expect(tracker.observeInboxIdentities(candidates)).toEqual([]);
+      expect(tracker.snapshot()[0]?.state).toBe('reconcile');
+    }
+    expect(tracker.observeInboxIdentities([exact])).toEqual(['exact-command']);
+    expect(tracker.snapshot()[0]?.state).toBe('accepted');
+  });
   it('defers to the authoritative inbox projection and settles as accepted', () => {
     const tracker = new AgentInputDeliveryTracker();
     const command = {
-      kind: 'agent.inbox.enqueue.v3' as const,
+      kind: 'agent.inbox.enqueue' as const,
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       runId: 'run-delivery',
       sessionId: 'session-a',
@@ -20,19 +39,17 @@ describe('Agent input delivery presentation state', () => {
     tracker.begin('command-delivery', command, NOW);
     tracker.requireReconciliation('command-delivery', 'Outcome unknown.', NOW);
 
-    const projectedRun = run('run-delivery', 'running', 5);
-    expect(tracker.observeProjection([{
-      ...projectedRun,
-      inbox: [{
+    expect(tracker.observeInboxIdentities([{
+      runId: command.runId, sessionId: command.sessionId, runVersion: 5,
+      input: {
         inputId: command.inputId,
         messageId: 'message-delivery',
         version: 1,
         delivery: command.delivery,
-        content: command.content,
         state: 'queued',
         queuedAt: NOW,
         updatedAt: NOW
-      }]
+      }
     }])).toEqual(['command-delivery']);
 
     expect(tracker.snapshot()).toEqual([
@@ -47,7 +64,7 @@ describe('Agent input delivery presentation state', () => {
   it('restores an unsettled sender record as reconcile without changing its identity', () => {
     const tracker = new AgentInputDeliveryTracker();
     const command = {
-      kind: 'agent.inbox.enqueue.v3' as const,
+      kind: 'agent.inbox.enqueue' as const,
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       runId: 'run-delivery',
       sessionId: 'session-a',
@@ -74,7 +91,7 @@ describe('Agent input delivery presentation state', () => {
   it('reuses the exact command payload and increments only the attempt counter', () => {
     const tracker = new AgentInputDeliveryTracker();
     const command = {
-      kind: 'agent.inbox.enqueue.v3' as const,
+      kind: 'agent.inbox.enqueue' as const,
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       runId: 'run-delivery',
       sessionId: 'session-a',

@@ -3,6 +3,22 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { APP_TERMINAL_CONTEXT_ID } from '@shared/contract';
 import { verifyInferenceStreamRecovery } from './inference-stream-recovery-smoke';
+import { showSmokeWindow } from './window-visibility';
+import { verifyScheduleSubmissionHistory } from './schedule-submission-history-smoke';
+import { verifyFollowUpCancellation } from './follow-up-cancellation-smoke';
+import { verifyRequiredChildCancellation } from './required-child-cancellation-smoke';
+import { verifyEffectCancellation } from './effect-cancellation-smoke';
+import { verifyWorkflowAgentExecution } from './workflow-agent-smoke';
+import { verifyProductivityEditing } from './productivity-editing-smoke';
+import { verifyAgentStatusDirectory } from './agent-status-ui-smoke';
+import { verifyTaskCenter } from './task-center-ui-smoke';
+import { TASK_CENTER_DECISION_UI_PROBE } from './task-center-decision-ui-smoke';
+import { verifyGoalAutonomy } from './goal-autonomy-smoke';
+import { verifyLongMemory } from './long-memory-smoke';
+import { verifyModelQuality } from './model-quality-smoke';
+import { verifyWorkspaceDocuments } from './workspace-documents-smoke';
+import { installSmokeProjectionProbe } from './projection-probe';
+import { verifyOversizedRunRecovery, type OversizedRunSmokeRecord } from './run-document-capacity-smoke';
 
 interface SmokeResult {
   passed: boolean;
@@ -25,6 +41,17 @@ interface SmokeResult {
   messageProjected: boolean;
   directStreamObserved: boolean;
   inferenceStreamDeliveryRecovered: boolean;
+  scheduleSubmissionHistoryVerified: boolean;
+  followUpCancellationVerified: boolean;
+  requiredChildCancellationVerified: boolean;
+  effectCancellationVerified: boolean;
+  workflowAgentExecutionVerified: boolean;
+  productivityEditingVerified: boolean;
+  agentStatusDirectoryVerified: boolean;
+  goalAutonomyVerified: boolean;
+  longMemoryVerified: boolean;
+  modelQualityVerified: boolean;
+  workspaceDocumentsVerified: boolean;
   directStreamRenderedBeforeCompletion: boolean;
   directStreamPartialText: string;
   directStreamChunkCount: number;
@@ -34,6 +61,7 @@ interface SmokeResult {
   inboxContinuationCompleted: boolean;
   agentInputDeliveryRecovered: boolean;
   rendererReloadDeliveryRecovered: boolean;
+  oversizedRunDocumentVerified: boolean;
   userQuestionCompleted: boolean;
   userQuestionRuntimeRecoveryCompleted: boolean;
   readToolCompleted: boolean;
@@ -86,6 +114,7 @@ interface SmokeObservation {
   rendererReloadDeliveryRecovered?: boolean;
   deliveryRecoverySessionId?: string;
   deliveryRecoveryRunId?: string;
+  oversizedRun?: OversizedRunSmokeRecord;
   userQuestionCompleted?: boolean;
   userQuestionRuntimeRecoveryCompleted?: boolean;
   readToolCompleted?: boolean;
@@ -97,6 +126,7 @@ interface SmokeObservation {
   effectCrashRecoveredWithoutReplay?: boolean;
   projectionCrashReplayedWithoutDuplicateEffect?: boolean;
   runtimeBoundaryKillsAcknowledged?: boolean;
+  taskCenterQuestionSourceEvidence?: { passed: boolean };
 }
 
 interface DesktopRestartDeliveryResult {
@@ -108,6 +138,7 @@ interface DesktopRestartDeliveryResult {
   retainedBeforeSettlement: boolean;
   absentFromProjection: boolean;
   settled: boolean;
+  oversizedRunRestored: boolean;
   terminalInterruptedRecovered: boolean;
   terminalRecoveryVisible: boolean;
   terminalPanelVisible: boolean;
@@ -144,8 +175,59 @@ export async function runElectronSmokeTest(
   outputRoot: string
 ): Promise<boolean> {
   if (!isAbsolute(outputRoot)) throw new Error('ARIADNE_SMOKE_TEST_OUTPUT must be absolute.');
+  if (process.env.ARIADNE_SMOKE_DATA_RECOVERY === '1') {
+    const { verifyDataRecoveryWindow } = await import('./data-recovery-smoke');
+    return verifyDataRecoveryWindow(window, outputRoot);
+  }
+  if (process.env.ARIADNE_SMOKE_FILE_DRAFTS === '1') {
+    const { verifyFileDraftWindow } = await import('./file-draft-smoke');
+    return verifyFileDraftWindow(window,outputRoot);
+  }
+  if (process.env.ARIADNE_SMOKE_COMPOSER_KEYBOARD === '1') {
+    const { verifyComposerKeyboardWindow } = await import('./composer-keyboard-smoke');
+    return verifyComposerKeyboardWindow(window, outputRoot);
+  }
+  if (process.env.ARIADNE_SMOKE_CHAT_DRAFTS === '1') {
+    const { verifyChatDraftWindow } = await import('./chat-draft-smoke');
+    return verifyChatDraftWindow(window, outputRoot);
+  }
+  if (process.env.ARIADNE_SMOKE_NOTIFICATIONS === '1') {
+    const { verifyDecisionNotificationWindow } = await import('./decision-notification-smoke');
+    return verifyDecisionNotificationWindow(window, outputRoot);
+  }
+  if (process.env.ARIADNE_SMOKE_DOMAIN_HEALTH === '1') {
+    const { verifyDomainHealthWindow } = await import('./domain-health-smoke');
+    return verifyDomainHealthWindow(window, outputRoot);
+  }
+  if (process.env.ARIADNE_SMOKE_PROJECTION_CAPACITY === '1') {
+    const { verifyProjectionCapacityWindow } = await import('./projection-capacity-smoke');
+    return verifyProjectionCapacityWindow(window, outputRoot);
+  }
   if (process.env.ARIADNE_SMOKE_PROFILE_VERIFY === '1') {
     return verifyApplicationProfileWindow(window, outputRoot);
+  }
+  if (process.env.ARIADNE_SMOKE_MODULE_UI_REVISIT === 'tasks-reminder-restart') {
+    const { verifyTaskNotificationRestart } = await import('./task-notification-restart-smoke');
+    if (window.webContents.isLoading()) await waitForLoad(window);
+    window.hide();
+    await window.webContents.executeJavaScript(`(async()=>{const deadline=Date.now()+60000;
+      while(Date.now()<deadline){if(window.ariadne&&(await window.ariadne.runtime.getStatus()).value?.availability==='ready')return;
+      await new Promise(resolve=>setTimeout(resolve,100));}throw new Error('task_reminder_restart_bootstrap_timeout');})()`,true);
+    return verifyTaskNotificationRestart(window, outputRoot);
+  }
+  if (['1', 'memory', 'tasks'].includes(process.env.ARIADNE_SMOKE_MODULE_UI_REVISIT ?? '')) {
+    await mkdir(outputRoot, { recursive: true });
+    if (window.webContents.isLoading()) await waitForLoad(window);
+    showSmokeWindow(window);
+    await window.webContents.executeJavaScript(`(async()=>{const deadline=Date.now()+60000;while(Date.now()<deadline){
+      if(window.__ariadneRendererCompositionRootV1?.services.runs.view.getSnapshot().runDirectory&&document.querySelector('.module-menu > button'))return;
+      await new Promise(resolve=>setTimeout(resolve,100));}throw new Error('module_revisit_bootstrap_timeout');})()`, true);
+    if (process.env.ARIADNE_SMOKE_MODULE_UI_REVISIT === 'memory') {
+      const sessionId = requireSmokeEnvironment('ARIADNE_SMOKE_MEMORY_REVISIT_SESSION');
+      await verifyLongMemory(window, requireSmokeEnvironment('ARIADNE_SMOKE_WORKSPACE_ID'), outputRoot, sessionId);
+    } else if (process.env.ARIADNE_SMOKE_MODULE_UI_REVISIT === 'tasks') await verifyTaskCenter(window, outputRoot);
+    else await verifyAgentStatusDirectory(window, outputRoot);
+    return true;
   }
   const providerBaseUrl = requireSmokeEnvironment('ARIADNE_SMOKE_PROVIDER_BASE_URL');
   const providerModel = requireSmokeEnvironment('ARIADNE_SMOKE_PROVIDER_MODEL');
@@ -154,9 +236,7 @@ export async function runElectronSmokeTest(
   await mkdir(outputRoot, { recursive: true });
   if (window.webContents.isLoading()) await waitForLoad(window);
 
-  window.setSkipTaskbar(true);
-  window.setPosition(-10_000, -10_000, false);
-  window.showInactive();
+  showSmokeWindow(window);
   const consoleErrors: string[] = [];
   const onConsoleMessage = (
     _event: Electron.Event<Electron.WebContentsConsoleMessageEventParams>,
@@ -168,6 +248,7 @@ export async function runElectronSmokeTest(
   window.webContents.on('console-message', onConsoleMessage);
 
   try {
+    await installSmokeProjectionProbe(window);
     if (process.env.ARIADNE_SMOKE_DESKTOP_DELIVERY_VERIFY === '1') {
       return await verifyDeliveryDesktopRestart(window, workspaceId, outputRoot);
     }
@@ -179,8 +260,15 @@ export async function runElectronSmokeTest(
         const waitUntil = async (probe, timeoutMs = 60_000) => {
           const deadline = Date.now() + timeoutMs;
           while (Date.now() < deadline) {
-            const value = await probe();
-            if (value) return value;
+            try {
+              const value = await probe();
+              if (value) return value;
+            } catch (error) {
+              // Only an observed disconnect during these read-only windows is
+              // retryable within the original deadline. Integrity failures fail.
+              if (error?.name !== 'PublicResultError'
+                || !['runtime_unavailable', 'command_outcome_uncertain'].includes(error.publicError?.code)) throw error;
+            }
             await delay(50);
           }
           throw new Error('smoke_wait_timeout:' + JSON.stringify({
@@ -212,38 +300,36 @@ export async function runElectronSmokeTest(
           if (!result.ok) throw new Error('runtime_request_failed:' + JSON.stringify(result));
           return result.value;
         };
-        const snapshot = async () => {
-          const value = await request({
-            kind: 'projection.snapshot.get',
-            contractVersion: '4.0'
-          });
-          if (value.kind !== 'projection.snapshot') throw new Error('projection_snapshot_kind_invalid');
+        const snapshot = async (selection = {}) => {
+          const value = await window.__ariadneSmokeProjection.readFixtureWindow(${JSON.stringify(workspaceId)}, selection);
           diagnosticSnapshot = {
             lifecycleStep,
-            sessions: value.snapshot.sessions,
-            runs: value.snapshot.runs,
-            messages: value.snapshot.messages,
-            inferenceStreams: value.snapshot.inferenceStreams,
-            decisions: value.snapshot.decisions,
-            diagnostics: value.snapshot.diagnostics
+            sessions: value.sessions,
+            runs: value.runs,
+            messages: value.messages,
+            inferenceStreams: value.inferenceStreams,
+            decisions: value.decisions,
+            diagnostics: value.diagnostics,
+            diagnosticCoverage: value.diagnosticCoverage,
+            boundaries: value.boundaries
           };
-          return value.snapshot;
+          return value;
         };
         const createRun = async (marker) => {
           const sessionId = crypto.randomUUID();
           const messageId = crypto.randomUUID();
           const created = await request({
-            kind: 'conversation.session.create.v3',
-            contractVersion: '4.0',
+            kind: 'conversation.session.create',
+            contractVersion: '5.0',
             sessionId,
             workspaceId: ${JSON.stringify(workspaceId)}
           });
-          if (created.kind !== 'conversation.session.created.v3') {
+          if (created.kind !== 'conversation.session.created') {
             throw new Error('session_create_result_invalid');
           }
           const accepted = await request({
-            kind: 'conversation.message.accept.v3',
-            contractVersion: '4.0',
+            kind: 'conversation.message.accept',
+            contractVersion: '5.0',
             sessionId,
             workspaceId: ${JSON.stringify(workspaceId)},
             expectedSessionVersion: created.version,
@@ -251,7 +337,7 @@ export async function runElectronSmokeTest(
             content: marker,
             execution: { mode: 'agent', modelId: ${JSON.stringify(providerModel)} }
           });
-          if (accepted.kind !== 'conversation.message.accepted.v3') {
+          if (accepted.kind !== 'conversation.message.accepted') {
             throw new Error('message_accept_result_invalid');
           }
           const run = await waitUntil(async () => {
@@ -260,8 +346,8 @@ export async function runElectronSmokeTest(
           });
           return { sessionId, messageId, runId: run.runId, created, accepted };
         };
-        const waitForRun = async (runId, predicate, timeoutMs = 60_000) => waitUntil(async () => {
-          const current = await snapshot();
+        const waitForRun = async (runId, predicate, collections = [], timeoutMs = 60_000) => waitUntil(async () => {
+          const current = await snapshot({ runCollections: { [runId]: collections } });
           const run = current.runs.find((item) => item.runId === runId);
           return run && predicate(run, current) ? { run, snapshot: current } : null;
         }, timeoutMs);
@@ -275,8 +361,8 @@ export async function runElectronSmokeTest(
           )) ?? null;
         });
         const resolvePermission = (runId, decision, choice) => request({
-          kind: 'agent.decision.resolve.v3',
-          contractVersion: '4.0',
+          kind: 'agent.decision.resolve',
+          contractVersion: '5.0',
           runId,
           decisionId: decision.decisionId,
           action: {
@@ -327,12 +413,12 @@ export async function runElectronSmokeTest(
           )) ? current : null;
         });
         const qualification = await request({
-          kind: 'model.qualification.run.v3',
-          contractVersion: '4.0',
+          kind: 'model.qualification.run',
+          contractVersion: '5.0',
           modelId: ${JSON.stringify(providerModel)}
         });
         if (
-          qualification.kind !== 'model.qualification.completed.v3'
+          qualification.kind !== 'model.qualification.completed'
           || qualification.modelId !== ${JSON.stringify(providerModel)}
           || qualification.supportsTextChat !== true
           || qualification.supportsAgent !== true
@@ -368,14 +454,23 @@ export async function runElectronSmokeTest(
           document.querySelector('.composer-workspace-menu .select-menu-trigger')
         );
 
-        const composer = document.querySelector('.composer textarea');
-        if (!(composer instanceof HTMLTextAreaElement)) throw new Error('composer_missing');
         const setValue = Object.getOwnPropertyDescriptor(
           HTMLTextAreaElement.prototype,
           'value'
         )?.set;
-        setValue?.call(composer, 'ariadne-smoke:direct');
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        // A different draft owner deliberately remounts its textarea. Resolve
+        // the active DOM element for every input instead of retaining a node
+        // across new drafts, archive/restore or selected-session transitions.
+        const enterComposerText = (text) => {
+          const activeComposer = document.querySelector('.composer textarea');
+          if (!(activeComposer instanceof HTMLTextAreaElement) || !activeComposer.isConnected) {
+            throw new Error('active_composer_missing');
+          }
+          if (!setValue) throw new Error('composer_value_setter_missing');
+          setValue.call(activeComposer, text);
+          activeComposer.dispatchEvent(new Event('input', { bubbles: true }));
+        };
+        enterComposerText('ariadne-smoke:direct');
         const enabledSendButton = await waitUntil(() => {
           const button = document.querySelector('.send-button');
           return button instanceof HTMLButtonElement && !button.disabled ? button : null;
@@ -440,8 +535,7 @@ export async function runElectronSmokeTest(
         Object.defineProperty(imageInput, 'files', { configurable: true, value: transfer.files });
         imageInput.dispatchEvent(new Event('change', { bubbles: true }));
         await waitUntil(() => document.querySelector('.composer-image-draft'));
-        setValue?.call(composer, 'ariadne-smoke:image');
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        enterComposerText('ariadne-smoke:image');
         const imageSendButton = await waitUntil(() => {
           const button = document.querySelector('.send-button');
           return button instanceof HTMLButtonElement && !button.disabled ? button : null;
@@ -643,6 +737,7 @@ export async function runElectronSmokeTest(
             && consumers.every((consumer) => consumer.getAttribute('data-runtime-availability') === 'ready');
         }));
 
+        lifecycleStep = 'read_tool';
         const read = await createRun('ariadne-smoke:read');
         const readDecision = await pendingPermission(read.runId);
         await resolvePermission(read.runId, readDecision, 'allow_once');
@@ -657,10 +752,10 @@ export async function runElectronSmokeTest(
             && message.status === 'completed'
             && message.content === 'ARIADNE_SMOKE_READ_OK'
           ))
-        ));
+        ), ["toolActivities"]);
 
-        setValue?.call(composer, 'ariadne-smoke:inbox');
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        lifecycleStep = 'inbox_input_after_session_restore';
+        enterComposerText('ariadne-smoke:inbox');
         const inboxStartButton = await waitUntil(() => {
           const button = document.querySelector('.send-button');
           return button instanceof HTMLButtonElement && !button.disabled ? button : null;
@@ -678,8 +773,7 @@ export async function runElectronSmokeTest(
             : undefined;
           return run?.status === 'running' ? { runId: run.runId, sessionId: run.sessionId } : null;
         });
-        setValue?.call(composer, 'ARIADNE_SMOKE_INBOX_INPUT');
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        enterComposerText('ARIADNE_SMOKE_INBOX_INPUT');
         const inboxSendButton = await waitUntil(() => {
           const button = document.querySelector('.send-button');
           return button instanceof HTMLButtonElement
@@ -693,7 +787,7 @@ export async function runElectronSmokeTest(
           input.delivery === 'next_turn'
           && input.content === 'ARIADNE_SMOKE_INBOX_INPUT'
           && input.state === 'queued'
-        )));
+        )), ["inbox"]);
         const inboxInputId = queuedInbox.run.inbox.find((input) => (
           input.content === 'ARIADNE_SMOKE_INBOX_INPUT'
         ))?.inputId;
@@ -720,7 +814,18 @@ export async function runElectronSmokeTest(
             && message.status === 'completed'
             && message.content === 'ARIADNE_SMOKE_INBOX_FINAL'
           ))
-        ));
+        ), ["inbox","interactionMessages"]);
+        lifecycleStep = 'inbox_transcript_visible';
+        // Earlier rows may be valid metadata whose bodies have not entered the
+        // viewport yet. Exercise actual scroll-driven body loading before
+        // checking the complete small transcript in the DOM.
+        const inboxViewport = document.querySelector('.message-viewport');
+        if (inboxViewport instanceof HTMLElement) {
+          for (let top = 0, step = 0; step < 32 && top < inboxViewport.scrollHeight; step++, top += Math.max(1, inboxViewport.clientHeight * 0.8)) {
+            inboxViewport.scrollTo({ top }); await delay(100);
+          }
+          inboxViewport.scrollTo({ top: inboxViewport.scrollHeight });
+        }
         const inboxTranscriptVisible = Boolean(await waitUntil(() => {
           const text = document.querySelector('.chat-panel')?.textContent ?? '';
           return text.includes('ARIADNE_SMOKE_INBOX_FIRST')
@@ -729,8 +834,7 @@ export async function runElectronSmokeTest(
         }));
 
         lifecycleStep = 'question_delivery_recovery';
-        setValue?.call(composer, 'ariadne-smoke:question');
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        enterComposerText('ariadne-smoke:question');
         const questionStartButton = await waitUntil(() => {
           const button = document.querySelector('.send-button');
           return button instanceof HTMLButtonElement && !button.disabled ? button : null;
@@ -759,6 +863,7 @@ export async function runElectronSmokeTest(
             : undefined;
           return run && decision ? { runId: run.runId, decisionId: decision.decisionId } : null;
         });
+        window.__taskCenterQuestionSourceEvidence=await ${TASK_CENTER_DECISION_UI_PROBE}(${JSON.stringify(workspaceId)},direct.run.sessionId,questionPending.runId,questionPending.decisionId,'user_question');
         const questionCard = await waitUntil(() => {
           const card = document.querySelector('section[aria-label="Agent 需要你的输入"]');
           return card?.textContent?.includes('Which execution path should Ariadne use for this smoke?')
@@ -792,8 +897,7 @@ export async function runElectronSmokeTest(
           childList: true,
           subtree: true
         });
-        setValue?.call(composer, 'ARIADNE_SMOKE_DELIVERY_INPUT');
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        enterComposerText('ARIADNE_SMOKE_DELIVERY_INPUT');
         const deliverySendButton = await waitUntil(() => {
           const button = document.querySelector('.send-button');
           return button instanceof HTMLButtonElement
@@ -807,7 +911,7 @@ export async function runElectronSmokeTest(
         const recoveredDelivery = await waitUntilAcrossRuntimeRestart(async () => {
           const runtime = await api.runtime.getStatus();
           if (!runtime.ok || runtime.value.availability !== 'ready') return null;
-          const current = await snapshot();
+          const current = await snapshot({ runCollections: { [questionPending.runId]: ['inbox'] } });
           const run = current.runs.find((item) => item.runId === questionPending.runId);
           const inputs = run?.inbox.filter((input) => (
             input.content === 'ARIADNE_SMOKE_DELIVERY_INPUT'
@@ -850,7 +954,7 @@ export async function runElectronSmokeTest(
         removeDeliveryInput.click();
         const deliveryInputRemoved = await waitForRun(questionPending.runId, (run) => (
           !run.inbox.some((input) => input.content === 'ARIADNE_SMOKE_DELIVERY_INPUT')
-        ));
+        ), ["inbox"]);
         const deliveryRecoveredQuestionCard = await waitUntil(() => {
           const card = document.querySelector('section[aria-label="Agent 需要你的输入"]');
           return card?.textContent?.includes('Which execution path should Ariadne use for this smoke?')
@@ -885,7 +989,7 @@ export async function runElectronSmokeTest(
             && message.status === 'completed'
             && message.content === 'ARIADNE_SMOKE_USER_QUESTION_COMPLETED'
           ))
-        ));
+        ), ["inbox","interactionMessages"]);
         const questionCardClosed = Boolean(await waitUntil(() => (
           document.querySelector('section[aria-label="Agent 需要你的输入"]') ? null : true
         )));
@@ -907,27 +1011,56 @@ export async function runElectronSmokeTest(
             message.runId === run.runId
             && message.content === 'ARIADNE_SMOKE_WRITE_ALLOW_OK'
           ))
-        ));
+        ), ["toolActivities"]);
         const resultsAfterAllow = await listWorkspace('results');
         const permissionAllowCompleted = resultsAfterAllow.entries.some((entry) => entry.name === 'allow.txt');
 
         lifecycleStep = 'permission_deny';
         const deny = await createRun('ariadne-smoke:write_deny');
         const denyDecision = await pendingPermission(deny.runId);
+        lifecycleStep = 'oversized_run_document';
+        const oversizedContent = '【模拟超大权威输入】汉字'.repeat(8000);
+        const oversizedInputIds = Array.from({ length: 5 }, () => crypto.randomUUID());
+        for (const inputId of oversizedInputIds) {
+          const accepted = await request({ kind: 'agent.inbox.enqueue', contractVersion: '5.0',
+            runId: deny.runId, sessionId: deny.sessionId, inputId, delivery: 'next_turn', content: oversizedContent });
+          if (accepted.kind !== 'agent.inbox.enqueued' || accepted.inputId !== inputId) throw new Error('oversized_input_not_accepted');
+        }
+        const oversizedQueued = await waitForRun(deny.runId, run => run.inbox.length === 5
+          && oversizedInputIds.every(id => run.inbox.some(input => input.inputId === id && input.content === oversizedContent)), ['inbox']);
+        const serializedInboxBytes = new TextEncoder().encode(JSON.stringify(oversizedQueued.run.inbox)).length;
+        if (serializedInboxBytes <= 1024 * 1024) throw new Error('oversized_run_fixture_too_small');
+        const oversizedSession = await waitUntil(() => document.querySelector('.conversation-row[data-session-id="'
+          + deny.sessionId + '"] .conversation-row-main'));
+        oversizedSession.click();
+        for (let index = 0; index < 5; index++) {
+          const row = await waitUntil(() => document.querySelectorAll('.agent-inbox-row')[index]);
+          row.scrollIntoView({ block: 'nearest' });
+          await waitUntil(() => row.querySelector('.agent-inbox-content')?.textContent === oversizedContent);
+        }
+        const visibleCompleteBodies = [...document.querySelectorAll('.agent-inbox-content')]
+          .filter(node => node.textContent === oversizedContent).length === 5;
+        if (!visibleCompleteBodies) throw new Error('oversized_run_body_dom_incomplete');
+        const originalSession = await waitUntil(() => document.querySelector('.conversation-row[data-session-id="'
+          + direct.run.sessionId + '"] .conversation-row-main'));
+        originalSession.click();
+        await waitUntil(() => document.querySelector('.chat-panel[aria-busy="false"]')
+          && document.querySelector('.conversation-row[data-session-id="' + direct.run.sessionId + '"].is-active'));
+        lifecycleStep = 'permission_deny';
         const resultsWhileDenyPending = await listWorkspace('results');
         const denyAbsentBeforeDecision = !resultsWhileDenyPending.entries.some((entry) => entry.name === 'deny.txt');
         await resolvePermission(deny.runId, denyDecision, 'deny');
-        await waitForRun(deny.runId, (run) => ['cancelled', 'failed'].includes(run.status));
+        await waitForRun(deny.runId, (run) => ['cancelled', 'failed'].includes(run.status), []);
         const resultsAfterDeny = await listWorkspace('results');
         const permissionDenyPreventedEffect = denyAbsentBeforeDecision
           && !resultsAfterDeny.entries.some((entry) => entry.name === 'deny.txt');
 
         lifecycleStep = 'cancel';
         const cancelled = await createRun('ariadne-smoke:cancel');
-        const runningCancellation = await waitForRun(cancelled.runId, (run) => run.status === 'running');
+        const runningCancellation = await waitForRun(cancelled.runId, (run) => run.status === 'running', []);
         const cancelResult = await request({
-          kind: 'agent.run.cancel.v3',
-          contractVersion: '4.0',
+          kind: 'agent.run.cancel',
+          contractVersion: '5.0',
           runId: cancelled.runId,
           expectedVersion: runningCancellation.run.version,
           occurredAt: new Date().toISOString(),
@@ -935,13 +1068,12 @@ export async function runElectronSmokeTest(
         });
         const cancelledTerminal = await waitForRun(
           cancelled.runId,
-          (run) => run.status === 'cancelled',
+          (run) => run.status === 'cancelled', [],
           30_000
         );
 
         lifecycleStep = 'crash_question';
-        setValue?.call(composer, 'ariadne-smoke:crash_question');
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        enterComposerText('ariadne-smoke:crash_question');
         const crashQuestionStartButton = await waitUntil(() => {
           const button = document.querySelector('.send-button');
           return button instanceof HTMLButtonElement && !button.disabled ? button : null;
@@ -1004,7 +1136,7 @@ export async function runElectronSmokeTest(
               && message.status === 'completed'
               && message.content === 'ARIADNE_SMOKE_CRASH_USER_QUESTION_COMPLETED'
             ))
-          ),
+          ), ["inbox"],
           90_000
         );
         // RuntimeSupervisor deliberately permits only three consecutive crash
@@ -1018,11 +1150,31 @@ export async function runElectronSmokeTest(
         });
 
         const crashedInference = await createRun('ariadne-smoke:crash_inference');
-        await waitForRun(crashedInference.runId, (run) => run.status === 'running');
+        const inferenceActive = await waitForRun(crashedInference.runId, (run) => run.status === 'running', []);
+        // The Provider holds this request open. Arm the native kill only after
+        // the shipped read path has actually observed its running projection.
+        const inferenceObservationId = crypto.randomUUID();
+        const inferenceObservationContent = JSON.stringify({ format: 'ariadne-smoke-inference-observed.v1',
+          commandId: inferenceObservationId, runId: inferenceActive.run.runId,
+          runVersion: inferenceActive.run.version, status: inferenceActive.run.status });
+        const inferenceObserved = await api.runtime.request({ kind: 'workspace.document.save', contractVersion: '5.0',
+          workspaceId: ${JSON.stringify(workspaceId)}, path: 'runtime-kills/inference-observed.json', expectedVersion: null,
+          content: inferenceObservationContent }, { commandId: inferenceObservationId });
+        if (inferenceObserved.ok ? inferenceObserved.value.kind !== 'workspace.document.saved'
+          : inferenceObserved.error.code !== 'command_outcome_uncertain') throw new Error('inference_observation_marker_not_saved');
         const inferenceKillAcknowledged = await waitForRuntimeKillAck('inference-killed.json');
+        // If the deliberate kill falls between file commit and reply, reconcile
+        // the exact written evidence after restart; never resend this write.
         const inferenceRecovery = await waitUntilAcrossRuntimeRestart(async () => {
           const runtime = await api.runtime.getStatus();
           if (!runtime.ok || runtime.value.availability !== 'ready') return null;
+          if (!inferenceObserved.ok) {
+            const marker = await request({ kind: 'workspace.document.read', contractVersion: '5.0',
+              workspaceId: ${JSON.stringify(workspaceId)}, path: 'runtime-kills/inference-observed.json' });
+            if (marker.kind !== 'workspace.document.read_result' || marker.content !== inferenceObservationContent) {
+              throw new Error('inference_observation_unknown_outcome_not_reconciled');
+            }
+          }
           const current = await snapshot();
           const run = current.runs.find((item) => item.runId === crashedInference.runId);
           return run?.status === 'interrupted' ? { run, current } : null;
@@ -1062,11 +1214,19 @@ export async function runElectronSmokeTest(
         const projectionCrashReplayedWithoutDuplicateEffect = projectionTerminal.run.status === 'completed'
           && projectionResults.entries.some((entry) => entry.name === 'projection-once.txt');
 
+        lifecycleStep = 'renderer_recovery_read_ranges';
+        await waitUntil(() => document.querySelector('.chat-panel[aria-busy="false"]'));
         const pageText = document.body.textContent ?? '';
         const readyAgentModels = initialProjection.models.filter((item) => (
           item.availability === 'ready' && item.supportsAgent
         ));
+        const oversizedRecovered = await waitForRun(deny.runId, run => ['failed', 'cancelled'].includes(run.status)
+          && run.inbox.length === 5 && oversizedInputIds.every(id => run.inbox.some(input => input.inputId === id
+            && input.content === oversizedContent && input.state === 'queued')), ['inbox']);
         return {
+          oversizedRun: { runId: deny.runId, sessionId: deny.sessionId, inputIds: oversizedInputIds,
+            serializedInboxBytes, perItemUtf16Length: oversizedContent.length, visibleCompleteBodies,
+            restoredAfterRuntimeKills: oversizedRecovered.run.runId === deny.runId },
           runtimeReady: status.availability === 'ready',
           projectionReady: true,
           modelQualificationCompleted: qualification.qualificationState === 'qualified',
@@ -1109,13 +1269,14 @@ export async function runElectronSmokeTest(
           deliveryRecoveryRunId: questionPending.runId,
           userQuestionCompleted: questionTerminal.run.runId === questionPending.runId
             && questionCardClosed,
+          taskCenterQuestionSourceEvidence: window.__taskCenterQuestionSourceEvidence,
           userQuestionRuntimeRecoveryCompleted:
             recoveredQuestionTerminal.run.runId === crashedQuestion.runId,
           readToolCompleted: readTerminal.run.status === 'completed',
           permissionBlockedBeforeAllow,
           permissionAllowCompleted: permissionAllowCompleted && allowTerminal.run.status === 'completed',
           permissionDenyPreventedEffect,
-          cancelCompleted: cancelResult.kind === 'agent.run.cancelled.v3'
+          cancelCompleted: cancelResult.kind === 'agent.run.cancelled'
             && cancelledTerminal.run.status === 'cancelled',
           inferenceCrashRecovered: inferenceRecovery.run.status === 'interrupted',
           effectCrashRecoveredWithoutReplay,
@@ -1130,6 +1291,13 @@ export async function runElectronSmokeTest(
         return { fatalError: error instanceof Error ? error.stack ?? error.message : String(error) };
       }
     })()`, true) as SmokeObservation;
+
+    let oversizedRunDocumentVerified = false;
+    if (observation.oversizedRun !== undefined && observation.fatalError === undefined) {
+      await writeFile(join(outputRoot, 'oversized-run-document.json'), JSON.stringify(observation.oversizedRun, null, 2), 'utf8');
+      try { oversizedRunDocumentVerified = await verifyOversizedRunRecovery(window, workspaceId, outputRoot, 'renderer-reload'); }
+      catch (error) { observation.fatalError = error instanceof Error ? error.message : String(error); }
+    }
 
     await window.webContents.executeJavaScript(
       'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))',
@@ -1146,9 +1314,76 @@ export async function runElectronSmokeTest(
       outputRoot
     );
     let inferenceStreamDeliveryRecovered = false;
+    let scheduleSubmissionHistoryVerified = false;
+    let followUpCancellationVerified = false;
+    let requiredChildCancellationVerified = false;
+    let effectCancellationVerified = false;
+    let workflowAgentExecutionVerified = false;
+    let productivityEditingVerified = false;
+    let agentStatusDirectoryVerified = false;
+    let goalAutonomyVerified = false;
+    let longMemoryVerified = false;
+    let modelQualityVerified = false;
+    let workspaceDocumentsVerified = false;
     if (observation.fatalError === undefined) {
-      try { inferenceStreamDeliveryRecovered = await verifyInferenceStreamRecovery(window, providerModel); }
+      try { inferenceStreamDeliveryRecovered = await verifyInferenceStreamRecovery(window, providerModel, outputRoot); }
       catch (error) { observation.fatalError = error instanceof Error ? error.message : String(error); }
+    }
+    if (observation.fatalError === undefined) {
+      try { await verifyScheduleSubmissionHistory(window, workspaceId, outputRoot); scheduleSubmissionHistoryVerified = true; }
+      catch (error) { observation.fatalError = error instanceof Error ? error.message : String(error); }
+    }
+    if (observation.fatalError === undefined) {
+      try { await verifyFollowUpCancellation(window, workspaceId, providerModel, outputRoot); followUpCancellationVerified = true; }
+      catch (error) { observation.fatalError = error instanceof Error ? error.message : String(error); }
+    }
+    if (observation.fatalError === undefined) {
+      try { await verifyRequiredChildCancellation(window, workspaceId, providerModel, outputRoot); requiredChildCancellationVerified = true; }
+      catch (error) { observation.fatalError = error instanceof Error ? error.message : String(error); }
+    }
+    if (observation.fatalError === undefined) {
+      try { await verifyEffectCancellation(window, workspaceId, providerModel, outputRoot); effectCancellationVerified = true; }
+      catch (error) { observation.fatalError = error instanceof Error ? error.message : String(error); }
+    }
+    if (observation.fatalError === undefined) {
+      try { await verifyWorkflowAgentExecution(window, workspaceId, outputRoot); workflowAgentExecutionVerified = true; }
+      catch (error) { observation.fatalError = error instanceof Error ? error.message : String(error); }
+    }
+    if (observation.fatalError === undefined) {
+      try {
+        if (!observation.deliveryRecoverySessionId) throw new Error('productivity_editing_fixture_session_missing');
+        await verifyProductivityEditing(window, workspaceId, outputRoot, observation.deliveryRecoverySessionId); productivityEditingVerified = true;
+      }
+      catch (error) { observation.fatalError = error instanceof Error ? error.message : String(error); }
+    }
+    if (observation.fatalError === undefined) {
+      try { await verifyAgentStatusDirectory(window, outputRoot); agentStatusDirectoryVerified = true; }
+      catch (error) { observation.fatalError = error instanceof Error ? error.message : String(error); }
+    }
+    if (observation.fatalError === undefined) {
+      try {
+        await verifyTaskCenter(window, outputRoot);
+        const decisions={ permission:await window.webContents.executeJavaScript('window.__taskCenterPermissionSourceEvidence'),
+          question:observation.taskCenterQuestionSourceEvidence };
+        if(!decisions.permission?.passed||!decisions.question?.passed)throw new Error('task_center_original_decision_evidence_missing');
+        await writeFile(join(outputRoot,'task-center-source-decisions.json'),JSON.stringify(decisions,null,2),'utf8');
+      } catch (error) { observation.fatalError = error instanceof Error ? error.message : String(error); }
+    }
+    if (observation.fatalError === undefined) {
+      try { await verifyGoalAutonomy(window, workspaceId, outputRoot); goalAutonomyVerified = true; }
+      catch (error) { observation.fatalError = error instanceof Error ? error.message : String(error); }
+    }
+    if (observation.fatalError === undefined) {
+      try { await verifyLongMemory(window, workspaceId, outputRoot); longMemoryVerified = true; }
+      catch (error) { observation.fatalError = error instanceof Error ? error.message : String(error); }
+    }
+    if (observation.fatalError === undefined) {
+      try { await verifyModelQuality(window,workspaceId,providerModel,outputRoot); modelQualityVerified=true; }
+      catch(error) { observation.fatalError=error instanceof Error?error.message:String(error); }
+    }
+    if (observation.fatalError === undefined) {
+      try { await verifyWorkspaceDocuments(window,workspaceId,outputRoot); workspaceDocumentsVerified=true; }
+      catch(error) { observation.fatalError=error instanceof Error?error.message:String(error); }
     }
     // The Provider persists counters after closing each response. The final
     // Runtime/Renderer assertion can win that race by a few milliseconds, so
@@ -1176,6 +1411,17 @@ export async function runElectronSmokeTest(
       messageProjected: observation.messageProjected === true,
       directStreamObserved: observation.directStreamObserved === true,
       inferenceStreamDeliveryRecovered,
+      scheduleSubmissionHistoryVerified,
+      followUpCancellationVerified,
+      requiredChildCancellationVerified,
+      effectCancellationVerified,
+      workflowAgentExecutionVerified,
+      productivityEditingVerified,
+      agentStatusDirectoryVerified,
+      goalAutonomyVerified,
+      longMemoryVerified,
+      modelQualityVerified,
+      workspaceDocumentsVerified,
       directStreamRenderedBeforeCompletion:
         observation.directStreamRenderedBeforeCompletion === true,
       directStreamPartialText: observation.directStreamPartialText ?? '',
@@ -1186,6 +1432,7 @@ export async function runElectronSmokeTest(
       inboxContinuationCompleted: observation.inboxContinuationCompleted === true,
       agentInputDeliveryRecovered: observation.agentInputDeliveryRecovered === true,
       rendererReloadDeliveryRecovered,
+      oversizedRunDocumentVerified,
       userQuestionCompleted: observation.userQuestionCompleted === true,
       userQuestionRuntimeRecoveryCompleted:
         observation.userQuestionRuntimeRecoveryCompleted === true,
@@ -1226,6 +1473,17 @@ export async function runElectronSmokeTest(
       && result.messageProjected
       && result.directStreamObserved
       && result.inferenceStreamDeliveryRecovered
+      && result.scheduleSubmissionHistoryVerified
+      && result.followUpCancellationVerified
+      && result.requiredChildCancellationVerified
+      && result.effectCancellationVerified
+      && result.workflowAgentExecutionVerified
+      && result.productivityEditingVerified
+      && result.agentStatusDirectoryVerified
+      && result.goalAutonomyVerified
+      && result.longMemoryVerified
+      && result.modelQualityVerified
+      && result.workspaceDocumentsVerified
       && result.directStreamRenderedBeforeCompletion
       && result.directStreamChunkCount >= 2
       && result.directAgentCompleted
@@ -1234,6 +1492,7 @@ export async function runElectronSmokeTest(
       && result.inboxContinuationCompleted
       && result.agentInputDeliveryRecovered
       && result.rendererReloadDeliveryRecovered
+      && result.oversizedRunDocumentVerified
       && result.userQuestionCompleted
       && result.userQuestionRuntimeRecoveryCompleted
       && result.readToolCompleted
@@ -1267,9 +1526,7 @@ async function verifyApplicationProfileWindow(
 ): Promise<boolean> {
   await mkdir(outputRoot, { recursive: true });
   if (window.webContents.isLoading()) await waitForLoad(window);
-  window.setSkipTaskbar(true);
-  window.setPosition(-10_000, -10_000, false);
-  window.showInactive();
+  showSmokeWindow(window);
   const consoleMessages: string[] = [];
   const onConsoleMessage = (
     _event: Electron.Event<Electron.WebContentsConsoleMessageEventParams>,
@@ -1427,11 +1684,11 @@ async function verifyDeliveryRendererReload(
   const inputId = `renderer-reload-input-${Date.now()}`;
   const content = 'ARIADNE_SMOKE_RENDERER_RELOAD_DELIVERY';
   try {
-    await window.webContents.executeJavaScript(`window.ariadne.agentInputDeliveryOutbox.stage({
+    await window.webContents.executeJavaScript(`window.ariadne.inputDeliveryOutbox.stage({
     commandId: ${JSON.stringify(commandId)},
     command: {
-      kind: 'agent.inbox.enqueue.v3',
-      contractVersion: '4.0',
+      kind: 'agent.inbox.enqueue',
+      contractVersion: '5.0',
       runId: ${JSON.stringify(runId)},
       sessionId: ${JSON.stringify(sessionId)},
       inputId: ${JSON.stringify(inputId)},
@@ -1445,6 +1702,7 @@ async function verifyDeliveryRendererReload(
     const loaded = waitForLoad(window);
     window.webContents.reload();
     await loaded;
+    await installSmokeProjectionProbe(window);
     await writeReloadDiagnostic(outputRoot, step, commandId);
 
     step = 'recover';
@@ -1475,7 +1733,7 @@ async function verifyDeliveryRendererReload(
       const receipt = document.querySelector(
         '.agent-input-delivery[data-command-id="' + ${JSON.stringify(commandId)} + '"]'
       );
-      const records = await window.ariadne.agentInputDeliveryOutbox.list();
+      const records = await window.ariadne.inputDeliveryOutbox.list();
       const record = records.find((candidate) => candidate.commandId === ${JSON.stringify(commandId)});
       if (
         receipt instanceof HTMLElement
@@ -1492,7 +1750,7 @@ async function verifyDeliveryRendererReload(
 
     step = 'retain-for-desktop-restart';
     const retained = await window.webContents.executeJavaScript(`(async () => (
-      (await window.ariadne.agentInputDeliveryOutbox.list())
+      (await window.ariadne.inputDeliveryOutbox.list())
         .some((record) => record.commandId === ${JSON.stringify(commandId)})
     ))()`, true) as boolean;
     await writeReloadDiagnostic(outputRoot, `${step}:${String(retained)}`, commandId);
@@ -1519,6 +1777,7 @@ async function verifyDeliveryDesktopRestart(
     retainedBeforeSettlement: false,
     absentFromProjection: false,
     settled: false,
+    oversizedRunRestored: false,
     terminalInterruptedRecovered: false,
     terminalRecoveryVisible: false,
     terminalPanelVisible: false,
@@ -1535,7 +1794,7 @@ async function verifyDeliveryDesktopRestart(
       let records = [];
       while (Date.now() < deadline) {
         const runtime = await window.ariadne.runtime.getStatus();
-        records = await window.ariadne.agentInputDeliveryOutbox.list();
+        records = await window.ariadne.inputDeliveryOutbox.list();
         if (runtime.ok && runtime.value.availability === 'ready' && records.length > 0) break;
         await delay(50);
       }
@@ -1576,21 +1835,13 @@ async function verifyDeliveryDesktopRestart(
         }
         await delay(50);
       }
-      const projection = await window.ariadne.runtime.request({
-        kind: 'projection.snapshot.get',
-        contractVersion: '4.0'
-      });
-      if (!projection.ok || projection.value.kind !== 'projection.snapshot') {
-        throw new Error('desktop_restart_projection_unavailable');
-      }
-      const absentFromProjection = !projection.value.snapshot.runs.some((run) => (
-        run.runId === record.command.runId
-        && run.inbox.some((input) => input.inputId === record.command.inputId)
-      ));
-      const retainedBeforeSettlement = (await window.ariadne.agentInputDeliveryOutbox.list())
+      const absentFromProjection = await window.__ariadneSmokeProjection.inboxAbsent(
+        ${JSON.stringify(workspaceId)}, record.command.sessionId, record.command.runId, record.command.inputId
+      );
+      const retainedBeforeSettlement = (await window.ariadne.inputDeliveryOutbox.list())
         .some((candidate) => candidate.commandId === record.commandId);
-      await window.ariadne.agentInputDeliveryOutbox.settle({ commandId: record.commandId });
-      const settled = !(await window.ariadne.agentInputDeliveryOutbox.list())
+      await window.ariadne.inputDeliveryOutbox.settle({ commandId: record.commandId });
+      const settled = !(await window.ariadne.inputDeliveryOutbox.list())
         .some((candidate) => candidate.commandId === record.commandId);
       const terminalRecords = await window.ariadne.terminal.listRecoveryRecords();
       const interruptedTerminal = terminalRecords.find((candidate) => (
@@ -1645,6 +1896,7 @@ async function verifyDeliveryDesktopRestart(
       };
     })()`, true) as Omit<DesktopRestartDeliveryResult, 'passed' | 'fatalError' | 'completedAt'>;
     Object.assign(result, observation);
+    result.oversizedRunRestored = await verifyOversizedRunRecovery(window, workspaceId, outputRoot, 'main-restart');
     const terminalScreenshot = 'terminal-main-crash-recovery.png';
     await window.webContents.executeJavaScript(
       'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))',
@@ -1693,6 +1945,7 @@ async function verifyDeliveryDesktopRestart(
       && result.retainedBeforeSettlement
       && result.absentFromProjection
       && result.settled
+      && result.oversizedRunRestored
       && result.terminalInterruptedRecovered
       && result.terminalRecoveryVisible
       && result.terminalPanelVisible
@@ -1743,6 +1996,8 @@ function validateProviderTrace(state: ProviderState): boolean {
   const expected: Record<string, readonly [number, number, number]> = {
     stream_recovery: [2, 0, 2],
     direct: [2, 0, 2],
+    quality_benchmark: [6, 0, 6], quality_route: [1, 0, 1],
+    document_edit_conflict: [1, 2, 3],
     image: [1, 0, 1],
     inbox: [1, 1, 2],
     question: [1, 1, 2],
@@ -1750,9 +2005,19 @@ function validateProviderTrace(state: ProviderState): boolean {
     read: [1, 1, 2],
     write_allow: [1, 1, 2],
     write_deny: [1, 0, 1],
+    cancel_follow_up: [1, 1, 2],
+    cancel_required_parent: [1, 0, 1],
+    cancel_required_child: [1, 0, 1],
+    cancel_effect: [1, 0, 1],
+    schedule_complete: [1, 0, 1], schedule_cancel: [1, 0, 1],
+    memory_stage: [1, 3, 4], memory_read: [1, 1, 2], memory_forget: [1, 1, 2],
     crash_inference: [1, 0, 1],
     crash_effect: [1, 0, 1],
-    crash_projection: [1, 1, 2]
+    crash_projection: [1, 1, 2],
+    workflow_context_seed: [1, 0, 1],
+    workflow_context_later: [1, 0, 1],
+    goal_context_seed: [2, 0, 2], goal_context_later: [1, 0, 1], goal_plan: [3, 5, 8],
+    goal_task_first: [1, 1, 2], goal_task_repair: [1, 1, 2], goal_pause_plan: [1, 1, 2], goal_pause_task: [1, 0, 1]
   };
   for (const [scenario, [initial, continuation, requests]] of Object.entries(expected)) {
     const actual = state.scenarios[scenario];
@@ -1782,9 +2047,39 @@ function validateProviderTrace(state: ProviderState): boolean {
     && state.scenarios.crash_question?.responses === 2
     && state.scenarios.crash_question?.aborted === 0
     && state.scenarios.stream_recovery?.responses === 2
-    && (state.requests === 20 || state.requests === 21)
-    && state.responses === 19
-    && (state.aborted === 1 || state.aborted === 2);
+    && state.scenarios.cancel_follow_up?.responses === 1
+    && state.scenarios.cancel_follow_up?.aborted === 1
+    && state.scenarios.cancel_required_parent?.responses === 1
+    && state.scenarios.cancel_required_parent?.aborted === 0
+    && state.scenarios.cancel_required_child?.responses === 0
+    && state.scenarios.cancel_required_child?.aborted === 1
+    && state.scenarios.cancel_effect?.responses === 1
+    && state.scenarios.cancel_effect?.aborted === 0
+    && state.scenarios.schedule_complete?.responses === 1 && state.scenarios.schedule_complete?.aborted === 0
+    && state.scenarios.schedule_cancel?.responses === 1 && state.scenarios.schedule_cancel?.aborted === 0
+    && state.scenarios.workflow_complete?.responses === 3
+    && state.scenarios.workflow_complete?.aborted === 0
+    && state.scenarios.workflow_cancel?.responses === 1
+    && state.scenarios.workflow_cancel?.aborted === 0
+    && state.scenarios.workflow_context_seed?.responses === 1
+    && state.scenarios.workflow_context_seed?.aborted === 0
+    && state.scenarios.workflow_context_later?.responses === 1
+    && state.scenarios.workflow_context_later?.aborted === 0
+    && state.scenarios.goal_plan?.responses === 8 && state.scenarios.goal_plan?.aborted === 0
+    && state.scenarios.goal_task_first?.responses === 2 && state.scenarios.goal_task_first?.aborted === 0
+    && state.scenarios.goal_task_repair?.responses === 2 && state.scenarios.goal_task_repair?.aborted === 0
+    && state.scenarios.goal_pause_plan?.responses === 2 && state.scenarios.goal_pause_plan?.aborted === 0
+    && state.scenarios.goal_pause_task?.responses === 1 && state.scenarios.goal_pause_task?.aborted === 0
+    && state.scenarios.goal_context_seed?.responses === 2 && state.scenarios.goal_context_seed?.aborted === 0
+    && state.scenarios.goal_context_later?.responses === 1 && state.scenarios.goal_context_later?.aborted === 0
+    && ['memory_stage','memory_read','memory_forget'].every(scenario => state.scenarios[scenario]?.aborted === 0
+      && state.scenarios[scenario]?.responses === (scenario === 'memory_stage' ? 4 : 2))
+    && state.scenarios.quality_benchmark?.responses===6 && state.scenarios.quality_benchmark?.aborted===0
+    && state.scenarios.quality_route?.responses===1 && state.scenarios.quality_route?.aborted===0
+    && state.scenarios.document_edit_conflict?.responses===3 && state.scenarios.document_edit_conflict?.aborted===0
+    && (state.requests === 69 || state.requests === 70)
+    && state.responses === 66
+    && (state.aborted === 3 || state.aborted === 4);
 }
 
 function requireSmokeEnvironment(name: string): string {

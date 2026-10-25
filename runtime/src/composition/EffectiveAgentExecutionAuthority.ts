@@ -6,7 +6,7 @@ import type {
   AgentAdmissionAuthoritySourceManifest
 } from '@ariadne/protocol/host';
 import type {
-  ConversationMessageExecutionV3
+  ConversationMessageExecution
 } from '@ariadne/protocol/public';
 
 const PLAN_TOOL_NAMES = new Set([
@@ -29,7 +29,7 @@ const PLAN_TOOL_NAMES = new Set([
  */
 export function compileEffectiveAgentExecutionAuthority(
   manifest: AgentAdmissionAuthoritySourceManifest,
-  execution: ConversationMessageExecutionV3
+  execution: ConversationMessageExecution
 ): {
   readonly workspaceAccess: 'read' | 'write';
   readonly capabilities: readonly AgentCapabilityGrant[];

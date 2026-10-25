@@ -9,6 +9,8 @@ import type {
 import type { ChatRequest, ModelResponse } from "../types.js";
 import type { TokenCount } from "../TokenCounter.js";
 import { createModelAbortError, throwIfModelAborted } from "../modelCancellation.js";
+import { ModelTimeoutError } from '../modelCancellation.js';
+import { LocalRuntimeUnavailableError } from './LocalRuntimeUnavailableError.js';
 
 interface QueueItem<T> {
   operation: () => Promise<T>;
@@ -31,6 +33,7 @@ export class LocalModelRuntimeManager {
   private readonly queue: Array<QueueItem<unknown>> = [];
   private queueRunning = false;
   private disposed = false;
+  private readonly modelFailures = new Set<string>();
 
   constructor(private readonly options: LocalModelRuntimeManagerOptions) {}
 
@@ -48,13 +51,19 @@ export class LocalModelRuntimeManager {
     return this.runExclusive(async () => {
       throwIfModelAborted(request.signal);
       if (this.disposed) throw new Error("本地模型管理器已关闭");
-      const entry = await this.ensureLoaded(model);
-      throwIfModelAborted(request.signal);
-      this.touch(model.id, entry);
       try {
-        return await entry.runtime.generate(model, request);
-      } finally {
+        const entry = await this.ensureLoaded(model, request.signal);
+        throwIfModelAborted(request.signal);
         this.touch(model.id, entry);
+        try {
+          const response = await entry.runtime.generate(model, request);
+          throwIfModelAborted(request.signal);
+          this.modelFailures.delete(model.id);
+          return response;
+        } finally { this.touch(model.id, entry); }
+      } catch (error) {
+        this.observeModelFailure(model.id, error, request.signal);
+        throw error;
       }
     }, request.signal);
   }
@@ -83,7 +92,18 @@ export class LocalModelRuntimeManager {
     }));
   }
 
-  private async ensureLoaded(model: LocalModelDescriptor): Promise<LoadedRuntime> {
+  hasExternalFailure(modelIds: ReadonlySet<string>): boolean {
+    return [...this.modelFailures].some(id => modelIds.has(id));
+  }
+  retainModelBindings(modelIds: ReadonlySet<string>): void {
+    for (const id of this.modelFailures) if (!modelIds.has(id)) this.modelFailures.delete(id);
+  }
+  private observeModelFailure(modelId: string, error: unknown, signal?: AbortSignal): void {
+    if (!signal?.aborted && (error instanceof LocalRuntimeUnavailableError || error instanceof ModelTimeoutError))
+      this.modelFailures.add(modelId);
+  }
+
+  private async ensureLoaded(model: LocalModelDescriptor, signal?: AbortSignal): Promise<LoadedRuntime> {
     const current = this.loaded.get(model.id);
     if (current) return current;
     while (this.loaded.size >= this.options.maxLoadedModels) {
@@ -95,7 +115,9 @@ export class LocalModelRuntimeManager {
     try {
       await runtime.load(model);
     } catch (error) {
-      await runtime.dispose();
+      this.observeModelFailure(model.id, error, signal);
+      try { await runtime.dispose(); }
+      catch (cleanupError) { throw new AggregateError([error, cleanupError], 'local_model_load_cleanup_failed'); }
       throw error;
     }
     const entry: LoadedRuntime = { runtime, lastUsedAt: Date.now() };
@@ -138,9 +160,11 @@ export class LocalModelRuntimeManager {
   ): Promise<TokenCount> {
     return this.runExclusive(async () => {
       if (this.disposed) throw new Error("本地模型管理器已关闭");
-      const entry = await this.ensureLoaded(model);
-      this.touch(model.id, entry);
-      return entry.runtime.countTokens(model, request);
+      try {
+        const entry = await this.ensureLoaded(model);
+        this.touch(model.id, entry);
+        return await entry.runtime.countTokens(model, request);
+      } catch (error) { this.observeModelFailure(model.id, error); throw error; }
     });
   }
 

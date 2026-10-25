@@ -11,19 +11,22 @@ import type {
 } from '../control/ports/AgentModelInference.js';
 import type { RuntimeCapabilityManifest } from './RuntimeCapabilityManifest.js';
 import type { AgentRuntimeTelemetry } from '../control/ports/AgentLifecycleObservability.js';
+import type { RuntimeAuthorityHealthSource } from './RuntimeAuthorityHealthSource.js';
 
 export interface RuntimeApplicationCommandResult {
   readonly outcome: RuntimeResponse['outcome'];
   readonly settlement: 'completed' | 'uncertain';
 }
 
-/** Narrow lifecycle/command port around the legacy Runtime application. */
+/** Lifecycle and command port for the current composed Runtime application. */
 export interface RuntimeApplication {
   readonly storageSchemas: Readonly<Record<string, number>>;
   readonly publicEventSink: RuntimePublicEventSink;
   readonly modelCatalog: RuntimeModelCatalogSource;
   /** Exact model execution owned by the same model domain as modelCatalog. */
   readonly modelInferenceGateway?: ExactAgentModelInferenceRuntime;
+  /** Actual model authority/transport observation; does not add an execution owner. */
+  readonly inferenceHealth?: RuntimeAuthorityHealthSource;
   start(): Promise<void>;
   execute(envelope: RuntimeCommandEnvelope): Promise<RuntimeApplicationCommandResult>;
   status(): RuntimeStatus;

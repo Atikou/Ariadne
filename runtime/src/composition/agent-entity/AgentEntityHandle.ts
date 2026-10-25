@@ -5,18 +5,20 @@ import {
   CONVERSATION_DB_SCHEMA_VERSION
 } from '../../adapters/persistence/ConversationDbSchema.js';
 import {
-  PUBLIC_PROJECTION_DB_SCHEMA_VERSION
+  PUBLIC_PROJECTION_CURRENT_DB_SCHEMA_VERSION
 } from '../../adapters/persistence/PublicProjectionDbSchema.js';
 import { PRODUCTIVITY_DB_SCHEMA_VERSION } from '../../adapters/persistence/SqliteProductivityStore.js';
 import type { PublicAgentObservability } from '../../adapters/observability/PublicAgentObservability.js';
 import type { AgentControlRuntimeLifecycle } from '../../ingress/AgentControlLifecycle.js';
+import type { RuntimeCommand } from '@ariadne/protocol/public';
+import type { RuntimeDomainHealthSnapshot } from '../../ingress/RuntimeDomainHealth.js';
+import { AgentEntityHealth } from './AgentEntityHealth.js';
 import type { RuntimeApplicationCommandResult } from '../../ingress/RuntimeApplication.js';
 import type { RuntimeCommandEnvelope } from '../../ingress/RuntimeIngress.js';
 import type { ShutdownContext } from '../../ingress/ShutdownContext.js';
-import type { RuntimeCommandReconciliation } from '../../control/ports/RuntimeCommandJournal.js';
+import type { RuntimeCommandReconciliationV2 as RuntimeCommandReconciliation } from '../../control/ports/RuntimeCommandJournalV2.js';
 import { AgentControlPublicCommandRouter } from '../AgentControlPublicCommandRouter.js';
-import { V3ScheduleWorker } from '../V3ScheduleWorker.js';
-import { composeAgentEntityCommandManifest } from './AgentEntityCommandAssembly.js';
+import { composeAgentEntityServices } from './AgentEntityServices.js';
 import {
   createAgentExecutionComponent,
   type AgentExecutionComponentHandle
@@ -39,38 +41,38 @@ export type { AgentEntityHandleOptions } from './AgentEntityManifest.js';
 /** Started Agent Entity handle that owns component lifecycle and public ingress. */
 export class AgentEntityHandle implements AgentControlRuntimeLifecycle {
   public readonly schemaVersion = AGENT_CONTROL_DB_SCHEMA_VERSION;
-  public readonly storageSchemas = Object.freeze({
-    agentControl: AGENT_CONTROL_DB_SCHEMA_VERSION,
-    conversation: CONVERSATION_DB_SCHEMA_VERSION,
-    publicProjection: PUBLIC_PROJECTION_DB_SCHEMA_VERSION,
-    productivity: PRODUCTIVITY_DB_SCHEMA_VERSION
-  });
+  public readonly storageSchemas: Readonly<Record<string, number>>;
   private readonly projection: AgentProjectionComponentHandle;
   private readonly execution: AgentExecutionComponentHandle;
   private readonly publicCommands: AgentControlPublicCommandRouter;
-  private readonly scheduleWorker: V3ScheduleWorker | undefined;
+  private readonly services: ReturnType<typeof composeAgentEntityServices>;
   private readonly unitOfWork: AgentPersistenceComponentHandle['unitOfWork'];
   private readonly persistence: AgentPersistenceComponentHandle;
   private readonly observability?: PublicAgentObservability;
+  private readonly startupTrace: AgentEntityHandleOptions['startupTrace'];
+  private readonly health: AgentEntityHealth;
   private lifecycle: 'new' | 'starting' | 'running' | 'failed' | 'stopping' | 'stopped' = 'new';
   private prepareOperation: Promise<void> | null = null;
   private shutdownOperation: Promise<void> | null = null;
 
   public constructor(manifest: AgentEntityManifest) {
+    this.storageSchemas = Object.freeze({ agentControl: AGENT_CONTROL_DB_SCHEMA_VERSION,
+      conversation: CONVERSATION_DB_SCHEMA_VERSION, publicProjection: PUBLIC_PROJECTION_CURRENT_DB_SCHEMA_VERSION,
+      ...(manifest.persistence.productivity === undefined ? {} : { productivity: PRODUCTIVITY_DB_SCHEMA_VERSION }),
+      ...(manifest.memoryAuthority === undefined ? {} : { longMemory: manifest.memoryAuthority.schemaVersion }) });
     const {
       persistence,
       options,
       executionPipeline,
       modelCatalog,
       projectionWakeEventSink,
-      authorizedWorkspaceIds,
       observability,
-      liveWork,
-      humanSkillCatalog
+      liveWork
     } = manifest;
     this.persistence = persistence;
+    this.startupTrace = options.startupTrace;
     this.observability = observability;
-    const { unitOfWork, conversation, productivity, attachmentStore } = persistence;
+    const { unitOfWork, conversation, productivity } = persistence;
     this.unitOfWork = unitOfWork;
     this.projection = createAgentProjectionComponent({
       persistence,
@@ -86,42 +88,30 @@ export class AgentEntityHandle implements AgentControlRuntimeLifecycle {
       liveWork,
       wakeProjectionDrain: () => this.projection.wake()
     });
-    const commandManifest = composeAgentEntityCommandManifest({
-      unitOfWork,
-      conversation,
-      executionPipeline,
-      projectionCommandOwners: this.projection.commandOwners(),
-      wakeProjectionDrain: () => this.projection.wake(),
-      authorizedWorkspaceIds,
-      conversationCommandNow: this.projection.conversationCommandNow,
-      agentDecisionCommandNow: options.agentDecisionCommandNow,
-      agentInboxCommandNow: options.agentInboxCommandNow,
-      attachmentStore,
-      humanSkillCatalog,
-      productivityStore: productivity
-    });
+    this.services = composeAgentEntityServices(manifest, this.projection, envelope => this.executeOwnedCommand(envelope));
+    const { commandManifest, workers } = this.services;
     this.publicCommands = new AgentControlPublicCommandRouter(commandManifest.ownerTable);
-    this.scheduleWorker = productivity === undefined
-      ? undefined
-      : new V3ScheduleWorker(
-          productivity,
-          conversation,
-          (envelope) => this.publicCommands.executeOwnedCommand(envelope)
-        );
+    this.health = new AgentEntityHealth(this.execution, this.projection,
+      workers,
+      { execution: unitOfWork, conversation, productivity, memory: manifest.memoryHealth }, commandManifest.ownerTable.diagnosticSnapshot(), manifest.inferenceAdmission);
   }
 
   public async start(): Promise<void> {
     if (this.lifecycle !== 'new') throw new Error('agent_control_lifecycle_already_started');
     this.lifecycle = 'starting';
     try {
+      this.startupTrace?.point('execution_start');
       await this.execution.start(() => this.projection.drainPending());
+      this.startupTrace?.point('execution_started');
       await this.projection.drainPending();
       if (await this.unitOfWork.countUnpublishedOutbox() !== 0) {
         throw new Error('agent_control_startup_projection_not_at_fixed_point');
       }
       this.lifecycle = 'running';
-      await this.scheduleWorker?.start();
+      this.startupTrace?.point('startup_workers');
+      await this.health.startBackgroundWorkers();
       this.projection.activate();
+      this.services.taskCenter?.start();
     } catch (error) {
       this.projection.fail(error);
       throw projectionHealthError(error);
@@ -129,17 +119,23 @@ export class AgentEntityHandle implements AgentControlRuntimeLifecycle {
   }
 
   public assertHealthy(): void {
-    this.execution.assertHealthy();
-    this.projection.assertHealthy();
     if (this.lifecycle !== 'running') {
       throw new Error('agent_control_public_projection_not_running');
     }
+    this.health.assertCoreHealthy();
   }
+
+  public assertCommandHealthy(command: RuntimeCommand): void {
+    if (this.lifecycle !== 'running') throw new Error('agent_control_public_projection_not_running');
+    this.health.assertCommandHealthy(command);
+  }
+
+  public readDomainHealth(): readonly RuntimeDomainHealthSnapshot[] { return this.health.read(); }
 
   public executeOwnedCommand(
     envelope: RuntimeCommandEnvelope
   ): Promise<RuntimeApplicationCommandResult | null> {
-    return this.publicCommands.executeOwnedCommand(envelope);
+    return this.health.execute(envelope, () => this.publicCommands.executeOwnedCommand(envelope));
   }
 
   public reconcileUncertainCommand(
@@ -172,11 +168,8 @@ export class AgentEntityHandle implements AgentControlRuntimeLifecycle {
     drainBeforeFreeze: boolean
   ): Promise<void> {
     const failures: unknown[] = [];
-    try {
-      await this.scheduleWorker?.stop();
-    } catch (error) {
-      failures.push(error);
-    }
+    try { await this.services.taskCenter?.stop(context); } catch (error) { failures.push(error); }
+    failures.push(...await this.health.stopBackgroundWorkers());
     failures.push(...await this.execution.prepareShutdown(context));
     let projectionBarrierReady = true;
     try {

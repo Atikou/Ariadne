@@ -18,10 +18,14 @@ import {
 } from '../src/composition/ProductionRuntimeCapabilityManifest.js';
 import type { HostCapabilityClient } from '../src/ingress/HostCapabilityClient.js';
 import type { FirstPartyProcessSandboxFactory } from '../src/composition/first-party-tools/FirstPartyAgentToolSupport.js';
+import { createShutdownContext } from '../src/ingress/ShutdownContext.js';
 
 const temporaryRoots: string[] = [];
+const manifests: Awaited<ReturnType<typeof compileProductionRuntimeCapabilityManifest>>[] = [];
 
-afterEach(() => {
+afterEach(async () => {
+  const shutdown = createShutdownContext(Date.now() + 5_000);
+  try { for (const manifest of manifests.splice(0)) await manifest.close(shutdown); } finally { shutdown.dispose(); }
   for (const root of temporaryRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -682,6 +686,7 @@ async function compileCapabilityCatalog(
   processSandboxFactory?: FirstPartyProcessSandboxFactory
 ) {
   const runtimePolicy = createDefaultRuntimePolicySnapshot();
+  const dataRoot = mkdtempSync(path.join(os.tmpdir(), 'ariadne-tool-catalog-data-')); temporaryRoots.push(dataRoot);
   runtimePolicy.mcp.servers = [...mcpServers];
   const bootstrap: RuntimeBootstrap = {
     protocol: ARIADNE_RUNTIME_PROTOCOL,
@@ -692,7 +697,7 @@ async function compileCapabilityCatalog(
     runtimeVersion: '0.1.0',
     runtimeBuildFingerprint: 'a'.repeat(64),
     installRoot: path.resolve('.'),
-    dataRoot: path.resolve('.'),
+    dataRoot,
     modelRoots: [],
     agentPermissions: {
       approvalPolicy: 'request',
@@ -719,6 +724,7 @@ async function compileCapabilityCatalog(
     })
   });
   const catalog = manifest.agentToolCatalogSnapshots[0];
+  manifests.push(manifest);
   if (catalog === undefined) throw new Error('test_capability_catalog_missing');
   return catalog;
 }

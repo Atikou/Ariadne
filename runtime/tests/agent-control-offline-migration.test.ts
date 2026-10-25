@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -7,11 +7,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { migrateEmptyAgentControlV5ToV6 } from '../src/adapters/persistence/AgentControlOfflineMigration.js';
 import { migrateAgentControlV6ToV7 } from '../src/adapters/persistence/AgentControlV6ToV7Migration.js';
+import { migrateAgentControlDatabaseNames } from '../src/adapters/persistence/AgentControlDatabaseNaming.js';
 import {
   openAgentControlDatabase,
+  createAgentControlDatabaseSchema,
   resolveAgentControlDatabasePath
 } from '../src/adapters/persistence/agentControlDbSchema.js';
-import { closeOwnedSqliteDatabase } from '../src/adapters/persistence/SqliteOwnerLease.js';
+import { acquireSqliteOwnerLease, closeOwnedSqliteDatabase } from '../src/adapters/persistence/SqliteOwnerLease.js';
 
 const roots: string[] = [];
 
@@ -20,6 +22,29 @@ afterEach(() => {
 });
 
 describe('Agent Control offline migration', () => {
+  it('recognizes its own completed v6 target and rejects newer v8 rather than mistaking it for the v6 target', () => {
+    const root = createV5Fixture();
+    migrateEmptyAgentControlV5ToV6(root);
+    expect(migrateEmptyAgentControlV5ToV6(root)).toMatchObject({ fromVersion: 6, toVersion: 6, migrated: false });
+    migrateAgentControlV6ToV7(root); migrateAgentControlDatabaseNames(root);
+    expect(() => migrateEmptyAgentControlV5ToV6(root)).toThrow('agent_control_offline_migration_unsupported:8:6');
+  });
+  it('rejects a divergent source schema before committing any DDL or migration history', () => {
+    const root = createV5Fixture(); const file = resolveAgentControlDatabasePath(root);
+    const database = new DatabaseSync(file); database.exec('CREATE TABLE unrecognized_extension(value TEXT)'); database.close();
+    const before = readFileSync(file);
+    expect(() => migrateEmptyAgentControlV5ToV6(root)).toThrow('agent_control_schema_definition_mismatch');
+    expect(readFileSync(file)).toEqual(before);
+    const after = new DatabaseSync(file, { readOnly: true });
+    try { expect(after.prepare('PRAGMA user_version').get()!.user_version).toBe(5); }
+    finally { after.close(); }
+  });
+  it.each([migrateEmptyAgentControlV5ToV6, migrateAgentControlV6ToV7])('releases its acquired owner fence when the business connection cannot open', migration => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-migration-open-failure-')); roots.push(root);
+    const file = resolveAgentControlDatabasePath(root); mkdirSync(file, { recursive: true });
+    expect(() => migration(root)).toThrow();
+    const lease = acquireSqliteOwnerLease(file, 'verify-no-leaked-fence'); lease.close();
+  });
   it('backs up and migrates an empty schema-v5 ledger through v6 to canonical v7', () => {
     const root = createV5Fixture();
 
@@ -41,10 +66,11 @@ describe('Agent Control offline migration', () => {
       toVersion: 7,
       migrated: true
     });
+    expect(migrateAgentControlDatabaseNames(root)).toMatchObject({ fromVersion: 7, toVersion: 8, migrated: true });
     const reopened = openAgentControlDatabase(root);
     try {
       expect(reopened.database.prepare('PRAGMA user_version').get()).toEqual({
-        user_version: 7
+        user_version: 8
       });
     } finally {
       closeOwnedSqliteDatabase(reopened.database, reopened.ownerLease);
@@ -138,9 +164,10 @@ describe('Agent Control offline migration', () => {
 function createV5Fixture(): string {
   const root = mkdtempSync(path.join(os.tmpdir(), 'ariadne-agent-control-migrate-'));
   roots.push(root);
-  const initialized = openAgentControlDatabase(root);
-  closeOwnedSqliteDatabase(initialized.database, initialized.ownerLease);
-  const database = new DatabaseSync(resolveAgentControlDatabasePath(root));
+  const databasePath = resolveAgentControlDatabasePath(root);
+  mkdirSync(path.dirname(databasePath), { recursive: true });
+  const database = new DatabaseSync(databasePath);
+  createAgentControlDatabaseSchema(database, 7);
   database.exec(`
     PRAGMA foreign_keys = OFF;
     PRAGMA legacy_alter_table = ON;

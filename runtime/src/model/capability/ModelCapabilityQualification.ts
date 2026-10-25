@@ -1,3 +1,4 @@
+import { assertModelQualityReport, type ModelQualityReport } from './ModelQualityContracts.js';
 export const MODEL_CAPABILITY_ADAPTER_PROTOCOL_VERSION = 1 as const;
 
 export type QualificationState = 'unknown' | 'testing' | 'qualified' | 'rejected';
@@ -22,6 +23,7 @@ export interface ModelCapabilityQualification {
   readonly testedAt?: string;
   readonly evidenceDigest?: string;
   readonly failureCode?: string;
+  readonly quality?: ModelQualityReport;
 }
 
 export interface DerivedModelCapabilities {
@@ -118,6 +120,7 @@ export function assertQualificationReport(
   if (report.failureCode !== undefined && !/^[a-z0-9_]{1,128}$/u.test(report.failureCode)) {
     throw new Error('model_capability_report_invalid');
   }
+  if(report.quality!==undefined)assertModelQualityReport(report.quality);
   return report;
 }
 

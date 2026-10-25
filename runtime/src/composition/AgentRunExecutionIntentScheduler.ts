@@ -4,6 +4,7 @@ import {
   sha256AgentControlData
 } from '@ariadne/agent-core';
 import { randomUUID } from 'node:crypto';
+import { AgentInferenceCancellationConflictError } from '../control/ports/AgentInferenceCancellationConflict.js';
 
 import type {
   AgentRunExecutionIntentRecoveryCursor,
@@ -12,6 +13,7 @@ import type {
 } from '../control/ports/AgentRunExecutionStarter.js';
 import type {
   AgentRunExecutionDispatchReceiptV1,
+  AgentRunExecutionNotStartedEvidence,
   AgentRunExecutionDispatcher
 } from '../control/execution/AgentRunExecutionDispatchController.js';
 import type { ShutdownContext } from '../ingress/ShutdownContext.js';
@@ -92,6 +94,11 @@ export interface ActiveAgentRunCancellationRequest {
   readonly commandId: string;
   readonly runId: string;
   readonly expectedVersion: number;
+  readonly authorizeVersion?: (ownedVersion: number) => Promise<boolean>;
+  /** Commits Run cancellation and returns its exact terminal Attempt receipt. */
+  readonly finalizeUnstarted?: (
+    evidence: AgentRunExecutionNotStartedEvidence
+  ) => Promise<AgentRunExecutionDispatchReceiptV1>;
   finalize(
     recovery: ActiveAgentRunCancellationRecovery
   ): Promise<{ readonly runVersion: number }>;
@@ -254,6 +261,13 @@ export class AgentRunExecutionIntentScheduler {
     request: ActiveAgentRunCancellationRequest
   ): Promise<ActiveAgentRunCancellationResult> {
     const active = this.activeByRun.get(request.runId);
+    if (active !== undefined && request.expectedVersion > active.admittedRunVersion + 1
+      && request.authorizeVersion !== undefined) {
+      return request.authorizeVersion(active.admittedRunVersion).then(authorized => {
+        if (!authorized || this.activeByRun.get(request.runId) !== active) return { status: 'not_active' as const };
+        return this.cancelActiveRun({ ...request, expectedVersion: active.admittedRunVersion });
+      });
+    }
     if (
       active === undefined
       || (
@@ -266,9 +280,7 @@ export class AgentRunExecutionIntentScheduler {
     const existing = active.cancellation;
     if (existing !== null) {
       if (existing.request.commandId !== request.commandId) {
-        return Promise.reject(new Error(
-          'A different cancellation already owns this active Agent Run.'
-        ));
+        return Promise.reject(new AgentInferenceCancellationConflictError(request.runId, 'cancellation'));
       }
       return existing.result;
     }
@@ -485,6 +497,39 @@ export class AgentRunExecutionIntentScheduler {
         this.activeByRun.delete(item.intent.runId);
         continue;
       }
+      if (outcome.status === 'not_started') {
+        const cancellation = active.cancellation;
+        try {
+          const evidence = outcome.evidence;
+          if (cancellation?.request.finalizeUnstarted === undefined
+            || evidence.executionIntentId !== item.intent.executionIntentId
+            || evidence.dispatchAttemptId !== dispatchAttemptId
+            || evidence.runId !== item.intent.runId
+            || !Number.isSafeInteger(evidence.runVersion)
+            || evidence.runVersion < item.intent.admittedRunVersion) {
+            throw new Error('Unstarted dispatch has no exact cancellation owner.');
+          }
+          const receipt = await cancellation.request.finalizeUnstarted(evidence);
+          assertExactReceipt(receipt, evidence.executionIntentId, dispatchAttemptId);
+          if (receipt.inferenceStatus !== 'cancelled' || receipt.runId !== evidence.runId
+            || receipt.runVersion <= evidence.runVersion || receipt.turnId !== evidence.turnId
+            || receipt.attemptId !== evidence.attemptId
+            || receipt.resultCommandId !== cancellation.request.commandId) {
+            throw new Error('Unstarted cancellation contradicts its terminal receipt.');
+          }
+          await this.commitSettlement(item, dispatchAttemptId, receipt, 'cancelled');
+          settled += 1;
+          cancellation.resolve({ status: 'cancelled', runVersion: receipt.runVersion });
+          this.onSettled?.(receipt);
+        } catch (error) {
+          cancellation?.reject(error);
+          recoveryIds.push(item.intent.executionIntentId);
+          await this.reportCrossed(item, dispatchAttemptId, 'dispatch_outcome_uncertain');
+        } finally {
+          this.activeByRun.delete(item.intent.runId);
+        }
+        continue;
+      }
       if (outcome.status === 'recovery_required') {
         const cancellation = active.cancellation;
         const receipt = outcome.receipt;
@@ -531,15 +576,14 @@ export class AgentRunExecutionIntentScheduler {
         this.activeByRun.delete(item.intent.runId);
         continue;
       }
-      this.activeByRun.delete(item.intent.runId);
-      assertExactReceipt(outcome.receipt, item.intent.executionIntentId, dispatchAttemptId);
-      const expectedOutcome = outcome.receipt.inferenceStatus === 'succeeded'
-        ? 'completed'
-        : outcome.receipt.inferenceStatus;
-      if (outcome.outcome !== expectedOutcome) {
-        throw new Error('Execution settlement outcome contradicts its strict receipt.');
-      }
       try {
+        assertExactReceipt(outcome.receipt, item.intent.executionIntentId, dispatchAttemptId);
+        const expectedOutcome = outcome.receipt.inferenceStatus === 'succeeded'
+          ? 'completed'
+          : outcome.receipt.inferenceStatus;
+        if (outcome.outcome !== expectedOutcome) {
+          throw new Error('Execution settlement outcome contradicts its strict receipt.');
+        }
         await this.commitSettlement(
           item,
           dispatchAttemptId,
@@ -548,6 +592,8 @@ export class AgentRunExecutionIntentScheduler {
         );
         settled += 1;
       } catch (error) {
+        active.cancellation?.reject(error);
+        this.activeByRun.delete(item.intent.runId);
         recoveryIds.push(item.intent.executionIntentId);
         const state = (error as { readonly dispatchCommitted?: boolean }).dispatchCommitted
           ? 'dispatched'
@@ -560,6 +606,10 @@ export class AgentRunExecutionIntentScheduler {
         );
         continue;
       }
+      // Completion may win the race with cancellation. Release its waiter so
+      // the public owner can recheck current authority instead of hanging.
+      active.cancellation?.resolve({ status: 'not_active' });
+      this.activeByRun.delete(item.intent.runId);
       this.onSettled?.(outcome.receipt);
     }
     if (recoveryIds.length > 0) {

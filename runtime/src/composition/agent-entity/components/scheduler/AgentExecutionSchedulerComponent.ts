@@ -4,6 +4,8 @@ import { AgentFollowUpInferenceDispatchController } from '../../../../control/ex
 import { AgentDelegatedInferenceDispatchController } from '../../../../control/execution/AgentDelegatedInferenceDispatchController.js';
 import { AgentChildResultsContinuationController } from '../../../../control/execution/AgentChildResultsContinuationController.js';
 import { AgentRunWorkClassifier } from '../../../../control/execution/AgentRunWorkClassifier.js';
+import { AgentParentCancellationGate } from '../../../../control/execution/AgentParentCancellationGate.js';
+import { AgentRunCancellationService } from '../run-control/AgentRunCancellationService.js';
 import { AgentContinuationBoundaryTerminalizationCoordinator } from '../../../../control/execution/AgentContinuationBoundaryTerminalizationCoordinator.js';
 import { AgentRetiredToolCatalogTerminalizationCoordinator } from '../../../../control/execution/AgentRetiredToolCatalogTerminalizationCoordinator.js';
 import { AgentStartedWorkRecoveryCoordinator } from '../../../../control/execution/AgentStartedWorkRecoveryCoordinator.js';
@@ -53,7 +55,7 @@ export interface AgentExecutionSchedulerComponentInput {
   >;
   readonly runWorkScheduler?: Omit<
     AgentRunWorkSchedulerOptions,
-    'startedWorkRecovery' | 'authorityVerifier' | 'retiredToolCatalogTerminalizations'
+    'startedWorkRecovery' | 'authorityVerifier' | 'retiredToolCatalogTerminalizations' | 'cancellationGate'
   >;
   readonly handoffProducer?: ConversationAgentHandoffProducerOptions;
 }
@@ -62,6 +64,7 @@ export interface AgentExecutionSchedulerComponentHandle {
   readonly handoffProducer: ConversationAgentHandoffProducer;
   readonly executionScheduler: AgentRunExecutionIntentScheduler;
   readonly runWorkScheduler: AgentRunWorkScheduler;
+  readonly cancellations: AgentRunCancellationService;
 }
 
 /** Owns durable execution scheduling, recovery, continuation, and Handoff wake-up. */
@@ -104,6 +107,7 @@ export function createAgentExecutionSchedulerComponent(
     new AgentContinuationBoundaryTerminalizationCoordinator(input.unitOfWork),
     {
       ...input.runWorkScheduler,
+      cancellationGate: new AgentParentCancellationGate(input.unitOfWork),
       startedWorkRecovery,
       delegatedInference: subagentRouter.delegatedInitial,
       delegatedFollowUps: subagentRouter.followUp,
@@ -147,5 +151,6 @@ export function createAgentExecutionSchedulerComponent(
     }
   }, input.handoffProducer);
 
-  return Object.freeze({ handoffProducer, executionScheduler, runWorkScheduler });
+  const cancellations = new AgentRunCancellationService(input.unitOfWork, { executionScheduler, runWorkScheduler, effects });
+  return Object.freeze({ handoffProducer, executionScheduler, runWorkScheduler, cancellations });
 }

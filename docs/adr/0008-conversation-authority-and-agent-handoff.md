@@ -10,8 +10,8 @@
 Session/Message authority, all four Handoff outbox transitions, the cross-store
 coordinator, fixed-point producer lifecycle, durable execution-intent receipt,
 terminal Agent-result projection and the default production execution pipeline
-are connected. Historical-store offline migration and real-process crash
-acceptance remain separate release gates.
+are connected. Retired-format history import is unsupported. Real-process crash
+acceptance remains a separate verification gate.
 
 ## Context
 
@@ -89,9 +89,10 @@ outbox, Agent admission, and Saga service.
 Conversation schema v1 is a pristine-store contract, not a rolling production
 migration target. Before production routing is enabled, the same v1 definition
 must include authoritative Session and immutable Message-version tables in
-addition to the handoff ledger. Any non-empty older or structurally different
-store requires an explicit fenced offline migration. Runtime startup never
-guesses, copies, repairs, or dual-reads historical conversation state.
+addition to the handoff ledger. Retired or structurally unknown stores are
+unsupported and remain unchanged. Current Conversation schema upgrades require
+their documented owner lease and validated backup; startup never guesses,
+copies, repairs or dual-reads retired conversation state.
 
 ## Consequences
 
@@ -101,8 +102,8 @@ guesses, copies, repairs, or dual-reads historical conversation state.
 - Renderer and facade code cannot fabricate missing links; they consume only
   authoritative projections.
 - Session/Message authority, the outbox coordinator, Agent-result projection
-  and the default execution/recovery Composition are connected. Offline
-  migration and real-process crash acceptance remain separate gates; Handoff
+  and the default execution/recovery Composition are connected. Current-store
+  schema upgrades and real-process crash acceptance remain separate gates; Handoff
   completion alone is not proof of a complete product Agent loop.
 
 ## Verification

@@ -38,20 +38,20 @@ export async function assertPersistedArtifactsMatchMutation(
   const checkpointRows = database.prepare(
     `SELECT run_id, checkpoint_version, run_version, command_id,
             codec_id, payload_json, created_at
-     FROM agent_v3_checkpoints WHERE command_id=? AND run_id=?`
+     FROM agent_checkpoints WHERE command_id=? AND run_id=?`
   ).all(command.command_id, command.run_id) as unknown as AgentCheckpointRow[];
   const inputRows = database.prepare(
-    `SELECT * FROM agent_v3_effect_payloads WHERE input_command_id=? AND run_id=?`
+    `SELECT * FROM agent_effect_payloads WHERE input_command_id=? AND run_id=?`
   ).all(command.command_id, command.run_id) as unknown as AgentEffectPayloadRow[];
   const resultRows = database.prepare(
-    `SELECT * FROM agent_v3_effect_payloads WHERE result_command_id=? AND run_id=?`
+    `SELECT * FROM agent_effect_payloads WHERE result_command_id=? AND run_id=?`
   ).all(command.command_id, command.run_id) as unknown as AgentEffectPayloadRow[];
   const directiveRows = database.prepare(
-    `SELECT * FROM agent_v3_directive_payloads
+    `SELECT * FROM agent_directive_payloads
      WHERE command_id=? AND run_id=? ORDER BY artifact_id`
   ).all(command.command_id, command.run_id) as unknown as AgentDirectivePayloadRow[];
   const turnInputRows = database.prepare(
-    `SELECT * FROM agent_v3_turn_inputs
+    `SELECT * FROM agent_turn_inputs
      WHERE command_id=? AND run_id=? ORDER BY turn_id`
   ).all(command.command_id, command.run_id) as unknown as AgentTurnInputPayloadRow[];
 
@@ -76,7 +76,7 @@ export async function assertPersistedArtifactsMatchMutation(
       commandId: row.command_id,
       runVersion: row.run_version,
       checkpointVersion: row.checkpoint_version
-    }, `agent_v3_checkpoints:${row.run_id}:${String(row.checkpoint_version)}`);
+    }, `agent_checkpoints:${row.run_id}:${String(row.checkpoint_version)}`);
     if (canonicalJson(decoded) !== canonicalJson(expectedCheckpoint.payload)) {
       throw artifactReplayConflict(command);
     }
@@ -91,7 +91,7 @@ export async function assertPersistedArtifactsMatchMutation(
     command.result_run_json,
     command.run_id,
     command.resulting_version,
-    `agent_v3_command_runs:${command.command_id}:${command.run_id}`
+    `agent_command_runs:${command.command_id}:${command.run_id}`
   );
   for (const [index, expected] of expectedTurnInputs.entries()) {
     const row = turnInputRows[index];
@@ -197,7 +197,7 @@ export async function assertPersistedArtifactsMatchMutation(
       runVersion: row.run_version,
       directiveDigest: row.directive_digest,
       contentHash: row.content_digest
-    }, `agent_v3_directive_payloads:${row.artifact_id}`);
+    }, `agent_directive_payloads:${row.artifact_id}`);
     if (
       canonicalJson(decoded) !== canonicalJson(payload.payload)
       || await sha256AgentControlData(decoded) !== row.content_digest
@@ -224,11 +224,11 @@ export async function assertCommittedDirectiveArtifacts(
   for (const mutation of committed.mutations) {
     for (const reference of committedDirectiveReferences(mutation.run)) {
       const row = database.prepare(
-        'SELECT * FROM agent_v3_directive_payloads WHERE artifact_id=?'
+        'SELECT * FROM agent_directive_payloads WHERE artifact_id=?'
       ).get(reference.artifactId) as AgentDirectivePayloadRow | undefined;
       if (row === undefined) {
         throw storageCorruption(
-          `agent_v3_directive_payloads:${reference.artifactId}:missing`
+          `agent_directive_payloads:${reference.artifactId}:missing`
         );
       }
       const payload = decodePayload(codec, row.codec_id, row.payload_json, {
@@ -238,7 +238,7 @@ export async function assertCommittedDirectiveArtifacts(
         runVersion: row.run_version,
         directiveDigest: row.directive_digest,
         contentHash: row.content_digest
-      }, `agent_v3_directive_payloads:${row.artifact_id}`);
+      }, `agent_directive_payloads:${row.artifact_id}`);
       if (
         row.run_id !== mutation.runId
         || row.payload_kind !== reference.kind
@@ -247,7 +247,7 @@ export async function assertCommittedDirectiveArtifacts(
         || await sha256AgentControlData(payload) !== reference.contentDigest
       ) {
         throw storageCorruption(
-          `agent_v3_directive_payloads:${reference.artifactId}:metadata_mismatch`
+          `agent_directive_payloads:${reference.artifactId}:metadata_mismatch`
         );
       }
     }

@@ -5,35 +5,41 @@ import {
 import type { AriadneApi } from '@shared/contract';
 import {
   AgentInputDeliveryTracker,
-  type AgentInputDeliveryReceipt
+  type AgentInputDeliveryReceipt,
+  type VerifiedAgentInboxIdentity
 } from '../agent-input-delivery';
-import { PublicResultError } from '../public-result';
+import { shouldReconcileInput } from './input-delivery-outcome';
 import type { RuntimeFeatureCommandGateway } from './runtime-feature-command-gateway';
 import type { RunFeatureHost } from './run-feature-host';
+import type { DraftDeliveryBinding } from './input-delivery-binding';
+import { DraftLinkedDeliveryView } from './draft-linked-delivery-view';
 
 export class AgentInputDeliveryController {
   private readonly tracker = new AgentInputDeliveryTracker();
   private persistenceReady: boolean;
   private persistenceErrorValue: string | null = null;
+  private readonly draftLinks = new Map<string, string>();
+  private readonly deliveryView = new DraftLinkedDeliveryView(this.draftLinks);
 
   constructor(
     private readonly gateway: RuntimeFeatureCommandGateway,
     private readonly host: RunFeatureHost,
-    private readonly persistence?: AriadneApi['agentInputDeliveryOutbox']
+    private readonly persistence?: AriadneApi['inputDeliveryOutbox']
   ) {
     this.persistenceReady = persistence === undefined;
   }
 
   snapshot(): AgentInputDeliveryReceipt[] {
-    return this.tracker.snapshot();
+    return this.deliveryView.read(this.tracker.snapshot());
   }
 
   get persistenceError(): string | null {
     return this.persistenceErrorValue;
   }
 
-  observeProjection(): void {
-    for (const commandId of this.tracker.observeProjection(this.host.projectionRuns())) {
+  observeInboxIdentities(identities: readonly VerifiedAgentInboxIdentity[]): void {
+    for (const commandId of this.tracker.observeInboxIdentities(identities)) {
+      if (this.draftLinks.has(commandId)) continue;
       void this.settlePersisted(commandId);
     }
   }
@@ -45,6 +51,8 @@ export class AgentInputDeliveryController {
       if (!this.host.isLifecycleGenerationCurrent(generation)) return;
       const now = new Date().toISOString();
       for (const record of records) {
+        if (record.command.kind !== 'agent.inbox.enqueue') continue;
+        if (record.draftSubmissionId) this.deliveryView.link(record.commandId, record.draftSubmissionId);
         this.tracker.restore(record.commandId, record.command, record.createdAt, now);
       }
       this.persistenceReady = true;
@@ -65,19 +73,20 @@ export class AgentInputDeliveryController {
     runId: string,
     sessionId: string,
     content: string,
-    delivery: 'next_turn' | 'next_step'
+    delivery: 'next_turn' | 'next_step',
+    draft?: DraftDeliveryBinding
   ): Promise<AgentInputDeliveryReceipt> {
-    const inputId = crypto.randomUUID();
+    const inputId = draft?.submissionId ?? crypto.randomUUID();
     const commandId = crypto.randomUUID();
     const command = {
-      kind: 'agent.inbox.enqueue.v3',
+      kind: 'agent.inbox.enqueue',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       runId,
       sessionId,
       inputId,
       delivery,
       content
-    } satisfies Extract<RuntimeCommand, { kind: 'agent.inbox.enqueue.v3' }>;
+    } satisfies Extract<RuntimeCommand, { kind: 'agent.inbox.enqueue' }>;
     if (!this.persistenceReady) {
       const receipt = this.tracker.begin(commandId, command, new Date().toISOString());
       const failed = this.tracker.fail(
@@ -89,9 +98,17 @@ export class AgentInputDeliveryController {
       return { ...receipt, ...failed };
     }
     try {
-      const staged = await this.persistence?.stage({ commandId, command });
+      if (draft && !this.persistence) throw new Error('input_delivery_persistence_required');
+      const staged = await this.persistence?.stage({ commandId, command,
+        ...(draft ? { draftSubmissionId: draft.submissionId } : {}) });
+      if (draft) this.deliveryView.link(commandId, draft.submissionId);
       this.tracker.begin(commandId, command, staged?.createdAt ?? new Date().toISOString());
+      await draft?.onStaged([commandId]);
     } catch (error) {
+      if (this.draftLinks.has(commandId)) {
+        const receipt = this.tracker.requireReconciliation(commandId, '发送身份已保存，草稿更新尚未完成；请核对原发送。', new Date().toISOString());
+        this.host.publish(); return receipt;
+      }
       this.tracker.begin(commandId, command, new Date().toISOString());
       const failed = this.tracker.fail(
         commandId,
@@ -106,6 +123,8 @@ export class AgentInputDeliveryController {
   }
 
   async reconcile(commandId: string): Promise<AgentInputDeliveryReceipt> {
+    const known = this.tracker.get(commandId);
+    if (known?.state === 'accepted' || known?.state === 'failed') return known;
     this.tracker.beginReconciliation(commandId, new Date().toISOString());
     this.host.publish();
     return this.dispatch(commandId, true);
@@ -113,7 +132,15 @@ export class AgentInputDeliveryController {
 
   dismiss(commandId: string): void {
     this.tracker.dismiss(commandId);
+    this.deliveryView.link(commandId);
     this.host.publish();
+  }
+
+  async settleDraftDelivery(commandId: string, submissionId: string): Promise<void> {
+    if (this.draftLinks.get(commandId) !== submissionId) throw new Error('input_delivery_draft_identity_mismatch');
+    const receipt = this.tracker.snapshot().find(row => row.commandId === commandId);
+    if (!receipt || (receipt.state !== 'accepted' && receipt.state !== 'failed')) throw new Error('input_delivery_not_settled');
+    if (!await this.settlePersisted(commandId)) throw new Error('input_delivery_settlement_persistence_failed');
   }
 
   private async dispatch(
@@ -123,20 +150,20 @@ export class AgentInputDeliveryController {
     const command = this.tracker.command(commandId);
     try {
       const result = await this.gateway.execute(command, commandId);
-      if (result.kind !== 'agent.inbox.enqueued.v3'
+      if (result.kind !== 'agent.inbox.enqueued'
         || result.runId !== command.runId
         || result.inputId !== command.inputId) {
         throw new Error(`runtime_result_invalid:${result.kind}`);
       }
       const receipt = this.tracker.accept(commandId, new Date().toISOString());
       this.host.publish();
-      void this.settlePersisted(commandId);
+      if (!this.draftLinks.has(commandId)) void this.settlePersisted(commandId);
       void this.host.synchronize();
       return receipt;
     } catch (error) {
       const message = this.host.errorMessage(error, 'Agent 输入提交失败。');
-      const reconciliationRequired = shouldReconcile(error, commandId, reconciliationAttempt);
-      const persistenceSettled = reconciliationRequired ? false : await this.settlePersisted(commandId);
+      const reconciliationRequired = shouldReconcileInput(error, commandId, reconciliationAttempt);
+      const persistenceSettled = reconciliationRequired ? false : this.draftLinks.has(commandId) || await this.settlePersisted(commandId);
       const receipt = reconciliationRequired || !persistenceSettled
         ? this.tracker.requireReconciliation(
             commandId,
@@ -164,26 +191,4 @@ export class AgentInputDeliveryController {
       return false;
     }
   }
-}
-
-const RECONCILABLE_CODES = new Set([
-  'command_outcome_uncertain',
-  'runtime_request_timeout',
-  'runtime_request_cancelled',
-  'runtime_request_send_failed'
-]);
-
-const DEFERRED_CODES = new Set([
-  'runtime_unavailable',
-  'runtime_initializing',
-  'runtime_shutting_down',
-  'runtime_stopped',
-  'runtime_exited'
-]);
-
-function shouldReconcile(error: unknown, commandId: string, retry: boolean): boolean {
-  if (!(error instanceof PublicResultError)) return false;
-  const { code, correlationId } = error.publicError;
-  if (correlationId === commandId && RECONCILABLE_CODES.has(code)) return true;
-  return retry && DEFERRED_CODES.has(code);
 }

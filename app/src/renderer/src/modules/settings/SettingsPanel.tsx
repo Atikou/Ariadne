@@ -25,6 +25,9 @@ import { createEditableLocalModelRoots, moveLocalModelRoot, normalizeLocalModelR
 import { useSpeechSnapshot } from '@renderer/core/speech/speech-coordinator';
 import { applicationProfileComponents } from '@shared/application-profile';
 import { SelectMenu } from '@renderer/shared/ui/SelectMenu';
+import { ModelQualityControl } from './ModelQualityControl';
+import { TaskNotificationSettings } from '@renderer/shared/ui/TaskNotificationSettings';
+import { DataManagementSettings } from './DataManagementSettings';
 
 const themeOptions: Array<{ value: ThemePreference; label: string; icon: typeof Sun }> = [
   { value: 'system', label: '跟随系统', icon: Laptop },
@@ -37,7 +40,7 @@ const noClearRequests = Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => [id, f
 const initialProviderExpansion = Object.fromEntries(AGENT_PROVIDER_IDS.map((id) => [id, false])) as Record<AgentProviderId, boolean>;
 const SETTINGS_CATEGORY_STORAGE_KEY = 'ariadne.settings.category.v1';
 
-type SettingsCategory = 'agent' | 'chat' | 'speech' | 'archives' | 'desktop';
+type SettingsCategory = 'agent' | 'chat' | 'speech' | 'archives' | 'data' | 'desktop';
 
 const settingsCategories: ReadonlyArray<{
   id: SettingsCategory;
@@ -49,6 +52,7 @@ const settingsCategories: ReadonlyArray<{
   { id: 'chat', label: '聊天与人设', description: '助手与用户人设', icon: MessageCircle },
   { id: 'speech', label: '本地语音', description: '识别、播报与音色包', icon: Mic },
   { id: 'archives', label: '归档管理', description: '聊天与工作区恢复', icon: ArchiveRestore },
+  { id: 'data', label: '数据管理', description: '备份、恢复与数据空间', icon: Database },
   { id: 'desktop', label: '外观与桌面', description: '主题、托盘与通知', icon: Laptop }
 ];
 
@@ -602,6 +606,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
 
       <div className={`settings-content${activeCategory === 'agent' || activeCategory === 'chat' ? ' settings-content--with-actions' : ''}`}>
         <div className="settings-content-scroll" key={activeCategory}>
+      {activeCategory === 'data' && <DataManagementSettings api={services.dataManagement} />}
       {activeCategory === 'agent' && <section className="settings-section" aria-labelledby={`${moduleId}-model-settings`}>
         <div className="settings-section-heading">
           <div className="settings-section-title"><span className="settings-section-icon"><KeyRound size={16} /></span><div className="settings-section-copy"><h2 id={`${moduleId}-model-settings`}>Agent 与模型</h2><p>配置本地模型目录和远程 Provider；工作区通过 Chat 侧栏的“打开工作区”管理。</p></div></div>
@@ -614,6 +619,7 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
         {agentSettings ? (
           <form id={`${moduleId}-agent-settings-form`} className="agent-settings-form" onSubmit={(event) => void saveAgentSettings(event)}>
             <div className="agent-settings-grid">
+              <ModelQualityControl models={models.models} services={services} />
               <div className="settings-field settings-field--wide local-model-roots-field">
                 <span id={`${moduleId}-local-model-roots-label`}>本地模型目录</span>
                 <div className="local-model-roots-control" aria-labelledby={`${moduleId}-local-model-roots-label`}>
@@ -1091,6 +1097,9 @@ export function SettingsPanel({ moduleId, services }: FeaturePanelProps): React.
               : '当前系统不支持 Electron Windows 通知。'))
             .catch((error) => setNotificationTestResult(`测试失败：${errorMessage(error)}`));
         }}><BellRing size={14} />测试 Windows 通知</button></div>
+        <TaskNotificationSettings value={preferences?.taskNotifications ?? { completed: false, failed: false }} disabled={!preferences}
+          onChange={(state, enabled) => preferences && savePreferences({ ...preferences, taskNotifications: {
+            ...(preferences.taskNotifications ?? { completed: false, failed: false }), [state]: enabled } })} />
         <div className="setting-block"><div><strong>安全边界</strong><p>Renderer 保持沙箱与上下文隔离，只通过固定 Preload API 使用桌面能力。</p></div></div>
       </section>}
         </div>

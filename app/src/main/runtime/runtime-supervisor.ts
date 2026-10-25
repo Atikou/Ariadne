@@ -22,12 +22,13 @@ import {
 } from '@ariadne/protocol/host';
 import type { AssistantChatProfile, RuntimePolicySnapshot } from '@ariadne/protocol/settings';
 import { readRuntimeBuildManifest } from './runtime-build-manifest';
+import type { RuntimeMaintenanceBoundary } from './runtime-maintenance-boundary';
 import {
   runtimeCommandSchema,
   type RuntimeCommand,
   type RuntimeEventEnvelope,
   type RuntimeResult,
-  type RuntimeStatus
+  type RuntimeStatus, type RuntimeHealth
 } from '@ariadne/protocol/public';
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 15_000;
@@ -122,6 +123,7 @@ export class RuntimeSupervisor {
   private startup: StartupAttempt | null = null;
   private shutdownAttempt: ShutdownAttempt | null = null;
   private readySnapshot: RuntimeReady | null = null;
+  private startupFailureHealth: RuntimeHealth | null = null;
   private activeBuildFingerprint: string | null = null;
   private lifecycleQueue: Promise<void> = Promise.resolve();
   private restartTimer: NodeJS.Timeout | null = null;
@@ -131,6 +133,7 @@ export class RuntimeSupervisor {
   private eventDeliveryQueue: Promise<void> = Promise.resolve();
   private lastDiagnostic: string | null = null;
   private stopping = false;
+  private maintenance = false;
   private disposed = false;
   private capabilities: RuntimeStatus['capabilities'] = [];
   private statusClock = 0;
@@ -160,6 +163,7 @@ export class RuntimeSupervisor {
   }
 
   configure(options: RuntimeSupervisorOptions): void {
+    this.assertNotInMaintenance();
     if (this.child || this.startup || this.currentStatus.availability !== 'stopped') {
       throw new Error('Runtime 运行期间不能直接替换配置。');
     }
@@ -172,10 +176,12 @@ export class RuntimeSupervisor {
     this.lastEventCursor = 0;
     this.lastDiagnostic = null;
     this.readySnapshot = null;
+    this.startupFailureHealth = null;
     this.activeBuildFingerprint = null;
   }
 
   async restart(options: RuntimeSupervisorOptions): Promise<RuntimeReady> {
+    this.assertNotInMaintenance();
     assertSupervisorOptions(options);
     return this.runLifecycleOperation(async () => {
       return this.restartNow(options, 'restart');
@@ -183,6 +189,7 @@ export class RuntimeSupervisor {
   }
 
   async start(): Promise<RuntimeReady> {
+    this.assertNotInMaintenance();
     return this.runLifecycleOperation(async () => {
       const buildFingerprint = this.resolveRuntimeBuildFingerprint();
       if (
@@ -296,6 +303,7 @@ export class RuntimeSupervisor {
     commandInput: RuntimeCommand,
     options: RuntimeRequestOptions = {}
   ): Promise<RuntimeResult> {
+    this.assertNotInMaintenance();
     const command = runtimeCommandSchema.parse(commandInput);
     const commandId = options.commandId ?? randomUUID();
     if (options.signal?.aborted) {
@@ -306,7 +314,16 @@ export class RuntimeSupervisor {
         commandId
       );
     }
+    if (command.kind === 'runtime.health.get' && this.currentStatus.availability !== 'ready') {
+      if (this.startupFailureHealth !== null && !this.disposed && !this.stopping
+        && ['crashed', 'disabled'].includes(this.currentStatus.availability))
+        return { kind: 'runtime.health', health: structuredClone(this.startupFailureHealth) };
+      throw new RuntimeRequestError('runtime_health_unavailable', 'Runtime 的独立启动健康状态暂不可读。', false);
+    }
+    if (this.startupFailureHealth !== null && this.currentStatus.availability !== 'ready')
+      throw new RuntimeRequestError('runtime_startup_source_unavailable', 'Runtime 启动来源不可用，请修复后显式重新启动。', false, commandId);
     await this.start();
+    this.assertNotInMaintenance();
     if (options.signal?.aborted) {
       throw new RuntimeRequestError(
         'runtime_request_cancelled',
@@ -394,12 +411,63 @@ export class RuntimeSupervisor {
     await this.runLifecycleOperation(() => this.shutdownNow(reason, true));
   }
 
+  /** Final restore shutdown must prove the original owner acknowledgement and
+   * clean process exit. Unlike a snapshot, success deliberately keeps admission
+   * closed until this Main process exits; a forced termination cannot qualify. */
+  async shutdownForDataRootSwitch(): Promise<void> {
+    this.assertNotInMaintenance();
+    this.maintenance = true;
+    await this.runLifecycleOperation(async () => {
+      let shutdownAttempted = false;
+      try {
+        if (this.disposed || this.currentStatus.availability !== 'ready' || !this.readySnapshot || !this.runtimeInstanceId)
+          throw new RuntimeRequestError('runtime_maintenance_source_unavailable', 'Runtime 尚未就绪，无法恢复数据。', true);
+        shutdownAttempted = true;
+        await this.shutdownNow('user_request', true, true);
+      } catch (error) {
+        try { if (shutdownAttempted) { this.disposed = false; await this.startNow(); } }
+        finally { this.maintenance = false; }
+        throw error;
+      }
+    });
+  }
+
+  /** Blocks admission, stops the original producers/owners and requires both
+   * their shutdown acknowledgement and a clean child exit before file access.
+   * Main must independently freeze and flush its stores around this operation. */
+  async withOfflineMaintenance<T>(operation: (boundary: RuntimeMaintenanceBoundary) => Promise<T>): Promise<T> {
+    this.assertNotInMaintenance();
+    this.maintenance = true;
+    return this.runLifecycleOperation(async () => {
+      let shutdownAttempted = false;
+      try {
+        if (this.disposed || this.currentStatus.availability !== 'ready' || !this.readySnapshot || !this.runtimeInstanceId)
+          throw new RuntimeRequestError('runtime_maintenance_source_unavailable', 'Runtime 尚未就绪，无法建立维护边界。', true);
+        const runtimeInstanceId = this.runtimeInstanceId;
+        const storageSchemas = Object.freeze({ ...this.readySnapshot.storageSchemas });
+        shutdownAttempted = true;
+        await this.shutdownNow('user_request', false, true);
+        return await operation(Object.freeze({ runtimeInstanceId, storageSchemas,
+          quiescedAt: new Date().toISOString(), shutdownAcknowledged: true as const }));
+      } finally {
+        try { if (shutdownAttempted) await this.startNow(); }
+        finally { this.maintenance = false; }
+      }
+    });
+  }
+
+  private assertNotInMaintenance(): void {
+    if (this.maintenance) throw new RuntimeRequestError('runtime_maintenance', '应用正在维护数据，请稍后重试。', true);
+  }
+
   private async shutdownNow(
     reason: 'app_quit' | 'restart' | 'upgrade' | 'user_request',
-    dispose: boolean
+    dispose: boolean,
+    requireAcknowledgement = false
   ): Promise<void> {
     this.disposed = dispose;
     this.stopping = true;
+    this.startupFailureHealth = null;
     if (this.restartTimer) {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
@@ -412,12 +480,14 @@ export class RuntimeSupervisor {
     const runtimeInstanceId = this.runtimeInstanceId;
     if (!child) {
       this.setStatus('stopped');
+      if (requireAcknowledgement) throw new RuntimeRequestError('runtime_maintenance_shutdown_unconfirmed', 'Runtime 关闭确认缺失，未执行数据备份。', true);
       return;
     }
 
     if (child.exitCode !== null || child.signalCode !== null) {
       this.releaseExitedChild(child);
       this.setStatus('stopped');
+      if (requireAcknowledgement) throw new RuntimeRequestError('runtime_maintenance_shutdown_unconfirmed', 'Runtime 关闭确认缺失，未执行数据备份。', true);
       return;
     }
 
@@ -428,6 +498,7 @@ export class RuntimeSupervisor {
     const requestId = randomUUID();
     this.shutdownAttempt = { child, requestId, completed: false };
     const exited = waitForExit(child);
+    let acknowledgedCleanExit = false;
     try {
       if (child.connected && runtimeInstanceId) {
         await this.send(child, {
@@ -475,12 +546,17 @@ export class RuntimeSupervisor {
         }
       }
     } finally {
-      if (this.shutdownAttempt?.child === child) this.shutdownAttempt = null;
+      if (this.shutdownAttempt?.child === child) {
+        acknowledgedCleanExit = this.shutdownAttempt.completed && child.exitCode === 0 && child.signalCode === null;
+        this.shutdownAttempt = null;
+      }
     }
     if (child.exitCode !== null || child.signalCode !== null) {
       this.releaseExitedChild(child);
       this.setStatus('stopped');
     }
+    if (requireAcknowledgement && !acknowledgedCleanExit)
+      throw new RuntimeRequestError('runtime_maintenance_shutdown_unconfirmed', 'Runtime 未确认正常关闭，未执行数据备份。', true);
   }
 
   private createBootstrap(
@@ -537,6 +613,16 @@ export class RuntimeSupervisor {
       return;
     }
     switch (message.type) {
+      case 'initialization_failed':
+        if (this.startup === null || this.readySnapshot !== null || this.stopping) {
+          this.handleProtocolViolation('Runtime 在错误阶段发送了启动失败诊断。'); return;
+        }
+        this.startupFailureHealth = structuredClone(message.health);
+        console.error('Runtime initialization failed:', message.phase, this.lastDiagnostic ?? 'diagnostic unavailable');
+        this.setStatus('crashed', 'Runtime 启动失败，请查看组件健康提示并修复对应来源。');
+        this.failStartup(new RuntimeRequestError('runtime_initialization_failed', 'Runtime 启动失败，业务操作尚未开放。', false,
+          randomUUID(), [`phase:${message.phase}`, ...(this.lastDiagnostic ? [this.lastDiagnostic] : [])]));
+        return;
       case 'ready':
         this.handleReady(message);
         return;

@@ -2,6 +2,7 @@ import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { closeOwnedSqliteDatabase, type SqliteOwnerLease } from './SqliteOwnerLease.js';
+import { SqliteAuthorityHealth, type SqliteAuthoritySource } from './SqliteAuthorityHealth.js';
 
 export interface SqliteTransactionShutdownContext {
   readonly deadlineAt: number;
@@ -11,6 +12,7 @@ export interface SqliteTransactionShutdownContext {
 }
 
 export interface SqliteTransactionOwnerOptions {
+  readonly source: SqliteAuthoritySource;
   readonly shutdownRequestedCode: string;
   readonly closedCode: string;
   readonly shutdownConflictCode: string;
@@ -31,6 +33,7 @@ export class SqliteTransactionOwner {
   private lastScheduledOperation: Promise<void> = Promise.resolve();
   private shutdownContext: SqliteTransactionShutdownContext | null = null;
   private closePromise: Promise<void> | null = null;
+  private readonly health: SqliteAuthorityHealth;
 
   public constructor(
     public readonly database: DatabaseSync,
@@ -40,7 +43,10 @@ export class SqliteTransactionOwner {
   ) {
     const resolved = path.resolve(databasePath);
     this.databaseKey = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    this.health = new SqliteAuthorityHealth(options.source);
   }
+
+  public assertHealthy(): void { this.health.assertHealthy(); }
 
   public schedule<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
     if (this.lifecycle !== 'open') {
@@ -48,7 +54,12 @@ export class SqliteTransactionOwner {
     }
     const signal = this.abortController.signal;
     const previous = transactionTails.get(this.databaseKey) ?? Promise.resolve();
-    const result = previous.then(() => operation(signal), () => operation(signal));
+    const run = async (): Promise<T> => {
+      this.health.assertHealthy();
+      try { return await operation(signal); }
+      catch (error) { this.health.observe(error); throw error; }
+    };
+    const result = previous.then(run, run);
     const tail = result.then(() => undefined, () => undefined);
     transactionTails.set(this.databaseKey, tail);
     this.lastScheduledOperation = tail;
@@ -76,7 +87,14 @@ export class SqliteTransactionOwner {
       if (mode === 'write') this.options.afterWriteCommit?.();
       return result;
     } catch (error) {
-      if (this.database.isTransaction) this.database.exec('ROLLBACK;');
+      if (this.database.isTransaction) {
+        try { this.database.exec('ROLLBACK;'); }
+        catch (rollbackError) {
+          this.health.observeFailedRollback(rollbackError);
+          throw new AggregateError([error, rollbackError], 'sqlite_transaction_rollback_failed');
+        }
+      }
+      this.health.observe(error);
       throw error;
     }
   }

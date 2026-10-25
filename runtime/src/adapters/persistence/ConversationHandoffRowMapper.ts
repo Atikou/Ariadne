@@ -6,7 +6,12 @@ import {
   type ConversationRunHandoffSaga
 } from '../../conversation/ConversationRunHandoffSaga.js';
 import { type SagaRow } from './ConversationHandoffStorageTypes.js';
-import { isPlainObject, storageInvariant } from './ConversationHandoffStorageValidation.js';
+import { isPlainObject, storageInvariant as storageError } from './ConversationHandoffStorageValidation.js';
+import { markAuthorityIntegrityError } from './SqliteAuthorityHealth.js';
+
+function storageInvariant(message: string, cause?: unknown): Error {
+  return markAuthorityIntegrityError('conversation', storageError(message, cause));
+}
 
 export function selectSagaRow(database: DatabaseSync, sagaId: string): SagaRow | undefined {
   return database.prepare(

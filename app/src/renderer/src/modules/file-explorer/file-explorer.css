@@ -14,3 +14,6 @@
 .file-tree-spacer { width: 13px; }
 .file-tree-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-tree small { flex: 0 0 auto; margin-left: auto; color: var(--text-3); font-size: 11px; }
+.file-draft-list { display: grid; gap: 6px; padding: 12px; border-bottom: 1px solid var(--border-subtle); }
+.file-draft-list button { display: grid; gap: 4px; padding: 8px; text-align: left; color: var(--text-1); background: var(--bg-hover); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); overflow-wrap: anywhere; }
+.file-draft-list small { color: var(--text-3); }

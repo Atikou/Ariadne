@@ -16,4 +16,5 @@ export interface AppEventMap {
   'session-activity:select-run': { runId: string; activityId?: string };
   'preferences:changed': UserPreferences;
   'speech:composer-transcript': { requestId: string; text: string; final: boolean };
+  'speech:composer-started': { requestId: string };
 }

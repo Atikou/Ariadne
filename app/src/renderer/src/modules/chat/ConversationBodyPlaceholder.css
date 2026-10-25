@@ -1,0 +1,9 @@
+.message-body-placeholder {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 0;
+  font-size: 0.85rem;
+}
+.message-body-placeholder small { flex-basis: 100%; overflow-wrap: anywhere; }

@@ -50,14 +50,14 @@ export function loadExecutionIntentRow(
   executionIntentId: string
 ): AgentExecutionIntentRow | undefined {
   return database.prepare(
-    'SELECT * FROM agent_v3_execution_intents WHERE execution_intent_id=?'
+    'SELECT * FROM agent_execution_intents WHERE execution_intent_id=?'
   ).get(executionIntentId) as AgentExecutionIntentRow | undefined;
 }
 
 export async function decodeAndVerifyExecutionIntent(
   row: AgentExecutionIntentRow
 ): Promise<AgentRunExecutionIntent> {
-  const source = `agent_v3_execution_intents:${row.execution_intent_id}`;
+  const source = `agent_execution_intents:${row.execution_intent_id}`;
   const parsed = parseJson(row.intent_json, source);
   try {
     assertExecutionIntent(parsed as AgentRunExecutionIntent);

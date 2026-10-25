@@ -172,6 +172,12 @@ export interface AgentRun {
   readonly turns: readonly AgentTurn[];
   readonly effects: readonly AgentEffect[];
   readonly inbox: readonly AgentInboxInput[];
+  /** Durable stop intent; the Effect outcome and recovery decision remain authoritative. */
+  readonly cancellationRequest?: {
+    readonly commandId: string;
+    readonly requestedAt: string;
+    readonly reason: string;
+  };
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -187,6 +193,7 @@ export function assertValidAgentRun(run: AgentRun): void {
       'turns',
       'effects',
       'inbox',
+      'cancellationRequest',
       'createdAt',
       'updatedAt'
     ],
@@ -196,6 +203,17 @@ export function assertValidAgentRun(run: AgentRun): void {
   assertPositiveInteger(run.version, 'run.version');
   assertTimestamp(run.createdAt, 'run.createdAt');
   assertTimestamp(run.updatedAt, 'run.updatedAt');
+  if (run.cancellationRequest !== undefined) {
+    const request = run.cancellationRequest;
+    assertExactObjectKeys(request, ['commandId', 'requestedAt', 'reason'], 'run.cancellationRequest');
+    assertCanonicalPublicId(request.commandId, 'run.cancellationRequest.commandId');
+    assertTimestamp(request.requestedAt, 'run.cancellationRequest.requestedAt');
+    assertNonEmpty(request.reason, 'run.cancellationRequest.reason');
+    if (Date.parse(request.requestedAt) < Date.parse(run.createdAt)
+      || Date.parse(request.requestedAt) > Date.parse(run.updatedAt)) {
+      throw new AgentRunInvariantError('Cancellation request must belong to the committed Run timeline.');
+    }
+  }
   assertValidAgentRunBinding(run.binding);
   if (!Array.isArray(run.turns)) {
     throw new AgentRunInvariantError('run.turns must be an array.');

@@ -1,3 +1,4 @@
+import type { ModelQualitySummary } from '@ariadne/protocol/public';
 export interface RuntimeModelCatalogEntry {
   readonly id: string;
   readonly label: string;
@@ -9,6 +10,7 @@ export interface RuntimeModelCatalogEntry {
   readonly supportsPlan: boolean;
   readonly supportsVision: boolean;
   readonly qualificationState: 'unknown' | 'testing' | 'qualified' | 'rejected';
+  readonly quality?: ModelQualitySummary;
 }
 
 /**

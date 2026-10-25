@@ -1,0 +1,12 @@
+{
+  "contractVersion": 3,
+  "contracts": [
+    {
+      "owner": "publicProjectionCatalogReadV3",
+      "file": "runtime/src/projection/PublicProjectionCatalogQueryPortsV3.ts",
+      "export": "PublicProjectionCatalogQueryStoreV3",
+      "digest": "sha256:91b5f9f619787cd12861d1ea5b39cf6d423045f6caf4792b6d7207e299e3f184",
+      "graphNodes": 185
+    }
+  ]
+}

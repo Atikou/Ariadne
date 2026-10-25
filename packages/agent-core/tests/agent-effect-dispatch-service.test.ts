@@ -4,6 +4,7 @@ import {
   AgentEffectDispatchRecoveryRequiredError,
   AgentEffectDispatchService,
   AgentRunCommandService,
+  AgentRunTransitionError,
   type AgentEffectDispatchCheckpointFactory,
   type AgentEffectExecutionInputReader,
   type AgentEffectExecutor
@@ -186,7 +187,96 @@ describe('AgentEffectDispatchService', () => {
       effects: [{ state: { status: 'authorized' } }]
     });
   });
+
+  it('settles the exact owned result across four Inbox writes without overwriting them or restarting I/O', async () => {
+    const unit = new InMemoryAgentRunUnitOfWork();
+    await createAuthorizedEffect(unit);
+    const finish = deferred<void>();
+    const executor = { execute: vi.fn(async () => { await finish.promise; return { status: 'succeeded' as const, result: { written: true } }; }) };
+    const dispatcher = createDispatcher(unit, executor);
+    const operation = dispatcher.dispatch(dispatchRequest());
+    await vi.waitFor(() => expect(executor.execute).toHaveBeenCalledOnce());
+    const commands = new AgentRunCommandService(unit);
+    for (let index = 0; index < 4; index += 1) {
+      await commands.execute({ kind: 'run.enqueue_inbox_input', commandId: `enqueue-${index}`, runId: 'run-1',
+        expectedVersion: 5 + index, occurredAt: at(5 + index), input: {
+          inputId: `input-${index}`, messageId: `message-${index}`, delivery: 'next_step', content: `steer-${index}`,
+          contentDigest: `sha256:${String(index).repeat(64)}`
+        } }, { turnInputPayloads: [], effectPayloads: [] });
+    }
+    finish.resolve();
+    await expect(operation).resolves.toMatchObject({ status: 'succeeded', run: { version: 10, updatedAt: at(8) } });
+    expect(unit.loadRun('run-1')?.inbox.map(input => input.content)).toEqual(['steer-0', 'steer-1', 'steer-2', 'steer-3']);
+    expect(executor.execute).toHaveBeenCalledOnce();
+  });
+
+  it.each(['succeeded', 'uncertain'] as const)('persists stop intent before abort, joins actual %s result and never fabricates a terminal Run', async outcome => {
+    const unit = new InMemoryAgentRunUnitOfWork();
+    await createAuthorizedEffect(unit);
+    const aborted = deferred<void>();
+    const finish = deferred<void>();
+    const executor = { execute: vi.fn(async (_request, signal: AbortSignal) => {
+      signal.addEventListener('abort', () => aborted.resolve(), { once: true });
+      await finish.promise;
+      return outcome === 'succeeded' ? { status: 'succeeded' as const, result: { written: true } }
+        : { status: 'uncertain' as const, reason: 'remote_stop_not_acknowledged' };
+    }) };
+    const dispatcher = createDispatcher(unit, executor);
+    const operation = dispatcher.dispatch(dispatchRequest());
+    await vi.waitFor(() => expect(executor.execute).toHaveBeenCalledOnce());
+    await expect(dispatcher.cancelActiveEffect('run-1', 'effect-1')).rejects.toBeInstanceOf(AgentRunTransitionError);
+    const commands = new AgentRunCommandService(unit);
+    const request = { kind: 'run.request_cancellation' as const, commandId: 'stop-effect', runId: 'run-1',
+      expectedVersion: 5, occurredAt: at(5), reason: 'user_requested' };
+    const accepted = await commands.execute(request, { turnInputPayloads: [], effectPayloads: [] });
+    expect(accepted.run).toMatchObject({ version: 6, state: { status: 'running', checkpointVersion: 4 },
+      cancellationRequest: { commandId: 'stop-effect', requestedAt: at(5) }, effects: [{ state: { status: 'started' } }] });
+    expect((await commands.execute(request, { turnInputPayloads: [], effectPayloads: [] })).replayed).toBe(true);
+    await expect(commands.execute({ kind: 'run.start_effect', commandId: 'start-again', runId: 'run-1',
+      expectedVersion: 6, occurredAt: at(5), effectId: 'effect-1' }, { turnInputPayloads: [], effectPayloads: [] }))
+      .rejects.toThrow(/durable cancellation request/u);
+    let joined = false;
+    const joining = dispatcher.cancelActiveEffect('run-1', 'effect-1').then(status => { joined = true; return status; });
+    await aborted.promise;
+    expect(joined).toBe(false);
+    expect(unit.loadRun('run-1')?.state.status).toBe('running');
+    finish.resolve();
+    await expect(joining).resolves.toBe('joined');
+    await expect(operation).resolves.toMatchObject({ status: outcome, run: { version: 7 } });
+    expect(executor.execute).toHaveBeenCalledOnce();
+    if (outcome === 'uncertain') {
+      expect(unit.loadRun('run-1')?.state).toMatchObject({ status: 'recovering', reason: 'uncertain_effect' });
+      await expect(commands.execute({ kind: 'run.cancel', commandId: 'unsafe-cancel', runId: 'run-1',
+        expectedVersion: 7, occurredAt: at(6), reason: 'user_requested' }, { turnInputPayloads: [], effectPayloads: [] }))
+        .rejects.toThrow(/exact recovery decision/u);
+    } else {
+      await expect(commands.execute({ kind: 'run.complete', commandId: 'complete-after-stop', runId: 'run-1',
+        expectedVersion: 7, occurredAt: at(6) }, { turnInputPayloads: [], effectPayloads: [] }))
+        .rejects.toThrow(/only settle existing work/u);
+    }
+  });
+
+  it('rejects result rebasing after a competing Effect result changes execution authority', async () => {
+    const unit = new InMemoryAgentRunUnitOfWork();
+    await createAuthorizedEffect(unit);
+    const finish = deferred<void>();
+    const executor = { execute: vi.fn(async () => { await finish.promise; return { status: 'succeeded' as const, result: { ok: true } }; }) };
+    const operation = createDispatcher(unit, executor).dispatch(dispatchRequest());
+    await vi.waitFor(() => expect(executor.execute).toHaveBeenCalledOnce());
+    await new TestAgentRunCommandService(unit).execute({ kind: 'run.record_effect_result', commandId: 'other-result',
+      runId: 'run-1', expectedVersion: 5, occurredAt: at(5), effectId: 'effect-1', result: { status: 'failed', errorCode: 'other', message: 'other' } });
+    finish.resolve();
+    await expect(operation).rejects.toThrow(/outside Inbox and cancellation request/u);
+    expect(unit.loadRun('run-1')?.effects[0]?.state.status).toBe('failed');
+    expect(executor.execute).toHaveBeenCalledOnce();
+  });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>(accept => { resolve = accept; });
+  return { promise, resolve };
+}
 
 const checkpointFactory: AgentEffectDispatchCheckpointFactory = {
   create: ({ checkpointVersion, phase, effect, occurredAt }) => ({

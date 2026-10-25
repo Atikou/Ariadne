@@ -13,7 +13,7 @@ import {
   type AgentTurnInput
 } from '@ariadne/agent-core';
 import type { ExactAgentModelInferenceToolContract } from '../../control/ports/AgentModelInference.js';
-import { estimateMessagesTokens } from './V3LongContextLifecycle.js';
+import { estimateMessagesTokens } from './LongContextLifecycle.js';
 import type { AgentInferenceToolContractDescriptorV2 } from '../../control/ports/AgentInferenceToolContracts.js';
 import {
   type AgentToolCatalogBinding,

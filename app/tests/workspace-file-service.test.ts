@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile, link } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -11,6 +12,28 @@ afterEach(async () => {
 });
 
 describe('workspace file service', () => {
+  it('resolves actual filesystem aliases and preserves new-name case without writing files',async()=>{
+    const root=await mkdtemp(join(tmpdir(),'ariadne-canonical-drafts-'));roots.push(root);
+    await mkdir(join(root,'ActualFolder'));await writeFile(join(root,'ActualFolder','MixedCase.txt'),'fixture');
+    await symlink(join(root,'ActualFolder'),join(root,'alias'),process.platform==='win32'?'junction':'dir');
+    const service=new WorkspaceFileService([{workspaceId:'workspace-main',rootPath:root}]);
+    expect(await service.resolveDocumentPath({workspaceId:'workspace-main',path:'alias/MixedCase.txt'})).toEqual({workspaceId:'workspace-main',path:'ActualFolder/MixedCase.txt',comparisonPath:'ActualFolder/MixedCase.txt',exists:true});
+    expect(await service.resolveDocumentPath({workspaceId:'workspace-main',path:'alias/NewName.txt'})).toEqual({workspaceId:'workspace-main',path:'ActualFolder/NewName.txt',comparisonPath:process.platform==='win32'?'ActualFolder/newname.txt':'ActualFolder/NewName.txt',exists:false});
+    if(process.platform==='win32')expect((await service.resolveDocumentPath({workspaceId:'workspace-main',path:'actualfolder/mixedcase.TXT'})).path).toBe('ActualFolder/MixedCase.txt');
+    expect((await service.listDirectory({workspaceId:'workspace-main',relativePath:'ActualFolder'})).entries).toHaveLength(1);
+    await link(join(root,'ActualFolder','MixedCase.txt'),join(root,'hard-link.txt'));
+    await expect(service.resolveDocumentPath({workspaceId:'workspace-main',path:'hard-link.txt'})).rejects.toThrow('one filesystem link');
+  });
+  it.runIf(process.platform==='win32')('keeps distinct files in an actual Windows case-sensitive directory distinct',async()=>{
+    const root=await mkdtemp(join(tmpdir(),'ariadne-case-sensitive-drafts-'));roots.push(root);
+    const folder=join(root,'Sensitive');await mkdir(folder);
+    execFileSync('fsutil.exe',['file','setCaseSensitiveInfo',folder,'enable'],{stdio:'pipe',windowsHide:true});
+    await writeFile(join(folder,'Notes.txt'),'first');await writeFile(join(folder,'notes.txt'),'second');
+    const service=new WorkspaceFileService([{workspaceId:'workspace-main',rootPath:root}]);
+    expect((await service.resolveDocumentPath({workspaceId:'workspace-main',path:'Sensitive/Notes.txt'})).path).toBe('Sensitive/Notes.txt');
+    expect((await service.resolveDocumentPath({workspaceId:'workspace-main',path:'Sensitive/notes.txt'})).path).toBe('Sensitive/notes.txt');
+    expect((await service.listDirectory({workspaceId:'workspace-main',relativePath:'Sensitive'})).entries).toHaveLength(2);
+  });
   it('returns relative projections and reads nested directories', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ariadne-workspace-'));
     roots.push(root);

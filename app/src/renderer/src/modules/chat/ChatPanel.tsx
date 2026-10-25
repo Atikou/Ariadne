@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent
 } from 'react';
 import {
@@ -20,11 +21,10 @@ import {
 } from 'lucide-react';
 import type { ChatRoutingStrategy, ModelInferenceOptions } from '@ariadne/protocol/public';
 import {
-  IMAGE_ATTACHMENT_MEDIA_TYPES_V3,
-  MAX_IMAGE_ATTACHMENTS_PER_MESSAGE_V3,
-  MAX_IMAGE_ATTACHMENT_MESSAGE_BYTES_V3,
+  IMAGE_ATTACHMENT_MEDIA_TYPES,
   PERSONAL_ASSISTANT_WORKSPACE_ID
 } from '@ariadne/protocol/public';
+import { messageMetadataOf } from '@ariadne/protocol/public';
 import type { AgentPermissionMode, AgentSettingsView } from '@shared/contract';
 import { useFeatureSnapshot } from '@renderer/core/runtime/features/feature-snapshot-store';
 import { formatRuntimeAvailability } from '@renderer/core/runtime/runtime-labels';
@@ -34,6 +34,7 @@ import { StatusPill } from '@renderer/shared/ui/StatusPill';
 import { getCenteredScrollDelta, isScrollNearBottom } from '@shared/scroll-geometry';
 import { ConversationOverviewRuler } from './ConversationOverviewRuler';
 import { ConversationSidebar } from './ConversationSidebar';
+import { AgentInboxPanel } from './AgentInboxPanel';
 import { ConversationApprovalCards } from '@renderer/app/ApprovalCenter';
 import { ComposerAddMenu } from './ComposerAddMenu';
 import { deriveChatModelState } from './chat-model-state';
@@ -43,7 +44,10 @@ import { useSpeechSnapshot } from '@renderer/core/speech/speech-coordinator';
 import { applicationProfileComponents } from '@shared/application-profile';
 import './ImageAttachments.css';
 import './AgentInputDelivery.css';
-import { type DraftImageAttachment, encodeDraftImages } from './ChatImageAttachments';
+import { encodeDraftImages } from './ChatImageAttachments';
+import { chatDraftOwnerKey } from '@shared/chat-drafts';
+import { useChatDraftImages } from '@renderer/core/conversations/use-chat-draft-images';
+import { composerKeyAction } from './ChatComposerKeyboard';
 import {
   AUTO_MODEL_ID,
   defaultInference,
@@ -77,11 +81,11 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   const speechComponents = applicationProfileComponents(services.applicationProfile, 'speech');
   const speechInputInstalled = speechComponents.includes('speech.stt');
   useConversationPresentationRevision(services.conversationNavigation);
-  const [draft, setDraft] = useState('');
+  const draftSnapshot = useSyncExternalStore(services.drafts.subscribe, services.drafts.getSnapshot);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [draftImages, setDraftImages] = useState<readonly DraftImageAttachment[]>([]);
   const [draftImageError, setDraftImageError] = useState<string | null>(null);
   const [conversationActionError, setConversationActionError] = useState<string | null>(null);
+  const [notificationTarget, setNotificationTarget] = useState<{ sessionId: string; decisionId: string } | null>(null);
   const [selectedModelId, setSelectedModelId] = useState(AUTO_MODEL_ID);
   const [routingStrategy, setRoutingStrategy] = useState<ChatRoutingStrategy>('local-first');
   const [permissionMode, setPermissionMode] = useState<AgentPermissionMode>('request');
@@ -93,22 +97,30 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   const [activeId, setActiveId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isAtLatest, setIsAtLatest] = useState(true);
-  const [editingInbox, setEditingInbox] = useState<{
-    inputId: string;
-    version: number;
-    content: string;
-  } | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
+  const composingRef = useRef(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const followLatestRef = useRef(true);
   const defaultsLoadedRef = useRef(false);
-  const speechDraftBasesRef = useRef(new Map<string, string>());
+  const speechDraftBasesRef = useRef(new Map<string, { owner: ReturnType<typeof services.drafts.ownerFor>; generation: string; text: string; revision: number }>());
   const selectedSession = runtime.sessions.find((session) => session.sessionId === runtime.selectedSessionId);
   const composerWorkspaceId = selectedSession?.workspaceId
     ?? draftWorkspaceId
     ?? PERSONAL_ASSISTANT_WORKSPACE_ID;
+  const draftOwner = services.drafts.ownerFor(composerWorkspaceId, runtime.selectedSessionId);
+  const draftOwnerKey = chatDraftOwnerKey(draftOwner);
+  const composerOwnerRef = useRef(draftOwner);
+  composerOwnerRef.current = draftOwner;
+  const currentDraft = draftSnapshot.drafts.find(row => chatDraftOwnerKey(row.owner) === draftOwnerKey) ?? services.drafts.draft(draftOwner);
+  const draft = currentDraft.editing.text;
+  const imageBodies = useChatDraftImages(services.drafts, draftOwner, currentDraft.editing.attachments);
+  const draftImages = currentDraft.editing.attachments.map(reference => ({ ...reference, clientId: reference.attachmentId,
+    data: imageBodies.bodies.get(reference.attachmentId)?.data ?? '' }));
+  const draftBlocked = !draftSnapshot.ready || Boolean(draftSnapshot.error) || currentDraft.submissions.some(row => row.status !== 'recoverable');
+  useEffect(() => { services.drafts.select(draftOwner); services.messages.selectDraftOwner(draftOwner.target.kind === 'new' ? draftOwnerKey : null);
+    setDraftImageError(null); }, [services.drafts, services.messages, draftOwnerKey]);
   const assistantMode = composerWorkspaceId === PERSONAL_ASSISTANT_WORKSPACE_ID;
   const planModeAvailable = runtime.status.availability === 'ready'
     && runtime.status.capabilities.includes('companion.agent-plan')
@@ -122,6 +134,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
     planModeEnabled,
     executionMode,
     routingStrategy,
+    modelsReadReady: runtime.modelsReadReady,
     models: runtime.models
   }), [
     runtime.status.availability,
@@ -129,6 +142,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
     planModeEnabled,
     executionMode,
     routingStrategy,
+    runtime.modelsReadReady,
     runtime.models
   ]);
   const availableModels = modelState.readyModels;
@@ -202,9 +216,6 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   const running = Boolean(activeRun);
   const runActionAvailable = activeRun?.origin === 'projection';
   const inboxAvailable = runtime.status.capabilities.includes('agent.inbox');
-  const queuedInputs = activeRun?.inbox.filter((input) => (
-    input.state === 'queued' && input.source === undefined
-  )) ?? [];
   const agentInputDeliveries = runtime.agentInputDeliveries.filter((receipt) => (
     receipt.sessionId === runtime.selectedSessionId
   ));
@@ -212,15 +223,6 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   const imageAttachmentsAvailable = !running && canChat && effectiveVisionModel !== undefined;
   const hasDraftInput = draft.trim().length > 0 || draftImages.length > 0;
 
-  useEffect(() => {
-    if (
-      editingInbox !== null
-      && !queuedInputs.some((input) => (
-        input.inputId === editingInbox.inputId
-        && input.version === editingInbox.version
-      ))
-    ) setEditingInbox(null);
-  }, [editingInbox, queuedInputs]);
 
   useEffect(() => {
     if (defaultsLoadedRef.current) return;
@@ -253,27 +255,54 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   }, [services.conversationNavigation]);
 
   useEffect(() => services.events.subscribe('chat:new-draft-requested', ({ workspaceId }) => {
+    services.drafts.newDraft(workspaceId ?? PERSONAL_ASSISTANT_WORKSPACE_ID);
     setDraftWorkspaceId(workspaceId);
     requestAnimationFrame(() => composerInputRef.current?.focus());
-  }), [services.events]);
+  }), [services.events, services.drafts]);
 
   useEffect(() => services.events.subscribe('speech:composer-transcript', ({ requestId, text, final }) => {
-    setDraft((current) => {
-      let base = speechDraftBasesRef.current.get(requestId);
-      if (base === undefined) {
-        base = current;
-        speechDraftBasesRef.current.set(requestId, base);
-      }
-      const separator = base.trim().length > 0 && text.trim().length > 0 ? ' ' : '';
-      return `${base}${separator}${text}`;
-    });
+    const base = speechDraftBasesRef.current.get(requestId);
+    if (!base) return;
+    const current = services.drafts.draft(base.owner).editing;
+    if (current.generation === base.generation && current.revision === base.revision) {
+      const separator = base.text.trim() && text.trim() ? ' ' : '';
+      services.drafts.edit(base.owner, `${base.text}${separator}${text}`);
+      base.revision = services.drafts.draft(base.owner).editing.revision;
+    }
     if (final) speechDraftBasesRef.current.delete(requestId);
-    requestAnimationFrame(() => composerInputRef.current?.focus());
-  }), [services.events]);
+  }), [services.events, services.drafts]);
 
-  useEffect(() => services.system.onApprovalNavigation(({ sessionId }) => {
-    void services.sessions.select(sessionId).catch(() => undefined);
-  }), [services.sessions, services.system]);
+  useEffect(() => services.events.subscribe('speech:composer-started', ({ requestId }) => {
+    const owner = composerOwnerRef.current, editing = services.drafts.draft(owner).editing;
+    speechDraftBasesRef.current.clear();
+    speechDraftBasesRef.current.set(requestId, { owner, generation: editing.generation, text: editing.text, revision: editing.revision });
+  }), [services.events, services.drafts]);
+
+  useEffect(() => services.system.onApprovalNavigation(({ sessionId, decisionId, taskNavigation }) => {
+    if (taskNavigation) {
+      return;
+    }
+    setNotificationTarget(decisionId ? { sessionId, decisionId } : null);
+    void services.sessions.select(sessionId).then(() => decisionId ? services.decisions.openDetail(decisionId) : undefined)
+      .catch(error => setConversationActionError(error instanceof Error ? error.message : '读取待确认操作失败。'));
+  }), [services]);
+
+  useEffect(() => {
+    if (!notificationTarget || runtime.selectedSessionId !== notificationTarget.sessionId) return;
+    const target = [...(messageListRef.current?.querySelectorAll<HTMLElement>('[data-decision-id]') ?? [])]
+      .find(element => element.dataset.decisionId === notificationTarget.decisionId);
+    if (target) {
+      const viewport = viewportRef.current;
+      if (viewport) {
+        const viewportBounds = viewport.getBoundingClientRect();
+        const targetBounds = target.getBoundingClientRect();
+        viewport.scrollTo({ top: viewport.scrollTop + getCenteredScrollDelta(
+          viewportBounds.top, viewportBounds.height, targetBounds.top, targetBounds.height
+        ) });
+      }
+      target.focus({ preventScroll: true }); setNotificationTarget(null);
+    }
+  }, [notificationTarget, runtime]);
 
   const changePermissionMode = async (nextPermissionMode: AgentPermissionMode): Promise<void> => {
     if (savingPermissionMode || nextPermissionMode === permissionMode) return;
@@ -335,7 +364,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
 
   useLayoutEffect(() => {
     if (composerInputRef.current) syncComposerTextareaHeight(composerInputRef.current);
-  }, [draft]);
+  }, [draft, currentDraft.editorId]);
 
   useEffect(() => {
     const input = composerInputRef.current;
@@ -362,7 +391,20 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   const setFollowingLatest = useCallback((value: boolean): void => {
     followLatestRef.current = value;
     setIsAtLatest((current) => current === value ? current : value);
-  }, []);
+  }, [currentDraft.editorId]);
+
+  useLayoutEffect(() => { composingRef.current = false; }, [currentDraft.editorId]);
+
+  const historyAnchor = messages.messageWindow?.window.kind === 'around'
+    ? messages.messageWindow.window.anchorMessageId : null;
+  useLayoutEffect(() => {
+    if (historyAnchor === null) return;
+    const viewport = viewportRef.current, target = document.getElementById(`chat-node-${historyAnchor}`);
+    if (!viewport || !target || !viewport.contains(target)) return;
+    setFollowingLatest(false); setSelectedId(historyAnchor); setActiveId(historyAnchor);
+    const bounds = viewport.getBoundingClientRect(), targetBounds = target.getBoundingClientRect();
+    viewport.scrollTop += getCenteredScrollDelta(bounds.top, viewport.clientHeight, targetBounds.top, targetBounds.height);
+  }, [historyAnchor, runtime.selectedSessionId, setFollowingLatest]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -394,19 +436,13 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   const addSelectedImages = async (files: FileList | null): Promise<void> => {
     if (files === null || files.length === 0) return;
     setDraftImageError(null);
+    const read = services.drafts.captureImageRead(draftOwner);
     try {
       const next = await encodeDraftImages(files);
-      if (draftImages.length + next.length > MAX_IMAGE_ATTACHMENTS_PER_MESSAGE_V3) {
-        throw new Error(`每条消息最多添加 ${MAX_IMAGE_ATTACHMENTS_PER_MESSAGE_V3} 张图片。`);
-      }
-      const combined = [...draftImages, ...next];
-      if (combined.reduce((sum, image) => sum + image.bytes, 0)
-        > MAX_IMAGE_ATTACHMENT_MESSAGE_BYTES_V3) {
-        throw new Error('图片合计不能超过 2 MB。');
-      }
-      setDraftImages(combined);
+      services.drafts.appendImages(read, next);
     } catch (error) {
-      setDraftImageError(error instanceof Error ? error.message : '无法读取所选图片。');
+      if (services.drafts.isSelected(read.owner)) setDraftImageError(error instanceof Error && error.name !== 'ZodError'
+        ? error.message : '无法添加图片；每条消息最多 4 张、合计 2 MB。');
     } finally {
       if (imageInputRef.current) imageInputRef.current.value = '';
     }
@@ -418,6 +454,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
     if (
       (message.trim().length === 0 && images.length === 0)
       || sending
+      || draftBlocked
       || !canChat
       || (planModeEnabled && !planModeAvailable)
     ) return;
@@ -427,17 +464,13 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
         : '所选模型不支持图片理解。');
       return;
     }
-    setDraft('');
-    setDraftImages([]);
     setDraftImageError(null);
     setFollowingLatest(true);
     try {
-      if (activeRun && inboxAvailable) {
-        await services.runs.enqueueInput(activeRun, message, delivery);
-      } else if (activeRun) {
+      if (activeRun && !inboxAvailable) {
         throw new Error('runtime_capability_missing:agent.inbox');
-      } else {
-        await services.messages.send(message, {
+      }
+      await services.draftDelivery.send(draftOwner, {
           ...(images.length > 0
             ? { modelId: effectiveVisionModel!.id }
             : selectedModelId !== AUTO_MODEL_ID
@@ -445,29 +478,18 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
               : {}),
           ...(selectedInference ? { inference: selectedInference } : {}),
           ...(planModeEnabled ? {} : { routingStrategy }),
-          workspaceId: composerWorkspaceId,
-          ...(images.length === 0
-            ? {}
-            : {
-                attachments: images.map(({ mediaType, data, name }) => ({
-                  mediaType,
-                  data,
-                  ...(name === undefined ? {} : { name })
-                }))
-              })
-        });
-      }
-    } catch {
-      setDraft(message);
-      setDraftImages(images);
+        }, activeRun, delivery);
+    } catch (error) {
+      if (services.drafts.isSelected(draftOwner)) setConversationActionError(error instanceof Error ? error.message : '发送未完成，请核对草稿。');
     }
   };
 
   const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      void send(event.metaKey || event.ctrlKey ? 'next_step' : 'next_turn');
-    }
+    const action = composerKeyAction(event.nativeEvent, composingRef.current,
+      canChat && !sending && !draftBlocked && hasDraftInput && (!planModeEnabled || planModeAvailable));
+    if (action === 'native') return;
+    event.preventDefault();
+    if (action !== 'blocked') void send(action);
   };
 
   const handleViewportScroll = (): void => {
@@ -506,7 +528,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
   };
 
   return (
-    <section className={`chat-panel${sidebarOpen ? '' : ' chat-panel--sidebar-hidden'}`} aria-labelledby={`${moduleId}-title`}>
+    <section className={`chat-panel${sidebarOpen ? '' : ' chat-panel--sidebar-hidden'}`} aria-labelledby={`${moduleId}-title`} aria-busy={!runtime.modelsReadReady}>
       <div className="chat-sidebar-slot" id={`${moduleId}-sidebar`} hidden={!sidebarOpen}>
         <ConversationSidebar services={services} />
       </div>
@@ -536,6 +558,16 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
         <div className="message-stage">
           <div className="message-viewport" ref={viewportRef} onScroll={handleViewportScroll}>
             <div className="message-list" ref={messageListRef}>
+              {messages.messageWindow?.hasEarlier && <button type="button" className="secondary-button"
+                onClick={() => {
+                  const row = messages.messageWindow?.rows[0];
+                  const anchor = row === undefined ? undefined : messageMetadataOf(row).messageId;
+                  if (anchor) void services.messages.showWindow({ kind: 'before', anchorMessageId: anchor, limit: 64 })
+                    .catch(error => setConversationActionError(error instanceof Error ? error.message : '读取历史消息失败。'));
+                }}>查看更早的消息</button>}
+              {messages.messageWindow?.hasLater && <button type="button" className="secondary-button"
+                onClick={() => void services.messages.showWindow({ kind: 'latest', limit: 64 })
+                  .catch(error => setConversationActionError(error instanceof Error ? error.message : '读取最新消息失败。'))}>返回最新消息</button>}
               {nodes.length === 0
                 ? <EmptyConversation modelState={modelState} />
                 : nodes.map(node => <ConversationMessageRow key={node.id} node={node}
@@ -586,18 +618,17 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                       <button
                         type="button"
                         disabled={runtime.status.availability !== 'ready'}
-                        onClick={() => void services.runs.reconcileInputDelivery(
-                          receipt.commandId
-                        )}
+                        onClick={() => void (receipt.draftSubmissionId
+                          ? services.draftDelivery.reconcile(draftOwner, receipt.draftSubmissionId)
+                          : services.runs.reconcileInputDelivery(receipt.commandId)).catch(() => setConversationActionError('原发送尚未确认，内容仍已保留。'))}
                       >重新确认</button>
                     )}
-                    {receipt.state === 'failed' && (
+                    {receipt.state === 'failed' && !receipt.draftSubmissionId && (
                       <button
                         type="button"
                         onClick={() => {
-                          setDraft((current) => current.trim().length === 0
-                            ? receipt.content
-                            : `${current}\n${receipt.content}`);
+                          const current = services.drafts.draft(draftOwner).editing.text;
+                          services.drafts.edit(draftOwner, current.trim().length === 0 ? receipt.content : `${current}\n${receipt.content}`);
                           services.runs.dismissInputDelivery(receipt.commandId);
                           requestAnimationFrame(() => composerInputRef.current?.focus());
                         }}
@@ -606,62 +637,18 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                     {receipt.state === 'accepted' && (
                       <button
                         type="button"
-                        onClick={() => services.runs.dismissInputDelivery(
-                          receipt.commandId
-                        )}
+                        onClick={() => {
+                          if (receipt.draftSubmissionId) void services.draftDelivery.dismissInputReceipt(receipt.commandId, receipt.draftSubmissionId)
+                            .catch(() => setConversationActionError('发送已接受，但安全保存或结算未完成；回执仍已保留。'));
+                          else services.runs.dismissInputDelivery(receipt.commandId);
+                        }}
                       >关闭</button>
                     )}
                   </div>
                 ))}
               </div>
             )}
-            {queuedInputs.length > 0 && activeRun && (
-              <div className="agent-inbox" aria-label="Agent 输入队列">
-                {queuedInputs.map((input) => (
-                  <div className="agent-inbox-row" key={input.inputId}>
-                    <span className="agent-inbox-mode">
-                      {input.delivery === 'next_step' ? '下一步' : '下一轮'}
-                    </span>
-                    {editingInbox?.inputId === input.inputId
-                      ? <input
-                          className="agent-inbox-edit"
-                          aria-label="编辑排队消息"
-                          autoFocus
-                          value={editingInbox.content}
-                          onChange={(event) => setEditingInbox({
-                            ...editingInbox,
-                            content: event.target.value
-                          })}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Escape') setEditingInbox(null);
-                            if (event.key === 'Enter' && editingInbox.content.trim()) {
-                              event.preventDefault();
-                              const replacement = editingInbox;
-                              setEditingInbox(null);
-                              void services.runs.replaceInput(
-                                activeRun,
-                                replacement.inputId,
-                                replacement.version,
-                                replacement.content
-                              );
-                            }
-                          }}
-                        />
-                      : <span className="agent-inbox-content">{input.content}</span>}
-                    <button type="button" onClick={() => setEditingInbox({
-                      inputId: input.inputId,
-                      version: input.version,
-                      content: input.content
-                    })}>编辑</button>
-                    <button type="button" onClick={() => void services.runs.removeInput(
-                      activeRun,
-                      input.inputId,
-                      input.version
-                    )}>移除</button>
-                  </div>
-                ))}
-              </div>
-            )}
+            {activeRun && activeRun.collections.inbox.total > 0 && <AgentInboxPanel key={`${activeRun.sessionId}:${activeRun.runId}`} run={activeRun} reads={services.runs} />}
             <div className="composer-context-bar">
               <SelectMenu<string>
                     className="composer-workspace-menu"
@@ -686,7 +673,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
               ref={imageInputRef}
               className="composer-image-file-input"
               type="file"
-              accept={IMAGE_ATTACHMENT_MEDIA_TYPES_V3.join(',')}
+              accept={IMAGE_ATTACHMENT_MEDIA_TYPES.join(',')}
               multiple
               aria-label="选择图片附件"
               tabIndex={-1}
@@ -696,32 +683,45 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
               <div className="composer-image-drafts" aria-label="待发送图片">
                 {draftImages.map((image) => (
                   <figure className="composer-image-draft" key={image.clientId}>
-                    <img
+                    {image.data ? <img
                       src={`data:${image.mediaType};base64,${image.data}`}
                       alt={image.name ?? '待发送图片'}
-                    />
+                    /> : imageBodies.failed.has(image.clientId)
+                      ? <span role="alert">图片读取失败 <button type="button" onClick={imageBodies.retry}>重试读取</button></span>
+                      : <span role="status">正在读取图片</span>}
                     <figcaption>{image.name ?? '图片'}</figcaption>
                     <button
                       type="button"
                       aria-label={`移除 ${image.name ?? '图片'}`}
-                      onClick={() => setDraftImages((current) => current.filter(
-                        (candidate) => candidate.clientId !== image.clientId
-                      ))}
+                      onClick={() => services.drafts.removeImage(draftOwner, image.clientId)}
                     ><X size={13} /></button>
                   </figure>
                 ))}
               </div>
             )}
-            {(draftImageError || conversationActionError) && <p className="composer-image-error" role="alert">{draftImageError ?? conversationActionError}</p>}
+            {(draftSnapshot.error || draftImageError || conversationActionError) && <p className="composer-image-error" role="alert">{draftSnapshot.error ?? draftImageError ?? conversationActionError}</p>}
+            {currentDraft.submissions.map(row => <div className="composer-draft-recovery" key={row.submissionId} role="status">
+              <span>{row.status === 'recoverable' ? '未发送内容已保留' : '这次发送尚待确认'}：{row.text.slice(0, 80) || `${row.attachments.length} 张图片`}</span>
+              <button type="button" onClick={() => {
+                setConversationActionError(null);
+                if (row.status === 'recoverable') {
+                  try { services.drafts.restore(draftOwner, row.submissionId); } catch { setConversationActionError('请先处理当前输入，再恢复保留内容。'); }
+                } else void services.draftDelivery.reconcile(draftOwner, row.submissionId).catch(error =>
+                  setConversationActionError(error instanceof Error ? error.message : '原发送核对失败，内容仍已保留。'));
+              }}>{row.status === 'recoverable' ? '恢复到输入框' : '核对原发送'}</button>
+            </div>)}
             <textarea
+              key={currentDraft.editorId}
               ref={composerInputRef}
               value={draft}
               rows={1}
               placeholder={running ? '继续输入：Enter 排到下一轮，Ctrl/⌘+Enter 在下一步介入' : modelState.composerPlaceholder}
               aria-label="消息输入框"
-              disabled={!canChat}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => { try { services.drafts.edit(draftOwner, event.target.value); } catch { setConversationActionError('输入未更新，请检查草稿存储或缩短内容。'); } }}
               onKeyDown={onComposerKeyDown}
+              onCompositionStart={() => { composingRef.current = true; }}
+              onCompositionEnd={() => { composingRef.current = false; }}
+              onBlur={() => { composingRef.current = false; }}
             />
             <div className="composer-toolbar">
               <div className="composer-model-controls">
@@ -820,7 +820,7 @@ export function ChatPanel({ moduleId, services }: FeaturePanelProps): React.JSX.
                   className={`send-button${running && !hasDraftInput ? ' send-button--stop' : ''}`}
                   disabled={sending || (running && !hasDraftInput
                     ? !runActionAvailable
-                    : !hasDraftInput || !canChat)}
+                    : !hasDraftInput || !canChat || draftBlocked)}
                   onClick={() => running && activeRun && !hasDraftInput
                     ? void services.runs.requestCancellation(activeRun)
                     : void send('next_turn')}

@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   PUBLIC_INFERENCE_CHUNK_MAX_BYTES,
-  publicInferenceChunkObservedV1Schema,
-  replayPublicInferenceStreamEventV1
-} from '../src/public/inference-stream-v3.js';
+  publicInferenceChunkObservedSchema,
+  replayPublicInferenceStreamEvent
+} from '../src/public/inference-stream.js';
 import { runtimeEventEnvelopeSchema } from '../src/public.js';
 
 const observedAt = '2026-08-28T00:00:00.000Z';
@@ -58,13 +58,13 @@ describe('public inference stream v1', () => {
   });
 
   it('replays one exact attempt in contiguous sequence', () => {
-    const first = replayPublicInferenceStreamEventV1(undefined, chunk());
-    const second = replayPublicInferenceStreamEventV1(first, chunk({
+    const first = replayPublicInferenceStreamEvent(undefined, chunk());
+    const second = replayPublicInferenceStreamEvent(first, chunk({
       sequence: 2,
       channel: 'reasoning',
       text: 'thinking'
     }));
-    const completed = replayPublicInferenceStreamEventV1(second, terminated({
+    const completed = replayPublicInferenceStreamEvent(second, terminated({
       finalSequence: 2
     }));
 
@@ -79,37 +79,37 @@ describe('public inference stream v1', () => {
   });
 
   it('rejects gaps, duplicates, identity drift, and contradictory terminal events', () => {
-    const first = replayPublicInferenceStreamEventV1(undefined, chunk());
+    const first = replayPublicInferenceStreamEvent(undefined, chunk());
 
-    expect(() => replayPublicInferenceStreamEventV1(first, chunk({ sequence: 3 })))
+    expect(() => replayPublicInferenceStreamEvent(first, chunk({ sequence: 3 })))
       .toThrow('public_inference_stream_sequence_invalid');
-    expect(() => replayPublicInferenceStreamEventV1(first, chunk()))
+    expect(() => replayPublicInferenceStreamEvent(first, chunk()))
       .toThrow('public_inference_stream_sequence_invalid');
-    expect(() => replayPublicInferenceStreamEventV1(first, chunk({ attemptId: 'attempt-2' })))
+    expect(() => replayPublicInferenceStreamEvent(first, chunk({ attemptId: 'attempt-2' })))
       .toThrow('public_inference_stream_identity_drift');
-    expect(() => replayPublicInferenceStreamEventV1(first, terminated({ finalSequence: 0 })))
+    expect(() => replayPublicInferenceStreamEvent(first, terminated({ finalSequence: 0 })))
       .toThrow('public_inference_stream_terminal_sequence_invalid');
 
-    const completed = replayPublicInferenceStreamEventV1(first, terminated());
-    expect(() => replayPublicInferenceStreamEventV1(completed, terminated({ state: 'interrupted' })))
+    const completed = replayPublicInferenceStreamEvent(first, terminated());
+    expect(() => replayPublicInferenceStreamEvent(completed, terminated({ state: 'interrupted' })))
       .toThrow('public_inference_stream_already_terminated');
   });
 
   it('bounds chunk payload by UTF-8 bytes, not JavaScript code units', () => {
-    expect(publicInferenceChunkObservedV1Schema.safeParse(chunk({
+    expect(publicInferenceChunkObservedSchema.safeParse(chunk({
       text: 'x'.repeat(PUBLIC_INFERENCE_CHUNK_MAX_BYTES)
     })).success).toBe(true);
-    expect(publicInferenceChunkObservedV1Schema.safeParse(chunk({
+    expect(publicInferenceChunkObservedSchema.safeParse(chunk({
       text: '中'.repeat(Math.floor(PUBLIC_INFERENCE_CHUNK_MAX_BYTES / 3) + 1)
     })).success).toBe(false);
   });
 
   it('rejects empty chunks, invalid canonical identities, and extra fields', () => {
-    expect(publicInferenceChunkObservedV1Schema.safeParse(chunk({ text: '' })).success)
+    expect(publicInferenceChunkObservedSchema.safeParse(chunk({ text: '' })).success)
       .toBe(false);
-    expect(publicInferenceChunkObservedV1Schema.safeParse(chunk({ runId: 'run/1' })).success)
+    expect(publicInferenceChunkObservedSchema.safeParse(chunk({ runId: 'run/1' })).success)
       .toBe(false);
-    expect(publicInferenceChunkObservedV1Schema.safeParse(chunk({ hidden: true })).success)
+    expect(publicInferenceChunkObservedSchema.safeParse(chunk({ hidden: true })).success)
       .toBe(false);
   });
 });

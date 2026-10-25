@@ -894,7 +894,7 @@ function agentControlRows(database: DatabaseSync): readonly unknown[] {
   const tables = (database.prepare(
     `SELECT name FROM sqlite_master
      WHERE type='table'
-       AND (name='agent_control_metadata' OR name LIKE 'agent_v3_%')
+       AND (name='agent_control_metadata' OR name LIKE 'agent_%')
      ORDER BY name`
   ).all() as Array<{ readonly name: string }>).map((row) => row.name);
   const rows = tables.map((table) => ({
@@ -905,20 +905,20 @@ function agentControlRows(database: DatabaseSync): readonly unknown[] {
   }));
   const sequence = database.prepare(
     `SELECT name, seq FROM sqlite_sequence
-     WHERE name LIKE 'agent_v3_%' ORDER BY name`
+     WHERE name LIKE 'agent_%' ORDER BY name`
   ).all();
   return [...rows, { table: 'sqlite_sequence', rows: sequence }];
 }
 
 function commandCount(database: DatabaseSync, commandId: string): number {
   return Number((database.prepare(
-    'SELECT COUNT(*) AS count FROM agent_v3_commands WHERE command_id=?'
+    'SELECT COUNT(*) AS count FROM agent_commands WHERE command_id=?'
   ).get(commandId) as { readonly count: number }).count);
 }
 
 function turnInputCount(database: DatabaseSync, turnId: string): number {
   return Number((database.prepare(
-    'SELECT COUNT(*) AS count FROM agent_v3_turn_inputs WHERE turn_id=?'
+    'SELECT COUNT(*) AS count FROM agent_turn_inputs WHERE turn_id=?'
   ).get(turnId) as { readonly count: number }).count);
 }
 
@@ -931,7 +931,7 @@ function readEffectResultColumns(database: DatabaseSync): {
   const row = database.prepare(
     `SELECT result_command_id, result_run_version,
             result_codec_id, result_payload_json
-     FROM agent_v3_effect_payloads
+     FROM agent_effect_payloads
      WHERE run_id=? AND effect_id=?`
   ).get(RUN_ID, EFFECT_ID) as {
     readonly result_command_id: string | null;
@@ -949,7 +949,7 @@ function tamperStrictJsonEffectResult(
   result: AgentJsonValue
 ): void {
   const update = database.prepare(
-    `UPDATE agent_v3_effect_payloads
+    `UPDATE agent_effect_payloads
      SET result_payload_json=?
      WHERE run_id=? AND effect_id=? AND result_payload_json IS NOT NULL`
   ).run(JSON.stringify(result), RUN_ID, effectId);
@@ -967,7 +967,7 @@ function tamperProtectedEffectResult(
     database.exec('PRAGMA foreign_keys=ON');
     const row = database.prepare(
       `SELECT input_digest, result_command_id, result_run_version, result_payload_json
-       FROM agent_v3_effect_payloads
+       FROM agent_effect_payloads
        WHERE run_id=? AND effect_id=?`
     ).get(RUN_ID, EFFECT_ID) as {
       readonly input_digest: string;
@@ -990,7 +990,7 @@ function tamperProtectedEffectResult(
       }
       envelope.ciphertext = flipBase64Byte(envelope.ciphertext);
       database.prepare(
-        `UPDATE agent_v3_effect_payloads SET result_payload_json=?
+        `UPDATE agent_effect_payloads SET result_payload_json=?
          WHERE run_id=? AND effect_id=?`
       ).run(JSON.stringify(envelope), RUN_ID, EFFECT_ID);
     } else {
@@ -1005,7 +1005,7 @@ function tamperProtectedEffectResult(
           inputDigest: row.input_digest
         });
         database.prepare(
-          `UPDATE agent_v3_effect_payloads SET result_payload_json=?
+          `UPDATE agent_effect_payloads SET result_payload_json=?
            WHERE run_id=? AND effect_id=?`
         ).run(JSON.stringify(encoded.payload), RUN_ID, EFFECT_ID);
       } finally {

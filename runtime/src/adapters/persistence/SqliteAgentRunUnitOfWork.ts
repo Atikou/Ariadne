@@ -2,7 +2,6 @@ import { DatabaseSync } from 'node:sqlite';
 export type { AgentPersistenceClock, AgentKeyringAnchorVerification } from './AgentControlStorageTypes.js';
 import {
   AgentRunInvariantError,
-  sha256AgentControlData,
   type AgentEffectInputDigester,
   type AgentEffectPayload,
   type AgentDirectivePayloadLookup,
@@ -61,8 +60,6 @@ import {
 import { SqliteAgentExecutionIntentStore } from './agent-control/execution-intent/SqliteAgentExecutionIntentStore.js';
 import {
   type AgentCommandRunRow,
-  type AgentCommittedMutationRow,
-  type AgentDirectivePayloadRow,
   type AgentKeyringAnchorVerification,
   type AgentPersistenceClock,
   type AgentRunRow
@@ -73,20 +70,20 @@ import { assertCommittedDirectiveArtifacts } from './AgentControlPayloadReplay.j
 import {
   assertDirectivePayloadLookup,
   assertRecoveryQueryRequest,
-  isCommandDigest,
   parseRunRow,
-  parseStoredRun,
   storageCorruption
 } from './AgentControlStorageValidation.js';
 import { loadActiveRuns } from './AgentControlRecoveryReader.js';
+import { loadHistoricalAgentRun } from './AgentRunHistoricalReader.js';
 import {
   effectPayloadReference,
   loadCheckpointPayload,
+  loadDirectivePayload,
   loadEffectInputPayload,
   loadEffectResultPayload,
   loadTurnInputPayload
 } from './AgentControlPayloadReader.js';
-import { decodePayload, loadEffectPayloadRow } from './AgentControlPayloadCodec.js';
+import { loadEffectPayloadRow } from './AgentControlPayloadCodec.js';
 import { assertKeyringAnchorVerification, verifyOrInitializeKeyringAnchor } from './AgentControlKeyring.js';
 import { SqliteAgentRunTransaction } from './SqliteAgentRunTransaction.js';
 
@@ -103,7 +100,7 @@ const SYSTEM_CLOCK: AgentPersistenceClock = {
  *
  * Every callback owns one `BEGIN IMMEDIATE` transaction. AgentRun aggregate,
  * committed command result, events, and outbox rows are either all committed
- * or all rolled back. The adapter writes only the `agent_v3_*` tables.
+ * or all rolled back. The adapter writes only the `agent_*` tables.
  */
 export class SqliteAgentRunUnitOfWork
 implements
@@ -119,6 +116,8 @@ AgentProtectedEffectResultAuthority {
   private readonly database: DatabaseSync;
   private readonly executionIntents: SqliteAgentExecutionIntentStore;
   private readonly transactionOwner: SqliteTransactionOwner;
+
+  public assertHealthy(): void { this.transactionOwner.assertHealthy(); }
 
   public constructor(
     dataRoot: string,
@@ -151,11 +150,12 @@ AgentProtectedEffectResultAuthority {
       databasePath,
       ownerLease,
       {
-        shutdownRequestedCode: 'agent_v3_shutdown_requested',
-        closedCode: 'agent_v3_unit_of_work_closed',
-        shutdownConflictCode: 'agent_v3_shutdown_context_conflict',
-        transactionActiveCode: 'agent_v3_transaction_already_active',
-        shutdownDeadlineCode: 'agent_v3_shutdown_deadline_exceeded'
+        source: 'execution',
+        shutdownRequestedCode: 'agent_shutdown_requested',
+        closedCode: 'agent_unit_of_work_closed',
+        shutdownConflictCode: 'agent_shutdown_context_conflict',
+        transactionActiveCode: 'agent_transaction_already_active',
+        shutdownDeadlineCode: 'agent_shutdown_deadline_exceeded'
       }
     );
   }
@@ -213,37 +213,7 @@ AgentProtectedEffectResultAuthority {
     }
     return this.scheduleOperation((signal) => this.executeDatabaseTransaction(
       'read',
-      async () => {
-        const row = this.database.prepare(
-          `SELECT command.command_id, command.command_digest,
-                  command.mutation_count,
-                  command_run.run_id, command_run.ordinal,
-                  command_run.expected_version,
-                  command_run.resulting_version,
-                  command_run.result_run_json
-           FROM agent_v3_command_runs AS command_run
-           INNER JOIN agent_v3_commands AS command
-             ON command.command_id=command_run.command_id
-           WHERE command_run.run_id=? AND command_run.resulting_version=?`
-        ).get(runId, version) as AgentCommittedMutationRow | undefined;
-        if (row === undefined) return null;
-        if (row.run_id !== runId || row.resulting_version !== version) {
-          throw storageCorruption(
-            `historical_run_identity_mismatch:${runId}:${String(version)}`
-          );
-        }
-        if (!isCommandDigest(row.command_digest)) {
-          throw storageCorruption(
-            `command_digest_invalid:${row.command_id}`
-          );
-        }
-        return parseStoredRun(
-          row.result_run_json,
-          row.run_id,
-          row.resulting_version,
-          `agent_v3_command_runs:${row.command_id}:${row.run_id}`
-        );
-      },
+      async () => loadHistoricalAgentRun(this.database, runId, version),
       signal
     ));
   }
@@ -314,7 +284,7 @@ AgentProtectedEffectResultAuthority {
         const row = loadEffectPayloadRow(this.database, runId, effectId);
         if (row === undefined) {
           throw storageCorruption(
-            `agent_v3_effect_payloads:${runId}:${effectId}:missing`
+            `agent_effect_payloads:${runId}:${effectId}:missing`
           );
         }
         return loadEffectInputPayload(
@@ -350,10 +320,10 @@ AgentProtectedEffectResultAuthority {
       async () => {
         const runRow = this.database.prepare(
           `SELECT run_id, version, state_status, aggregate_json, created_at, updated_at
-           FROM agent_v3_runs WHERE run_id=?`
+           FROM agent_runs WHERE run_id=?`
         ).get(runId) as AgentRunRow | undefined;
         if (runRow === undefined) return null;
-        const run = parseRunRow(runRow, 'agent_v3_runs:protected_effect_result');
+        const run = parseRunRow(runRow, 'agent_runs:protected_effect_result');
         const effect = run.effects.find((candidate) => candidate.effectId === effectId);
         if (
           effect === undefined
@@ -383,37 +353,7 @@ AgentProtectedEffectResultAuthority {
     assertDirectivePayloadLookup(reference);
     return this.scheduleOperation((signal) => this.executeDatabaseTransaction(
       'read',
-      async () => {
-        const row = this.database.prepare(
-          'SELECT * FROM agent_v3_directive_payloads WHERE artifact_id=?'
-        ).get(reference.artifactId) as AgentDirectivePayloadRow | undefined;
-        if (row === undefined) {
-          throw storageCorruption(
-            `agent_v3_directive_payloads:${reference.artifactId}:missing`
-          );
-        }
-        const payload = decodePayload(this.payloadCodec, row.codec_id, row.payload_json, {
-          kind: 'directive_response',
-          runId: row.run_id,
-          commandId: row.command_id,
-          runVersion: row.run_version,
-          directiveDigest: row.directive_digest,
-          contentHash: row.content_digest
-        }, `agent_v3_directive_payloads:${row.artifact_id}`);
-        if (
-          row.run_id !== reference.runId
-          || row.artifact_id !== reference.artifactId
-          || row.payload_kind !== reference.kind
-          || row.directive_digest !== reference.directiveDigest
-          || row.content_digest !== reference.contentDigest
-          || await sha256AgentControlData(payload) !== reference.contentDigest
-        ) {
-          throw storageCorruption(
-            `agent_v3_directive_payloads:${reference.artifactId}:lookup_mismatch`
-          );
-        }
-        return payload;
-      },
+      () => loadDirectivePayload(this.database, this.payloadCodec, reference),
       signal
     ));
   }

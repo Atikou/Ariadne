@@ -4,6 +4,9 @@ import {
   AgentRunVersionConflictError,
   DefaultAgentInboxContinuationPlanner,
   assertValidAgentRun,
+  hasExactApprovedPlanBoundary,
+  canonicalizeAgentControlData,
+  sha256AgentControlData,
   type AgentDirectivePayloadLookup,
   type AgentDirectivePayloadReader,
   type AgentInferenceAttempt,
@@ -76,7 +79,8 @@ export class AgentInboxContinuationController {
       sourceAttempt.state.status !== 'succeeded'
       || (sourceAttempt.state.directive.kind !== 'respond'
         && sourceAttempt.state.directive.kind !== 'complete'
-        && sourceAttempt.state.directive.kind !== 'ask_user')
+        && sourceAttempt.state.directive.kind !== 'ask_user'
+        && !hasExactApprovedPlanBoundary(run, inputIds))
     ) throw invalid('Agent inbox continuation is not at a settled response boundary.');
     const sourceReference = recovery.turnInputPayloads.find(
       (reference) => reference.turnId === sourceTurn.turnId
@@ -98,7 +102,8 @@ export class AgentInboxContinuationController {
             run.runId,
             succeededAttempt!.state.directiveDigest,
             requireResponseDirective(succeededAttempt!.state.directive),
-            this.payloads
+            this.payloads,
+            this.runs
           )
         };
     const plan = await this.planner.plan({
@@ -136,12 +141,13 @@ function requireResponseDirective(
   directive: AgentCommittedDirective
 ): Extract<
   AgentCommittedDirective,
-  { readonly kind: 'respond' | 'complete' | 'ask_user' }
+  { readonly kind: 'respond' | 'complete' | 'ask_user' | 'request_decision' }
 > {
   if (
     directive.kind !== 'respond'
     && directive.kind !== 'complete'
     && directive.kind !== 'ask_user'
+    && directive.kind !== 'request_decision'
   ) {
     throw invalid('Agent inbox continuation response Directive is unavailable.');
   }
@@ -166,10 +172,20 @@ async function resolveAssistantContent(
   directiveDigest: string,
   directive: Extract<
     AgentCommittedDirective,
-    { readonly kind: 'respond' | 'complete' | 'ask_user' }
+    { readonly kind: 'respond' | 'complete' | 'ask_user' | 'request_decision' }
   >,
-  payloads: AgentDirectivePayloadReader
+  payloads: AgentDirectivePayloadReader,
+  runs: AgentRunUnitOfWork
 ): Promise<string> {
+  if (directive.kind === 'request_decision') {
+    const decision = directive.decision;
+    const reference = { planId: decision.planId, version: decision.planVersion, contentHash: decision.planHash };
+    const plan = await runs.transaction(transaction => transaction.loadPlanVersion?.(reference) ?? Promise.resolve(null));
+    if (plan === null || plan.runId !== runId || await sha256AgentControlData(plan.payload) !== decision.planHash) {
+      throw invalid('Approved Plan continuation requires its exact intact protected payload.');
+    }
+    return `Plan proposal:\n${canonicalizeAgentControlData(plan.payload)}`;
+  }
   let reference: AgentDirectivePayloadLookup | null = null;
   if (directive.kind === 'respond') {
     reference = {

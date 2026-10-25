@@ -1,4 +1,6 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -13,6 +15,8 @@ import {
 } from '../src/model/capability/ModelCapabilityRegistry.js';
 import { LocalTextCapabilityProbe } from '../src/model/capability/LocalTextCapabilityProbe.js';
 import type { ModelClient } from '../src/model/types.js';
+import { initializeModelCapabilitySchema } from '../src/model/capability/ModelCapabilityDbSchema.js';
+import { readOwnedAuthorityFault } from '../src/adapters/persistence/SqliteAuthorityHealth.js';
 
 const roots: string[] = [];
 const FINGERPRINT_A = `sha256:${'a'.repeat(64)}`;
@@ -23,6 +27,79 @@ afterEach(() => {
 });
 
 describe('ModelCapabilityRegistry', () => {
+  it('audits malformed rows before promoting metadata-1 stores and preserves their original bytes', () => {
+    const databasePath=temporaryDatabase(), db=new DatabaseSync(databasePath);
+    try { initializeModelCapabilitySchema(db); db.prepare('INSERT INTO model_capability_qualification VALUES (?,?,?,?,?,?)')
+      .run('fixture','model',FINGERPRINT_A,1,'{"private":"invalid source"}',null); db.exec('PRAGMA user_version=0;'); }
+    finally {db.close();}
+    const before=readFileSync(databasePath); let caught:unknown;
+    try {new ModelCapabilityRegistry(databasePath);} catch(error) {caught=error;}
+    expect(readOwnedAuthorityFault(caught)).toEqual({source:'inference',kind:'integrity'});
+    expect(readFileSync(databasePath)).toEqual(before);
+  });
+  it('fences an opened corrupted registry rather than overwriting it with a later qualification', () => {
+    const databasePath=temporaryDatabase(), registry=new ModelCapabilityRegistry(databasePath);
+    const report=unknownQualification({providerId:'fixture',modelId:'model',fingerprint:FINGERPRINT_A});
+    try {
+      registry.write(report); const external=new DatabaseSync(databasePath);
+      try {external.prepare('UPDATE model_capability_qualification SET report_json=?').run('{private invalid JSON');} finally {external.close();}
+      expect(()=>registry.read('fixture','model',FINGERPRINT_A)).toThrow('inference_persisted_record_invalid');
+      expect(()=>registry.assertHealthy()).toThrow('inference_authority_integrity');
+      expect(()=>registry.write(report)).toThrow('inference_authority_integrity');
+      expect(()=>registry.registerFingerprint('fixture','other',FINGERPRINT_B)).toThrow('inference_authority_integrity');
+    } finally {registry.close();}
+    const read=new DatabaseSync(databasePath,{readOnly:true});
+    try {expect(read.prepare('SELECT report_json FROM model_capability_qualification').get()!.report_json).toBe('{private invalid JSON');}
+    finally {read.close();}
+  });
+  it('rejects future metadata and future user_version before changing the business database', () => {
+    for (const future of ['metadata','user-version'] as const) {
+      const databasePath = temporaryDatabase(); const db = new DatabaseSync(databasePath);
+      try {
+        initializeModelCapabilitySchema(db);
+        db.prepare('INSERT INTO model_capability_qualification VALUES (?,?,?,?,?,?)').run('fixture','model',FINGERPRINT_A,1,'PRESERVE_FUTURE_CACHE',null);
+        if (future === 'metadata') db.exec('PRAGMA user_version=0; UPDATE model_capability_metadata SET schema_version=2;');
+        else db.exec('PRAGMA user_version=2;');
+      } finally {db.close();}
+      const bytes = readFileSync(databasePath);
+      for (let repeat=0;repeat<2;repeat++) expect(()=>new ModelCapabilityRegistry(databasePath)).toThrow(
+        future==='metadata'?'model_capability_metadata_schema_unsupported':'model_capability_schema_unsupported:2');
+      expect(readFileSync(databasePath).equals(bytes)).toBe(true);
+    }
+  });
+  it('refuses unmanaged databases rather than creating metadata around unrelated data', () => {
+    const databasePath=temporaryDatabase();const db=new DatabaseSync(databasePath);
+    try {db.exec("CREATE TABLE alien_data(value TEXT); INSERT INTO alien_data VALUES('KEEP');");}finally{db.close();}
+    const hash=()=>createHash('sha256').update(readFileSync(databasePath)).digest('hex');const before=hash();
+    expect(()=>new ModelCapabilityRegistry(databasePath)).toThrow('model_capability_database_unmanaged');expect(hash()).toBe(before);
+  });
+  it('recognizes the existing metadata-1 cache and preserves its exact reports while establishing user_version', () => {
+    const databasePath=temporaryDatabase();const db=new DatabaseSync(databasePath);
+    const report={...unknownQualification({providerId:'fixture',modelId:'model',fingerprint:FINGERPRINT_A}),textResponse:'qualified' as const};
+    try {initializeModelCapabilitySchema(db);db.prepare('INSERT INTO model_capability_qualification VALUES (?,?,?,?,?,?)')
+      .run('fixture','model',FINGERPRINT_A,1,JSON.stringify(report),null);db.exec('PRAGMA user_version=0;');}finally{db.close();}
+    const registry=new ModelCapabilityRegistry(databasePath);
+    try {registry.registerFingerprint('fixture','model',FINGERPRINT_A);expect(registry.current('fixture','model')).toEqual(report);}
+    finally{registry.close();}
+    const reopened=new DatabaseSync(databasePath,{readOnly:true});try{expect(reopened.prepare('PRAGMA user_version').get()!.user_version).toBe(1);
+      expect(reopened.prepare('SELECT report_json FROM model_capability_qualification').get()!.report_json).toBe(JSON.stringify(report));}
+    finally{reopened.close();}
+  });
+  it('fences a second owner and releases the lease only after close', () => {
+    const databasePath=temporaryDatabase();const registry=new ModelCapabilityRegistry(databasePath);
+    try {expect(()=>new ModelCapabilityRegistry(databasePath)).toThrow('sqlite_owner_lease_unavailable:model-capability');}
+    finally{registry.close();}
+    const reopened=new ModelCapabilityRegistry(databasePath);reopened.close();
+  });
+  it('rejects a valid report stored under another exact identity', () => {
+    const databasePath=temporaryDatabase();const db=new DatabaseSync(databasePath);
+    try {initializeModelCapabilitySchema(db);db.prepare('INSERT INTO model_capability_qualification VALUES (?,?,?,?,?,?)')
+      .run('fixture','model',FINGERPRINT_A,1,JSON.stringify(unknownQualification({providerId:'other',modelId:'model',fingerprint:FINGERPRINT_A})),null);}
+    finally{db.close();}
+    const before=readFileSync(databasePath);
+    expect(()=>new ModelCapabilityRegistry(databasePath)).toThrow('stored_identity_mismatch');
+    expect(readFileSync(databasePath)).toEqual(before);
+  });
   it('persists exact-fingerprint qualification and invalidates it on fingerprint change', () => {
     const databasePath = temporaryDatabase();
     const first = new ModelCapabilityRegistry(databasePath);

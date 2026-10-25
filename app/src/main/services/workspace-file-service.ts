@@ -1,7 +1,8 @@
 import { realpathSync } from 'node:fs';
-import { readdir, realpath } from 'node:fs/promises';
-import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
+import { readdir, realpath, stat } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { WorkspaceDirectoryListing, WorkspaceDirectoryRequest } from '@shared/contract';
+import { fileDraftPathRequestSchema, fileDraftPathResultSchema } from '@shared/file-drafts';
 
 const MAX_ENTRIES = 2_000;
 const MAX_WORKSPACES = 32;
@@ -64,6 +65,35 @@ export class WorkspaceFileService {
 
   getRoot(workspaceId: string): string {
     return this.requireWorkspace(workspaceId).rootPath;
+  }
+
+  /** Read-only identity resolution. Existing paths retain actual filesystem
+   * case; only not-yet-existing Windows suffixes share a comparison namespace. */
+  async resolveDocumentPath(input: {workspaceId:string;path:string}) {
+    const request=fileDraftPathRequestSchema.parse(input),workspace=this.requireWorkspace(request.workspaceId);
+    try {
+      const rootReal=await realpath(workspace.rootPath);
+      if(pathIdentity(rootReal)!==pathIdentity(workspace.canonicalRoot))throw new WorkspaceFileBoundaryError('Workspace root identity changed.');
+      let cursor=resolve(workspace.rootPath,...request.path.split('/'));
+      assertPathInside(workspace.rootPath,cursor);
+      const missing:string[]=[];
+      for (;;) {
+        try {
+          const canonical=await realpath(cursor);assertPathInside(workspace.canonicalRoot,canonical);
+          const observed=await stat(canonical);
+          if(!missing.length&&(!observed.isFile()||observed.nlink>1))throw new WorkspaceFileBoundaryError('Only regular files with one filesystem link can be edited.');
+          if(missing.length&&!observed.isDirectory())throw new WorkspaceFileBoundaryError('File parent is not a directory.');
+          const prefix=relative(workspace.canonicalRoot,canonical).split(sep).join('/');
+          const path=[prefix,...missing].filter(Boolean).join('/');
+          const comparisonPath=[prefix,...missing.map(part=>process.platform==='win32'?part.toLowerCase():part)].filter(Boolean).join('/');
+          return fileDraftPathResultSchema.parse({workspaceId:request.workspaceId,path,comparisonPath,exists:missing.length===0});
+        }catch(error){
+          if(!(error instanceof Error&&'code' in error&&error.code==='ENOENT'))throw error;
+          if(pathIdentity(cursor)===pathIdentity(workspace.rootPath))throw error;
+          missing.unshift(basename(cursor));const parent=dirname(cursor);if(parent===cursor)throw error;cursor=parent;
+        }
+      }
+    }catch(error){if(error instanceof WorkspaceFileBoundaryError)throw error;throw new WorkspaceFileBoundaryError('Workspace file identity is unavailable.');}
   }
 
   async listDirectory(request: WorkspaceDirectoryRequest): Promise<WorkspaceDirectoryListing> {

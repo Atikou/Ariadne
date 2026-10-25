@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { AgentRunCommandService } from '@ariadne/agent-core';
 import {
   PUBLIC_PROJECTION_CONTRACT_VERSION,
+  RunDocumentItemAssembler, verifyRunDocumentRootResult, verifyRunDocumentChunkResult,
   type RuntimeCommand
 } from '@ariadne/protocol/public';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -15,6 +16,8 @@ import {
   type AgentPersistenceClock
 } from '../src/adapters/persistence/SqliteAgentRunUnitOfWork.js';
 import { SqliteConversationRunHandoffUnitOfWork } from '../src/adapters/persistence/SqliteConversationRunHandoffUnitOfWork.js';
+import { SqliteProductivityStore } from '../src/adapters/persistence/SqliteProductivityStore.js';
+import { SqliteTaskQuerySnapshotStore } from '../src/adapters/persistence/SqliteTaskQuerySnapshotStore.js';
 import { StrictJsonAgentPersistencePayloadCodec } from '../src/adapters/persistence/StrictJsonAgentPersistencePayloadCodec.js';
 import { resolveAgentControlDatabasePath } from '../src/adapters/persistence/agentControlDbSchema.js';
 import {
@@ -44,6 +47,57 @@ afterEach(() => {
 });
 
 describe('Agent Control v3 public projection lifecycle', () => {
+  it('starts with a failed Workflow scanner, admits an unrelated durable Session and rejects new automatic work without losing the source', async () => {
+    const root = createRoot(), unit = new SqliteAgentRunUnitOfWork(root);
+    const conversation = new SqliteConversationRunHandoffUnitOfWork(root), projection = new SqlitePublicProjectionStore(root);
+    const productivity = new SqliteProductivityStore(root);
+    const scanning = vi.spyOn(productivity, 'pendingWorkflowAgentWork').mockRejectedValue(new Error('private workflow payload'));
+    const control = new ComposedAgentControlRuntime(composeAgentPersistenceComponentHandle({
+      dataRoot: root, unitOfWork: unit, conversation, publicProjection: projection, productivity
+    }), { publishIntervalMs: 60_000 }, projectionLifecyclePipeline());
+    const close = closeControl(control);
+    try {
+      expect(() => control.assertHealthy()).toThrow('agent_control_public_projection_not_running');
+      await expect(control.start()).resolves.toBeUndefined();
+      expect(() => control.assertHealthy()).not.toThrow();
+      const command: RuntimeCommand = { kind: 'conversation.session.create', contractVersion: '5.0',
+        sessionId: 'unrelated-session', workspaceId: 'workspace-public-projection' };
+      expect(() => control.assertCommandHealthy(command)).not.toThrow();
+      await expect(control.executeOwnedCommand(commandEnvelope(command, 'create-unrelated-session'))).resolves.toMatchObject({
+        settlement: 'completed', outcome: { ok: true, result: { kind: 'conversation.session.created', sessionId: 'unrelated-session' } }
+      });
+      expect((await conversation.readSession('unrelated-session'))?.workspaceId).toBe('workspace-public-projection');
+      expect(() => control.assertCommandHealthy({ kind: 'workflow.start', contractVersion: '5.0',
+        sessionId: 'unrelated-session', workspaceId: 'workspace-public-projection', goalId: 'goal', workflowId: 'workflow',
+        expectedGoalVersion: 1, expectedTodoRevision: 1, todoIds: ['todo'], maxConcurrency: 1, maxTransitions: 1,
+        deadlineAt: '2031-01-01T00:00:00.000Z', executionMode: 'agent' })).toThrow('runtime_domain_unavailable:workflow');
+      expect(() => control.assertCommandHealthy({ kind: 'productivity.query', contractVersion: '5.0',
+        sessionId: 'unrelated-session', workspaceId: 'workspace-public-projection' })).not.toThrow();
+      const health = control.readDomainHealth();
+      expect(health.find(row => row.domain === 'workflow')).toMatchObject({ availability: 'unavailable', code: 'worker_failed', source: 'workflow' });
+      expect(health.find(row => row.domain === 'schedule')?.availability).toBe('healthy');
+      expect(JSON.stringify(health)).not.toContain('private workflow payload');
+      expect(scanning).toHaveBeenCalledTimes(1);
+    } finally { scanning.mockRestore(); await close(); }
+  });
+  it('rejects a legacy scalar Run read without poisoning the document query owner', async () => {
+    const root = createRoot(), unit = new SqliteAgentRunUnitOfWork(root);
+    const conversation = new SqliteConversationRunHandoffUnitOfWork(root), projection = new SqlitePublicProjectionStore(root);
+    await startRun(unit, 'run-query-contract');
+    const control = new ComposedAgentControlRuntime(testPersistence(root, unit, conversation, projection),
+      { publishIntervalMs: 60_000 }, projectionLifecyclePipeline());
+    const close = closeControl(control);
+    try {
+      await control.start();
+      expect(outboxPublicationCounts(root)).toEqual({ published: 2, pending: 0 });
+      await expect(control.executeOwnedCommand(commandEnvelope({ kind: 'projection.snapshot.get', contractVersion: '5.0' },
+        'legacy-run-query'))).resolves.toMatchObject({ outcome: { ok: false, error: { code: 'public_projection_contract_mismatch' } } });
+      await expect(control.executeOwnedCommand(commandEnvelope({ kind: 'projection.catalog.begin', request: {
+        pageContractVersion: '3.0', scope: { kind: 'tasks' }, feature: 'runs', filter: 'all'
+      } }, 'bounded-run-query'))).resolves.toMatchObject({ outcome: { ok: true, result: { kind: 'projection.catalog.manifest' } } });
+      await expect(runSummaryWindow(projection)).resolves.toMatchObject({ cursor: 1, runs: [{ runId: 'run-query-contract', version: 1 }] });
+    } finally { await close(); }
+  });
   it('renames, archives, restores, replays and projects one durable Conversation Session', async () => {
     const root = createRoot();
     const unit = new SqliteAgentRunUnitOfWork(root);
@@ -61,16 +115,16 @@ describe('Agent Control v3 public projection lifecycle', () => {
     try {
       await control.start();
       const create = commandEnvelope({
-        kind: 'conversation.session.create.v3',
+        kind: 'conversation.session.create',
         contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         sessionId: 'session-lifecycle',
         workspaceId: 'workspace-lifecycle'
       }, 'create-session-lifecycle');
       await expect(control.executeOwnedCommand(create)).resolves.toMatchObject({
-        outcome: { ok: true, result: { kind: 'conversation.session.created.v3', version: 1 } }
+        outcome: { ok: true, result: { kind: 'conversation.session.created', version: 1 } }
       });
       const rename = commandEnvelope({
-        kind: 'conversation.session.rename.v3',
+        kind: 'conversation.session.rename',
         contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         sessionId: 'session-lifecycle',
         workspaceId: 'workspace-lifecycle',
@@ -78,10 +132,10 @@ describe('Agent Control v3 public projection lifecycle', () => {
         title: 'Durable lifecycle'
       }, 'rename-session-lifecycle');
       await expect(control.executeOwnedCommand(rename)).resolves.toMatchObject({
-        outcome: { ok: true, result: { kind: 'conversation.session.updated.v3', version: 2 } }
+        outcome: { ok: true, result: { kind: 'conversation.session.updated', version: 2 } }
       });
       await expect(control.executeOwnedCommand(commandEnvelope({
-        kind: 'conversation.session.archive.v3',
+        kind: 'conversation.session.archive',
         contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         sessionId: 'session-lifecycle',
         workspaceId: 'workspace-lifecycle',
@@ -98,7 +152,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
         }]
       });
       await expect(control.executeOwnedCommand(commandEnvelope({
-        kind: 'conversation.session.restore.v3',
+        kind: 'conversation.session.restore',
         contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         sessionId: 'session-lifecycle',
         workspaceId: 'workspace-lifecycle',
@@ -165,7 +219,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
     try {
       await control.start();
       const fork = commandEnvelope({
-        kind: 'conversation.session.fork.v3',
+        kind: 'conversation.session.fork',
         contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         sessionId: 'navigation-child',
         sourceSessionId: 'navigation-parent',
@@ -177,7 +231,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
         outcome: {
           ok: true,
           result: {
-            kind: 'conversation.session.forked.v3',
+            kind: 'conversation.session.forked',
             sessionId: 'navigation-child',
             boundary: reference
           }
@@ -187,7 +241,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
         outcome: { ok: true, result: { sessionId: 'navigation-child' } }
       });
       await expect(control.executeOwnedCommand(commandEnvelope({
-        kind: 'conversation.sessions.query.v3',
+        kind: 'conversation.sessions.query',
         contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         workspaceId: 'navigation-workspace',
         query: 'stable navigation',
@@ -197,20 +251,20 @@ describe('Agent Control v3 public projection lifecycle', () => {
         outcome: {
           ok: true,
           result: {
-            kind: 'conversation.sessions.query_result.v3',
+            kind: 'conversation.sessions.query_result',
             items: [{ sessionId: 'navigation-parent', matches: [{ reference }] }]
           }
         }
       });
       await expect(control.executeOwnedCommand(commandEnvelope({
-        kind: 'conversation.message.resolve.v3',
+        kind: 'conversation.message.resolve',
         contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         reference
       }, 'navigation-resolve'))).resolves.toMatchObject({
         outcome: {
           ok: true,
           result: {
-            kind: 'conversation.message.resolved.v3',
+            kind: 'conversation.message.resolved',
             reference,
             content: 'stable navigation needle'
           }
@@ -248,7 +302,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
       deadlineAt: '2031-01-01T00:00:00.000Z',
       signal: new AbortController().signal,
       command: {
-        kind: 'agent.run.cancel.v3' as const,
+        kind: 'agent.run.cancel' as const,
         contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         runId: 'run-public-cancel',
         expectedVersion: 1,
@@ -261,7 +315,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
       outcome: {
         ok: true,
         result: {
-          kind: 'agent.run.cancelled.v3',
+          kind: 'agent.run.cancelled',
           runId: 'run-public-cancel',
           runVersion: 2
         }
@@ -288,7 +342,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
     try {
       await control.start();
       const commands = Array.from({ length: 4 }, (_, index) => commandEnvelope({
-        kind: 'agent.inbox.enqueue.v3', contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+        kind: 'agent.inbox.enqueue', contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         runId: 'run-concurrent-inbox', sessionId: 'session-run-concurrent-inbox',
         inputId: `input-concurrent-${index}`, delivery: 'next_step', content: `Concurrent input ${index}`
       }, `enqueue-concurrent-${index}`));
@@ -307,6 +361,10 @@ describe('Agent Control v3 public projection lifecycle', () => {
     const unit = new SqliteAgentRunUnitOfWork(root);
     const conversation = new SqliteConversationRunHandoffUnitOfWork(root);
     const projection = new SqlitePublicProjectionStore(root);
+    await new ConversationAuthorityService(conversation).createSession({
+      kind: 'conversation.create_session', commandId: 'create-inbox-query-session', eventId: 'inbox-query-session-created',
+      sessionId: 'session-run-public-inbox', workspaceId: 'workspace-public-projection', expectedVersion: null, occurredAt: at(0)
+    });
     await startRun(unit, 'run-public-inbox');
     const control = new ComposedAgentControlRuntime(
       testPersistence(root, unit, conversation, projection),
@@ -320,7 +378,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
     try {
       await control.start();
       const enqueue = commandEnvelope({
-        kind: 'agent.inbox.enqueue.v3',
+        kind: 'agent.inbox.enqueue',
         contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         runId: 'run-public-inbox',
         sessionId: 'session-run-public-inbox',
@@ -331,27 +389,24 @@ describe('Agent Control v3 public projection lifecycle', () => {
       await expect(control.executeOwnedCommand(enqueue)).resolves.toMatchObject({
         outcome: {
           ok: true,
-          result: { kind: 'agent.inbox.enqueued.v3', runVersion: 2, inputVersion: 1 }
+          result: { kind: 'agent.inbox.enqueued', runVersion: 2, inputVersion: 1 }
         }
       });
       await expect(control.executeOwnedCommand(enqueue)).resolves.toMatchObject({
         outcome: { ok: true, result: { runVersion: 2, inputVersion: 1 } }
       });
-      await expect.poll(() => projection.snapshot()).toMatchObject({
-        runs: [{
-          runId: 'run-public-inbox',
-          version: 2,
-          inbox: [{
+      await expect.poll(() => inboxState(projection, 'run-public-inbox')).toMatchObject({
+          runVersion: 2,
+          input: {
             inputId: 'input-public-inbox',
             version: 1,
             delivery: 'next_step',
             state: 'queued'
-          }]
-        }]
+          }
       });
 
       await expect(control.executeOwnedCommand(commandEnvelope({
-        kind: 'agent.inbox.replace.v3',
+        kind: 'agent.inbox.replace',
         contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         runId: 'run-public-inbox',
         inputId: 'input-public-inbox',
@@ -360,18 +415,15 @@ describe('Agent Control v3 public projection lifecycle', () => {
       }, 'replace-public-inbox'))).resolves.toMatchObject({
         outcome: {
           ok: true,
-          result: { kind: 'agent.inbox.replaced.v3', runVersion: 3, inputVersion: 2 }
+          result: { kind: 'agent.inbox.replaced', runVersion: 3, inputVersion: 2 }
         }
       });
-      await expect.poll(() => projection.snapshot()).toMatchObject({
-        runs: [{
-          version: 3,
-          inbox: [{ version: 2, content: 'Use the revised durable inbox input.' }]
-        }]
+      await expect.poll(() => inboxState(projection, 'run-public-inbox')).toMatchObject({
+        runVersion: 3, input: { version: 2, content: 'Use the revised durable inbox input.' }
       });
 
       await expect(control.executeOwnedCommand(commandEnvelope({
-        kind: 'agent.inbox.remove.v3',
+        kind: 'agent.inbox.remove',
         contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         runId: 'run-public-inbox',
         inputId: 'input-public-inbox',
@@ -379,11 +431,11 @@ describe('Agent Control v3 public projection lifecycle', () => {
       }, 'remove-public-inbox'))).resolves.toMatchObject({
         outcome: {
           ok: true,
-          result: { kind: 'agent.inbox.removed.v3', runVersion: 4 }
+          result: { kind: 'agent.inbox.removed', runVersion: 4 }
         }
       });
-      await expect.poll(() => projection.snapshot()).toMatchObject({
-        runs: [{ version: 4, inbox: [] }]
+      await expect.poll(() => inboxState(projection, 'run-public-inbox')).toMatchObject({
+        runVersion: 4, input: null
       });
       await expect(unit.transaction((transaction) => (
         transaction.loadRun('run-public-inbox')
@@ -493,7 +545,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
     try {
       await control.start();
 
-      await expect(projection.snapshot()).resolves.toMatchObject({
+      await expect(runSummaryWindow(projection)).resolves.toMatchObject({
         cursor: 1,
         runs: [{
           runId: 'run-production-chain',
@@ -552,7 +604,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
         deadlineAt: '2031-01-01T00:00:00.000Z',
         signal: new AbortController().signal,
         command: {
-          kind: 'conversation.session.create.v3',
+          kind: 'conversation.session.create',
           contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
           sessionId: 'session-created-during-active-drain',
           workspaceId: 'workspace-created-during-active-drain'
@@ -606,7 +658,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
       await expect(control.start()).rejects.toThrow(
         'agent_control_public_projection_unhealthy'
       );
-      await expect(projection.snapshot()).resolves.toMatchObject({
+      await expect(runSummaryWindow(projection)).resolves.toMatchObject({
         cursor: 1,
         runs: [{ runId: 'run-append-before-ack', version: 1 }]
       });
@@ -675,7 +727,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
         projectionLifecyclePipeline()
       );
       await control.start();
-      await expect(projection.snapshot()).resolves.toMatchObject({
+      await expect(runSummaryWindow(projection)).resolves.toMatchObject({
         runs: [{ runId: 'run-owner-takeover', version: 1 }]
       });
       expect(outboxPublicationCounts(root)).toEqual({ published: 2, pending: 0 });
@@ -709,9 +761,9 @@ describe('Agent Control v3 public projection lifecycle', () => {
         occurredAt: at(2),
         reason: 'must not enter a frozen UoW'
       }, { turnInputPayloads: [], effectPayloads: [] }))
-        .rejects.toThrow('agent_v3_unit_of_work_closed');
+        .rejects.toThrow('agent_unit_of_work_closed');
 
-      await expect(projection.snapshot()).resolves.toMatchObject({
+      await expect(runSummaryWindow(projection)).resolves.toMatchObject({
         runs: [{ runId: 'run-shutdown-drain', version: 1 }]
       });
       await control.shutdown(context);
@@ -729,8 +781,9 @@ describe('Agent Control v3 public projection lifecycle', () => {
     const unit = new SqliteAgentRunUnitOfWork(root);
     const conversation = new SqliteConversationRunHandoffUnitOfWork(root);
     const projection = new SqlitePublicProjectionStore(root);
+    const persistence = testPersistence(root, unit, conversation, projection);
     const control = new ComposedAgentControlRuntime(
-      testPersistence(root, unit, conversation, projection),
+      persistence,
       { publishIntervalMs: 60_000 }
     );
     await control.start();
@@ -757,8 +810,13 @@ describe('Agent Control v3 public projection lifecycle', () => {
       expect(() => new SqlitePublicProjectionStore(root)).toThrow(
         /sqlite_owner_lease_unavailable:public_projection/
       );
+      const competingReadModel = new SqliteTaskQuerySnapshotStore(root);
+      expect(competingReadModel.available).toBe(false);
+      expect(persistence.taskQuerySnapshots?.available).toBe(true);
+      competingReadModel.close();
     } finally {
       preparationFailure.mockRestore();
+      persistence.taskQuerySnapshots?.close();
       await projection.close(context);
       await conversation.close(context);
       await unit.close(context);
@@ -796,7 +854,7 @@ describe('Agent Control v3 public projection lifecycle', () => {
           return error instanceof Error ? error.message : String(error);
         }
       }, { timeout: 1_000, interval: 5 }).toBe(
-        'agent_control_public_projection_unhealthy'
+        'runtime_domain_unavailable:projection'
       );
       const attemptsAfterFailure = appendAttempts;
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -1026,10 +1084,40 @@ function projectionLifecyclePipeline(): AgentControlExecutionPipeline {
     handoffProducer: producer as unknown as AgentControlExecutionPipeline['handoffProducer'],
     executionScheduler: executionScheduler as unknown as
       AgentControlExecutionPipeline['executionScheduler'],
-    runWorkScheduler: producer as unknown as
+    runWorkScheduler: { ...producer, interruptActiveTurn: async () => ({ status: 'not_active' }) } as unknown as
       AgentControlExecutionPipeline['runWorkScheduler'],
     assertConversationMessageAdmission: (): void => undefined
   };
+}
+
+async function runSummaryWindow(store: SqlitePublicProjectionStore) {
+  const manifest = await store.beginCatalogSnapshot({ pageContractVersion: '3.0',
+    scope: { kind: 'tasks' }, feature: 'runs', filter: 'all' });
+  if ('status' in manifest) throw new Error('fixture_run_catalog_unavailable');
+  const page = await store.readCatalogPage({ manifest, limit: 128 });
+  if (page.status !== 'ok' || page.hasMore) throw new Error('fixture_run_catalog_incomplete');
+  return { cursor: manifest.boundaryCursor, runs: page.rows.flatMap(row => row.feature === 'runs' ? [row.dto] : []) };
+}
+
+async function inboxState(store: SqlitePublicProjectionStore, runId: string) {
+  const manifest = await store.beginCatalogSnapshot({ pageContractVersion: '3.0',
+    scope: { kind: 'session', sessionId: `session-${runId}`, workspaceId: 'workspace-public-projection' }, feature: 'runs', filter: 'all' });
+  if ('status' in manifest) throw new Error('fixture_run_catalog_unavailable');
+  const request = { queryContractVersion: '1.0' as const, manifest, runId };
+  const root = await verifyRunDocumentRootResult(request, await store.readRunDocument(request));
+  if (root.status !== 'ok') throw new Error('fixture_document_unavailable');
+  const runVersion = root.header.summary.version;
+  if (root.header.collections.inbox.itemCount === 0) return { runVersion, input: null };
+  const assembler = new RunDocumentItemAssembler(root.header, 'inbox', 0);
+  for (let chunkOrdinal = 0; chunkOrdinal < 32; chunkOrdinal++) {
+    const input = { queryContractVersion: '1.0', manifest, document: root.document,
+      collection: 'inbox' as const, itemOrdinal: 0, chunkOrdinal };
+    const chunk = await verifyRunDocumentChunkResult(input, await store.readRunDocumentChunk(input));
+    if (chunk.status !== 'ok') throw new Error('fixture_inbox_chunk_unavailable');
+    const item = await assembler.accept(chunk.leaf);
+    if (item !== null) return { runVersion, input: item.value };
+  }
+  throw new Error('fixture_inbox_incomplete');
 }
 
 function testPersistence(
@@ -1065,7 +1153,7 @@ function outboxPublicationCounts(root: string): {
       `SELECT
          SUM(CASE WHEN published_at IS NULL THEN 0 ELSE 1 END) AS published,
          SUM(CASE WHEN published_at IS NULL THEN 1 ELSE 0 END) AS pending
-       FROM agent_v3_outbox`
+       FROM agent_outbox`
     ).get() as { published: number; pending: number };
   } finally {
     database.close();

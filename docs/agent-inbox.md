@@ -13,7 +13,7 @@ Agent inbox 是同一 `AgentRun` 上唯一的运行中输入权威。它不取�
 
 当一个响应边界同时存在两类输入时，系统领取全部 `next_step` 和最早一条 `next_turn`，同时保持被选输入在原始队列中的顺序。其余 `next_turn` 留待后续响应边界。
 
-Agent 主动提问复用相同 continuation，但不伪装成普通用户 follow-up：模型提交 `ask_user` Directive 后，问题正文与 2–8 个可选项写入受保护 `user_question` payload，Run 进入 `waiting/user_question`。公开 Decision 只携带经过脱敏的 `question`、选项和 opaque action token。回答通过 `agent.decision.resolve.v3` 的 `answer` choice 提交；Decision resolution、answer digest 与带 `source.kind=user_question_answer` 的 `next_step` inbox 输入在同一 Run commit 中落盘。
+Agent 主动提问复用相同 continuation，但不伪装成普通用户 follow-up：模型提交 `ask_user` Directive 后，问题正文与 2–8 个可选项写入受保护 `user_question` payload，Run 进入 `waiting/user_question`。公开 Decision 只携带经过脱敏的 `question`、选项和 opaque action token。回答通过 `agent.decision.resolve` 的 `answer` choice 提交；Decision resolution、answer digest 与带 `source.kind=user_question_answer` 的 `next_step` inbox 输入在同一 Run commit 中落盘。
 
 排队项支持：
 

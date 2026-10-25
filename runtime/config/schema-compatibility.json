@@ -6,17 +6,40 @@
     "newerDatabaseWrite": "rejected"
   },
   "databases": {
-    "memory": {
-      "currentSchema": 41,
-      "minimumForwardSource": 40
+    "modelCapability": {
+      "currentSchema": 1,
+      "minimumForwardSource": 0
     },
-    "companion": {
+    "agentControl": {
       "currentSchema": 8,
-      "minimumForwardSource": 7
+      "minimumForwardSource": 7,
+      "offlineMigration": "runtime/dist/cli/normalize-agent-database.js --data-root <absolute-stopped-runtime-root>",
+      "requiresStoppedRuntime": true,
+      "backupRequired": true
     },
-    "tools": {
-      "currentSchema": 2,
-      "minimumForwardSource": 1
+    "conversation": {
+      "currentSchema": 4,
+      "minimumForwardSource": 3
+    },
+    "publicProjection": {
+      "currentSchema": 4,
+      "minimumForwardSource": 3
+    },
+    "runtimeCommand": {
+      "currentSchema": 1,
+      "minimumForwardSource": 0
+    },
+    "longMemory": {
+      "currentSchema": 1,
+      "minimumForwardSource": 0
+    },
+    "productivity": {
+      "currentSchema": 3,
+      "minimumForwardSource": 2,
+      "startupUpgrade": "audited-additive-v2-to-v3-under-exclusive-owner",
+      "olderSourceMaintenance": "Schema 1 requires the retained offline v1-to-v2 command before the normal audited v2-to-v3 open",
+      "requiresStoppedRuntime": true,
+      "backupRequired": true
     },
     "traceIndex": {
       "currentSchema": 1,

@@ -10,10 +10,10 @@ import { loadConfig } from '../config/loadConfig.js';
 import { LocalModelService } from '../model/local/LocalModelService.js';
 import type { ChatMessage, ModelClient, TokenCount } from '../model/types.js';
 import {
-  admitV3TokenizedProjections,
-  planV3LongContext,
-  type V3ModelContextGroup
-} from '../adapters/model/V3LongContextLifecycle.js';
+  admitTokenizedProjections,
+  planLongContext,
+  type ModelContextGroup
+} from '../adapters/model/LongContextLifecycle.js';
 import type { ExactAgentModelInferenceMessage } from '../control/ports/AgentModelInference.js';
 
 type AcceptanceTarget = 'local' | 'remote';
@@ -150,7 +150,7 @@ async function prepareLongContextProjection(
     maxOutputTokens: Math.min(1_024, Math.floor((client.contextWindowTokens ?? 32_768) / 8))
   };
   const pinned = [exactMessage('system', 'Continue the durable acceptance conversation concisely.')];
-  const groups: V3ModelContextGroup[] = [{
+  const groups: ModelContextGroup[] = [{
     kind: 'conversation',
     messages: [
       exactMessage('user', 'State that this is restart acceptance phase one.'),
@@ -180,7 +180,7 @@ async function prepareLongContextProjection(
     )]
   });
   sourceCount = await countExact(client, [...pinned, ...groups.flatMap((group) => group.messages)]);
-  const plan = planV3LongContext({
+  const plan = planLongContext({
     pinnedMessages: pinned,
     groups,
     capacity,
@@ -191,7 +191,7 @@ async function prepareLongContextProjection(
   const recovery = plan.overflowRecoveryMessages === null
     ? null
     : await countExact(client, plan.overflowRecoveryMessages);
-  return admitV3TokenizedProjections({ plan, capacity, primary, recovery });
+  return admitTokenizedProjections({ plan, capacity, primary, recovery });
 }
 
 async function countExact(

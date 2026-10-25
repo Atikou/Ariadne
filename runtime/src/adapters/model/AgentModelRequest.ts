@@ -7,7 +7,7 @@ import {
   type AgentTurnInput
 } from '@ariadne/agent-core';
 import type { ExactAgentModelInferenceMessage, ExactAgentModelInferenceToolContract } from '../../control/ports/AgentModelInference.js';
-import { type V3LongContextUsageBaseline } from './V3LongContextLifecycle.js';
+import { type LongContextUsageBaseline } from './LongContextLifecycle.js';
 import {
   MAX_MODEL_REQUEST_BYTES,
   MAX_MODEL_REQUEST_MESSAGES,
@@ -116,7 +116,7 @@ export function digestTokenMeterHeader(
 export function findUsageBaseline(
   input: AgentTurnInput,
   requestHeaderDigest: string
-): V3LongContextUsageBaseline | undefined {
+): LongContextUsageBaseline | undefined {
   for (let turnIndex = input.run.turns.length - 1; turnIndex >= 0; turnIndex -= 1) {
     const attempts = input.run.turns[turnIndex]!.attempts;
     for (let attemptIndex = attempts.length - 1; attemptIndex >= 0; attemptIndex -= 1) {

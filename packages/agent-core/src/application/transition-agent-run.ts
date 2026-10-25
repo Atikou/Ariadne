@@ -11,6 +11,7 @@ import type {
   RecordAgentEffectResultCommand,
   RegisterAgentEffectCommand,
   RequestAgentDecisionCommand,
+  RequestAgentRunCancellationCommand,
   RemoveAgentInboxInputCommand,
   ReplaceAgentInboxInputCommand,
   ResolveAgentDecisionCommand,
@@ -18,6 +19,7 @@ import type {
   StartAgentRunCommand
 } from './commands.js';
 import type { AgentRunEventPayload } from './events.js';
+import { isPlanApprovalInput, type PlanApprovalInput } from './plan-approval-input.js';
 import {
   type AgentRun,
   type AgentRunState,
@@ -42,6 +44,7 @@ import {
 import type { AgentTurn } from '../domain/turn.js';
 import {
   assertValidAgentInboxInput,
+  planApprovalInputContent,
   type AgentInboxInput
 } from '../domain/inbox.js';
 import {
@@ -114,7 +117,8 @@ export function createAgentRun(
 
 export function transitionAgentRun(
   run: AgentRun,
-  command: ExistingAgentRunCommand
+  command: ExistingAgentRunCommand,
+  planApprovalInput?: PlanApprovalInput
 ): AgentRunTransition {
   assertValidAgentRun(run);
   assertCommandMetadata(command);
@@ -136,7 +140,16 @@ export function transitionAgentRun(
     );
   }
 
+  if (run.cancellationRequest !== undefined && ![
+    'run.request_cancellation', 'run.cancel', 'run.record_effect_result', 'run.resolve_decision',
+    'run.enqueue_inbox_input', 'run.replace_inbox_input', 'run.remove_inbox_input'
+  ].includes(command.kind)) {
+    throw new AgentRunTransitionError('A Run with a durable cancellation request can only settle existing work.');
+  }
+
   switch (command.kind) {
+    case 'run.request_cancellation':
+      return requestRunCancellation(run, command);
     case 'run.begin':
       return beginRun(run, command);
     case 'run.enqueue_inbox_input':
@@ -180,7 +193,7 @@ export function transitionAgentRun(
     case 'run.request_decision':
       return requestDecision(run, command);
     case 'run.resolve_decision':
-      return resolveDecision(run, command);
+      return resolveDecision(run, command, planApprovalInput);
     case 'run.register_effect':
       return registerEffect(run, command);
     case 'run.authorize_effect':
@@ -204,6 +217,12 @@ function enqueueInboxInput(
   run: AgentRun,
   command: EnqueueAgentInboxInputCommand
 ): AgentRunTransition {
+  if (run.turns.some(turn => turn.attempts.some(attempt => attempt.state.status === 'succeeded'
+    && attempt.state.directive.kind === 'request_decision'
+    && (command.input.inputId === attempt.state.directive.decision.decisionId
+      || command.input.messageId === attempt.state.directive.decision.decisionId)))) {
+    throw new AgentRunTransitionError('Plan approval input identity is reserved for its exact Decision transaction.');
+  }
   const requiresContinuationCapacity = command.input.source?.kind !== 'live_work';
   if (
     requiresContinuationCapacity
@@ -250,7 +269,7 @@ function replaceInboxInput(
   command: ReplaceAgentInboxInputCommand
 ): AgentRunTransition {
   const current = requireQueuedInboxInput(run, command.inputId, command.expectedInputVersion);
-  if (current.source !== undefined) {
+  if (current.source !== undefined || isPlanApprovalInput(run, current)) {
     throw new AgentRunTransitionError('System Agent inbox input is immutable.');
   }
   const input: AgentInboxInput = {
@@ -277,7 +296,7 @@ function removeInboxInput(
   command: RemoveAgentInboxInputCommand
 ): AgentRunTransition {
   const current = requireQueuedInboxInput(run, command.inputId, command.expectedInputVersion);
-  if (current.source !== undefined) {
+  if (current.source !== undefined || isPlanApprovalInput(run, current)) {
     throw new AgentRunTransitionError('System Agent inbox input is immutable.');
   }
   return updateRun(
@@ -424,7 +443,8 @@ function requestDecision(
 
 function resolveDecision(
   run: AgentRun,
-  command: ResolveAgentDecisionCommand
+  command: ResolveAgentDecisionCommand,
+  planApprovalInput?: PlanApprovalInput
 ): AgentRunTransition {
   if (
     run.state.status !== 'waiting'
@@ -456,6 +476,31 @@ function resolveDecision(
       'Only a user-question resolution may carry an inbox answer.'
     );
   }
+  const approvesPlan = decision.kind === 'plan' && command.resolution.kind === 'plan'
+    && command.resolution.outcome === 'approve';
+  if (!approvesPlan && planApprovalInput !== undefined) {
+    throw new AgentRunTransitionError('Only an approved Plan may carry its continuation input.');
+  }
+  const latestAttempt = run.turns.at(-1)?.attempts.at(-1);
+  if (approvesPlan && latestAttempt?.state.status === 'succeeded'
+    && latestAttempt.state.directive.kind === 'request_decision' && planApprovalInput === undefined) {
+    throw new AgentRunTransitionError('An inferred Plan approval requires its atomic continuation input.');
+  }
+  if (approvesPlan && planApprovalInput !== undefined && decision.kind === 'plan') {
+    const approval = planApprovalInput;
+    if (approval.inputId !== decision.decisionId || approval.messageId !== decision.decisionId
+      || approval.content !== planApprovalInputContent(decision) || run.inbox.length >= 1_000
+      || run.inbox.some(input => input.inputId === approval.inputId || input.messageId === approval.messageId)) {
+      throw new AgentRunTransitionError('Plan approval continuation input must bind the exact Plan once.');
+    }
+    const input: AgentInboxInput = {
+      ...approval, version: 1, delivery: 'next_step', state: 'queued',
+      queuedAt: command.occurredAt, updatedAt: command.occurredAt
+    };
+    assertValidAgentInboxInput(input);
+    inbox = [...inbox, input];
+    events.push({ type: 'inbox.input_enqueued', input });
+  }
 
   if (decision.kind === 'permission' && command.resolution.kind === 'permission') {
     const effect = requireEffect(run, decision.effectId);
@@ -484,6 +529,16 @@ function resolveDecision(
       events.push({ type: 'run.cancelled', reason: 'permission_denied' });
     }
   } else if (
+    decision.kind === 'plan'
+    && command.resolution.kind === 'plan'
+    && command.resolution.outcome === 'reject'
+  ) {
+    const cancelled = cancelOpenEffects(effects, command.occurredAt, 'plan_rejected');
+    effects = cancelled.effects;
+    events.push(...cancelled.events);
+    state = { status: 'cancelled', checkpointVersion, cancelledAt: command.occurredAt, reason: 'plan_rejected' };
+    events.push({ type: 'run.cancelled', reason: 'plan_rejected' });
+  } else if (
     decision.kind === 'recovery'
     && command.resolution.kind === 'recovery'
   ) {
@@ -496,6 +551,7 @@ function resolveDecision(
 
     switch (command.resolution.outcome) {
       case 'retry': {
+        if (run.cancellationRequest !== undefined) throw new AgentRunTransitionError('An Effect cannot retry while its Run cancellation is pending.');
         const replacement = replaceEffect(
           effects,
           effect,
@@ -846,6 +902,9 @@ function cancelRun(
   run: AgentRun,
   command: CancelAgentRunCommand
 ): AgentRunTransition {
+  if (run.effects.some(effect => effect.state.status === 'uncertain')) {
+    throw new AgentRunTransitionError('An uncertain Effect must be resolved through its exact recovery decision before Run cancellation.');
+  }
   if (run.state.status === 'waiting_children' || run.state.status === 'cancelling') {
     throw new AgentRunTransitionError(
       'A parent with required child Runs must cancel through child terminal coordination.'
@@ -948,6 +1007,23 @@ function interruptContinuableTurn(
       reason: command.reason
     }]
   );
+}
+
+function requestRunCancellation(run: AgentRun, command: RequestAgentRunCancellationCommand): AgentRunTransition {
+  assertNonEmpty(command.reason, 'command.reason');
+  if (run.cancellationRequest === undefined
+    && !run.effects.some(effect => effect.state.status === 'started' || effect.state.status === 'uncertain')) {
+    throw new AgentRunTransitionError('A durable cancellation request requires an in-flight or uncertain Effect.');
+  }
+  const request = run.cancellationRequest ?? {
+    commandId: command.commandId, requestedAt: command.occurredAt, reason: command.reason
+  };
+  const next = { ...run, cancellationRequest: request, version: run.version + 1, updatedAt: command.occurredAt };
+  assertValidAgentRun(next);
+  return { run: next, events: [
+    { type: 'run.cancellation_requested', reason: request.reason },
+    { type: 'run.state_changed', from: run.state.status, to: run.state }
+  ] };
 }
 
 function assertNoStartedEffects(

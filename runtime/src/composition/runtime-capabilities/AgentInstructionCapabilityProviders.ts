@@ -70,6 +70,7 @@ export function agentInstructionCapabilityProviders(): readonly RuntimeCapabilit
       id: 'agent.instructions.assembly',
       consumes: [
         { serviceId: WORKSPACE_CONTRIBUTOR_SERVICE_ID, optional: false },
+        { serviceId: 'agent.instructions.memory', optional: false },
         { serviceId: SKILL_CONTRIBUTOR_SERVICE_ID, optional: false },
         { serviceId: MODE_POLICY_CONTRIBUTOR_SERVICE_ID, optional: false }
       ],
@@ -79,6 +80,7 @@ export function agentInstructionCapabilityProviders(): readonly RuntimeCapabilit
         services: {
           [AGENT_INSTRUCTION_ASSEMBLY_SERVICE_ID]: new ProductionAgentInstructionAssembly([
             context.services.required<AgentInstructionContributor>(WORKSPACE_CONTRIBUTOR_SERVICE_ID),
+            context.services.required<AgentInstructionContributor>('agent.instructions.memory'),
             context.services.required<AgentInstructionContributor>(SKILL_CONTRIBUTOR_SERVICE_ID),
             context.services.required<AgentInstructionContributor>(MODE_POLICY_CONTRIBUTOR_SERVICE_ID)
           ])

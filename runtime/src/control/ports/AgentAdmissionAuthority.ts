@@ -11,7 +11,7 @@ import {
   type AgentExecutionProfile,
   type AgentRunBinding
 } from '@ariadne/agent-core';
-import type { ConversationMessageExecutionV3 } from '@ariadne/protocol/public';
+import type { ConversationMessageExecution } from '@ariadne/protocol/public';
 
 const trustedAuthorityBundles = new WeakSet<object>();
 
@@ -82,7 +82,7 @@ export interface AgentAdmissionAuthorityQueryV2 {
   readonly objectiveDigest: string;
   readonly runId: string;
   readonly requiresVision?: true;
-  readonly execution: ConversationMessageExecutionV3;
+  readonly execution: ConversationMessageExecution;
 }
 
 /** One exact immutable authority lookup; no mutable settings fallback exists. */

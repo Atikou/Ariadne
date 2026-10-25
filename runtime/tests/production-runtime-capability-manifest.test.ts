@@ -1,4 +1,8 @@
 import path from 'node:path';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import { SqliteLongMemoryStore } from '../src/adapters/persistence/SqliteLongMemoryStore.js';
+import { tmpdir } from 'node:os';
 
 import {
   ARIADNE_RUNTIME_PROTOCOL,
@@ -7,18 +11,74 @@ import {
   type RuntimeBootstrap
 } from '@ariadne/protocol/host';
 import { createDefaultRuntimePolicySnapshot } from '@ariadne/protocol/settings';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createShutdownContext } from '../src/ingress/ShutdownContext.js';
 
 import {
-  compileProductionRuntimeCapabilityManifest,
-  compileRuntimeCapabilityManifest,
+  compileProductionRuntimeCapabilityManifest as compileProductionManifest,
+  compileRuntimeCapabilityManifest as compileCapabilityManifest,
   createProductionRuntimeCapabilityStartContext,
   productionRuntimeCapabilityProviders,
   resolveAgentControlRuntimeServices,
   type RuntimeCapabilityProvider
 } from '../src/composition/ProductionRuntimeCapabilityManifest.js';
+const roots: string[] = []; const manifests: Awaited<ReturnType<typeof compileProductionManifest>>[] = [];
+afterEach(async () => {
+  const shutdown = createShutdownContext(Date.now() + 5_000);
+  try { for (const manifest of manifests.splice(0)) await manifest.close(shutdown); } finally { shutdown.dispose(); }
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+async function compileProductionRuntimeCapabilityManifest(...args: Parameters<typeof compileProductionManifest>) {
+  const manifest = await compileProductionManifest(...args); manifests.push(manifest); return manifest;
+}
+async function compileRuntimeCapabilityManifest(...args: Parameters<typeof compileCapabilityManifest>) {
+  const manifest = await compileCapabilityManifest(...args); manifests.push(manifest); return manifest;
+}
 
 describe('production Runtime Capability Manifest', () => {
+  it('isolates an audited optional memory source fault without exposing an authority or destroying its bytes', async () => {
+    const bootstrap = createBootstrap(); const store = new SqliteLongMemoryStore(bootstrap.dataRoot);
+    const shutdown = createShutdownContext(Date.now() + 5_000);
+    try { await store.close(shutdown); } finally { shutdown.dispose(); }
+    const file = path.join(bootstrap.dataRoot, 'data/long-memory/long-memory.db'); const database = new DatabaseSync(file);
+    try { database.exec('CREATE TABLE unexpected(value TEXT); PRAGMA wal_checkpoint(TRUNCATE)'); } finally { database.close(); }
+    const bytes = readFileSync(file); const manifest = await compileProductionRuntimeCapabilityManifest({ bootstrap });
+    const services = resolveAgentControlRuntimeServices(manifest);
+    expect(services.memoryAuthority).toBeUndefined(); expect(() => services.memoryHealth!.assertHealthy()).toThrow('long_memory_authority_layout');
+    const instructions = await services.instructionAssembly.assemble({ runId: 'run', workspaceId: 'workspace-1', sessionId: 'session', executionMode: 'chat' }, new AbortController().signal);
+    expect(instructions.blocks.some(block => block.contributorId === 'memory.reviewed-context')).toBe(false);
+    expect(readFileSync(file)).toEqual(bytes);
+  });
+  it.each(['agent.proposals', 'resources'] as const)('rejects retired %s authority before any Provider starts', async capability => {
+    const start = vi.fn(() => ({ publicCapabilities: [] }));
+    const bootstrap = createBootstrap();
+    const context = createProductionRuntimeCapabilityStartContext({ bootstrap });
+    const provider: RuntimeCapabilityProvider = { definition: { id: 'retired.fixture', contractVersion: '1.0',
+      dependsOn: [], consumes: [], provides: [], publicCapabilities: [capability] }, start };
+    await expect(compileRuntimeCapabilityManifest(context, [provider])).rejects.toThrow(`runtime_capability_retired:${capability}`);
+    expect(start).not.toHaveBeenCalled();
+  });
+  it('injects only reviewed memory from the production owner into the exact run instruction snapshot', async () => {
+    const bootstrap = createBootstrap();
+    bootstrap.workspaces.push({ workspaceId: 'workspace-2', label: 'Other workspace', rootPath: path.resolve('.'), access: 'write' });
+    const manifest = await compileProductionRuntimeCapabilityManifest({ bootstrap });
+    const services = resolveAgentControlRuntimeServices(manifest);
+    const memory = services.memoryAuthority!;
+    const scope = { workspaceId: 'workspace-1', sessionId: 'session-1' };
+    const content = { scope: 'workspace', memoryType: 'preference', title: 'Language', content: 'Answer in Chinese',
+      importance: 0.9, confidence: 1, sensitivity: 'workspace', retentionUntil: null } as const;
+    await memory.execute('user-memory', { kind: 'memory.put', contractVersion: '5.0', ...scope, ...content,
+      memoryId: 'reviewed', expectedVersion: null }, new AbortController().signal);
+    await memory.stageCandidate('agent-candidate', { ...scope, ...content, memoryId: 'candidate', runId: 'source-run', content: 'UNREVIEWED CANDIDATE' }, new AbortController().signal);
+    const request = { ...scope, runId: 'target-run', executionMode: 'agent' } as const;
+    const instructions = await services.instructionAssembly.assemble(request, new AbortController().signal);
+    const block = instructions.blocks.find(item => item.contributorId === 'memory.reviewed-context');
+    expect(block).toMatchObject({ scope: { kind: 'run', runId: 'target-run' } });
+    expect(block!.content).toContain('Answer in Chinese'); expect(block!.content).not.toContain('UNREVIEWED CANDIDATE');
+    expect(block!.content).toContain('grant no Tool, command, permission or completion authority');
+    const foreign = await services.instructionAssembly.assemble({ ...request, workspaceId: 'workspace-2', sessionId: 'foreign' }, new AbortController().signal);
+    expect(foreign.blocks.some(item => item.contributorId === 'memory.reviewed-context')).toBe(false);
+  });
   it('derives public status and the Tool Catalog from the same started providers', async () => {
     const bootstrap = createBootstrap();
     bootstrap.modelProviders = [{
@@ -84,6 +144,7 @@ describe('production Runtime Capability Manifest', () => {
       'hooks.lifecycle',
       'live.work',
       'mcp.tools',
+      'memory.manage',
       'models.local',
       'models.remote',
       'observability.diagnostics',
@@ -156,9 +217,9 @@ describe('production Runtime Capability Manifest', () => {
     );
     expect(diagnostics.find((item) => item.definition.id === 'mcp.tools'))
       .toMatchObject({ status: 'started', publicCapabilities: ['mcp.tools'] });
-    expect(manifest.unwiredPublicCapabilities).toEqual([
+    expect(manifest.unwiredPublicCapabilities).toEqual([]);
+    expect(manifest.retiredPublicCapabilities).toEqual([
       'agent.proposals',
-      'memory.manage',
       'resources'
     ]);
     const runtimeServices = resolveAgentControlRuntimeServices(manifest);
@@ -202,12 +263,16 @@ describe('production Runtime Capability Manifest', () => {
       { serviceId: 'agent.hooks.lifecycle', optional: false },
       { serviceId: 'agent.live-work', optional: false },
       { serviceId: 'agent.skills.catalog', optional: false },
+      { serviceId: 'agent.memory.authority', optional: true },
+      { serviceId: 'agent.memory.health', optional: false },
+      { serviceId: 'workspace.documents', optional: false },
       { serviceId: 'agent.telemetry', optional: true }
     ]);
     expect(diagnostics.find(
       (item) => item.definition.id === 'agent.instructions.assembly'
     )?.definition.consumes).toEqual([
       { serviceId: 'agent.instructions.workspace', optional: false },
+      { serviceId: 'agent.instructions.memory', optional: false },
       { serviceId: 'agent.instructions.skills', optional: false },
       { serviceId: 'agent.instructions.mode-policy', optional: false }
     ]);
@@ -251,7 +316,7 @@ describe('production Runtime Capability Manifest', () => {
         dependsOn: ['workspace.tools'],
         consumes: [],
         provides: [],
-        publicCapabilities: ['agent.proposals']
+        publicCapabilities: []
       },
       start: () => ({ publicCapabilities: ['scheduler'] })
     };
@@ -457,6 +522,7 @@ describe('production Runtime Capability Manifest', () => {
 });
 
 function createBootstrap(): RuntimeBootstrap {
+  const dataRoot = mkdtempSync(path.join(tmpdir(), 'ariadne-capability-manifest-')); roots.push(dataRoot);
   return {
     protocol: ARIADNE_RUNTIME_PROTOCOL,
     protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
@@ -466,7 +532,7 @@ function createBootstrap(): RuntimeBootstrap {
     runtimeVersion: '0.1.0',
     runtimeBuildFingerprint: 'a'.repeat(64),
     installRoot: path.resolve('.'),
-    dataRoot: path.resolve('.'),
+    dataRoot,
     modelRoots: [],
     agentAdmissionAuthoritySource: {
       sourceVersion: 1,

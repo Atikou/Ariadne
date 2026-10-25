@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import type { ConversationMessageReferenceV3 } from '@ariadne/protocol/public';
+import type { ConversationMessageReference } from '@ariadne/protocol/public';
+import type { FrozenConversationContext } from '../../../control/ports/ConversationContext.js';
+export type { FrozenConversationContext } from '../../../control/ports/ConversationContext.js';
 
 import type {
   ConversationMessageVersion,
@@ -16,7 +18,7 @@ import {
 export interface ConversationSessionLineage {
   readonly sourceSessionId: string;
   readonly sourceSessionVersion: number;
-  readonly boundary: ConversationMessageReferenceV3;
+  readonly boundary: ConversationMessageReference;
   readonly createdAt: string;
 }
 
@@ -27,8 +29,10 @@ export interface ForkConversationSessionRequest {
   readonly sourceSessionId: string;
   readonly workspaceId: string;
   readonly expectedSourceSessionVersion: number;
-  readonly boundary: ConversationMessageReferenceV3;
+  readonly boundary: ConversationMessageReference;
   readonly occurredAt: string;
+  readonly sourceVersionMode?: 'current' | 'frozen';
+  readonly title?: string;
 }
 
 export interface ForkConversationSessionResult {
@@ -48,14 +52,14 @@ export interface ConversationSessionQueryItem {
   readonly session: ConversationSession;
   readonly lineage: ConversationSessionLineage | null;
   readonly matches: readonly {
-    readonly reference: ConversationMessageReferenceV3;
+    readonly reference: ConversationMessageReference;
     readonly role: 'user' | 'assistant';
     readonly snippet: string;
   }[];
 }
 
 export interface ResolvedConversationMessageReference {
-  readonly reference: ConversationMessageReferenceV3;
+  readonly reference: ConversationMessageReference;
   readonly workspaceId: string;
   readonly role: 'user' | 'assistant';
   readonly content: string;
@@ -83,7 +87,11 @@ export class SqliteConversationNavigationStore {
   public constructor(private readonly database: DatabaseSync) {}
 
   public fork(request: ForkConversationSessionRequest): ForkConversationSessionResult {
-    const fingerprint = digest(request);
+    if ((request.title !== undefined && (request.title.length < 1 || request.title.length > 80 || request.title.trim() !== request.title))
+      || (request.sourceVersionMode !== undefined && request.sourceVersionMode !== 'current' && request.sourceVersionMode !== 'frozen')) {
+      throw new Error('conversation_fork_request_invalid');
+    }
+    const fingerprint = fingerprintConversationForkRequest(request);
     const replay = this.database.prepare(
       `SELECT command_fingerprint, result_json
        FROM conversation_navigation_commands WHERE command_id=?`
@@ -95,7 +103,9 @@ export class SqliteConversationNavigationStore {
       const parsed = JSON.parse(replay.result_json) as Omit<ForkConversationSessionResult, 'replayed'>;
       return { ...parsed, replayed: true };
     }
-    const source = this.readSession(request.sourceSessionId);
+    const source = request.sourceVersionMode === 'frozen'
+      ? this.readSessionVersion(request.sourceSessionId, request.expectedSourceSessionVersion)
+      : this.readSession(request.sourceSessionId);
     if (
       source === null
       || source.workspaceId !== request.workspaceId
@@ -128,7 +138,7 @@ export class SqliteConversationNavigationStore {
       sessionId: request.sessionId,
       workspaceId: request.workspaceId,
       version: 1,
-      title: forkTitle(source.title),
+      title: request.title ?? forkTitle(source.title),
       status: 'active',
       createdAt: request.occurredAt,
       updatedAt: request.occurredAt
@@ -256,7 +266,7 @@ export class SqliteConversationNavigationStore {
     });
   }
 
-  public resolve(reference: ConversationMessageReferenceV3): ResolvedConversationMessageReference {
+  public resolve(reference: ConversationMessageReference): ResolvedConversationMessageReference {
     const row = this.database.prepare(
       `SELECT message_id, version, session_id, workspace_id, role,
               payload_json, content_digest, created_at
@@ -294,6 +304,32 @@ export class SqliteConversationNavigationStore {
        FROM conversation_sessions WHERE session_id=?`
     ).get(sessionId) as SessionRow | undefined;
     return row === undefined ? null : parseSessionRow(row, `navigation-session:${sessionId}`);
+  }
+
+  /** A single read transaction freezes the full lineage cutoff, including an empty local branch. */
+  public captureContext(sessionId: string, expectedVersion: number): FrozenConversationContext {
+    const source = this.readSession(sessionId);
+    if (source === null || source.version !== expectedVersion) throw new Error('workflow_context_version_conflict');
+    const row = this.database.prepare(
+      `SELECT message.message_id,message.version,message.content_digest FROM conversation_commands command
+       JOIN conversation_message_versions message ON message.message_id=command.message_id
+         AND message.version=command.message_version AND message.session_id=command.session_id
+       WHERE command.session_id=? AND command.resulting_session_version<=?
+       ORDER BY command.resulting_session_version DESC LIMIT 1`
+    ).get(sessionId, expectedVersion) as { message_id: string; version: number; content_digest: string } | undefined;
+    if (row !== undefined) return { sourceSessionId: sessionId, sourceSessionVersion: expectedVersion,
+      boundary: { sessionId, messageId: row.message_id, messageVersion: row.version, contentDigest: row.content_digest } };
+    const lineage = this.readLineage(sessionId);
+    return lineage === null ? { sourceSessionId: sessionId, sourceSessionVersion: expectedVersion }
+      : { sourceSessionId: lineage.sourceSessionId, sourceSessionVersion: lineage.sourceSessionVersion, boundary: { ...lineage.boundary } };
+  }
+
+  private readSessionVersion(sessionId: string, version: number): ConversationSession | null {
+    const row = this.database.prepare(
+      `SELECT session_id,workspace_id,version,title,status,created_at,updated_at
+       FROM conversation_session_versions WHERE session_id=? AND version=?`
+    ).get(sessionId, version) as SessionRow | undefined;
+    return row === undefined ? null : parseSessionRow(row, `navigation-session-version:${sessionId}:${String(version)}`);
   }
 
   public readMessageVersion(
@@ -411,7 +447,8 @@ function assertLineageDepth(database: DatabaseSync, sessionId: string): void {
   }
 }
 
-function digest(value: unknown): string {
+/** Preserve the released fingerprint algorithm and production request order. */
+export function fingerprintConversationForkRequest(value: ForkConversationSessionRequest): string {
   return `sha256:${createHash('sha256').update(JSON.stringify(value), 'utf8').digest('hex')}`;
 }
 

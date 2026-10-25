@@ -37,8 +37,8 @@ Parent inference
 - Parent 只在 durable child-terminal fact 完整后恢复；Child 输出通过 protected terminal-content resolver 回灌。
 - Public Projection 暴露 `parentRunId`、`delegationId`、`subagentMode` 和 `subagentProviderId`，Renderer 把 Child 及其真实执行 Provider 显示在 Parent 的 SubAgent 状态区，并避免把 Child 误选为 Chat 主 Run。
 - `one_shot` Child 的 `respond` 仍是终态；`continuable` Child 的 `respond` 进入持久化 `waiting_input`。只有显式 `complete`、`fail`、取消或预算/期限终结才结束 Child 生命周期。
-- `agent.subagent.send.v3` 只接受同会话的 direct parent、`waiting_children` Parent 和 `continuable` Child；普通 `agent.inbox.enqueue.v3` 不允许绕过这条父子权限边界。
-- `agent.subagent.interrupt.v3` 只中断 work scheduler 当前持有的 Child inference。Abort 后仍按 Provider outcome unknown 写入 uncertain Attempt，再以精确 `interrupt_turn` recovery decision 回到 `waiting_input`；它不会把 Child 改成 `cancelled`，也不会重新排队已经被旧 Turn claim 的输入。
+- `agent.subagent.send` 只接受同会话的 direct parent、`waiting_children` Parent 和 `continuable` Child；普通 `agent.inbox.enqueue` 不允许绕过这条父子权限边界。
+- `agent.subagent.interrupt` 只中断 work scheduler 当前持有的 Child inference。Abort 后仍按 Provider outcome unknown 写入 uncertain Attempt，再以精确 `interrupt_turn` recovery decision 回到 `waiting_input`；它不会把 Child 改成 `cancelled`，也不会重新排队已经被旧 Turn claim 的输入。
 - 中断后的下一 Turn 使用 `interrupted_inference` cause 绑定原 Turn/Attempt/recovery decision，并在受保护模型输入中插入明确的系统中断事实。中断期间尚未 claim 的 inbox 输入保持原 FIFO 顺序，后续 direct-parent send 唤醒同一个 Child Run。
 - `waiting_input`、interrupted-inference continuation 与 execution Provider 身份/隔离能力/配置摘要已进入 Agent Control schema v7 / ledger revision 55、active recovery scan 和 Public Projection，因此进程重启后仍能恢复同一个 Child Run 并回到同一执行 Provider。
 - Runtime 仅在 Agent admission authority 启用时宣告 `agent.subagents`。
@@ -58,7 +58,7 @@ Parent inference
 - [deepseek-harness capability seams](https://github.com/deepseek-ai/deepseek-harness/blob/cd5ef8148158c3a752a658978873241fdf8e2bbc/docs/capability-seams.zh.md)
 - [deepseek-harness ACP Provider](https://github.com/deepseek-ai/deepseek-harness/blob/cd5ef8148158c3a752a658978873241fdf8e2bbc/packages/subagent/subagent-acp/README.zh.md)
 
-尚未宣告完成：fork、显式凭据转交、structured report、真实 Electron SubAgent 场景和 Claude 商业登录态 live gate。ACP/Codex/Claude 有意不转发 Runtime ambient credential，只使用产品自身安全存储已有的认证；Codex 已在本机真实登录态完成一次 app-server acceptance，Claude 的确定性真实进程协议已验收但本机没有可执行文件，不能把 fixture 写成 live 通过。`send/list/status/interrupt` 已进入公开产品链；`agent.run.cancel.v3` 仍保留终结整个 Run 的独立语义。
+尚未宣告完成：fork、显式凭据转交、structured report、真实 Electron SubAgent 场景和 Claude 商业登录态 live gate。ACP/Codex/Claude 有意不转发 Runtime ambient credential，只使用产品自身安全存储已有的认证；Codex 已在本机真实登录态完成一次 app-server acceptance，Claude 的确定性真实进程协议已验收但本机没有可执行文件，不能把 fixture 写成 live 通过。`send/list/status/interrupt` 已进入公开产品链；`agent.run.cancel` 仍保留终结整个 Run 的独立语义。
 
 ## 验证
 

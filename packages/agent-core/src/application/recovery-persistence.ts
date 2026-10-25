@@ -7,6 +7,7 @@ import type { AgentRunEvent } from './events.js';
 import { isCanonicalIsoTimestamp } from '../domain/values.js';
 import type { AgentJsonValue } from '../domain/json-value.js';
 import type { AgentEffect } from '../domain/effect.js';
+import { agentInboxInputRole } from '../domain/inbox.js';
 import { assertValidAgentAvailableTool, type AgentAvailableTool } from '../domain/tool.js';
 import { assertValidAgentTurnCause, type AgentTurnCause } from '../domain/turn.js';
 import type { AgentTurnInputMessage } from './agent-engine.js';
@@ -16,6 +17,7 @@ import {
   summarizeAgentTurnInput
 } from './turn-input-digest.js';
 import { canonicalizeAgentControlData } from './control-command-digest.js';
+import { isAgentRunCancellationRequestMutation } from './agent-run-effect-result-authority.js';
 
 export const MAX_PROTECTED_AGENT_TURN_INPUT_SNAPSHOT_UTF8_BYTES = 256 * 1_024;
 
@@ -424,11 +426,11 @@ export function assertAgentRunCommitArtifacts(
     }
   } else if (isTerminalAgentRun(next)) {
     if (checkpoint !== undefined) assertExactCheckpoint(next, checkpoint);
-  } else if (isAgentRunInboxOnlyMutation(current, next)) {
+  } else if (isAgentRunInboxOnlyMutation(current, next) || isAgentRunCancellationRequestMutation(current, next)) {
     if (checkpoint !== undefined) {
       throw checkpointConflict(
         next.runId,
-        'A pure Agent inbox mutation must reuse the existing recovery checkpoint.'
+        'An Inbox or cancellation request mutation must reuse the existing recovery checkpoint.'
       );
     }
   } else {
@@ -551,6 +553,8 @@ export function isAgentRunInboxOnlyMutation(
   return current !== null
     && next.version === current.version + 1
     && next.state.checkpointVersion === current.state.checkpointVersion
+    && canonicalizeAgentControlData(next.cancellationRequest ?? null)
+      === canonicalizeAgentControlData(current.cancellationRequest ?? null)
     && canonicalizeAgentControlData(next.binding)
       === canonicalizeAgentControlData(current.binding)
     && canonicalizeAgentControlData(next.state)
@@ -909,7 +913,7 @@ function assertExactCurrentContinuationSuffix(
         || input.state !== 'claimed'
         || input.claimedTurnId !== turnId
         || message.kind !== 'text'
-        || message.role !== (input.source?.kind === 'live_work' ? 'system' : 'user')
+        || message.role !== agentInboxInputRole(input)
         || message.content !== input.content;
     })
   ) throw turnInputConflict(run.runId, 'turn_input_cause_mismatch');

@@ -2,7 +2,7 @@ import type { RuntimeCommand } from '@ariadne/protocol/public';
 
 import type { RuntimeApplicationCommandResult } from '../../../ingress/RuntimeApplication.js';
 import type { RuntimeCommandEnvelope } from '../../../ingress/RuntimeIngress.js';
-import type { RuntimeCommandReconciliation } from '../../../control/ports/RuntimeCommandJournal.js';
+import type { RuntimeCommandReconciliationV2 as RuntimeCommandReconciliation } from '../../../control/ports/RuntimeCommandJournalV2.js';
 
 export type PublicCommandKind = RuntimeCommand['kind'];
 export type OwnedPublicCommand<K extends PublicCommandKind> = Extract<
@@ -14,7 +14,7 @@ export interface AgentPublicCommandOwner {
   readonly id: string;
   readonly commandKinds: readonly PublicCommandKind[];
   execute(envelope: RuntimeCommandEnvelope): Promise<RuntimeApplicationCommandResult>;
-  reconcile(envelope: RuntimeCommandEnvelope): Promise<RuntimeCommandReconciliation>;
+  reconcile(envelope: RuntimeCommandEnvelope): Promise<RuntimeCommandReconciliation | null>;
 }
 
 export interface AgentPublicCommandOwnerSnapshot {
@@ -38,7 +38,7 @@ export function defineAgentPublicCommandOwner<K extends PublicCommandKind>(
   reconcile: (
     envelope: RuntimeCommandEnvelope,
     command: OwnedPublicCommand<K>
-  ) => Promise<RuntimeCommandReconciliation>
+  ) => Promise<RuntimeCommandReconciliation | null>
 ): AgentPublicCommandOwner {
   const frozenKinds = Object.freeze([...commandKinds]);
   return Object.freeze({

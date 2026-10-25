@@ -10,6 +10,9 @@ export const MAX_RUNTIME_MESSAGE_BYTES = 8 * 1024 * 1024;
 export const nonEmptyIdSchema = z.string().trim().min(1).max(256);
 export const runtimeInstanceIdSchema = z.string().uuid();
 export const isoDateTimeSchema = z.string().datetime({ offset: true });
+export const canonicalUtcTimestampSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u)
+  .refine(value => Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value,
+    'Timestamp must be canonical UTC with millisecond precision.');
 
 export const jsonPrimitiveSchema = z.union([
   z.string(),

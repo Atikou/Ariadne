@@ -6,6 +6,7 @@ import type { ModelCatalogProjectionSource } from '../../projection/ModelCatalog
 import type { AgentControlExecutionPipeline } from '../ProductionAgentControlExecutionPipelineFactory.js';
 import type { AgentPersistenceComponentHandle } from './components/persistence/AgentPersistenceComponent.js';
 import type { AgentProjectionComponentOptions } from './components/projection/AgentProjectionComponent.js';
+import type { RuntimeCommand } from '@ariadne/protocol/public';
 
 export interface AgentEntityHandleOptions extends AgentProjectionComponentOptions {
   readonly agentDecisionCommandNow?: () => Date;
@@ -17,11 +18,15 @@ export interface AgentEntityManifest {
   readonly options: AgentEntityHandleOptions;
   readonly executionPipeline?: AgentControlExecutionPipeline;
   readonly modelCatalog?: ModelCatalogProjectionSource;
+  readonly inferenceAdmission?: (command: RuntimeCommand) => void;
   readonly projectionWakeEventSink?: RuntimePublicEventSink;
   readonly authorizedWorkspaceIds: readonly string[];
   readonly observability?: PublicAgentObservability;
   readonly liveWork?: AgentControlLiveWorkService;
   readonly humanSkillCatalog?: NonNullable<AgentControlRuntimeServices['humanSkillCatalog']>;
+  readonly memoryAuthority?: NonNullable<AgentControlRuntimeServices['memoryAuthority']>;
+  readonly memoryHealth?: NonNullable<AgentControlRuntimeServices['memoryHealth']>;
+  readonly workspaceDocuments?: NonNullable<AgentControlRuntimeServices['workspaceDocuments']>;
 }
 
 /** Freezes the one complete assembly input consumed by a started Agent Entity. */

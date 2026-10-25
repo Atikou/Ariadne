@@ -63,7 +63,7 @@ function messageEvent(message: RuntimeMessage): ReviewEvent {
     from: isUser ? 'user' : isSystem ? 'runtime' : 'agent',
     to: isUser ? 'agent' : 'user',
     title: isUser ? '用户消息' : isSystem ? '系统消息' : 'Agent 回复',
-    summary: summarize(message.content),
+    summary: message.content === undefined ? '正文未加载' : summarize(message.content),
     kind: 'message',
     status: statusForMessage(message.status),
     messageId: message.messageId,

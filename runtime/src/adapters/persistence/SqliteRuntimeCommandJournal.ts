@@ -2,16 +2,18 @@ import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { SqliteAuthorityHealth, markAuthorityIntegrityError } from './SqliteAuthorityHealth.js';
+import { WORKSPACE_DOCUMENT_FAILURE_MESSAGES } from '@ariadne/protocol/public';
 
-import { runtimeResponseSchema } from '@ariadne/protocol/host';
+import { runtimeResponseSchema, type RuntimeResponse } from '@ariadne/protocol/host';
 
 import type {
-  RuntimeCommandBeginResult,
-  RuntimeCommandJournal,
-  RuntimeCommandJournalStatus,
-  RuntimeCommandOutcome,
-  RuntimeCommandReconciliation
-} from '../../control/ports/RuntimeCommandJournal.js';
+  RuntimeCommandBeginResultV2 as RuntimeCommandBeginResult,
+  RuntimeCommandJournalV2 as RuntimeCommandJournal,
+  RuntimeCommandReconciliationV2 as RuntimeCommandReconciliation
+} from '../../control/ports/RuntimeCommandJournalV2.js';
+import type { RuntimeCommandJournalStatus } from '../../control/ports/RuntimeCommandJournal.js';
+type RuntimeCommandOutcome = RuntimeResponse['outcome'];
 import {
   migrateRuntimeCommandDatabase,
   RUNTIME_COMMAND_DB_SCHEMA_VERSION,
@@ -28,6 +30,8 @@ interface RuntimeCommandRow {
   command_digest: string;
   status: RuntimeCommandJournalStatus;
   outcome_json: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface SqliteRuntimeCommandJournalOptions {
@@ -57,6 +61,8 @@ export class SqliteRuntimeCommandJournal implements RuntimeCommandJournal {
   private database: DatabaseSync | null = null;
   private ownerLease: SqliteOwnerLease | null = null;
   private lifecycle: 'new' | 'open' | 'closed' = 'new';
+  private health = new SqliteAuthorityHealth('journal');
+  public assertHealthy(): void { this.health.assertHealthy(); if (this.lifecycle !== 'open') throw new Error('runtime_command_journal_not_open'); }
 
   private readonly retentionMs: number;
   private readonly maxReplayOutcomes: number;
@@ -78,6 +84,7 @@ export class SqliteRuntimeCommandJournal implements RuntimeCommandJournal {
     const databasePath = resolveRuntimeCommandDatabasePath(dataRoot);
     mkdirSync(path.dirname(databasePath), { recursive: true });
     const ownerLease = acquireSqliteOwnerLease(databasePath, 'runtime-command-journal');
+    const openingHealth = new SqliteAuthorityHealth('journal');
     let database: DatabaseSync | null = null;
     try {
       const openedDatabase = new DatabaseSync(databasePath);
@@ -90,24 +97,29 @@ export class SqliteRuntimeCommandJournal implements RuntimeCommandJournal {
       openedDatabase.exec('PRAGMA journal_mode = WAL;');
       openedDatabase.exec('PRAGMA synchronous = FULL;');
       assertRuntimeCommandDatabasePragmas(openedDatabase);
+      this.observe(() => inImmediateTransaction(openedDatabase, () => {
+        for (const row of openedDatabase.prepare('SELECT * FROM runtime_commands ORDER BY command_id').iterate())
+          validateCommandRow(row as unknown as RuntimeCommandRow);
+      }, error => openingHealth.observeFailedRollback(error)), openingHealth);
       const now = this.nowIso();
-      recoverInterruptedCommands(openedDatabase, now);
-      inImmediateTransaction(openedDatabase, () => {
+      this.transaction(openedDatabase, () => {
+        for (const row of openedDatabase.prepare("SELECT * FROM runtime_commands WHERE status='executing'").iterate())
+          validateCommandRow(row as unknown as RuntimeCommandRow);
+        openedDatabase.prepare("UPDATE runtime_commands SET status='uncertain',outcome_json=NULL,updated_at=? WHERE status='executing'").run(now);
         pruneReplayPayloads(
           openedDatabase,
           now,
           this.retentionMs,
           this.maxReplayOutcomes
         );
-      });
+      }, openingHealth);
     } catch (error) {
+      openingHealth.observe(error);
       if (database !== null) {
         try {
           closeOwnedSqliteDatabase(database, ownerLease);
-        } catch {
-          // Preserve the initialization failure. The close helper releases
-          // ownership only after a confirmed business close; otherwise it
-          // intentionally retains the fence until process exit.
+        } catch (closeError) {
+          throw new AggregateError([error, closeError], 'runtime_command_journal_open_cleanup_failed');
         }
       } else {
         ownerLease.close();
@@ -116,14 +128,16 @@ export class SqliteRuntimeCommandJournal implements RuntimeCommandJournal {
     }
     this.database = database;
     this.ownerLease = ownerLease;
+    this.health = openingHealth;
     this.lifecycle = 'open';
   }
 
-  begin(commandId: string, commandDigest: string): RuntimeCommandBeginResult {
+  begin(commandId: string, commandDigest: string, previousDigests: readonly string[] = []): RuntimeCommandBeginResult {
     assertCommandIdentity(commandId, commandDigest);
+    if (previousDigests.length > 8 || previousDigests.some(value => !/^[a-f0-9]{64}$/u.test(value))) throw new Error('runtime_command_previous_digest_invalid');
     const storageKey = commandStorageKey(commandId);
     const database = this.requireDatabase();
-    return inImmediateTransaction(database, () => {
+    return this.transaction(database, () => {
       const now = this.nowIso();
       pruneReplayPayloads(database, now, this.retentionMs, this.maxReplayOutcomes);
       const existing = selectCommand(database, storageKey);
@@ -135,7 +149,11 @@ export class SqliteRuntimeCommandJournal implements RuntimeCommandJournal {
         ).run(storageKey, commandDigest, now, now);
         return { kind: 'started' };
       }
-      if (existing.command_digest !== commandDigest) return { kind: 'conflict' };
+      if (existing.command_digest !== commandDigest) {
+        if (!previousDigests.includes(existing.command_digest)) return { kind: 'conflict' };
+        database.prepare('UPDATE runtime_commands SET command_digest=?,updated_at=? WHERE command_id=? AND command_digest=?')
+          .run(commandDigest, now, storageKey, existing.command_digest);
+      }
       if (existing.status === 'completed') {
         if (existing.outcome_json === null) {
           throw storageCorruption(`completed_outcome_missing:${storageKey}`);
@@ -149,13 +167,13 @@ export class SqliteRuntimeCommandJournal implements RuntimeCommandJournal {
   getStatus(commandId: string): RuntimeCommandJournalStatus | null {
     if (commandId.length === 0) throw new Error('runtime_command_id_required');
     assertCommandId(commandId);
-    return selectCommand(this.requireDatabase(), commandStorageKey(commandId))?.status ?? null;
+    return this.observe(() => selectCommand(this.requireDatabase(), commandStorageKey(commandId))?.status ?? null);
   }
 
   complete(
     commandId: string,
     commandDigest: string,
-    outcome: RuntimeCommandOutcome
+    outcome: unknown
   ): void {
     this.settle(commandId, commandDigest, 'completed', outcome);
   }
@@ -163,7 +181,7 @@ export class SqliteRuntimeCommandJournal implements RuntimeCommandJournal {
   markUncertain(
     commandId: string,
     commandDigest: string,
-    outcome: RuntimeCommandOutcome
+    outcome: unknown
   ): void {
     this.settle(commandId, commandDigest, 'uncertain', outcome);
   }
@@ -176,7 +194,7 @@ export class SqliteRuntimeCommandJournal implements RuntimeCommandJournal {
     assertCommandIdentity(commandId, commandDigest);
     const storageKey = commandStorageKey(commandId);
     const database = this.requireDatabase();
-    return inImmediateTransaction(database, () => {
+    return this.transaction(database, () => {
       const existing = selectCommand(database, storageKey);
       if (!existing) throw storageCorruption(`command_missing:${storageKey}`);
       if (existing.command_digest !== commandDigest) return { kind: 'conflict' };
@@ -206,7 +224,10 @@ export class SqliteRuntimeCommandJournal implements RuntimeCommandJournal {
 
       const prepared = this.prepareSettlement('completed', reconciliation.outcome);
       if (prepared.status !== 'completed' || prepared.serialized === null) {
-        throw new Error('runtime_command_reconciliation_outcome_not_replay_safe');
+        // The domain has reconstructed an authorized receipt for this attempt.
+        // Retention policy controls storage, not delivery: keep the tombstone so
+        // every future attempt must obtain fresh evidence from that same owner.
+        return { kind: 'replay', outcome: OUTCOME_SCHEMA.parse(reconciliation.outcome) };
       }
       const completed = database.prepare(
         `UPDATE runtime_commands
@@ -246,13 +267,13 @@ export class SqliteRuntimeCommandJournal implements RuntimeCommandJournal {
     commandId: string,
     commandDigest: string,
     status: Extract<RuntimeCommandJournalStatus, 'completed' | 'uncertain'>,
-    outcome: RuntimeCommandOutcome
+    outcome: unknown
   ): void {
     assertCommandIdentity(commandId, commandDigest);
     const storageKey = commandStorageKey(commandId);
     const prepared = this.prepareSettlement(status, outcome);
     const database = this.requireDatabase();
-    inImmediateTransaction(database, () => {
+    this.transaction(database, () => {
       const now = this.nowIso();
       pruneReplayPayloads(database, now, this.retentionMs, this.maxReplayOutcomes);
       const existing = selectCommand(database, storageKey);
@@ -289,7 +310,7 @@ export class SqliteRuntimeCommandJournal implements RuntimeCommandJournal {
 
   private prepareSettlement(
     status: Extract<RuntimeCommandJournalStatus, 'completed' | 'uncertain'>,
-    outcome: RuntimeCommandOutcome
+    outcome: unknown
   ): {
     status: Extract<RuntimeCommandJournalStatus, 'completed' | 'uncertain'>;
     serialized: string | null;
@@ -314,21 +335,19 @@ export class SqliteRuntimeCommandJournal implements RuntimeCommandJournal {
   }
 
   private requireDatabase(): DatabaseSync {
+    this.health.assertHealthy();
     if (this.lifecycle !== 'open' || !this.database) {
       throw new Error('runtime_command_journal_not_open');
     }
     return this.database;
   }
-}
-
-function recoverInterruptedCommands(database: DatabaseSync, now: string): void {
-  inImmediateTransaction(database, () => {
-    database.prepare(
-      `UPDATE runtime_commands
-       SET status='uncertain', outcome_json=NULL, updated_at=?
-       WHERE status='executing'`
-    ).run(now);
-  });
+  private observe<T>(operation: () => T, health = this.health): T {
+    health.assertHealthy();
+    try { return operation(); } catch (error) { health.observe(error); throw error; }
+  }
+  private transaction<T>(database: DatabaseSync, operation: () => T, health = this.health): T {
+    return this.observe(() => inImmediateTransaction(database, operation, error => health.observeFailedRollback(error)), health);
+  }
 }
 
 function assertRuntimeCommandDatabasePragmas(database: DatabaseSync): void {
@@ -361,11 +380,16 @@ function pruneReplayPayloads(
   maxReplayOutcomes: number
 ): void {
   const cutoff = new Date(Date.parse(now) - retentionMs).toISOString();
+  for (const row of database.prepare("SELECT * FROM runtime_commands WHERE status='completed' AND outcome_json IS NOT NULL AND updated_at<?").iterate(cutoff))
+    validateCommandRow(row as unknown as RuntimeCommandRow);
   database.prepare(
     `UPDATE runtime_commands
      SET status='uncertain', outcome_json=NULL
      WHERE status='completed' AND outcome_json IS NOT NULL AND updated_at < ?`
   ).run(cutoff);
+  for (const row of database.prepare(`SELECT * FROM runtime_commands WHERE status='completed' AND outcome_json IS NOT NULL
+    ORDER BY updated_at DESC,rowid DESC LIMIT -1 OFFSET ?`).iterate(maxReplayOutcomes))
+    validateCommandRow(row as unknown as RuntimeCommandRow);
   database.prepare(
     `UPDATE runtime_commands
      SET status='uncertain', outcome_json=NULL
@@ -380,8 +404,10 @@ function pruneReplayPayloads(
 }
 
 function isReplaySafeOutcome(outcome: RuntimeCommandOutcome): boolean {
-  if (!outcome.ok) return false;
+  if (!outcome.ok) return Object.hasOwn(WORKSPACE_DOCUMENT_FAILURE_MESSAGES,outcome.error.code)
+    && outcome.error.message===WORKSPACE_DOCUMENT_FAILURE_MESSAGES[outcome.error.code];
   if (outcome.result.kind === 'acknowledged') return true;
+  if (['workspace.document.saved','workspace.document.moved','workspace.document.deleted'].includes(outcome.result.kind))return true;
   return outcome.result.kind === 'runtime.status'
     && outcome.result.status.detail === undefined;
 }
@@ -405,14 +431,12 @@ function assertPositiveInteger(value: number, name: string): void {
 
 function selectCommand(database: DatabaseSync, storageKey: string): RuntimeCommandRow | null {
   const row = database.prepare(
-    `SELECT command_id, command_digest, status, outcome_json
+    `SELECT command_id, command_digest, status, outcome_json, created_at, updated_at
      FROM runtime_commands
      WHERE command_id=?`
   ).get(storageKey) as RuntimeCommandRow | undefined;
   if (!row) return null;
-  if (!['executing', 'completed', 'uncertain'].includes(row.status)) {
-    throw storageCorruption(`status_invalid:${storageKey}`);
-  }
+  validateCommandRow(row);
   return row;
 }
 
@@ -445,7 +469,7 @@ function commandStorageKey(commandId: string): string {
   return createHash('sha256').update(commandId, 'utf8').digest('hex');
 }
 
-function inImmediateTransaction<T>(database: DatabaseSync, operation: () => T): T {
+function inImmediateTransaction<T>(database: DatabaseSync, operation: () => T, rollbackFailed?: (error: unknown) => void): T {
   if (database.isTransaction) throw new Error('runtime_command_journal_transaction_active');
   database.exec('BEGIN IMMEDIATE');
   try {
@@ -453,11 +477,28 @@ function inImmediateTransaction<T>(database: DatabaseSync, operation: () => T): 
     database.exec('COMMIT');
     return result;
   } catch (error) {
-    if (database.isTransaction) database.exec('ROLLBACK');
+    if (database.isTransaction) {
+      try { database.exec('ROLLBACK'); }
+      catch (rollbackError) { rollbackFailed?.(rollbackError); throw new AggregateError([error, rollbackError], 'runtime_command_journal_rollback_failed'); }
+    }
     throw error;
   }
 }
 
 function storageCorruption(message: string, cause?: unknown): Error {
-  return new Error(`runtime_command_journal_corruption:${message}`, { cause });
+  return markAuthorityIntegrityError('journal', new Error(`runtime_command_journal_corruption:${message}`, { cause }));
+}
+function validateCommandRow(row: RuntimeCommandRow): void {
+  if (typeof row.command_id !== 'string' || !/^[a-f0-9]{64}$/u.test(row.command_id)
+    || typeof row.command_digest !== 'string' || !/^[a-f0-9]{64}$/u.test(row.command_digest)) throw storageCorruption('identity_invalid');
+  if (!['executing', 'completed', 'uncertain'].includes(row.status)) throw storageCorruption(`status_invalid:${row.command_id}`);
+  for (const value of [row.created_at, row.updated_at]) {
+    if (typeof value !== 'string' || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value)
+      throw storageCorruption('timestamp_invalid');
+  }
+  if (row.status === 'completed') {
+    if (typeof row.outcome_json !== 'string') throw storageCorruption(`completed_outcome_missing:${row.command_id}`);
+    const outcome = parseOutcome(row.outcome_json, row.command_id);
+    if (!isReplaySafeOutcome(outcome) || containsSensitiveAuthorization(row.outcome_json)) throw storageCorruption('outcome_not_replay_safe');
+  } else if (row.outcome_json !== null) throw storageCorruption('uncertain_payload_present');
 }

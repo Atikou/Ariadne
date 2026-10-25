@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { TelemetryConfigSchema } from "../src/config/types.js";
-import { sanitizeTelemetryAttributes } from "../src/telemetry/TelemetryService.js";
+import { sanitizeTelemetryAttributes } from "../src/adapters/observability/ProductionTelemetryService.js";
 
 describe("OpenTelemetry export policy", () => {
   it("is disabled by default and requires exact HTTPS allowlist matches", () => {

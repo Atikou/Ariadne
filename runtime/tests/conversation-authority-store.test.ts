@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readConversationProjectionRecords } from '../src/adapters/persistence/conversation/projection/SqliteConversationProjectionReader.js';
 
 import {
   resolveConversationDatabasePath
@@ -46,6 +47,21 @@ afterEach(async () => {
 });
 
 describe('Conversation authority store', () => {
+  it('reads immutable event, Session and Message bindings with a fixed statement set per projection batch', async () => {
+    const root = tempRoot(), unit = track(new SqliteConversationRunHandoffUnitOfWork(root));
+    const authority = new ConversationAuthorityService(unit);
+    await authority.createSession(createSessionCommand()); await authority.acceptUserMessage(acceptMessageCommand());
+    const database = new DatabaseSync(resolveConversationDatabasePath(root), {readOnly:true});
+    const prepare = vi.spyOn(database, 'prepare');
+    try {
+      const records = readConversationProjectionRecords(database, {afterCursor:0,limit:100});
+      expect(prepare.mock.calls.length).toBe(3);
+      expect(records).toHaveLength(2);
+      expect(records[0]?.session.version).toBe(1); expect(records[1]?.session.version).toBe(2);
+      expect(records[1]?.messageVersion?.payload.content).toBe(RAW_CONTENT);
+      expect(records[1]?.event.type).toBe('conversation.user_message.accepted');
+    } finally { prepare.mockRestore(); database.close(); }
+  });
   it('atomically creates Session + immutable Message v1 + Handoff v1 with a proving FK', async () => {
     const root = tempRoot();
     const unit = track(new SqliteConversationRunHandoffUnitOfWork(root));

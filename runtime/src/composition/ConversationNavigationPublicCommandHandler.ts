@@ -14,9 +14,9 @@ type ConversationNavigationCommand = Extract<
   RuntimeCommandEnvelope['command'],
   {
     readonly kind:
-      | 'conversation.session.fork.v3'
-      | 'conversation.sessions.query.v3'
-      | 'conversation.message.resolve.v3';
+      | 'conversation.session.fork'
+      | 'conversation.sessions.query'
+      | 'conversation.message.resolve';
   }
 >;
 
@@ -42,11 +42,11 @@ export class ConversationNavigationPublicCommandHandler {
     command: ConversationNavigationCommand
   ): Promise<RuntimeApplicationCommandResult> {
     switch (command.kind) {
-      case 'conversation.session.fork.v3':
+      case 'conversation.session.fork':
         return this.fork(envelope, command);
-      case 'conversation.sessions.query.v3':
+      case 'conversation.sessions.query':
         return this.query(envelope, command);
-      case 'conversation.message.resolve.v3':
+      case 'conversation.message.resolve':
         return this.resolve(envelope, command);
     }
   }
@@ -54,7 +54,7 @@ export class ConversationNavigationPublicCommandHandler {
   private async fork(
     envelope: RuntimeCommandEnvelope,
     command: Extract<ConversationNavigationCommand, {
-      readonly kind: 'conversation.session.fork.v3';
+      readonly kind: 'conversation.session.fork';
     }>
   ): Promise<RuntimeApplicationCommandResult> {
     envelope.signal.throwIfAborted();
@@ -73,6 +73,8 @@ export class ConversationNavigationPublicCommandHandler {
         workspaceId: command.workspaceId,
         expectedSourceSessionVersion: command.expectedSourceSessionVersion,
         boundary: command.boundary,
+        ...(command.sourceVersionMode === undefined ? {} : { sourceVersionMode: command.sourceVersionMode }),
+        ...(command.title === undefined ? {} : { title: command.title }),
         occurredAt
       });
       this.callbacks.wakeProjectionDrain();
@@ -80,7 +82,7 @@ export class ConversationNavigationPublicCommandHandler {
         outcome: {
           ok: true,
           result: {
-            kind: 'conversation.session.forked.v3',
+            kind: 'conversation.session.forked',
             sessionId: result.session.sessionId,
             version: 1,
             sourceSessionId: result.lineage.sourceSessionId,
@@ -97,7 +99,7 @@ export class ConversationNavigationPublicCommandHandler {
   private async query(
     envelope: RuntimeCommandEnvelope,
     command: Extract<ConversationNavigationCommand, {
-      readonly kind: 'conversation.sessions.query.v3';
+      readonly kind: 'conversation.sessions.query';
     }>
   ): Promise<RuntimeApplicationCommandResult> {
     envelope.signal.throwIfAborted();
@@ -109,7 +111,7 @@ export class ConversationNavigationPublicCommandHandler {
       outcome: {
         ok: true,
         result: {
-          kind: 'conversation.sessions.query_result.v3',
+          kind: 'conversation.sessions.query_result',
           items: items.map(({ session, lineage, matches }) => ({
             sessionId: session.sessionId,
             workspaceId: session.workspaceId,
@@ -132,7 +134,7 @@ export class ConversationNavigationPublicCommandHandler {
   private async resolve(
     envelope: RuntimeCommandEnvelope,
     command: Extract<ConversationNavigationCommand, {
-      readonly kind: 'conversation.message.resolve.v3';
+      readonly kind: 'conversation.message.resolve';
     }>
   ): Promise<RuntimeApplicationCommandResult> {
     envelope.signal.throwIfAborted();
@@ -143,7 +145,7 @@ export class ConversationNavigationPublicCommandHandler {
       return {
         outcome: {
           ok: true,
-          result: { kind: 'conversation.message.resolved.v3', ...resolved }
+          result: { kind: 'conversation.message.resolved', ...resolved }
         },
         settlement: 'completed'
       };

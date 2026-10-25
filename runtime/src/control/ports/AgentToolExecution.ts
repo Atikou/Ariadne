@@ -3,6 +3,8 @@ import type {
   AgentPinnedToolIdentity,
   AgentToolJsonValue
 } from '@ariadne/agent-core';
+import type { GoalPlanningAuthority } from './GoalPlanningAuthority.js';
+import type { AgentMemoryToolAuthority } from './AgentMemoryToolAuthority.js';
 
 export interface AgentProtectedEffectResultReadResult {
   readonly effectId: string;
@@ -47,10 +49,13 @@ export interface AgentProtectedEffectResultReader {
 }
 
 export interface AgentToolExecutionServices {
+  readonly memory?: AgentMemoryToolAuthority;
   readonly protectedEffectResults?: AgentProtectedEffectResultReader;
+  readonly goalPlanning?: GoalPlanningAuthority;
 }
 
 export interface AgentToolExecutionContext {
+  readonly memory?: AgentMemoryToolAuthority;
   readonly runId: string;
   readonly effectId: string;
   readonly toolCallId: string;
@@ -60,6 +65,7 @@ export interface AgentToolExecutionContext {
   readonly signal: AbortSignal;
   /** Internal execution service; never appears in the data-only Tool contract. */
   readonly protectedEffectResults?: AgentProtectedEffectResultReader;
+  readonly goalPlanning?: GoalPlanningAuthority;
 }
 
 export type AgentToolInputValidationResult =

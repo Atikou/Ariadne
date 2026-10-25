@@ -116,6 +116,7 @@ export class LocalModelService {
   }
 
   private rebuildClients(): void {
+    this.runtimes.retainModelBindings(new Set(this.snapshotValue.models.map(model => model.id)));
     const ready = this.snapshotValue.models.filter((model) => model.status === "ready");
     this.configsValue = ready.map(descriptorToClientConfig);
     this.clientsValue = ready.map((model) => new EmbeddedModelClient(model, this.runtimes));

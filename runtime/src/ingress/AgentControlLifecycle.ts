@@ -4,7 +4,7 @@ import type {
 } from '@ariadne/protocol/host';
 
 import type { HostCapabilityClient } from './HostCapabilityClient.js';
-import type { RuntimeCommandReconciliation } from '../control/ports/RuntimeCommandJournal.js';
+import type { RuntimeCommandReconciliationV2 as RuntimeCommandReconciliation } from '../control/ports/RuntimeCommandJournalV2.js';
 import type {
   RuntimeApplicationCommandResult
 } from './RuntimeApplication.js';
@@ -22,6 +22,10 @@ import type { AgentProcessSandbox } from '../control/ports/AgentProcessSandbox.j
 import type { AgentInstructionAssemblyService } from '../control/ports/AgentInstructionAssembly.js';
 import type { AgentLifecycleHookService } from '../control/ports/AgentLifecycleHooks.js';
 import type { HumanSkillCatalog } from '../control/ports/HumanSkillCatalog.js';
+import type { LongMemoryAuthority } from '../control/ports/LongMemoryAuthority.js';
+import type { WorkspaceDocumentAuthority } from '../control/ports/WorkspaceDocumentAuthority.js';
+import type { RuntimeCommand, RuntimeDomainHealthSnapshot } from '@ariadne/protocol/public';
+import type { RuntimeAuthorityHealthSource } from './RuntimeAuthorityHealthSource.js';
 
 /** Provider-composed services consumed by Agent Control after Store creation. */
 export interface AgentControlRuntimeServices {
@@ -31,6 +35,9 @@ export interface AgentControlRuntimeServices {
   readonly liveWorkLifecycle?: AgentControlLiveWorkService;
   readonly processSandboxForWorkspace?: (workspaceRoot: string) => AgentProcessSandbox;
   readonly humanSkillCatalog?: HumanSkillCatalog;
+  readonly memoryAuthority?: LongMemoryAuthority;
+  readonly memoryHealth?: RuntimeAuthorityHealthSource;
+  readonly workspaceDocuments?: WorkspaceDocumentAuthority;
 }
 
 export interface AgentControlRuntimeLifecycle {
@@ -38,11 +45,15 @@ export interface AgentControlRuntimeLifecycle {
   readonly storageSchemas: Readonly<Record<string, number>>;
   start(): Promise<void>;
   assertHealthy(): void;
+  /** Command admission checks only the worker domains needed by this action. */
+  assertCommandHealthy(command: RuntimeCommand): void;
+  /** Bounded in-memory owner health; does not read Projection or authority rows. */
+  readDomainHealth(): readonly RuntimeDomainHealthSnapshot[];
   /** Returns null only when this control plane does not own the command kind. */
   executeOwnedCommand(
     envelope: RuntimeCommandEnvelope
   ): Promise<RuntimeApplicationCommandResult | null>;
-  /** Returns null only when another domain owns reconciliation for this kind. */
+  /** Null means this domain has no proof of commitment or non-commitment. */
   reconcileUncertainCommand(
     envelope: RuntimeCommandEnvelope
   ): Promise<RuntimeCommandReconciliation | null>;
@@ -71,6 +82,9 @@ export interface AgentControlRuntimeFactoryInput {
   readonly modelCatalog: RuntimeModelCatalogSource;
   /** Exact inference owned by the Runtime model domain. */
   readonly modelInferenceGateway?: ExactAgentModelInferenceRuntime;
+  /** Shares the Application's one inference admission latch with internal
+   * worker dispatch. It adds no inference owner or diagnostic source. */
+  readonly inferenceAdmission?: (command: RuntimeCommand) => void;
   /** Composition-gated queue for non-authoritative Projection wake hints. */
   readonly publicEventSink: RuntimePublicEventSink;
   /** Immediate append-only inference events delivered to the public renderer stream. */

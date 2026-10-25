@@ -14,6 +14,14 @@ import {
 import { compileSpeechEntity } from '../src/main/speech/entity/speech-entity-compiler';
 
 describe('Application Profile', () => {
+  it('includes the production task center in every supported desktop profile', async () => {
+    for (const definition of [DESKTOP_DEFAULT_PROFILE, DESKTOP_PREVIEW_PROFILE, DESKTOP_NO_SPEECH_PROFILE,
+      DESKTOP_STT_ONLY_PROFILE, DESKTOP_TTS_ONLY_PROFILE]) {
+      const profile = await compileApplicationProfile(definition);
+      expect(applicationProfileComponents(profile, 'ui')).toContain('tasks.center');
+      expect(profile.revision).toBe(6);
+    }
+  });
   it('compiles a canonical immutable digest', async () => {
     const first = await compileApplicationProfile(DESKTOP_DEFAULT_PROFILE);
     const second = await compileApplicationProfile({

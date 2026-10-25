@@ -362,14 +362,14 @@ describe('Ariadne Runtime protocol', () => {
   it('requires authoritative session identity and version for v3 messages', () => {
     const message = '  你好\n下一行  ';
     expect(runtimeCommandSchema.parse({
-      kind: 'conversation.session.create.v3',
-      contractVersion: '4.0',
+      kind: 'conversation.session.create',
+      contractVersion: '5.0',
       sessionId: 'session-exact-text',
       workspaceId: 'secondary'
     })).toMatchObject({ sessionId: 'session-exact-text', workspaceId: 'secondary' });
     const command = runtimeCommandSchema.parse({
-      kind: 'conversation.message.accept.v3',
-      contractVersion: '4.0',
+      kind: 'conversation.message.accept',
+      contractVersion: '5.0',
       sessionId: 'session-exact-text',
       workspaceId: 'secondary',
       expectedSessionVersion: 1,
@@ -378,8 +378,8 @@ describe('Ariadne Runtime protocol', () => {
     });
     expect(command).toMatchObject({ content: message, expectedSessionVersion: 1 });
     expect(runtimeCommandSchema.safeParse({
-      kind: 'conversation.message.accept.v3',
-      contractVersion: '4.0',
+      kind: 'conversation.message.accept',
+      contractVersion: '5.0',
       sessionId: 'session-exact-text',
       workspaceId: 'secondary',
       expectedSessionVersion: 1,
@@ -612,7 +612,7 @@ describe('Ariadne Runtime protocol', () => {
       text: '检查',
       source: 'provider',
       startedAt: '2026-07-22T00:00:00.000Z'
-    }).success).toBe(true);
+    }).success).toBe(false);
     expect(runtimeEventSchema.safeParse({
       kind: 'projection.changed',
       feature: 'models'
@@ -642,19 +642,12 @@ describe('Ariadne Runtime protocol', () => {
         eventId: 'event-1',
         cursor: 1,
         schemaVersion: '2.0',
-        aggregateType: 'trace',
+        aggregateType: 'projection',
         aggregateId: 'trace-1',
         aggregateVersion: 1,
         occurredAt: '2026-07-21T12:00:00.000Z',
         event: {
-          kind: 'trace.appended',
-          entry: {
-            traceId: 'trace-1',
-            level: 'info',
-            category: 'protocol-test',
-            message: 'Runtime event.',
-            occurredAt: '2026-07-21T12:00:00.000Z'
-          }
+          kind: 'projection.changed', feature: 'diagnostics'
         }
       }
     }).type).toBe('event');
@@ -704,52 +697,6 @@ describe('Ariadne Runtime protocol', () => {
         }
       }
     })).toThrow();
-  });
-
-  it('carries a structured user-visible error on interrupted Companion messages', () => {
-    const message = parseRuntimeToHostMessage({
-      protocol: ARIADNE_RUNTIME_PROTOCOL,
-      protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION,
-      runtimeInstanceId,
-      type: 'event',
-      event: {
-        eventId: 'event-2',
-        cursor: 2,
-        schemaVersion: '2.0',
-        aggregateType: 'companion',
-        aggregateId: 'message-interrupted',
-        aggregateVersion: 1,
-        occurredAt: '2026-07-22T00:00:00.000Z',
-        event: {
-          kind: 'companion.message.changed',
-          message: {
-            messageId: 'message-interrupted',
-            sessionId: 'session-interrupted',
-            role: 'assistant',
-            content: '已收到的部分内容',
-            status: 'interrupted',
-            createdAt: '2026-07-22T00:00:00.000Z',
-            error: {
-              code: 'COMPANION_TURN_PROTOCOL_ERROR',
-              message: 'Agent 提案格式无效，请重试。',
-              retryable: true
-            }
-          }
-        }
-      }
-    });
-
-    expect(message).toMatchObject({
-      type: 'event',
-      event: {
-        event: {
-          message: {
-            status: 'interrupted',
-            error: { code: 'COMPANION_TURN_PROTOCOL_ERROR', retryable: true }
-          }
-        }
-      }
-    });
   });
 
   it('keeps Browser capability traffic on the private Runtime-to-Main protocol', () => {

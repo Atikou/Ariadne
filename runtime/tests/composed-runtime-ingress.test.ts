@@ -9,12 +9,13 @@ import {
 } from '@ariadne/protocol/host';
 import {
   PUBLIC_PROJECTION_CONTRACT_VERSION,
-  PUBLIC_PROJECTION_GENESIS_DIGEST
+  PUBLIC_PROJECTION_GENESIS_DIGEST, runtimeResultSchema
 } from '@ariadne/protocol/public';
 import { createDefaultRuntimePolicySnapshot } from '@ariadne/protocol/settings';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ComposedRuntimeIngress } from '../src/composition/ComposedRuntimeIngress.js';
+import { RuntimeDomainHealth } from '../src/ingress/RuntimeDomainHealth.js';
 import type {
   AgentControlRuntimeFactory,
   AgentControlRuntimeFactoryInput,
@@ -26,12 +27,12 @@ import type {
   RuntimeApplicationFactory
 } from '../src/ingress/RuntimeApplication.js';
 import type {
-  RuntimeCommandBeginResult,
-  RuntimeCommandJournal,
-  RuntimeCommandJournalStatus,
-  RuntimeCommandOutcome,
-  RuntimeCommandReconciliation
-} from '../src/ingress/RuntimeCommandJournal.js';
+  RuntimeCommandBeginResultV2 as RuntimeCommandBeginResult,
+  RuntimeCommandJournalV2 as RuntimeCommandJournal,
+  RuntimeCommandReconciliationV2 as RuntimeCommandReconciliation
+} from '../src/control/ports/RuntimeCommandJournalV2.js';
+import type { RuntimeCommandJournalStatus } from '../src/control/ports/RuntimeCommandJournal.js';
+type RuntimeCommandOutcome = RuntimeResponse['outcome'];
 import type { RuntimeCommandEnvelope } from '../src/ingress/RuntimeIngress.js';
 import type {
   RuntimeModelCatalogEntry,
@@ -44,8 +45,51 @@ import type {
 } from '../src/ingress/RuntimePublicEventSink.js';
 
 const fingerprint = 'b'.repeat(64);
+const ingressFixtures: { ingress: ComposedRuntimeIngress; shutdownFailureExpected: boolean }[] = [];
+function newIngress(dependencies: ConstructorParameters<typeof ComposedRuntimeIngress>[0], shutdownFailureExpected = false): ComposedRuntimeIngress {
+  const ingress = new ComposedRuntimeIngress(dependencies); ingressFixtures.push({ ingress, shutdownFailureExpected }); return ingress;
+}
+afterEach(async () => {
+  const context = createShutdownContext(Date.now() + 5_000);
+  try {
+    for (const fixture of ingressFixtures.splice(0)) {
+      try { await fixture.ingress.shutdown(context); }
+      catch (error) { if (!fixture.shutdownFailureExpected) throw error; }
+    }
+  } finally { context.dispose(); }
+});
 
 describe('ComposedRuntimeIngress', () => {
+  it('isolates damaged inference authority from independent commands and keeps diagnostics body-free', async () => {
+    let broken=false, external=false;
+    const harness=await createHarness({inferenceHealth:{assertHealthy(){if(broken)throw new Error('private model database');},hasExternalFailure:()=>external}});
+    const read=()=>harness.ingress.execute({...envelope('inference-health-read'),command:{kind:'runtime.health.get'}});
+    external=true;
+    expect(await read()).toMatchObject({ok:true,result:{health:{domains:[{domain:'inference',availability:'degraded',code:'external_unavailable'}]}}});
+    await expect(harness.ingress.execute(envelope('independent-while-model-degraded'))).resolves.toMatchObject({ok:true});
+    external=false;
+    expect(await read()).toMatchObject({ok:true,result:{health:{domains:[{domain:'inference',availability:'healthy'}]}}});
+    broken=true;
+    const health=await read();
+    expect(health).toMatchObject({ok:true,result:{health:{domains:[{domain:'inference',availability:'unavailable',code:'authority_unavailable'}]}}});
+    expect(JSON.stringify(health)).not.toContain('private model database');
+    await expect(harness.ingress.execute({...envelope('model-source-refused'),command:{kind:'model.availability.check',contractVersion:'5.0',modelId:'fixture'}}))
+      .resolves.toMatchObject({ok:false,error:{code:'runtime_inference_unavailable'}});
+    expect(harness.journal.getStatus('model-source-refused')).toBeNull();
+    await expect(harness.ingress.execute(envelope('independent-while-model-damaged'))).resolves.toMatchObject({ok:true});
+  });
+  it('reports an actual journal-probe failure through independent health and rejects ordinary commands before the ledger', async () => {
+    let broken = false;
+    const harness = await createHarness({ journalHealth: { assertHealthy() { if (broken) throw new Error('private journal storage fault'); } } });
+    broken = true;
+    const read = await harness.ingress.execute({ ...envelope('health-independent-journal'), command: { kind: 'runtime.health.get' } });
+    expect(read).toMatchObject({ ok: true, result: { kind: 'runtime.health', health: {
+      domains: [{ domain: 'journal', availability: 'unavailable', code: 'authority_unavailable', recovery: 'repair' }]
+    } } });
+    expect(JSON.stringify(read)).not.toContain('private journal storage fault');
+    await expect(harness.ingress.execute(envelope('journal-fenced-command'))).resolves.toMatchObject({ ok: false, error: { code: 'runtime_journal_unavailable' } });
+    expect(harness.journal.getStatus('journal-fenced-command')).toBeNull();
+  });
   it('constructs the model domain before Control and starts Control before the Application', async () => {
     const order: string[] = [];
     await createHarness({ order, withAgentControl: true });
@@ -78,7 +122,7 @@ describe('ComposedRuntimeIngress', () => {
         supportsVision: false
       }]
     );
-    const ingress = new ComposedRuntimeIngress({
+    const ingress = newIngress({
       commandJournal: journal,
       runtimeApplicationFactory: {
         create: async () => application
@@ -89,6 +133,7 @@ describe('ComposedRuntimeIngress', () => {
           return agentLifecycle([]);
         }
       },
+      preflightCommunicationContract: () => undefined,
       preflightMemoryControlShadows: () => undefined,
       readBuildManifest: () => ({
         schemaVersion: 1,
@@ -149,7 +194,7 @@ describe('ComposedRuntimeIngress', () => {
       order,
       async () => completed(successOutcome())
     );
-    const ingress = new ComposedRuntimeIngress({
+    const ingress = newIngress({
       commandJournal: journal,
       runtimeApplicationFactory: {
         create: async () => {
@@ -168,6 +213,8 @@ describe('ComposedRuntimeIngress', () => {
               throw new Error('initial_projection_drain_failed');
             },
             assertHealthy: () => undefined,
+            assertCommandHealthy: () => undefined,
+            readDomainHealth: () => [],
             executeOwnedCommand: async () => null,
             reconcileUncertainCommand: async () => null,
             prepareShutdown: async () => undefined,
@@ -175,6 +222,7 @@ describe('ComposedRuntimeIngress', () => {
           };
         }
       },
+      preflightCommunicationContract: () => undefined,
       preflightMemoryControlShadows: () => { order.push('legacy-preflight'); },
       readBuildManifest: () => ({
         schemaVersion: 1,
@@ -204,7 +252,7 @@ describe('ComposedRuntimeIngress', () => {
   });
 
   it('preserves the deepest stable startup failure code through lifecycle wrappers', async () => {
-    const ingress = new ComposedRuntimeIngress({
+    const ingress = newIngress({
       commandJournal: new InMemoryRuntimeCommandJournal({ order: [] }),
       runtimeApplicationFactory: {
         create: async () => new FakeRuntimeApplication(
@@ -222,6 +270,7 @@ describe('ComposedRuntimeIngress', () => {
           }
         })
       },
+      preflightCommunicationContract: () => undefined,
       preflightMemoryControlShadows: () => undefined,
       readBuildManifest: () => ({
         schemaVersion: 1,
@@ -309,7 +358,7 @@ describe('ComposedRuntimeIngress', () => {
 
     const conflict = await harness.ingress.execute({
       ...envelope('stable-command'),
-      command: { kind: 'projection.snapshot.get', contractVersion: '4.0' }
+      command: { kind: 'projection.snapshot.get', contractVersion: '5.0' }
     });
 
     expect(conflict).toMatchObject({
@@ -319,14 +368,24 @@ describe('ComposedRuntimeIngress', () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
+  it('validates V2 journal replay at Ingress before publishing an invalid transport result', async () => {
+    const execute = vi.fn(async () => completed(successOutcome()));
+    const harness = await createHarness({ execute });
+    vi.spyOn(harness.journal, 'begin').mockReturnValue({ kind: 'replay', outcome: {
+      ok: true, result: { kind: 'projection.snapshot.page_result', page: { status: 'ok', changes: [] } }
+    } });
+    await expect(harness.ingress.execute(envelope('invalid-journal-replay'))).rejects.toThrow();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('replays commands whose nested object keys arrive in a different order', async () => {
     const execute = vi.fn(async () => completed(successOutcome()));
     const harness = await createHarness({ execute });
     const first = {
       ...envelope('canonical-command'),
       command: {
-        kind: 'agent.decision.resolve.v3' as const,
-        contractVersion: '4.0' as const,
+        kind: 'agent.decision.resolve' as const,
+        contractVersion: '5.0' as const,
         runId: 'run-canonical',
         decisionId: 'decision-canonical',
         action: {
@@ -346,8 +405,8 @@ describe('ComposedRuntimeIngress', () => {
         },
         decisionId: 'decision-canonical',
         runId: 'run-canonical',
-        contractVersion: '4.0' as const,
-        kind: 'agent.decision.resolve.v3' as const
+        contractVersion: '5.0' as const,
+        kind: 'agent.decision.resolve' as const
       }
     };
 
@@ -396,6 +455,48 @@ describe('ComposedRuntimeIngress', () => {
       });
     expect(execute).not.toHaveBeenCalled();
     expect(harness.journal.getStatus('health-gated-command')).toBeNull();
+  });
+
+  it('names the failed worker before journal admission while allowing an unrelated command', async () => {
+    const health = new RuntimeDomainHealth();
+    health.register('workflow', { probe() { throw new Error('private worker exception'); },
+      failureCode: 'worker_failed', recovery: 'reconcile' });
+    const execute = vi.fn(async () => completed(successOutcome()));
+    const harness = await createHarness({ withAgentControl: true, execute,
+      assertAgentCommandHealthy: command => {
+        if (command.kind === 'workflow.start') health.assertAvailable(['workflow']);
+      } });
+    const rejected: RuntimeCommandEnvelope = { ...envelope('worker-gated'), command: { kind: 'workflow.start', contractVersion: '5.0', workspaceId: 'workspace', sessionId: 'session',
+      workflowId: 'workflow', goalId: 'goal', expectedGoalVersion: 1, expectedTodoRevision: 1, todoIds: ['todo'],
+      maxConcurrency: 1, maxTransitions: 1, executionMode: 'agent', deadlineAt: '2098-01-01T00:00:00.000Z' } };
+    const outcome = await harness.ingress.execute(rejected);
+    expect(outcome).toMatchObject({ ok: false, error: { code: 'runtime_workflow_unavailable', retryable: false } });
+    expect(JSON.stringify(outcome)).not.toContain('private worker exception');
+    expect(harness.journal.getStatus('worker-gated')).toBeNull();
+    await expect(harness.ingress.execute(envelope('unrelated-after-worker-failure'))).resolves.toEqual(successOutcome());
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads bounded source health independently of damaged Projection admission and command journal', async () => {
+    let damaged = false;
+    const health = new RuntimeDomainHealth();
+    health.register('projection', { probe() { if (damaged) throw new Error('private corrupt payload'); },
+      failureCode: 'authority_unavailable', recovery: 'repair' });
+    const execute = vi.fn(async () => completed(successOutcome()));
+    const harness = await createHarness({ withAgentControl: true, execute,
+      assertAgentHealthy: () => { if (damaged) throw new Error('corrupt'); }, readAgentDomainHealth: () => health.read() });
+    damaged = true;
+    const journal = vi.spyOn(harness.journal, 'begin').mockImplementation(() => { throw new Error('corrupt journal'); });
+    const command: RuntimeCommandEnvelope = { ...envelope('independent-health'), command: { kind: 'runtime.health.get' } };
+    const outcome = await harness.ingress.execute(command);
+    expect(outcome).toMatchObject({ ok: true, result: { kind: 'runtime.health', health: {
+      contractVersion: '1.0', coverage: 'registered_domains', domains: [{ domain: 'projection',
+        source: 'projection', availability: 'unavailable', code: 'authority_unavailable', recovery: 'repair' }]
+    } } });
+    if (!outcome.ok) throw new Error('fixture_health');
+    expect(() => runtimeResultSchema.parse(outcome.result)).not.toThrow();
+    expect(JSON.stringify(outcome)).not.toContain('private corrupt payload');
+    expect(journal).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled(); journal.mockRestore();
   });
 
   it('persists an uncertain interruption before the application observes abort', async () => {
@@ -720,6 +821,8 @@ describe('ComposedRuntimeIngress', () => {
 });
 
 interface HarnessOptions {
+  readonly inferenceHealth?: {assertHealthy():void;hasExternalFailure?():boolean};
+  readonly journalHealth?: { assertHealthy(): void };
   readonly execute?: (
     envelope: RuntimeCommandEnvelope
   ) => Promise<RuntimeApplicationCommandResult>;
@@ -730,6 +833,8 @@ interface HarnessOptions {
   readonly failAgentClose?: boolean;
   readonly failApplicationPrepare?: boolean;
   readonly assertAgentHealthy?: () => void;
+  readonly assertAgentCommandHealthy?: AgentControlRuntimeLifecycle['assertCommandHealthy'];
+  readonly readAgentDomainHealth?: AgentControlRuntimeLifecycle['readDomainHealth'];
   readonly executeAgentOwned?: (
     envelope: RuntimeCommandEnvelope
   ) => Promise<RuntimeApplicationCommandResult | null>;
@@ -753,6 +858,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<{
     options.execute ?? (async () => completed(successOutcome())),
     options.failApplicationPrepare ?? false
   );
+  if(options.inferenceHealth!==undefined)Object.defineProperty(application,'inferenceHealth',{value:options.inferenceHealth});
   const applicationFactory: RuntimeApplicationFactory = {
     create: async () => {
       order.push('application-create');
@@ -761,8 +867,10 @@ async function createHarness(options: HarnessOptions = {}): Promise<{
   };
   const dependencies = {
     commandJournal: journal,
+    ...(options.journalHealth === undefined ? {} : { journalHealth: options.journalHealth }),
     runtimeApplicationFactory: applicationFactory,
-    preflightMemoryControlShadows: () => { order.push('legacy-preflight'); },
+    preflightCommunicationContract: () => undefined,
+      preflightMemoryControlShadows: () => { order.push('legacy-preflight'); },
     readBuildManifest: () => ({
       schemaVersion: 1 as const,
       runtimeVersion: '0.1.0',
@@ -774,11 +882,13 @@ async function createHarness(options: HarnessOptions = {}): Promise<{
         options.failAgentClose,
         options.assertAgentHealthy,
         options.executeAgentOwned,
-        options.reconcileAgentOwned
+        options.reconcileAgentOwned,
+        options.assertAgentCommandHealthy,
+        options.readAgentDomainHealth
       )
     } : {})
   };
-  const ingress = new ComposedRuntimeIngress(dependencies);
+  const ingress = newIngress(dependencies, Boolean(options.failJournalClose || options.failAgentClose || options.failApplicationPrepare));
   await ingress.initialize({
     bootstrap: bootstrap(),
     hostCapabilities: {
@@ -790,7 +900,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<{
 }
 
 class FakeRuntimeApplication implements RuntimeApplication {
-  public readonly storageSchemas = { memory: 45, companion: 1, tools: 1 };
+  public readonly storageSchemas = { agentControl: 7, conversation: 4, productivity: 2 };
   public readonly publicEvents: RuntimePublicEventAppend[] = [];
   public readonly publicEventSink: RuntimePublicEventSink = {
     append: async (event) => { this.publicEvents.push(event); }
@@ -927,7 +1037,9 @@ function agentFactory(
   ) => Promise<RuntimeApplicationCommandResult | null> = async () => null,
   reconcileUncertainCommand: (
     envelope: RuntimeCommandEnvelope
-  ) => Promise<RuntimeCommandReconciliation | null> = async () => null
+  ) => Promise<RuntimeCommandReconciliation | null> = async () => null,
+  assertCommandHealthy?: AgentControlRuntimeLifecycle['assertCommandHealthy'],
+  readDomainHealth?: AgentControlRuntimeLifecycle['readDomainHealth']
 ): AgentControlRuntimeFactory {
   return {
     create: async () => {
@@ -939,6 +1051,8 @@ function agentFactory(
         executeOwnedCommand,
         reconcileUncertainCommand
       );
+      if (assertCommandHealthy !== undefined) lifecycle.assertCommandHealthy = assertCommandHealthy;
+      if (readDomainHealth !== undefined) lifecycle.readDomainHealth = readDomainHealth;
       return lifecycle;
     }
   };
@@ -960,6 +1074,8 @@ function agentLifecycle(
     storageSchemas: { agentControl: 13, publicProjection: 1 },
     start: async () => { order.push('agent-start'); },
     assertHealthy,
+    assertCommandHealthy: () => assertHealthy(),
+    readDomainHealth: () => [],
     executeOwnedCommand,
     reconcileUncertainCommand,
     prepareShutdown: async () => { order.push('agent-prepare'); },
@@ -1031,7 +1147,8 @@ function bootstrap(): RuntimeBootstrap {
     runtimeVersion: '0.1.0',
     runtimeBuildFingerprint: fingerprint,
     installRoot: path.resolve('.'),
-    dataRoot: path.resolve('tmp', `ingress-${randomUUID()}`),
+    // Failure-fence fixtures deliberately retain owners until process exit.
+    dataRoot: path.resolve('artifacts', 'ingress-fixtures', `ingress-${randomUUID()}`),
     modelRoots: [],
     agentAdmissionAuthoritySource: disabledAdmissionAuthoritySource(),
     runtimePolicy: createDefaultRuntimePolicySnapshot(),

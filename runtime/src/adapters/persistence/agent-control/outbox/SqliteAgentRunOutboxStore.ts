@@ -1,3 +1,4 @@
+import { markAuthorityIntegrityError } from '../../SqliteAuthorityHealth.js';
 import type { DatabaseSync } from 'node:sqlite';
 
 import {
@@ -103,20 +104,20 @@ export async function claimPendingAgentRunOutbox(
     return existing.map(parseClaimedOutboxRow);
   }
   const completed = database.prepare(
-    'SELECT COUNT(*) AS count FROM agent_v3_outbox WHERE published_claim_id=?'
+    'SELECT COUNT(*) AS count FROM agent_outbox WHERE published_claim_id=?'
   ).get(request.claimId) as { count: number };
   if (completed.count > 0) return [];
 
   const candidates = database.prepare(
     `SELECT cursor
-     FROM agent_v3_outbox
+     FROM agent_outbox
      WHERE published_at IS NULL
        AND (claim_id IS NULL OR claim_expires_at <= ?)
      ORDER BY cursor
      LIMIT ?`
   ).all(claimedAt, request.limit) as unknown as { cursor: number }[];
   const update = database.prepare(
-    `UPDATE agent_v3_outbox
+    `UPDATE agent_outbox
      SET claim_id=?, claimed_at=?, claim_expires_at=?,
          publish_attempts=publish_attempts + 1
      WHERE cursor=? AND published_at IS NULL
@@ -153,7 +154,7 @@ export async function markAgentRunOutboxPublished(
   const rows: AgentOutboxRow[] = [];
   for (const message of request.messages) {
     const row = database.prepare(
-      'SELECT * FROM agent_v3_outbox WHERE cursor=?'
+      'SELECT * FROM agent_outbox WHERE cursor=?'
     ).get(message.cursor) as AgentOutboxRow | undefined;
     if (row === undefined || row.event_id !== message.eventId) {
       throw new AgentRunOutboxClaimConflictError(
@@ -185,7 +186,7 @@ export async function markAgentRunOutboxPublished(
   }
 
   const update = database.prepare(
-    `UPDATE agent_v3_outbox
+    `UPDATE agent_outbox
      SET published_at=?, published_claim_id=?,
          claim_id=NULL, claimed_at=NULL, claim_expires_at=NULL
      WHERE cursor=? AND event_id=? AND published_at IS NULL AND claim_id=?`
@@ -210,11 +211,11 @@ export async function markAgentRunOutboxPublished(
 
 export function countUnpublishedAgentRunOutbox(database: DatabaseSync): number {
   const row = database.prepare(
-    'SELECT COUNT(*) AS count FROM agent_v3_outbox WHERE published_at IS NULL'
+    'SELECT COUNT(*) AS count FROM agent_outbox WHERE published_at IS NULL'
   ).get() as { count: number };
   const count = Number(row.count);
   if (!Number.isSafeInteger(count) || count < 0) {
-    throw storageCorruption('agent_v3_outbox:pending_count_invalid');
+    throw storageCorruption('agent_outbox:pending_count_invalid');
   }
   return count;
 }
@@ -223,14 +224,14 @@ export function recoverAbandonedAgentOutboxClaims(database: DatabaseSync): void 
   database.exec('BEGIN IMMEDIATE;');
   try {
     database.exec(
-      `UPDATE agent_v3_outbox
+      `UPDATE agent_outbox
        SET claim_id=NULL, claimed_at=NULL, claim_expires_at=NULL
        WHERE published_at IS NULL AND claim_id IS NOT NULL;`
     );
     database.exec('COMMIT;');
   } catch (error) {
     if (database.isTransaction) database.exec('ROLLBACK;');
-    throw storageCorruption('agent_v3_outbox:owner_takeover_recovery_failed', error);
+    throw storageCorruption('agent_outbox:owner_takeover_recovery_failed', error);
   }
 }
 
@@ -253,8 +254,8 @@ function selectOutboxRows(
             event.sequence AS canonical_sequence,
             event.occurred_at AS canonical_occurred_at,
             event.event_json AS canonical_event_json
-     FROM agent_v3_outbox AS outbox
-     LEFT JOIN agent_v3_events AS event ON event.event_id=outbox.event_id
+     FROM agent_outbox AS outbox
+     LEFT JOIN agent_events AS event ON event.event_id=outbox.event_id
      WHERE ${where}
      ORDER BY outbox.cursor`
   ).all(...parameters) as unknown as AgentOutboxRow[];
@@ -262,7 +263,7 @@ function selectOutboxRows(
 
 function parseClaimedOutboxRow(row: AgentOutboxRow): ClaimedAgentRunOutboxMessage {
   if (row.claim_id === null || row.claim_expires_at === null) {
-    throw storageCorruption(`agent_v3_outbox:${String(row.cursor)}:claim_metadata_missing`);
+    throw storageCorruption(`agent_outbox:${String(row.cursor)}:claim_metadata_missing`);
   }
   if (
     row.canonical_command_id === null
@@ -272,10 +273,10 @@ function parseClaimedOutboxRow(row: AgentOutboxRow): ClaimedAgentRunOutboxMessag
     || row.canonical_occurred_at === null
     || row.canonical_event_json === null
   ) {
-    throw storageCorruption(`agent_v3_outbox:${String(row.cursor)}:event_missing`);
+    throw storageCorruption(`agent_outbox:${String(row.cursor)}:event_missing`);
   }
   if (row.event_json !== row.canonical_event_json) {
-    throw storageCorruption(`agent_v3_outbox:${String(row.cursor)}:event_diverged`);
+    throw storageCorruption(`agent_outbox:${String(row.cursor)}:event_diverged`);
   }
   const event = parseAgentEventRow({
     event_id: row.event_id,
@@ -292,7 +293,7 @@ function parseClaimedOutboxRow(row: AgentOutboxRow): ClaimedAgentRunOutboxMessag
     || event.runId !== row.aggregate_id
     || event.runVersion !== row.aggregate_version
   ) {
-    throw storageCorruption(`agent_v3_outbox:${String(row.cursor)}:event_metadata_mismatch`);
+    throw storageCorruption(`agent_outbox:${String(row.cursor)}:event_metadata_mismatch`);
   }
   return {
     cursor: row.cursor,
@@ -306,5 +307,5 @@ function parseClaimedOutboxRow(row: AgentOutboxRow): ClaimedAgentRunOutboxMessag
 }
 
 function storageCorruption(message: string, cause?: unknown): Error {
-  return new Error(`agent_v3_storage_corruption:${message}`, { cause });
+  return markAuthorityIntegrityError('execution', new Error(`agent_storage_corruption:${message}`, { cause }));
 }

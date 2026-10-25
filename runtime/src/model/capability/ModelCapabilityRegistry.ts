@@ -1,35 +1,47 @@
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { acquireSqliteOwnerLease, closeOwnedSqliteDatabase, type SqliteOwnerLease } from '../../adapters/persistence/SqliteOwnerLease.js';
+import { initializeModelCapabilitySchema } from './ModelCapabilityDbSchema.js';
+import type { ModelCapabilityAuthority } from './ModelCapabilityAuthority.js';
+import { DATABASE_PATHS } from '../../adapters/persistence/DatabasePaths.js';
+import { SqliteAuthorityHealth, attributeSqliteOpeningFault } from '../../adapters/persistence/SqliteAuthorityHealth.js';
+import { auditModelCapabilityAuthority, readStoredQualification, type StoredQualificationRow } from './ModelCapabilityRecords.js';
 
 import {
-  MODEL_CAPABILITY_ADAPTER_PROTOCOL_VERSION,
   assertQualificationReport,
   unknownQualification,
   type ModelCapabilityQualification
 } from './ModelCapabilityQualification.js';
 
-const STORAGE_SCHEMA_VERSION = 1;
-
-interface StoredQualificationRow {
-  readonly report_json: string;
-}
-
 /** Runtime-owned authority for capability evidence bound to an exact model fingerprint. */
-export class ModelCapabilityRegistry {
+export class ModelCapabilityRegistry implements ModelCapabilityAuthority {
   private readonly database: DatabaseSync;
+  private readonly ownerLease: SqliteOwnerLease;
   private readonly currentFingerprints = new Map<string, string>();
   private closed = false;
+  private readonly health = new SqliteAuthorityHealth('inference');
 
   public constructor(databasePath: string) {
     const resolved = path.resolve(databasePath);
     mkdirSync(path.dirname(resolved), { recursive: true });
-    this.database = new DatabaseSync(resolved);
-    this.database.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
-    this.initializeSchema();
+    const lease = acquireSqliteOwnerLease(resolved, 'model-capability');
+    let database: DatabaseSync | undefined;
+    try {
+      database = new DatabaseSync(resolved);
+      initializeModelCapabilitySchema(database, auditModelCapabilityAuthority);
+      database.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
+      this.database = database; this.ownerLease = lease;
+    } catch (error) {
+      attributeSqliteOpeningFault('inference', error);
+      if (!database) lease.close(); else try { closeOwnedSqliteDatabase(database,lease); }
+      catch (closeError) { throw new AggregateError([error, closeError], 'model_capability_open_cleanup_failed'); }
+      throw error;
+    }
   }
 
   public registerFingerprint(providerId: string, modelId: string, fingerprint: string): void {
+    this.assertOpen();
     assertIdentity(providerId, modelId, fingerprint);
     this.currentFingerprints.set(modelKey(providerId, modelId), fingerprint);
   }
@@ -52,20 +64,27 @@ export class ModelCapabilityRegistry {
   ): ModelCapabilityQualification {
     this.assertOpen();
     assertIdentity(providerId, modelId, fingerprint);
+    return this.observe(() => {
     const row = this.database.prepare(`
-      SELECT report_json
+      SELECT *
       FROM model_capability_qualification
       WHERE provider_id = ? AND model_id = ? AND fingerprint = ?
     `).get(providerId, modelId, fingerprint) as unknown as StoredQualificationRow | undefined;
     if (row === undefined) return unknownQualification({ providerId, modelId, fingerprint });
-    const parsed = JSON.parse(row.report_json) as ModelCapabilityQualification;
-    return Object.freeze({ ...assertQualificationReport(parsed) });
+    return readStoredQualification(row);
+    });
   }
 
   public write(report: ModelCapabilityQualification): void {
     this.assertOpen();
-    const valid = assertQualificationReport(report);
-    this.database.prepare(`
+    const proposed = assertQualificationReport(report);
+    const existingQuality = this.read(proposed.providerId, proposed.modelId, proposed.fingerprint).quality;
+    // Qualification probes can finish after a newer benchmark. Their stale
+    // snapshot must not erase or roll back quality for this exact fingerprint.
+    const valid = existingQuality !== undefined && (proposed.quality === undefined
+      || Date.parse(existingQuality.evaluatedAt) > Date.parse(proposed.quality.evaluatedAt))
+      ? {...proposed, quality: existingQuality} : proposed;
+    this.observe(() => this.database.prepare(`
       INSERT INTO model_capability_qualification (
         provider_id, model_id, fingerprint, adapter_protocol_version, report_json, tested_at
       ) VALUES (?, ?, ?, ?, ?, ?)
@@ -80,49 +99,23 @@ export class ModelCapabilityRegistry {
       valid.adapterProtocolVersion,
       JSON.stringify(valid),
       valid.testedAt ?? null
-    );
+    ));
   }
 
   public close(): void {
     if (this.closed) return;
+    closeOwnedSqliteDatabase(this.database,this.ownerLease);
     this.closed = true;
-    this.database.close();
-  }
-
-  private initializeSchema(): void {
-    this.database.exec(`
-      CREATE TABLE IF NOT EXISTS model_capability_metadata (
-        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-        schema_version INTEGER NOT NULL
-      );
-    `);
-    const metadata = this.database.prepare(`
-      SELECT schema_version FROM model_capability_metadata WHERE singleton = 1
-    `).get() as unknown as { readonly schema_version: number } | undefined;
-    if (metadata !== undefined && metadata.schema_version !== STORAGE_SCHEMA_VERSION) {
-      this.database.exec(`
-        DROP TABLE IF EXISTS model_capability_qualification;
-        DELETE FROM model_capability_metadata;
-      `);
-    }
-    this.database.exec(`
-      CREATE TABLE IF NOT EXISTS model_capability_qualification (
-        provider_id TEXT NOT NULL,
-        model_id TEXT NOT NULL,
-        fingerprint TEXT NOT NULL,
-        adapter_protocol_version INTEGER NOT NULL,
-        report_json TEXT NOT NULL,
-        tested_at TEXT,
-        PRIMARY KEY (provider_id, model_id, fingerprint)
-      );
-      INSERT INTO model_capability_metadata (singleton, schema_version)
-      VALUES (1, ${String(STORAGE_SCHEMA_VERSION)})
-      ON CONFLICT(singleton) DO UPDATE SET schema_version = excluded.schema_version;
-    `);
   }
 
   private assertOpen(): void {
     if (this.closed) throw new Error('model_capability_registry_closed');
+    this.health.assertHealthy();
+  }
+  public assertHealthy(): void { this.assertOpen(); }
+  private observe<T>(operation: () => T): T {
+    this.health.assertHealthy();
+    try { return operation(); } catch (error) { this.health.observe(error); throw error; }
   }
 }
 
@@ -137,10 +130,8 @@ function assertIdentity(providerId: string, modelId: string, fingerprint: string
 }
 
 export function qualificationDatabasePath(dataRoot: string): string {
-  return path.join(
-    path.resolve(dataRoot),
-    'data',
-    'model-capability',
-    `model-capability-v${String(MODEL_CAPABILITY_ADAPTER_PROTOCOL_VERSION)}.db`
-  );
+  const target = path.resolve(dataRoot, DATABASE_PATHS.modelCapability);
+  const root = path.dirname(target);
+  if (existsSync(path.join(root, 'model-capability-v1.db'))) throw new Error('model_capability_database_name_migration_required');
+  return target;
 }

@@ -7,7 +7,6 @@ ADR 记录长期决策和历史原因，不承担当前能力清单。当前生�
 | [0001](0001-ariadne-agent-core-ownership.md) | Accepted | 独立 Agent Core 所有权 |
 | [0002](0002-single-agent-run-owner.md) | Accepted | Agent Run 单一状态所有者 |
 | [0003](0003-dependency-direction-and-baseline.md) | Accepted | 依赖方向与架构门禁 |
-| [0004](0004-agent-v2-recovery-ledger.md) | Superseded | Agent v2 recovery ledger；仅保留历史不变量 |
 | [0005](0005-isolated-control-stores-and-recovery-encryption.md) | Accepted | 控制库隔离与恢复载荷加密 |
 | [0006](0006-durable-inference-attempts.md) | Accepted | 持久 Inference Attempt |
 | [0007](0007-runtime-command-reconciliation.md) | Accepted | 不确定命令的 receipt 协调 |
@@ -18,7 +17,6 @@ ADR 记录长期决策和历史原因，不承担当前能力清单。当前生�
 | [0012](0012-sanitized-decision-presentation.md) | Accepted | 脱敏 Decision Presentation |
 | [0013](0013-protected-turn-input-execution-snapshot.md) | Accepted | 受保护 Turn 输入快照 |
 | [0014](0014-causal-effect-result-continuation.md) | Accepted | Effect Result 因果续接 |
-| [0015](0015-pure-v3-text-effect-result-protocol.md) | Superseded | 历史 v3 文本 Effect Result 协议；由 ADR-0021/0022 取代 |
 | [0016](0016-agent-run-work-scheduler-and-recovery.md) | Accepted | Run Work Scheduler 与恢复 |
 | [0017](0017-exact-follow-up-inference-ownership.md) | Accepted | Follow-up Inference 所有权 |
 | [0018](0018-bootstrap-frozen-capability-manifest.md) | Accepted | Bootstrap 冻结的 Capability Manifest |
@@ -37,5 +35,13 @@ ADR 记录长期决策和历史原因，不承担当前能力清单。当前生�
 | [0031](0031-manifest-owned-trusted-hook-provider-lifecycle.md) | Accepted | Manifest 管理的可信 Hook Provider 生命周期 |
 | [0032](0032-durable-agent-user-question-control-plane.md) | Accepted | Agent 主动提问的持久控制面 |
 | [0033](0033-contract-pinned-tool-semantics-and-public-presentation.md) | Accepted | Tool 模型语义与公开静态展示的合同固定 |
+
+| [0039](0039-composer-composition-and-keyboard.md) | Accepted | 组合输入优先与单一聊天快捷键入口 |
+| [0040](0040-private-file-drafts-and-mutation-recovery.md) | Proposed | 加密文件草稿、退出保护与原命令恢复 |
+| [0041](0041-incremental-memory-search-index.md) | Accepted | 后台增量记忆索引与有界候选查询 |
+| [0042](0042-versioned-productivity-editing.md) | Accepted | 生产力表单草稿、版本冲突与待办依赖编辑 |
+| [0043](0043-bounded-task-directory-and-versioned-module-editing.md) | Accepted | 有界任务目录、模块版本草稿与窗口生命周期 |
+
+| [0044](0044-authorized-read-only-task-center.md) | Proposed | 授权只读任务中心、稳定分页与原所有者导航 |
 
 ADR 的日期不表示内容过期；它表示决策发生时间。若实现状态已变化，正文必须把旧状态标为历史快照，并链接当前实现文档。

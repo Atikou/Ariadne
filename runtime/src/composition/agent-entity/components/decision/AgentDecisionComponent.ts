@@ -5,7 +5,7 @@ import {
   AgentDecisionAuthorityError,
   AgentDecisionAuthorityService
 } from '../../../../control/run/AgentDecisionAuthorityService.js';
-import type { RuntimeCommandReconciliation } from '../../../../control/ports/RuntimeCommandJournal.js';
+import type { RuntimeCommandReconciliationV2 as RuntimeCommandReconciliation } from '../../../../control/ports/RuntimeCommandJournalV2.js';
 import type { RuntimeApplicationCommandResult } from '../../../../ingress/RuntimeApplication.js';
 import type { RuntimeCommandEnvelope } from '../../../../ingress/RuntimeIngress.js';
 import { completedPublicError } from '../../../AgentPublicCommandFailures.js';
@@ -16,7 +16,7 @@ import {
 } from '../../command-owners/AgentPublicCommandOwnerTable.js';
 
 type DecisionCommand = Extract<RuntimeCommandEnvelope['command'], {
-  readonly kind: 'agent.decision.resolve.v3';
+  readonly kind: 'agent.decision.resolve';
 }>;
 
 export interface AgentDecisionComponentInput {
@@ -83,7 +83,7 @@ export function createAgentDecisionComponent(
   return Object.freeze({
     commandOwners: (): readonly AgentPublicCommandOwner[] => Object.freeze([
       defineAgentPublicCommandOwner('agent.decision', [
-        'agent.decision.resolve.v3'
+        'agent.decision.resolve'
       ], execute, reconcile)
     ])
   });

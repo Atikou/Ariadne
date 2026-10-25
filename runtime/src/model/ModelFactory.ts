@@ -10,7 +10,7 @@ import type { LocalModelRuntimeManager } from "./local/LocalModelRuntimeManager.
 import { clientConfigToDescriptor } from "./local/types.js";
 import type { ModelClient } from "./types.js";
 import { ResilientModelClient } from "./ProviderResilience.js";
-import type { TelemetryService } from "../telemetry/TelemetryService.js";
+import type { TelemetryService } from "../adapters/observability/ProductionTelemetryService.js";
 
 export interface ModelFactoryDependencies {
   localRuntimes?: LocalModelRuntimeManager;

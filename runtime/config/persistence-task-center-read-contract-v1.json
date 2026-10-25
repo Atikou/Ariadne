@@ -1,0 +1,20 @@
+{
+  "contractVersion": 1,
+  "policy": "Read-only metadata and versioned relations under original Productivity and Conversation owners; nine original ports and all previous extension baselines remain unchanged. No authoritative task state or message body in the directory.",
+  "contracts": [
+    {
+      "owner": "productivityTaskCatalogReadV1",
+      "file": "runtime/src/control/ports/ProductivityTaskCatalogReadV1.ts",
+      "export": "ProductivityTaskCatalogReadV1",
+      "digest": "sha256:17901067c62f0ee17643abef571d273179f690e9b29ab93fd3c08d75c1fbe647",
+      "graphNodes": 39
+    },
+    {
+      "owner": "conversationMessageIdentityReadV1",
+      "file": "runtime/src/control/ports/ConversationMessageIdentityReadV1.ts",
+      "export": "ConversationMessageIdentityReadV1",
+      "digest": "sha256:926d590bb8c48885faa83b60d517e2ca6fbc14c63e9b45268c208f37c8be6119",
+      "graphNodes": 7
+    }
+  ]
+}

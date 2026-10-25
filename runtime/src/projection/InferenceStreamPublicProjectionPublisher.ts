@@ -3,13 +3,13 @@ import { createHash } from 'node:crypto';
 import {
   PUBLIC_INFERENCE_STREAM_CONTRACT_VERSION,
   PUBLIC_PROJECTION_CONTRACT_VERSION,
-  publicInferenceChunkObservedV1Schema,
-  publicInferenceChunkProjectionV3Schema,
-  publicInferenceStreamTerminatedV1Schema,
-  publicInferenceStreamProjectionV3Schema,
+  publicInferenceChunkObservedSchema,
+  publicInferenceChunkProjectionSchema,
+  publicInferenceStreamTerminatedSchema,
+  publicInferenceStreamProjectionSchema,
   publicProjectionCanonicalIdSchema,
-  type PublicInferenceChunkProjectionV3,
-  type PublicInferenceStreamProjectionV3
+  type PublicInferenceChunkProjection,
+  type PublicInferenceStreamProjection
 } from '@ariadne/protocol/public';
 
 import type {
@@ -36,9 +36,9 @@ interface MutableStreamState extends InferenceStreamIdentity {
   sourceCursor: number;
   version: number;
   nextSequence: number;
-  status: PublicInferenceStreamProjectionV3['status'];
+  status: PublicInferenceStreamProjection['status'];
   retainedBytes: number;
-  chunks: PublicInferenceChunkProjectionV3[];
+  chunks: PublicInferenceChunkProjection[];
   timer?: ReturnType<typeof setTimeout>;
   tail: Promise<void>;
   dirty: boolean;
@@ -64,7 +64,7 @@ export class InferenceStreamPublicProjectionPublisher {
       if (head.operation !== 'upsert' || head.dto === null) {
         throw new Error('inference_stream_head_invalid');
       }
-      const dto = publicInferenceStreamProjectionV3Schema.parse(head.dto);
+      const dto = publicInferenceStreamProjectionSchema.parse(head.dto);
       if (dto.status !== 'streaming') continue;
       const identity = {
         sessionId: dto.sessionId,
@@ -114,7 +114,7 @@ export class InferenceStreamPublicProjectionPublisher {
           readonly text: string;
         }) => this.observe(state, chunk)
       }),
-      terminate: (status: PublicInferenceStreamProjectionV3['status']) => (
+      terminate: (status: PublicInferenceStreamProjection['status']) => (
         this.terminate(state, status)
       )
     });
@@ -127,11 +127,11 @@ export class InferenceStreamPublicProjectionPublisher {
     if (state.status !== 'streaming') throw new Error('inference_stream_already_terminated');
     if (chunk.sequence !== state.nextSequence) throw new Error('inference_stream_sequence_invalid');
     const observedAt = canonicalNow(this.now);
-    const parsed = publicInferenceChunkProjectionV3Schema.parse({
+    const parsed = publicInferenceChunkProjectionSchema.parse({
       ...chunk,
       observedAt
     });
-    this.enqueueLiveEvent(state, publicInferenceChunkObservedV1Schema.parse({
+    this.enqueueLiveEvent(state, publicInferenceChunkObservedSchema.parse({
       contractVersion: PUBLIC_INFERENCE_STREAM_CONTRACT_VERSION,
       kind: 'inference.chunk.observed',
       sessionId: state.sessionId,
@@ -166,7 +166,7 @@ export class InferenceStreamPublicProjectionPublisher {
 
   private async terminate(
     state: MutableStreamState,
-    status: PublicInferenceStreamProjectionV3['status']
+    status: PublicInferenceStreamProjection['status']
   ): Promise<void> {
     if (status === 'streaming') throw new Error('inference_stream_terminal_state_invalid');
     if (state.status !== 'streaming') {
@@ -181,7 +181,7 @@ export class InferenceStreamPublicProjectionPublisher {
     state.dirty = true;
     this.enqueueFlush(state);
     await state.tail;
-    this.enqueueLiveEvent(state, publicInferenceStreamTerminatedV1Schema.parse({
+    this.enqueueLiveEvent(state, publicInferenceStreamTerminatedSchema.parse({
       contractVersion: PUBLIC_INFERENCE_STREAM_CONTRACT_VERSION,
       kind: 'inference.stream.terminated',
       sessionId: state.sessionId,
@@ -198,8 +198,8 @@ export class InferenceStreamPublicProjectionPublisher {
 
   private enqueueLiveEvent(
     state: MutableStreamState,
-    event: ReturnType<typeof publicInferenceChunkObservedV1Schema.parse>
-      | ReturnType<typeof publicInferenceStreamTerminatedV1Schema.parse>
+    event: ReturnType<typeof publicInferenceChunkObservedSchema.parse>
+      | ReturnType<typeof publicInferenceStreamTerminatedSchema.parse>
   ): void {
     if (!state.publishLiveEvents) return;
     const aggregateVersion = event.kind === 'inference.chunk.observed'
@@ -283,7 +283,7 @@ function restoreState(
   if (head.operation !== 'upsert' || head.dto === null) {
     throw new Error('inference_stream_head_invalid');
   }
-  const dto = publicInferenceStreamProjectionV3Schema.parse(head.dto);
+  const dto = publicInferenceStreamProjectionSchema.parse(head.dto);
   if (
     head.aggregateId !== inferenceStreamId
     || head.aggregateVersion !== dto.version
@@ -315,8 +315,8 @@ function snapshotDto(
   state: MutableStreamState,
   updatedAt: string,
   version: number
-): PublicInferenceStreamProjectionV3 {
-  return publicInferenceStreamProjectionV3Schema.parse({
+): PublicInferenceStreamProjection {
+  return publicInferenceStreamProjectionSchema.parse({
     inferenceStreamId: state.inferenceStreamId,
     sessionId: state.sessionId,
     runId: state.runId,

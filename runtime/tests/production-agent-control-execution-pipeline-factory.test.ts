@@ -212,7 +212,7 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
         settlement: 'completed',
         outcome: {
           ok: true,
-          result: { kind: 'conversation.message.accepted.v3' }
+          result: { kind: 'conversation.message.accepted' }
         }
       });
       const sagaId = requireAcceptedSagaId(accepted);
@@ -228,8 +228,9 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
       const saga = await harness.conversation.transaction(
         (transaction) => transaction.loadSaga(sagaId)
       );
-      expect(saga?.stage.kind).toBe('agent_run_linked');
-      if (saga?.stage.kind !== 'agent_run_linked') {
+      // Publication may already have completed the terminal Conversation effect
+      // while the exact Provider operation settles. Both stages retain its Run.
+      if (saga?.stage.kind !== 'agent_run_linked' && saga?.stage.kind !== 'agent_result_projected') {
         throw new Error('pipeline_test_run_not_linked');
       }
       const run = await harness.unitOfWork.transaction(
@@ -556,7 +557,7 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
       if (waitingChild === null) throw new Error('pipeline_continuable_child_missing');
 
       await expect(harness.runtime.executeOwnedCommand(envelope({
-        kind: 'agent.subagent.send.v3',
+        kind: 'agent.subagent.send',
         contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         parentRunId: parent.runId,
         childRunId: waitingChild.runId,
@@ -567,7 +568,7 @@ describe('ProductionAgentControlExecutionPipelineFactory', () => {
         outcome: {
           ok: true,
           result: {
-            kind: 'agent.subagent.input.sent.v3',
+            kind: 'agent.subagent.input.sent',
             parentRunId: parent.runId,
             childRunId: waitingChild.runId
           }
@@ -1139,7 +1140,7 @@ async function createHarness(
 
 async function createSession(runtime: ComposedAgentControlRuntime): Promise<void> {
   await expect(runtime.executeOwnedCommand(envelope({
-    kind: 'conversation.session.create.v3',
+    kind: 'conversation.session.create',
     contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
     sessionId: 'session-v3',
     workspaceId: 'workspace-v3'
@@ -1151,7 +1152,7 @@ function messageEnvelope(
   mode: 'agent' | 'plan' = 'agent'
 ): RuntimeCommandEnvelope {
   return envelope({
-    kind: 'conversation.message.accept.v3',
+    kind: 'conversation.message.accept',
     contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
     sessionId: 'session-v3',
     workspaceId: 'workspace-v3',
@@ -1180,7 +1181,7 @@ function requireAcceptedSagaId(
 ): string {
   if (
     result?.outcome.ok !== true
-    || result.outcome.result.kind !== 'conversation.message.accepted.v3'
+    || result.outcome.result.kind !== 'conversation.message.accepted'
   ) {
     throw new Error('pipeline_test_message_not_accepted');
   }

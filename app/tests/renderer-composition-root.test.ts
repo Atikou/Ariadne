@@ -55,6 +55,8 @@ describe('RendererCompositionRoot', () => {
         onEvent: vi.fn(() => vi.fn())
       },
       agentSettings: {},
+      chatDrafts: { list: vi.fn(async () => []), write: vi.fn(), move: vi.fn(), readAttachment: vi.fn() },
+      fileDrafts: { list: vi.fn(async () => ({revision:0,records:[]})), replace: vi.fn(), resolvePath:vi.fn() },
       workspace: {}
     } as unknown as AriadneApi;
     const storage = {
@@ -84,6 +86,8 @@ describe('RendererCompositionRoot', () => {
     first.installWindowLifecycle(windowLifecycle as unknown as Window);
     await Promise.all([first.start(), second.start()]);
     expect(getStatus).toHaveBeenCalledTimes(1);
+    expect(api.chatDrafts.list).toHaveBeenCalledTimes(1);
+    expect(first.services.drafts.getSnapshot().ready).toBe(true);
 
     windowLifecycle.dispatchEvent(new Event('pagehide'));
     expect(removeStatus).toHaveBeenCalledTimes(1);

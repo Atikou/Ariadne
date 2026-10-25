@@ -2,9 +2,10 @@ import { PUBLIC_PROJECTION_CONTRACT_VERSION } from '@ariadne/protocol/public';
 import type {
   ConversationSession,
   ModelSummary,
-  PublicRunProjectionV3,
   RunActivity,
-  PublicProjectionReadBatchV3,
+  PublicRunCatalogSummary,
+  PublicDecisionCatalogSummary,
+  PublicProjectionMessageWindow,
   RuntimeCommand,
   RuntimeEventEnvelope,
   RuntimeResult,
@@ -13,12 +14,16 @@ import type {
 } from '@ariadne/protocol/public';
 import type { AriadneApi } from '@shared/contract';
 import {
-  ProjectionCache,
-  type ProjectionCacheSnapshot
-} from './projection/projection-cache';
+  RendererProjectionRepository,
+  SESSION_DIRECTORY, RUN_DIRECTORY, DECISION_DIRECTORY,
+  type RendererProjectionSnapshot
+} from './projection/renderer-projection-repository';
+import type { ProjectionCatalogWindow } from './projection/projection-catalog-repository';
 import {
   ProjectionProtocolIntegrityError,
-  ProjectionReadResetSignal,
+  ProjectionCatalogResetSignal,
+  ProjectionSnapshotResetSignal,
+  ProjectionScopedReadResetSignal,
   ProjectionRuntimeClient
 } from './projection/projection-runtime-client';
 import { PublicResultError, unwrapPublicResult } from './public-result';
@@ -32,11 +37,15 @@ import {
   type RuntimeRun
 } from './runtime-projection-presenter';
 import { RuntimeUiState } from './runtime-ui-state';
-import { RuntimeProjectionViews } from './runtime-projection-views';
+import { ProjectionBodyReadQueue } from './projection/projection-body-read-queue';
+import { RuntimeProjectionViews, isTerminalRunSummary } from './runtime-projection-views';
 import { LiveSnapshotPublisher } from './live-snapshot-publisher';
 import { LiveInferenceStreamStore } from './live-inference-stream-store';
 import { presentInferenceMessages, reconcileLiveInferenceStreams } from './live-inference-message-projection';
 import { ProductivityFeatureStore } from './features/productivity-feature-store';
+import { TaskCenterFeatureStore } from './features/task-center-feature-store';
+import { LongMemoryFeatureStore } from './features/long-memory-feature-store';
+import { WorkspaceDocumentFeatureStore } from './features/workspace-document-feature-store';
 import { ToolResultFeatureStore } from './features/tool-result-feature-store';
 import { HumanSkillFeatureStore } from './features/human-skill-feature-store';
 import { SessionFeatureStore } from './features/session-feature-store';
@@ -46,6 +55,8 @@ import { RunFeatureStore } from './features/run-feature-store';
 import { FeatureSnapshotStore } from './features/feature-snapshot-store';
 import { ModelFeatureStore } from './features/model-feature-store';
 import { DiagnosticsFeatureStore } from './features/diagnostics-feature-store';
+import { runtimeRequestErrorMessage, sanitizeRuntimeCommandError } from './runtime-request-errors';
+export { runtimeRequestErrorMessage } from './runtime-request-errors';
 
 export type { AgentInputDeliveryReceipt } from './agent-input-delivery';
 export type {
@@ -57,53 +68,32 @@ export type {
 } from './runtime-projection-presenter';
 export { PublicResultError, unwrapPublicResult } from './public-result';
 
-export interface RuntimeSnapshot {
-  initialized: boolean;
-  status: RuntimeStatus;
-  projectionStreamId: string | null;
-  projectionCursor: number;
-  projectionIntegrityError: string | null;
-  sessions: ConversationSession[];
-  selectedSessionId: string | null;
-  planModeSessionIds: string[];
-  pendingOverlayIds: string[];
-  messages: RuntimeMessage[];
-  models: ModelSummary[];
-  runs: RuntimeRun[];
-  activities: RunActivity[];
-  permissions: RuntimePermissionDecision[];
-  planHandoffs: RuntimePlanDecision[];
-  userQuestions: RuntimeUserQuestionDecision[];
-  trace: TraceEntry[];
-  agentInputDeliveries: AgentInputDeliveryReceipt[];
-  lastError: string | null;
-}
-
-const STOPPED_STATUS: RuntimeStatus = {
-  availability: 'stopped',
-  capabilities: [],
-  observedAt: new Date(0).toISOString()
-};
+export type { RuntimeSnapshot } from './runtime-snapshot';
+import { STOPPED_STATUS, type RuntimeSnapshot } from './runtime-snapshot';
 
 const ACTIVE_PROJECTION_POLL_INTERVAL_MS = 500;
 
 /**
  * Renderer composition store. The six authoritative domain collections are
- * derived from ProjectionCache with slice identity caching; this class owns lifecycle, command
+ * derived from bounded independent read ranges; this class owns lifecycle, command
  * routing and local UI overlays.
  */
 export class RuntimeStore {
+  private readonly bodyReads = new ProjectionBodyReadQueue();
   readonly decisions: DecisionFeatureStore;
   readonly diagnostics: DiagnosticsFeatureStore;
   readonly humanSkills: HumanSkillFeatureStore;
   readonly messages: MessageFeatureStore;
   readonly models: ModelFeatureStore;
   readonly productivity: ProductivityFeatureStore;
+  readonly tasks: TaskCenterFeatureStore;
+  readonly memory: LongMemoryFeatureStore;
+  readonly documents: WorkspaceDocumentFeatureStore;
   readonly runs: RunFeatureStore;
   readonly sessions: SessionFeatureStore;
   readonly toolResults: ToolResultFeatureStore;
   private readonly projectionClient: ProjectionRuntimeClient;
-  private readonly projection = new ProjectionCache();
+  private readonly projection: RendererProjectionRepository;
   private readonly ui = new RuntimeUiState();
   private readonly views = new RuntimeProjectionViews();
   private readonly livePublisher = new LiveSnapshotPublisher(() => this.publish());
@@ -130,8 +120,10 @@ export class RuntimeStore {
 
   constructor(
     private readonly api: AriadneApi['runtime'],
-    agentInputDeliveryPersistence?: AriadneApi['agentInputDeliveryOutbox']
+    agentInputDeliveryPersistence?: AriadneApi['inputDeliveryOutbox']
   ) {
+    this.projectionClient = new ProjectionRuntimeClient(api);
+    this.projection = new RendererProjectionRepository(this.projectionClient);
     const snapshotSource = { getSnapshot: this.getSnapshot, subscribe: this.subscribe };
     const featureView = <T>(select: (snapshot: RuntimeSnapshot) => T) =>
       new FeatureSnapshotStore(snapshotSource, select);
@@ -139,13 +131,18 @@ export class RuntimeStore {
       execute: (command: RuntimeCommand, commandId?: string) => this.command(command, commandId)
     };
     this.decisions = new DecisionFeatureStore(featureGateway, {
-      projectionDecisions: () => this.projection.decisions.getSnapshot(),
+      projectionDecisions: () => this.projection.getSnapshot().decisions,
       awaitDecisionSettlement: (decisionId) => this.awaitDecisionProjectionSettlement(decisionId)
     }, featureView((snapshot) => ({
       permissions: snapshot.permissions,
+      openedDecisionId: snapshot.openedDecisionId,
       planHandoffs: snapshot.planHandoffs,
-      userQuestions: snapshot.userQuestions
-    })));
+      userQuestions: snapshot.userQuestions,
+      decisionSummaries: snapshot.decisionSummaries,
+      decisionDirectory: snapshot.projectionWindows.decisions,
+      sessionDecisionDirectory: snapshot.projectionWindows.sessionDecisions
+    })), { openDetail: id => this.openDecisionDetail(id), navigate: direction => this.navigateProjectionCatalog('decisions', direction),
+      navigateSession: direction => this.projection.navigateSession('decisions', direction) });
     this.diagnostics = new DiagnosticsFeatureStore(featureView((snapshot) => ({
       initialized: snapshot.initialized,
       status: snapshot.status,
@@ -154,34 +151,46 @@ export class RuntimeStore {
       projectionIntegrityError: snapshot.projectionIntegrityError,
       trace: snapshot.trace,
       lastError: snapshot.lastError
-    })), () => this.refresh());
+    })), () => this.refresh(), (command, options) => this.api.request(command, options));
     this.humanSkills = new HumanSkillFeatureStore(featureGateway);
     this.messages = new MessageFeatureStore(featureGateway, {
       selectedSessionId: () => this.ui.selectedSessionId,
-      projectionSessions: () => this.projection.sessions.getSnapshot(),
+      projectionSessions: () => this.projection.getSnapshot().sessions,
+      resolveSendSession: sessionId => this.projection.readSessionProof(sessionId),
       hasCapability: (capability) => this.status.capabilities.includes(capability),
       isPlanModeEnabled: (sessionId) => this.ui.isPlanModeEnabled(sessionId),
-      beginPendingChat: (message, now) => this.ui.beginPendingChat(message, now),
+      beginPendingChat: (message, now, messageId, sessionId, draftOwnerKey) => this.ui.beginPendingChat(message, now, messageId, sessionId, draftOwnerKey),
+      selectDraftOwner: key => this.ui.selectDraftOwner(key),
       moveNewSessionPlanMode: (sessionId) => this.ui.moveNewSessionPlanMode(sessionId),
-      selectSession: (sessionId) => this.ui.selectSession(sessionId),
-      acceptPendingChat: (messageId, sessionId) => this.ui.acceptPendingChat(messageId, sessionId),
+      selectSession: (sessionId) => this.selectSession(sessionId),
+      acceptPendingChat: (messageId, sessionId) => {
+        const previousSessionId = this.ui.selectedSessionId;
+        this.ui.acceptPendingChat(messageId, sessionId);
+        if (this.ui.selectedSessionId !== previousSessionId) this.liveInferenceStreams.clear();
+        this.projection.selectSession(this.ui.selectedSessionId);
+      },
       failPendingChat: (messageId, message) => this.ui.failPendingChat(messageId, message),
       errorMessage: (error) => runtimeRequestErrorMessage(error),
       publish: () => this.publish(),
       synchronize: () => this.requestSynchronization(false)
     }, featureView((snapshot) => ({
       messages: snapshot.messages,
-      pendingOverlayIds: snapshot.pendingOverlayIds
-    })));
+      pendingOverlayIds: snapshot.pendingOverlayIds,
+      messageWindow: snapshot.projectionWindows.messages
+    })), window => this.showMessageWindow(window), (id, sessionId, digest) => this.bodyReads.read(JSON.stringify(['message', id, sessionId, digest]),
+      () => this.projection.loadMessageBody(id, sessionId, digest)), agentInputDeliveryPersistence);
     this.models = new ModelFeatureStore(
-      featureView((snapshot) => ({ models: snapshot.models })),
+      featureView((snapshot) => ({ models: snapshot.models, modelsReadReady: snapshot.projectionStreamId !== null })),
       featureGateway,
       () => this.requestSynchronization(false)
     );
     this.productivity = new ProductivityFeatureStore(featureGateway);
+    this.tasks = new TaskCenterFeatureStore(featureGateway);
+    this.memory = new LongMemoryFeatureStore(featureGateway);
+    this.documents = new WorkspaceDocumentFeatureStore(featureGateway);
     this.runs = new RunFeatureStore(featureGateway, {
       hasCapability: (capability) => this.status.capabilities.includes(capability),
-      projectionRuns: () => this.projection.runs.getSnapshot(),
+      projectionRuns: () => this.projection.getSnapshot().runs,
       isLifecycleGenerationCurrent: (generation) => generation === this.lifecycleGeneration,
       errorMessage: (error, fallback) => runtimeRequestErrorMessage(error, fallback),
       publish: () => this.publish(),
@@ -189,12 +198,24 @@ export class RuntimeStore {
     }, featureView((snapshot) => ({
       runs: snapshot.runs,
       activities: snapshot.activities,
-      agentInputDeliveries: snapshot.agentInputDeliveries
-    })), agentInputDeliveryPersistence);
+      agentInputDeliveries: snapshot.agentInputDeliveries,
+      runSummaries: snapshot.runSummaries,
+      openedRunId: snapshot.openedRunId,
+      runDirectory: snapshot.projectionWindows.runs,
+      sessionRunDirectory: snapshot.projectionWindows.sessionRuns
+    })), agentInputDeliveryPersistence, { openDetail: id => this.openRunDetail(id), navigate: direction => this.navigateProjectionCatalog('runs', direction),
+      navigateSession: direction => this.projection.navigateSession('runs', direction),
+      readCollection: (id, sessionId, token, collection, direction) => this.projection.readRunCollection(id, sessionId, token, collection, direction),
+      readInboxBody: (id, sessionId, inputId, token) => this.bodyReads.read(JSON.stringify(['inbox', id, sessionId, inputId, token]),
+        () => this.projection.loadInboxBody(id, sessionId, inputId, token)) });
     this.sessions = new SessionFeatureStore(featureGateway, {
-      projectionSessions: () => this.projection.sessions.getSnapshot(),
-      selectSession: (sessionId) => this.ui.selectSession(sessionId),
-      clearSessionSelection: () => this.ui.clearSessionSelection(),
+      projectionSessions: () => this.projection.getSnapshot().sessions,
+      resolveSession: sessionId => this.projection.readSessionProof(sessionId),
+      selectSession: (sessionId) => this.selectSession(sessionId),
+      clearSessionSelection: () => {
+        this.ui.clearSessionSelection(); this.liveInferenceStreams.clear(); this.projection.selectSession(null);
+        this.synchronizationGeneration += 1;
+      },
       isPlanModeEnabled: (sessionId) => this.ui.isPlanModeEnabled(sessionId),
       setPlanModeEnabled: (enabled, sessionId) => this.ui.setPlanModeEnabled(enabled, sessionId),
       publish: () => this.publish(),
@@ -202,10 +223,10 @@ export class RuntimeStore {
     }, featureView((snapshot) => ({
       sessions: snapshot.sessions,
       selectedSessionId: snapshot.selectedSessionId,
-      planModeSessionIds: snapshot.planModeSessionIds
-    })));
+      planModeSessionIds: snapshot.planModeSessionIds,
+      sessionDirectory: snapshot.projectionWindows.sessions
+    })), direction => this.navigateProjectionCatalog('sessions', direction));
     this.toolResults = new ToolResultFeatureStore(featureGateway);
-    this.projectionClient = new ProjectionRuntimeClient(api);
     this.snapshot = this.createSnapshot(this.projection.getSnapshot());
     this.removeProjectionListener = this.projection.subscribe(() => {
       const projection = this.projection.getSnapshot();
@@ -215,13 +236,27 @@ export class RuntimeStore {
         this.liveInferenceStreams.clear();
       }
       reconcileLiveInferenceStreams(this.liveInferenceStreams, projection);
-      this.runs.observeProjection();
       this.publish(projection);
       this.updateProjectionPolling(projection);
     });
   }
 
   getSnapshot = (): RuntimeSnapshot => this.snapshot;
+
+  private selectSession(sessionId: string): void {
+    if (this.ui.selectedSessionId !== sessionId) this.liveInferenceStreams.clear();
+    this.ui.selectSession(sessionId);
+    this.projection.selectSession(sessionId);
+    this.synchronizationGeneration += 1;
+  }
+
+  openRunDetail(runId: string): Promise<void> { return this.projection.openRun(runId); }
+  openDecisionDetail(decisionId: string): Promise<void> { return this.projection.openDecision(decisionId); }
+  showMessageWindow(window: PublicProjectionMessageWindow): Promise<void> { return this.projection.messageWindow(window); }
+  navigateProjectionCatalog(kind: 'sessions' | 'runs' | 'decisions', direction: 'next' | 'previous'): Promise<void> {
+    const selection = kind === 'sessions' ? SESSION_DIRECTORY : kind === 'runs' ? RUN_DIRECTORY : DECISION_DIRECTORY;
+    return this.projection.navigate(selection, direction);
+  }
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -266,6 +301,8 @@ export class RuntimeStore {
     this.synchronizationPromise = null;
     this.initialized = false;
     this.status = STOPPED_STATUS;
+    this.diagnostics.dispose();
+    this.tasks.dispose();
     this.requestError = null;
     this.liveInferenceStreams.clear();
     this.projection.resetLifecycle();
@@ -319,10 +356,16 @@ export class RuntimeStore {
   private acceptStatus(status: RuntimeStatus): boolean {
     if (status.observedAt < this.status.observedAt) return false;
     this.status = status;
+    this.diagnostics.acceptStatus(status);
     return true;
   }
 
   private receiveWakeHint(envelope: RuntimeEventEnvelope): void {
+    if ((envelope.event.kind === 'inference.chunk.observed' || envelope.event.kind === 'inference.stream.terminated')
+      && envelope.event.sessionId !== this.ui.selectedSessionId) {
+      if (envelope.event.kind === 'inference.stream.terminated') void this.requestSynchronization(false);
+      return;
+    }
     try {
       if (this.liveInferenceStreams.accept(envelope)) {
         if (envelope.event.kind === 'inference.stream.terminated') this.publish();
@@ -345,6 +388,7 @@ export class RuntimeStore {
 
   private requestSynchronization(forceSnapshot: boolean): Promise<void> {
     if (forceSnapshot) {
+      this.projection.resetReadRanges();
       this.snapshotRequired = true;
       this.synchronizationGeneration += 1;
     }
@@ -379,6 +423,7 @@ export class RuntimeStore {
   }
 
   private async drainSynchronization(lifecycle: number): Promise<void> {
+    let resets = 0;
     while (
       this.synchronizationRequested
       && lifecycle === this.lifecycleGeneration
@@ -386,40 +431,22 @@ export class RuntimeStore {
     ) {
       this.synchronizationRequested = false;
       const synchronization = this.synchronizationGeneration;
-      if (this.snapshotRequired) {
-        const snapshot = await this.projectionClient.getSnapshot();
+      try {
+        await this.projection.synchronize(this.ui.selectedSessionId, this.snapshotRequired);
         if (!this.isCurrentSynchronization(lifecycle, synchronization)) continue;
-        this.projection.replaceSnapshot(snapshot);
         this.snapshotRequired = false;
-      }
-
-      let hasMore = true;
-      let batches = 0;
-      while (hasMore && this.isCurrentSynchronization(lifecycle, synchronization)) {
-        if (++batches > 10_000) throw new Error('projection_replay_batch_limit');
-        const request = this.projection.createReadRequest();
-        let batch: PublicProjectionReadBatchV3;
-        try {
-          batch = await this.projectionClient.readCommits(request);
-        } catch (error) {
-          if (error instanceof ProjectionReadResetSignal) {
-            this.snapshotRequired = true;
-            this.synchronizationGeneration += 1;
-            this.synchronizationRequested = true;
-            break;
-          }
-          throw error;
-        }
-        if (!this.isCurrentSynchronization(lifecycle, synchronization)) break;
-        const application = await this.projection.applyBatch(batch);
-        if (!this.isCurrentSynchronization(lifecycle, synchronization)) break;
-        if (application.status === 'reset_required') {
-          this.snapshotRequired = true;
-          this.synchronizationGeneration += 1;
-          this.synchronizationRequested = true;
-          break;
-        }
-        hasMore = batch.status === 'ok' && batch.hasMore;
+        const unsettled = this.runs.deliverySnapshot().filter(receipt => receipt.state === 'pending' || receipt.state === 'reconcile');
+        await this.projection.observeInboxProofs(unsettled, identity => this.runs.observeVerifiedInboxIdentities([identity]));
+        if (!this.isCurrentSynchronization(lifecycle, synchronization)) continue;
+      } catch (error) {
+        if (!this.isCurrentSynchronization(lifecycle, synchronization)) continue;
+        if (!(error instanceof ProjectionCatalogResetSignal || error instanceof ProjectionSnapshotResetSignal || error instanceof ProjectionScopedReadResetSignal)) throw error;
+        if (error.reason === 'contract_mismatch' || ++resets > 3) throw error;
+        this.projection.resetReadRanges();
+        this.snapshotRequired = true;
+        this.synchronizationGeneration += 1;
+        this.synchronizationRequested = true;
+        continue;
       }
       if (this.projection.getSnapshot().integrityError === null) {
         this.requestError = null;
@@ -450,12 +477,12 @@ export class RuntimeStore {
   }
 
   private updateProjectionPolling(
-    projection: ProjectionCacheSnapshot = this.projection.getSnapshot()
+    projection: RendererProjectionSnapshot = this.projection.getSnapshot()
   ): void {
     if (
       !this.lifecycleReady
       || this.status.availability !== 'ready'
-      || (!projection.runs.some((run) => !isTerminalPublicRun(run)) && !this.liveInferenceStreams.hasActiveStreams)
+      || (!projection.runSummaries.some((run) => !isTerminalRunSummary(run)) && !this.liveInferenceStreams.hasActiveStreams)
     ) {
       this.stopProjectionPolling();
       return;
@@ -485,25 +512,18 @@ export class RuntimeStore {
   }
 
   private async awaitDecisionProjectionSettlement(decisionId: string): Promise<void> {
-    const settled = (): boolean => {
-      const current = this.projection.decisions.getSnapshot().find(
-        (candidate) => candidate.decisionId === decisionId
-      );
-      return current === undefined || current.status !== 'pending';
-    };
-    if (settled()) return;
-
     const retryDelaysMs = [0, 25, 50, 100, 200, 400, 800, 1_600, 2_000];
     for (const [index, delayMs] of retryDelaysMs.entries()) {
       if (delayMs > 0) {
         await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
       }
       if (this.status.availability !== 'ready' || !this.lifecycleReady) continue;
-      // A command response can win the race with its asynchronous Projection
-      // drain, and wake hints are deliberately non-authoritative. Re-read the
-      // durable snapshot until the exact Decision is no longer actionable.
-      await this.requestSynchronization(index > 0);
-      if (settled()) return;
+      // Catalog omission says nothing about settlement. Read this exact
+      // Decision at a fresh durable boundary, including its terminal state.
+      if (await this.projection.decisionSettled(decisionId)) {
+        await this.requestSynchronization(index > 0);
+        return;
+      }
     }
     throw new Error('projection_decision_settlement_timeout');
   }
@@ -528,8 +548,8 @@ export class RuntimeStore {
     for (const listener of this.listeners) listener();
   }
 
-  private createSnapshot(projection: ProjectionCacheSnapshot): RuntimeSnapshot {
-    const authoritative = this.views.messages(projection.messages, projection.runs);
+  private createSnapshot(projection: RendererProjectionSnapshot): RuntimeSnapshot {
+    const authoritative = this.views.messages(projection.messages);
     const messagesWithReasoning = mergeInferenceStreamReasoning(
       [...authoritative.bySession.values()].flat(),
       this.liveInferenceStreams.getSnapshot(),
@@ -561,6 +581,14 @@ export class RuntimeStore {
       messages,
       models: this.views.models(projection.models),
       runs: this.views.runs(projection.runs),
+      runSummaries: projection.runSummaries,
+      openedRunId: projection.openedRunId,
+      openedDecisionId: projection.openedDecisionId,
+      decisionSummaries: projection.decisionSummaries,
+      projectionWindows: {
+        sessions: projection.directory, runs: projection.taskDirectory, decisions: projection.decisionDirectory,
+        sessionRuns: projection.sessionRuns, sessionDecisions: projection.sessionDecisions, messages: projection.messageWindow
+      },
       activities: this.views.activities(projection.runs),
       ...this.views.decisions(projection.decisions),
       trace: this.views.trace(projection.diagnostics),
@@ -570,35 +598,4 @@ export class RuntimeStore {
         ?? this.requestError
     };
   }
-}
-
-export function runtimeRequestErrorMessage(
-  error: unknown,
-  fallback = 'Runtime 请求失败。'
-): string {
-  const source = error instanceof Error
-    ? error.message
-    : typeof error === 'string'
-      ? error
-      : '';
-  const message = source
-    .replace(/^Error invoking remote method '[^']+':\s*/iu, '')
-    .replace(/^(?:(?:RuntimeRequestError|Error):\s*)+/iu, '')
-    .replace(/decision-action\.v1:[0-9a-f]{64}/giu, '[redacted-decision-action]')
-    .trim();
-  return (message || fallback).slice(0, 16_384);
-}
-
-function sanitizeRuntimeCommandError(
-  command: RuntimeCommand,
-  error: unknown
-): unknown {
-  if (command.kind !== 'agent.decision.resolve.v3') return error;
-  return new Error(runtimeRequestErrorMessage(error));
-}
-
-function isTerminalPublicRun(run: PublicRunProjectionV3): boolean {
-  return run.status === 'completed'
-    || run.status === 'failed'
-    || run.status === 'cancelled';
 }

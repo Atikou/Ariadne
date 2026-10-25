@@ -18,10 +18,10 @@ type ConversationSessionCommand = Extract<
   RuntimeCommandEnvelope['command'],
   {
     readonly kind:
-      | 'conversation.session.create.v3'
-      | 'conversation.session.rename.v3'
-      | 'conversation.session.archive.v3'
-      | 'conversation.session.restore.v3';
+      | 'conversation.session.create'
+      | 'conversation.session.rename'
+      | 'conversation.session.archive'
+      | 'conversation.session.restore';
   }
 >;
 
@@ -48,7 +48,7 @@ export class ConversationSessionPublicCommandHandler {
     envelope: RuntimeCommandEnvelope,
     command: ConversationSessionCommand
   ): Promise<RuntimeApplicationCommandResult> {
-    return command.kind === 'conversation.session.create.v3'
+    return command.kind === 'conversation.session.create'
       ? this.create(envelope, command)
       : this.mutate(envelope, command);
   }
@@ -56,7 +56,7 @@ export class ConversationSessionPublicCommandHandler {
   private async create(
     envelope: RuntimeCommandEnvelope,
     command: Extract<ConversationSessionCommand, {
-      readonly kind: 'conversation.session.create.v3';
+      readonly kind: 'conversation.session.create';
     }>
   ): Promise<RuntimeApplicationCommandResult> {
     envelope.signal.throwIfAborted();
@@ -98,7 +98,7 @@ export class ConversationSessionPublicCommandHandler {
       outcome: {
         ok: true,
         result: {
-          kind: 'conversation.session.created.v3',
+          kind: 'conversation.session.created',
           sessionId: result.session.sessionId,
           version: 1
         }
@@ -110,7 +110,7 @@ export class ConversationSessionPublicCommandHandler {
   private async mutate(
     envelope: RuntimeCommandEnvelope,
     command: Exclude<ConversationSessionCommand, {
-      readonly kind: 'conversation.session.create.v3';
+      readonly kind: 'conversation.session.create';
     }>
   ): Promise<RuntimeApplicationCommandResult> {
     envelope.signal.throwIfAborted();
@@ -120,11 +120,11 @@ export class ConversationSessionPublicCommandHandler {
       deriveConversationAuthorityId('session-updated-event', envelope.commandId),
       this.callbacks.resolveCommandTime(envelope.commandId)
     ]);
-    const mutation = command.kind === 'conversation.session.rename.v3'
+    const mutation = command.kind === 'conversation.session.rename'
       ? { kind: 'rename' as const, title: command.title }
       : {
           kind: 'set_status' as const,
-          status: command.kind === 'conversation.session.archive.v3'
+          status: command.kind === 'conversation.session.archive'
             ? 'archived' as const
             : 'active' as const
         };
@@ -159,7 +159,7 @@ export class ConversationSessionPublicCommandHandler {
       outcome: {
         ok: true,
         result: {
-          kind: 'conversation.session.updated.v3',
+          kind: 'conversation.session.updated',
           sessionId: command.sessionId,
           version: result.resultingSessionVersion
         }

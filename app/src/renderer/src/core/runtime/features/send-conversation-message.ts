@@ -2,31 +2,37 @@ import {
   PERSONAL_ASSISTANT_WORKSPACE_ID,
   PUBLIC_PROJECTION_CONTRACT_VERSION,
   type ChatRoutingStrategy,
-  type ConversationMessageExecutionV3,
-  type EncodedImageAttachmentV3,
+  type ConversationMessageExecution,
+  type EncodedImageAttachment,
   type ModelInferenceOptions,
-  type PublicSessionProjectionV3,
+  type PublicSessionProjection,
   type RuntimeStatus
 } from '@ariadne/protocol/public';
 import { deriveConversationTitle } from '@renderer/modules/chat/conversation-title';
 import type { RuntimeFeatureCommandGateway } from './runtime-feature-command-gateway';
+import type { InputDeliveryOutboxStageRequest } from '@shared/contract';
+import type { DraftDeliveryBinding } from './input-delivery-binding';
+import { ConversationInputDeliveryController } from './conversation-input-delivery-controller';
 
 export interface SendMessageOptions {
   modelId?: string;
   inference?: ModelInferenceOptions;
   routingStrategy?: ChatRoutingStrategy;
   workspaceId?: string;
-  sessionId?: string;
+  sessionId?: string | null;
   selectSession?: boolean;
-  attachments?: readonly EncodedImageAttachmentV3[];
+  attachments?: readonly EncodedImageAttachment[];
+  draft?: DraftDeliveryBinding;
 }
 
 export interface MessageFeatureHost {
   selectedSessionId(): string | null;
-  projectionSessions(): readonly PublicSessionProjectionV3[];
+  projectionSessions(): readonly PublicSessionProjection[];
+  resolveSendSession(sessionId: string): Promise<PublicSessionProjection | null>;
   hasCapability(capability: RuntimeStatus['capabilities'][number]): boolean;
   isPlanModeEnabled(sessionId: string | null): boolean;
-  beginPendingChat(message: string, now: string): { readonly clientMessageId: string };
+  beginPendingChat(message: string, now: string, clientMessageId?: string, sessionId?: string | null, draftOwnerKey?: string): { readonly clientMessageId: string };
+  selectDraftOwner(key: string | null): void;
   moveNewSessionPlanMode(sessionId: string): void;
   selectSession(sessionId: string): void;
   acceptPendingChat(clientMessageId: string, sessionId: string): void;
@@ -40,9 +46,11 @@ export async function sendConversationMessage(
   gateway: RuntimeFeatureCommandGateway,
   host: MessageFeatureHost,
   message: string,
-  options: SendMessageOptions
+  options: SendMessageOptions,
+  delivery: ConversationInputDeliveryController = new ConversationInputDeliveryController(gateway)
 ): Promise<{ messageId: string; sessionId: string }> {
-  const selectedSessionId = options.sessionId ?? host.selectedSessionId() ?? undefined;
+  const originalSelection = host.selectedSessionId();
+  const selectedSessionId = (options.sessionId === undefined ? originalSelection : options.sessionId) ?? undefined;
   const selectedSession = host.projectionSessions().find(
     (session) => session.sessionId === selectedSessionId && session.status === 'active'
   );
@@ -54,41 +62,42 @@ export async function sendConversationMessage(
   if (planMode && !host.hasCapability('companion.agent-plan')) {
     throw new Error('runtime_capability_missing:companion.agent-plan');
   }
-  const execution: ConversationMessageExecutionV3 = {
+  const execution: ConversationMessageExecution = {
     mode: workspaceId === PERSONAL_ASSISTANT_WORKSPACE_ID ? 'chat' : planMode ? 'plan' : 'agent',
     ...(options.modelId === undefined ? {} : { modelId: options.modelId }),
     ...(options.inference === undefined ? {} : { inference: options.inference }),
     ...(options.routingStrategy === undefined ? {} : { routingStrategy: options.routingStrategy })
   };
-  const pending = host.beginPendingChat(message, new Date().toISOString());
+  const pending = host.beginPendingChat(message, new Date().toISOString(), options.draft?.submissionId, selectedSessionId ?? null, options.draft?.draftOwnerKey);
   host.publish();
 
   try {
+    const requests: InputDeliveryOutboxStageRequest[] = [];
     let sessionId = selectedSessionId;
     let expectedSessionVersion = selectedSession?.version;
+    if (sessionId !== undefined) {
+      const current = await host.resolveSendSession(sessionId);
+      if (current === null || current.status !== 'active' || current.workspaceId !== workspaceId) {
+        throw new Error('conversation_session_projection_missing');
+      }
+      expectedSessionVersion = current.version;
+    }
     if (!sessionId) {
       sessionId = crypto.randomUUID();
-      const created = await gateway.execute({
-        kind: 'conversation.session.create.v3',
+      requests.push({ commandId: crypto.randomUUID(), ...(options.draft ? { draftSubmissionId: options.draft.submissionId } : {}), command: {
+        kind: 'conversation.session.create',
         contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         sessionId,
         workspaceId,
         title: deriveConversationTitle(message, options.attachments !== undefined && options.attachments.length > 0)
-      });
-      if (created.kind !== 'conversation.session.created.v3' || created.sessionId !== sessionId) {
-        throw new Error(`runtime_result_invalid:${created.kind}`);
-      }
-      expectedSessionVersion = created.version;
-      if (planMode) host.moveNewSessionPlanMode(sessionId);
-      if (options.selectSession !== false) host.selectSession(sessionId);
-      host.acceptPendingChat(pending.clientMessageId, sessionId);
-      host.publish();
+      } });
+      expectedSessionVersion = 1;
     }
     if (expectedSessionVersion === undefined) {
       throw new Error('conversation_session_projection_missing');
     }
-    const result = await gateway.execute({
-      kind: 'conversation.message.accept.v3',
+    requests.push({ commandId: crypto.randomUUID(), ...(options.draft ? { draftSubmissionId: options.draft.submissionId } : {}), command: {
+      kind: 'conversation.message.accept',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       sessionId,
       workspaceId,
@@ -99,11 +108,17 @@ export async function sendConversationMessage(
         ? {}
         : { attachments: options.attachments.map((attachment) => ({ ...attachment })) }),
       execution
-    });
-    if (result.kind !== 'conversation.message.accepted.v3'
-      || result.sessionId !== sessionId
-      || result.messageId !== pending.clientMessageId) {
-      throw new Error(`runtime_result_invalid:${result.kind}`);
+    } });
+    const binding = options.draft && { ...options.draft, onSessionCreated: async (createdId: string) => {
+      await options.draft!.onSessionCreated(createdId, () => {
+        if (planMode) host.moveNewSessionPlanMode(createdId);
+        if (options.selectSession !== false && options.draft!.canSelectSession()) host.selectSession(createdId);
+      });
+    } };
+    const result = await delivery.send(requests, binding);
+    if (!selectedSessionId && !binding) {
+      if (planMode) host.moveNewSessionPlanMode(sessionId);
+      if (options.selectSession !== false && host.selectedSessionId() === originalSelection) host.selectSession(sessionId);
     }
     host.acceptPendingChat(pending.clientMessageId, result.sessionId);
     host.publish();
@@ -137,12 +152,12 @@ async function generateAndApplyTitle(
     workspaceId: string;
     expectedSessionVersion: number;
     content: string;
-    execution: ConversationMessageExecutionV3;
+    execution: ConversationMessageExecution;
   }
 ): Promise<void> {
   try {
     const generated = await gateway.execute({
-      kind: 'conversation.session.title.generate.v3',
+      kind: 'conversation.session.title.generate',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       sessionId: input.sessionId,
       workspaceId: input.workspaceId,
@@ -151,12 +166,12 @@ async function generateAndApplyTitle(
       execution: input.execution
     });
     if (
-      generated.kind !== 'conversation.session.title.generated.v3'
+      generated.kind !== 'conversation.session.title.generated'
       || generated.sessionId !== input.sessionId
       || generated.sessionVersion !== input.expectedSessionVersion
     ) return;
     const renamed = await gateway.execute({
-      kind: 'conversation.session.rename.v3',
+      kind: 'conversation.session.rename',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       sessionId: input.sessionId,
       workspaceId: input.workspaceId,
@@ -164,7 +179,7 @@ async function generateAndApplyTitle(
       title: generated.title
     });
     if (
-      renamed.kind === 'conversation.session.updated.v3'
+      renamed.kind === 'conversation.session.updated'
       && renamed.sessionId === input.sessionId
     ) void host.synchronize();
   } catch {

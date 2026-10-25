@@ -1,3 +1,4 @@
+import { markAuthorityIntegrityError } from '../../SqliteAuthorityHealth.js';
 import type { AgentRunEvent } from '@ariadne/agent-core';
 
 export interface AgentEventRow {
@@ -11,7 +12,7 @@ export interface AgentEventRow {
 }
 
 export function parseAgentEventRow(row: AgentEventRow): AgentRunEvent {
-  const source = `agent_v3_events:${row.event_id}`;
+  const source = `agent_events:${row.event_id}`;
   let parsed: unknown;
   try {
     parsed = JSON.parse(row.event_json) as unknown;
@@ -49,5 +50,5 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function storageCorruption(message: string, cause?: unknown): Error {
-  return new Error(`agent_v3_storage_corruption:${message}`, { cause });
+  return markAuthorityIntegrityError('execution', new Error(`agent_storage_corruption:${message}`, { cause }));
 }

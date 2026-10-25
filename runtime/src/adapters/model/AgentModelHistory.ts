@@ -1,6 +1,7 @@
-import { createHash } from 'node:crypto';
+import { historicalProviderToolCallId } from './AgentModelToolResultReference.js';
 import {
   cloneCanonicalAgentToolInput,
+  agentInboxInputRole,
   sameAgentPinnedToolIdentity,
   type AgentCommittedDirective,
   type AgentEffectExecutionInputReader,
@@ -10,7 +11,7 @@ import {
   type AgentTurnInput
 } from '@ariadne/agent-core';
 import type { ExactAgentModelInferenceMessage, ExactAgentModelInferenceRequestContentBlock } from '../../control/ports/AgentModelInference.js';
-import { type V3ModelContextGroup } from './V3LongContextLifecycle.js';
+import { type ModelContextGroup } from './LongContextLifecycle.js';
 import type { ConversationAttachmentReader, OwnedConversationImageAttachment } from '../../control/ports/ConversationAttachmentStore.js';
 import {
   INTERNAL_DIRECTIVE_PROTOCOL,
@@ -44,11 +45,11 @@ type BoundModelHistoryEntry =
 
 export function groupModelHistory(messages: readonly ExactAgentModelInferenceMessage[]): {
   readonly pinned: readonly ExactAgentModelInferenceMessage[];
-  readonly groups: readonly V3ModelContextGroup[];
+  readonly groups: readonly ModelContextGroup[];
 } {
   const pinned = messages.filter((message) => message.role === 'system');
   const causal = messages.filter((message) => message.role !== 'system');
-  const groups: V3ModelContextGroup[] = [];
+  const groups: ModelContextGroup[] = [];
   for (let index = 0; index < causal.length; index += 1) {
     const current = causal[index]!;
     const next = causal[index + 1];
@@ -161,7 +162,12 @@ export function prepareBoundModelHistory(
         || batch.some((message) => message.kind !== 'text')
         || batch[0]?.kind !== 'text'
         || batch[0].role !== 'assistant'
-        || batch.slice(1).some((message) => message.kind !== 'text' || message.role !== 'user')
+        || batch.slice(1).some((message, index) => {
+          const queued = input.run.inbox.find(entry => entry.inputId === cause.inputIds[index]);
+          return queued === undefined || queued.state !== 'claimed' || queued.claimedTurnId !== turn.turnId
+            || message.kind !== 'text' || message.role !== agentInboxInputRole(queued)
+            || message.content !== queued.content;
+        })
       ) throw invalidBoundModelHistory();
       for (const message of batch) {
         if (message.kind !== 'text') throw invalidBoundModelHistory();
@@ -416,17 +422,6 @@ export function coalesceUserContentMessages(
     }
   }
   return Object.freeze(result);
-}
-
-function historicalProviderToolCallId(
-  runId: string,
-  effectId: string,
-  toolCallId: string
-): string {
-  return `history_${createHash('sha256')
-    .update(canonicalJson({ runId, effectId, toolCallId }))
-    .digest('hex')
-    .slice(0, 40)}`;
 }
 
 function sameStringSequence(

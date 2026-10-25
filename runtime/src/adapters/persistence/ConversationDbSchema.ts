@@ -1,6 +1,8 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { attributeSqliteOpeningFault, markAuthorityIntegrityError, markAuthorityUnavailableError } from './SqliteAuthorityHealth.js';
+import { DATABASE_PATHS } from './DatabasePaths.js';
 
 import {
   acquireSqliteOwnerLease,
@@ -9,11 +11,7 @@ import {
 } from './SqliteOwnerLease.js';
 
 export const CONVERSATION_DB_SCHEMA_VERSION = 4;
-export const CONVERSATION_DB_RELATIVE_PATH = path.join(
-  'data',
-  'conversation',
-  'conversation.db'
-);
+export const CONVERSATION_DB_RELATIVE_PATH = DATABASE_PATHS.conversation;
 
 const CONVERSATION_SCHEMA_MIGRATION_NAME =
   'conversation_authority_v4_lineage_query';
@@ -55,14 +53,14 @@ export function openConversationDatabase(dataRoot: string): {
     assertConversationDatabasePragmas(database);
     return { database, databasePath, ownerLease };
   } catch (error) {
+    attributeSqliteOpeningFault('conversation', error);
     if (database === null) {
       ownerLease.close();
     } else {
       try {
         closeOwnedSqliteDatabase(database, ownerLease);
-      } catch {
-        // The opening error stays authoritative. A connection whose close is
-        // uncertain remains strongly referenced and fenced until process exit.
+      } catch (closeError) {
+        throw new AggregateError([error, closeError], 'conversation_open_cleanup_failed');
       }
     }
     throw error;
@@ -72,10 +70,10 @@ export function openConversationDatabase(dataRoot: string): {
 function initializeOrValidateConversationSchema(database: DatabaseSync): void {
   const version = readUserVersion(database);
   if (version > CONVERSATION_DB_SCHEMA_VERSION) {
-    throw new Error(
+    throw markAuthorityUnavailableError('conversation', new Error(
       `conversation_schema_newer_than_runtime:${String(version)}:`
       + String(CONVERSATION_DB_SCHEMA_VERSION)
-    );
+    ));
   }
   if (version === 1) {
     migrateConversationSchemaV1ToV2(database);
@@ -88,18 +86,18 @@ function initializeOrValidateConversationSchema(database: DatabaseSync): void {
   if (lineageVersion === 3) {
     migrateConversationSchemaV3ToV4(database);
   } else if (lineageVersion > 0 && lineageVersion < CONVERSATION_DB_SCHEMA_VERSION) {
-    throw new Error(
+    throw markAuthorityUnavailableError('conversation', new Error(
       `conversation_offline_migration_required:${String(migratedVersion)}:`
       + String(CONVERSATION_DB_SCHEMA_VERSION)
-    );
+    ));
   }
   if (version === 0) {
     const objects = listSchemaObjects(database);
     if (objects.length !== 0) {
-      throw new Error(
+      throw markAuthorityUnavailableError('conversation', new Error(
         `conversation_unversioned_schema_not_empty:`
         + objects.map(schemaObjectIdentity).join(',')
-      );
+      ));
     }
     createConversationSchema(database);
   }
@@ -732,13 +730,13 @@ function createConversationSchemaObjects(database: DatabaseSync): void {
   `);
 }
 
-function assertConversationSchema(database: DatabaseSync): void {
+export function assertConversationSchema(database: DatabaseSync): void {
   const version = readUserVersion(database);
   if (version !== CONVERSATION_DB_SCHEMA_VERSION) {
-    throw new Error(
+    throw markAuthorityIntegrityError('conversation', new Error(
       `conversation_schema_version_mismatch:${String(version)}:`
       + String(CONVERSATION_DB_SCHEMA_VERSION)
-    );
+    ));
   }
   const actual = listSchemaObjects(database);
   const canonicalDatabase = new DatabaseSync(':memory:');
@@ -750,10 +748,10 @@ function assertConversationSchema(database: DatabaseSync): void {
     canonicalDatabase.close();
   }
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    throw new Error(
+    throw markAuthorityIntegrityError('conversation', new Error(
       `conversation_schema_definition_mismatch:`
       + actual.map(schemaObjectIdentity).join(',')
-    );
+    ));
   }
 
   const migrations = database.prepare(
@@ -769,14 +767,14 @@ function assertConversationSchema(database: DatabaseSync): void {
     || migrations[0]?.name !== CONVERSATION_SCHEMA_MIGRATION_NAME
     || !isCanonicalTimestamp(migrations[0]?.applied_at)
   ) {
-    throw new Error('conversation_schema_migration_ledger_invalid');
+    throw markAuthorityIntegrityError('conversation', new Error('conversation_schema_migration_ledger_invalid'));
   }
   const integrity = database.prepare('PRAGMA integrity_check;').get() as {
     integrity_check: string;
   };
   const foreignKeyFailures = database.prepare('PRAGMA foreign_key_check;').all();
   if (integrity.integrity_check !== 'ok' || foreignKeyFailures.length !== 0) {
-    throw new Error('conversation_schema_integrity_check_failed');
+    throw markAuthorityIntegrityError('conversation', new Error('conversation_schema_integrity_check_failed'));
   }
 }
 
@@ -799,7 +797,7 @@ function assertConversationDatabasePragmas(database: DatabaseSync): void {
     || journalMode.journal_mode.toLowerCase() !== 'wal'
     || Number(synchronous.synchronous) !== 2
   ) {
-    throw new Error('conversation_pragma_verification_failed');
+    throw markAuthorityUnavailableError('conversation', new Error('conversation_pragma_verification_failed'));
   }
 }
 
@@ -823,7 +821,7 @@ function readUserVersion(database: DatabaseSync): number {
   };
   const version = Number(row.user_version);
   if (!Number.isSafeInteger(version) || version < 0) {
-    throw new Error('conversation_schema_user_version_invalid');
+    throw markAuthorityIntegrityError('conversation', new Error('conversation_schema_user_version_invalid'));
   }
   return version;
 }

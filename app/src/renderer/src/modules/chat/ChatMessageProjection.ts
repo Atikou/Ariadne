@@ -6,7 +6,7 @@ export function toConversationNode(message: RuntimeMessage): ConversationNode {
   const previous = nodes.get(message);
   if (previous !== undefined) return previous;
   const content = message.content;
-  const summary = content
+  const summary = message.bodyState === 'unloaded' ? '正文未加载' : content
     || message.reasoning?.content
     || (message.status === 'streaming' ? '正在处理…' : '');
   const kind = message.role === 'user'
@@ -22,7 +22,9 @@ export function toConversationNode(message: RuntimeMessage): ConversationNode {
     sender: message.role === 'user' ? '你' : 'Ariadne',
     time: new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     summary: summary.slice(0, 160),
-    content,
+    ...(content === undefined ? {} : { content }),
+    ...(message.bodyState === undefined ? {} : { bodyState: message.bodyState }),
+    ...(message.bodyReadToken === undefined ? {} : { bodyReadToken: message.bodyReadToken, sessionId: message.sessionId }),
     ...(message.attachments === undefined
       ? {}
       : { attachments: message.attachments.map((attachment) => ({ ...attachment })) }),

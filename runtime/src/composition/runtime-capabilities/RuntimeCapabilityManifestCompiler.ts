@@ -22,6 +22,7 @@ import type {
 import { createShutdownContext, type ShutdownContext } from '../../ingress/ShutdownContext.js';
 import { toAgentComponentDefinition } from './RuntimeCapabilityComponentAdapter.js';
 import { compileRuntimeCapabilityDefinitionGraph } from './RuntimeCapabilityDefinitionGraph.js';
+import { isRetiredRuntimeCapability, RETIRED_RUNTIME_CAPABILITIES } from './RetiredRuntimeCapabilities.js';
 import type {
   RuntimeCapabilityHandle,
   RuntimeCapabilityProvider,
@@ -131,8 +132,9 @@ function createManifest(
   return Object.freeze<RuntimeCapabilityManifest>({
     agentComponentCatalog: componentCatalog,
     publicCapabilities: Object.freeze([...publicCapabilities].sort(compareCodeUnits)),
+    retiredPublicCapabilities: RETIRED_RUNTIME_CAPABILITIES,
     unwiredPublicCapabilities: Object.freeze(runtimeCapabilitySchema.options.filter(
-      (capability) => !started.some(
+      (capability) => !isRetiredRuntimeCapability(capability) && !started.some(
         (item) => item.definition.publicCapabilities.includes(capability)
       )
     ).sort(compareCodeUnits)),

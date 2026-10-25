@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   applySqliteMigrations,
   assertDatabaseVersionSupported,
+  assertDatabaseFileVersionSupported,
   getSchemaInfo,
   type SchemaInfo,
 } from "../storage/sqliteMigration.js";
@@ -32,13 +33,16 @@ export class TraceIndexStore {
   readonly schemaInfo: SchemaInfo;
 
   constructor(private readonly indexDbPath: string) {
+    assertDatabaseFileVersionSupported(indexDbPath,TRACE_INDEX_SCHEMA_VERSION);
     mkdirSync(pathDir(indexDbPath), { recursive: true });
     this.db = new DatabaseSync(indexDbPath);
+    try {
     assertDatabaseVersionSupported(this.db, TRACE_INDEX_SCHEMA_VERSION);
     this.db.exec("PRAGMA journal_mode = WAL;");
     const { version } = applySqliteMigrations(this.db, TRACE_INDEX_MIGRATIONS);
     this.schemaVersion = version;
     this.schemaInfo = getSchemaInfo(this.db);
+    }catch(error){try{this.db.close();}catch{ /* Preserve the initialization error. */ }throw error;}
   }
 
   insert(row: TraceIndexInsert): void {

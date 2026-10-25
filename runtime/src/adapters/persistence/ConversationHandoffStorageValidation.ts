@@ -1,3 +1,4 @@
+import { markAuthorityIntegrityError } from './SqliteAuthorityHealth.js';
 import { ConversationAuthorityError } from '../../conversation/ConversationAuthority.js';
 import { ConversationRunHandoffError } from '../../conversation/ConversationRunHandoffSaga.js';
 import { type ConversationPersistenceClock } from './ConversationHandoffStorageTypes.js';
@@ -83,11 +84,11 @@ export function authorityStorageCorruption(
   message: string,
   cause?: unknown
 ): ConversationAuthorityError {
-  return new ConversationAuthorityError(
+  return markAuthorityIntegrityError('conversation', new ConversationAuthorityError(
     'CONVERSATION_STORAGE_CORRUPTION',
     `Conversation storage corruption: ${message}.`,
     cause === undefined ? undefined : { cause }
-  );
+  ));
 }
 
 export function storageInvariant(message: string, cause?: unknown): Error {

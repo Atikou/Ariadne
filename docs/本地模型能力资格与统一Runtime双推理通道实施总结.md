@@ -75,7 +75,7 @@ Native Agent Channel 用于通过 Agent/Plan 资格的模型。工具名称、�
 资格数据库位于应用数据目录：
 
 ```text
-runtime/data/model-capability/model-capability-v1.db
+runtime/data/model-capability/model-capability.db
 ```
 
 工作区不创建 `.agent`，会话、模型资格和 Runtime 数据均由软件目录下的权威存储统一管理。

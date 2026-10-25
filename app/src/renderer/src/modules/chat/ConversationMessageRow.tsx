@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useCallback } from 'react';
 import type { RunActivity } from '@ariadne/protocol/public';
 import { moduleId, type FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import type { RuntimeRun } from '@renderer/core/runtime/runtime-store';
@@ -17,6 +17,11 @@ export const ConversationMessageRow = memo(function ConversationMessageRow({ nod
   services: FeaturePanelProps['services'];
   onError(error: string | null): void;
 }): React.JSX.Element {
+  const loadBody = useCallback(async () => {
+    if (node.sessionId !== undefined && node.bodyReadToken !== undefined) {
+      await services.messages.loadBody(node.id, node.sessionId, node.bodyReadToken);
+    }
+  }, [node.id, node.sessionId, node.bodyReadToken, services.messages]);
   return <div id={`chat-node-${node.id}`} data-conversation-node className={`conversation-node conversation-node--${node.kind}`}>
     <ConversationMessage node={node} run={run} activities={activities} workspaceId={workspaceId} toolResults={services.toolResults}
       onOpenActivity={node.runId ? () => {
@@ -24,6 +29,7 @@ export const ConversationMessageRow = memo(function ConversationMessageRow({ nod
         services.events.emit('module:open', ACTIVITY_MODULE);
       } : undefined}
       onCopy={text => services.clipboard.writeText({ text })}
+      onLoadBody={loadBody}
       onFork={node.reference === undefined ? undefined : async () => {
         onError(null);
         try { await services.sessions.forkFromMessage(node.reference!.sessionId, node.reference!); }

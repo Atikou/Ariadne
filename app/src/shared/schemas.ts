@@ -13,8 +13,8 @@ import {
   runtimePolicySnapshotSchema
 } from '@ariadne/protocol/settings';
 import type {
-  AgentInputDeliveryOutboxRecord,
-  AgentInputDeliveryOutboxStageRequest,
+  InputDeliveryOutboxRecord,
+  InputDeliveryOutboxStageRequest,
   JsonObject,
   JsonValue
 } from './contract';
@@ -88,41 +88,48 @@ export const gameDetectionRuleSchema = z
   })
   .strict();
 
-const agentInputDeliveryCommandSchema = runtimeCommandSchema.refine(
-  (command) => command.kind === 'agent.inbox.enqueue.v3',
-  'Only Agent inbox enqueue commands may enter the delivery outbox.'
+const inputDeliveryCommandSchema = runtimeCommandSchema.refine(
+  (command) => ['agent.inbox.enqueue', 'conversation.session.create', 'conversation.message.accept'].includes(command.kind),
+  'Only input submission commands may enter the delivery outbox.'
 );
 
-export const agentInputDeliveryOutboxStageRequestSchema = z
+export const inputDeliveryOutboxStageRequestSchema = z
   .object({
     commandId: z.string().trim().min(1).max(256),
-    command: agentInputDeliveryCommandSchema
+    command: inputDeliveryCommandSchema,
+    draftSubmissionId: z.string().uuid().optional()
   })
   .strict();
 
-export const agentInputDeliveryOutboxSettleRequestSchema = z
+export const inputDeliveryOutboxSettleRequestSchema = z
   .object({ commandId: z.string().trim().min(1).max(256) })
   .strict();
 
-const agentInputDeliveryOutboxRecordSchema = z
+const inputDeliveryOutboxRecordSchema = z
   .object({
     commandId: z.string().trim().min(1).max(256),
-    command: agentInputDeliveryCommandSchema,
+    command: inputDeliveryCommandSchema,
+    draftSubmissionId: z.string().uuid().optional(),
     createdAt: z.string().datetime()
   })
   .strict();
 
-export function parseAgentInputDeliveryOutboxStageRequest(
+export function parseInputDeliveryOutboxStageRequest(
   input: unknown
-): AgentInputDeliveryOutboxStageRequest {
-  return agentInputDeliveryOutboxStageRequestSchema.parse(input) as AgentInputDeliveryOutboxStageRequest;
+): InputDeliveryOutboxStageRequest {
+  return inputDeliveryOutboxStageRequestSchema.parse(input) as InputDeliveryOutboxStageRequest;
 }
 
-export function parseAgentInputDeliveryOutboxRecords(
+export function parseInputDeliveryOutboxBatch(input: unknown): InputDeliveryOutboxStageRequest[] {
+  return z.array(inputDeliveryOutboxStageRequestSchema).min(1).max(3)
+    .refine(rows => new Set(rows.map(row => row.commandId)).size === rows.length).parse(input) as InputDeliveryOutboxStageRequest[];
+}
+
+export function parseInputDeliveryOutboxRecords(
   input: unknown
-): AgentInputDeliveryOutboxRecord[] {
-  const parsed: unknown = z.array(agentInputDeliveryOutboxRecordSchema).max(100).parse(input);
-  return parsed as AgentInputDeliveryOutboxRecord[];
+): InputDeliveryOutboxRecord[] {
+  const parsed: unknown = z.array(inputDeliveryOutboxRecordSchema).max(100).parse(input);
+  return parsed as InputDeliveryOutboxRecord[];
 }
 
 export const speechPreferencesSchema = z
@@ -150,6 +157,7 @@ export const userPreferencesSchema = z
     theme: z.enum(['system', 'dark', 'light']),
     suppressAutomaticWakeDuringGames: z.boolean(),
     gameDetectionRules: z.array(gameDetectionRuleSchema).max(500),
+    taskNotifications: z.object({ completed: z.boolean(), failed: z.boolean() }).strict().default({ completed: false, failed: false }),
     speech: speechPreferencesSchema
   })
   .strict();

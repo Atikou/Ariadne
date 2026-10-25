@@ -1,0 +1,120 @@
+{
+  "contractVersion": 1,
+  "policy": "Fixed database names and physical layout. Ordinary feature updates preserve this layout; a major redesign requires a reviewed migration with record-preservation and restore evidence.",
+  "owners": [
+    {
+      "owner": "agentControl",
+      "relativePath": "data/agent-control/agent-control.db",
+      "schemaMetadataVersion": 8,
+      "schemaDigest": "sha256:f4ddf20e770469f635aaf714bc5dbca940389c54c36567ddf0a65b55e4fc2eb9",
+      "tables": [
+        "agent_budget_entries",
+        "agent_budget_grants",
+        "agent_checkpoints",
+        "agent_child_terminals",
+        "agent_command_runs",
+        "agent_commands",
+        "agent_control_metadata",
+        "agent_delegations",
+        "agent_directive_payloads",
+        "agent_effect_payloads",
+        "agent_events",
+        "agent_execution_intents",
+        "agent_outbox",
+        "agent_plan_approvals",
+        "agent_plan_versions",
+        "agent_runs",
+        "agent_turn_inputs",
+        "schema_migrations"
+      ]
+    },
+    {
+      "owner": "conversation",
+      "relativePath": "data/conversation/conversation.db",
+      "schemaMetadataVersion": 4,
+      "schemaDigest": "sha256:cc5d92d75b91fcec2675b9361dc3b7313e4801e76bc97d5fd91a762a96033e58",
+      "tables": [
+        "conversation_commands",
+        "conversation_events",
+        "conversation_handoff_commands",
+        "conversation_handoff_events",
+        "conversation_handoff_inbox",
+        "conversation_handoff_outbox",
+        "conversation_handoff_sagas",
+        "conversation_message_heads",
+        "conversation_message_versions",
+        "conversation_navigation_commands",
+        "conversation_session_lineage",
+        "conversation_session_versions",
+        "conversation_sessions",
+        "schema_migrations"
+      ]
+    },
+    {
+      "owner": "publicProjection",
+      "relativePath": "data/public-projection/projection.db",
+      "schemaMetadataVersion": 3,
+      "schemaDigest": "sha256:1eafa053dabbf47b90fe9de3418ddb6caec2a6a39ebce72f5a86adfbf463c5e9",
+      "tables": [
+        "projection_commits",
+        "projection_heads",
+        "projection_metadata",
+        "projection_source_checkpoints",
+        "projection_versions",
+        "schema_migrations"
+      ]
+    },
+    {
+      "owner": "runtimeCommand",
+      "relativePath": "data/runtime-control/runtime-command.db",
+      "schemaMetadataVersion": 1,
+      "schemaDigest": "sha256:b398accd871a98012fc277c48945014dfa6b291f25c565e97c1ae42dcf105cbb",
+      "tables": [
+        "runtime_commands",
+        "schema_migrations"
+      ]
+    },
+    {
+      "owner": "productivity",
+      "relativePath": "data/productivity/productivity.db",
+      "schemaMetadataVersion": 2,
+      "schemaDigest": "sha256:39211f0cab9ecae1b7d315a6750aa4f11487a3cc8b6fc2fc05d2885556a765d5",
+      "tables": [
+        "productivity_commands",
+        "productivity_events",
+        "productivity_goals",
+        "productivity_schedule_occurrences",
+        "productivity_schedules",
+        "productivity_todo_snapshots",
+        "productivity_workflows"
+      ]
+    },
+    {
+      "owner": "modelCapability",
+      "relativePath": "data/model-capability/model-capability.db",
+      "schemaMetadataVersion": 1,
+      "schemaDigest": "sha256:4826696fbc1c342810e74bf5620f91fcfcc23da291e727e958c3ac0b7a86b488",
+      "tables": [
+        "model_capability_metadata",
+        "model_capability_qualification"
+      ]
+    },
+    {
+      "owner": "longMemory",
+      "relativePath": "data/long-memory/long-memory.db",
+      "schemaMetadataVersion": 1,
+      "schemaDigest": "sha256:de856016ed2a41dcce678fa63fd72c4c101007327fbcd70b2eebaf84f4ed9058",
+      "tables": [
+        "long_memories",
+        "long_memory_commands",
+        "long_memory_fts",
+        "long_memory_fts_config",
+        "long_memory_fts_content",
+        "long_memory_fts_data",
+        "long_memory_fts_docsize",
+        "long_memory_fts_idx",
+        "long_memory_vectors"
+      ]
+    }
+  ]
+}

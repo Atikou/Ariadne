@@ -23,6 +23,8 @@ import {
   ProductionAgentEffectExecutionInputReader
 } from '../../../../control/execution/ProductionAgentEffectExecutionInputReader.js';
 import type { AgentLifecycleHooks } from '../../../../control/ports/AgentLifecycleHooks.js';
+import type { GoalPlanningAuthority } from '../../../../control/ports/GoalPlanningAuthority.js';
+import type { AgentMemoryToolAuthority } from '../../../../control/ports/AgentMemoryToolAuthority.js';
 import {
   ProtectedAgentEffectResultReader
 } from '../../../../control/resources/ProtectedAgentEffectResultReader.js';
@@ -39,6 +41,8 @@ export interface AgentToolExecutionComponentInput {
   >;
   readonly catalogSnapshots: readonly TrustedAgentToolCatalogSnapshot[];
   readonly lifecycleHooks: AgentLifecycleHooks;
+  readonly goalPlanning?: GoalPlanningAuthority;
+  readonly memory?: AgentMemoryToolAuthority;
 }
 
 export interface AgentToolExecutionComponentHandle {
@@ -59,7 +63,9 @@ export async function createAgentToolExecutionComponent(
   const catalogs = new ImmutableAgentToolCatalogRegistry(
     input.catalogSnapshots,
     input.lifecycleHooks,
-    { protectedEffectResults: protectedEffectResultReader }
+    { protectedEffectResults: protectedEffectResultReader,
+      ...(input.memory === undefined ? {} : { memory: input.memory }),
+      ...(input.goalPlanning === undefined ? {} : { goalPlanning: input.goalPlanning }) }
   );
   await assertCatalogAuthorities(input.authoritySource, catalogs);
   const effectInputReader = new ProductionAgentEffectExecutionInputReader(

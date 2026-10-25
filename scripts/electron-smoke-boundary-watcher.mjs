@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import { projectedTerminalRunMatches } from './smoke-projection-boundary.mjs';
 
 const options = parseArguments(process.argv.slice(2));
 const agentDatabasePath = requireOption(options, 'agent-db');
@@ -100,7 +101,7 @@ function scenarioRequested(path, scenario) {
 function userQuestionWaiting(database) {
   return database.prepare(`
     SELECT 1 AS observed
-      FROM agent_v3_runs
+      FROM agent_runs
      WHERE state_status='waiting'
        AND json_extract(aggregate_json, '$.state.reason')='user_question'
      ORDER BY updated_at DESC
@@ -111,7 +112,7 @@ function userQuestionWaiting(database) {
 function agentInboxInputCommitted(database) {
   return database.prepare(`
     SELECT 1 AS observed
-      FROM agent_v3_outbox
+      FROM agent_outbox
      WHERE json_extract(event_json, '$.payload.type')='inbox.input_enqueued'
        AND json_extract(event_json, '$.payload.input.content')='ARIADNE_SMOKE_DELIVERY_INPUT'
      ORDER BY cursor DESC
@@ -132,14 +133,14 @@ function effectStarted(database) {
   return database.prepare(`
     WITH target AS (
       SELECT json_extract(event_json, '$.payload.effect.effectId') AS effect_id
-        FROM agent_v3_outbox
+        FROM agent_outbox
        WHERE json_extract(event_json, '$.payload.type')='effect.registered'
          AND json_extract(event_json, '$.payload.effect.tool.toolName')='browser.wait'
        ORDER BY cursor DESC
        LIMIT 1
     )
     SELECT 1 AS observed
-      FROM agent_v3_outbox, target
+      FROM agent_outbox, target
      WHERE json_extract(event_json, '$.payload.type')='effect.transitioned'
        AND json_extract(event_json, '$.payload.effectId')=target.effect_id
        AND json_extract(event_json, '$.payload.to.status')='started'
@@ -150,7 +151,7 @@ function effectStarted(database) {
 function terminalRunAwaitingProjection(agentDatabase, projectionDatabase) {
   const source = agentDatabase.prepare(`
     SELECT aggregate_id AS run_id
-      FROM agent_v3_outbox
+      FROM agent_outbox
      WHERE json_extract(event_json, '$.payload.type')='effect.registered'
        AND json_extract(event_json, '$.payload.effect.tool.toolName')='workspace.write_file'
      ORDER BY cursor DESC
@@ -159,25 +160,19 @@ function terminalRunAwaitingProjection(agentDatabase, projectionDatabase) {
   if (typeof source?.run_id !== 'string') return false;
   const authority = agentDatabase.prepare(`
     SELECT version, state_status
-      FROM agent_v3_runs
+      FROM agent_runs
      WHERE run_id=?
   `).get(source.run_id);
   if (authority?.state_status !== 'completed') return false;
   const projected = projectionDatabase.prepare(`
-    SELECT aggregate_version, dto_json
-      FROM projection_versions
-     WHERE feature='runs' AND aggregate_id=?
-     ORDER BY aggregate_version DESC
+    SELECT v.aggregate_version, v.dto_json, c.contract_version
+      FROM projection_versions v JOIN projection_commits c ON c.cursor=v.commit_cursor
+     WHERE v.feature='runs' AND v.aggregate_id=?
+     ORDER BY v.aggregate_version DESC
      LIMIT 1
   `).get(source.run_id);
   if (projected === undefined) return true;
-  let dto;
-  try {
-    dto = JSON.parse(projected.dto_json);
-  } catch {
-    return true;
-  }
-  return projected.aggregate_version < authority.version || dto?.status !== 'completed';
+  return !projectedTerminalRunMatches(projected, source.run_id, authority.version);
 }
 
 function parseArguments(values) {

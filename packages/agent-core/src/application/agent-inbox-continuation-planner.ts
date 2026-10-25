@@ -1,6 +1,8 @@
 import { assertValidAgentRun, type AgentRun } from '../domain/agent-run.js';
 import { AgentRunInvariantError } from '../domain/errors.js';
 import type { AgentInboxInput } from '../domain/inbox.js';
+import { agentInboxInputRole } from '../domain/inbox.js';
+import { hasExactApprovedPlanBoundary } from './plan-approval-input.js';
 import type { AgentTurnCause } from '../domain/turn.js';
 import type { RegisterAgentTurnCommand } from './commands.js';
 import {
@@ -68,7 +70,8 @@ export class DefaultAgentInboxContinuationPlanner {
         || sourceAttempt.state.status !== 'succeeded'
         || (sourceAttempt.state.directive.kind !== 'respond'
           && sourceAttempt.state.directive.kind !== 'complete'
-          && sourceAttempt.state.directive.kind !== 'ask_user')
+          && sourceAttempt.state.directive.kind !== 'ask_user'
+          && !hasExactApprovedPlanBoundary(run, request.inputIds))
       ) throw invalid('Agent inbox continuation requires the latest succeeded response.');
     } else if (
       request.boundary.interruptionNotice.length === 0
@@ -242,7 +245,7 @@ function requireInterruptedRecoveryDecisionId(run: AgentRun): string {
 }
 
 function inboxRole(input: AgentInboxInput): 'user' | 'system' {
-  return input.source?.kind === 'live_work' ? 'system' : 'user';
+  return agentInboxInputRole(input);
 }
 
 function invalid(message: string): AgentRunInvariantError {

@@ -109,6 +109,7 @@ describe('Main Agent admission authority source builder', () => {
           'workspace.delete_file',
           'workspace.move_file',
           'workspace.write_file',
+          'memory.stage_candidate',
         ])
       );
     }
@@ -122,6 +123,9 @@ describe('Main Agent admission authority source builder', () => {
       'computer.list_directory',
       'computer.open_path',
       'computer.read_text_file',
+      'memory.read',
+      'memory.recall',
+      'productivity.record_goal_decision',
       'workspace.code_intelligence',
       'workspace.effect_result_read',
       'workspace.glob',
@@ -147,6 +151,9 @@ describe('Main Agent admission authority source builder', () => {
       'computer.list_directory',
       'computer.open_path',
       'computer.read_text_file',
+      'memory.read',
+      'memory.recall',
+      'productivity.record_goal_decision',
       'workspace.code_intelligence',
       'workspace.effect_result_read',
       'workspace.glob',

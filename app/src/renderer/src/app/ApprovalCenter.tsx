@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
+import { usePanelDetailFocus } from '@renderer/shared/ui/usePanelDetailFocus';
 import { FolderLock, ListChecks, MessageCircleQuestion, ShieldCheck } from 'lucide-react';
 import type { ModuleServices } from '@renderer/core/modules/module-contract';
 import {
@@ -12,6 +13,7 @@ import type { DecisionFeatureStore } from '@renderer/core/runtime/features/decis
 import { useFeatureSnapshot } from '@renderer/core/runtime/features/feature-snapshot-store';
 import { formatRisk } from '@renderer/core/runtime/runtime-labels';
 import { PlanContractView } from '@renderer/modules/agent-plan/PlanContractView';
+import { DecisionDetailLinks } from '@renderer/shared/ui/DecisionDetailLinks';
 
 type PendingApproval =
   | { kind: 'permission'; id: string; createdAt: string; request: RuntimePermissionDecision }
@@ -66,13 +68,19 @@ export function ConversationApprovalCards(
     runs.runs,
   ]);
 
-  if (pending.length === 0) return null;
+  const summaries = decisions.sessionDecisionDirectory?.page.rows.flatMap(row => row.feature === 'decisions' ? [row.dto] : []) ?? [];
+  const detailedIds = new Set(pending.map(item => item.id));
+  const undisplayed = summaries.filter(row => !detailedIds.has(row.decisionId));
+  if (pending.length === 0 && undisplayed.length === 0) return null;
 
   return (
     <div className="conversation-approval-stack" role="region" aria-live="polite" aria-label="待确认操作">
+      <p>此会话 {decisions.sessionDecisionDirectory?.page.totalRows ?? pending.length} 项待确认操作</p>
+      <DecisionDetailLinks rows={undisplayed} services={services} />
+      {decisions.sessionDecisionDirectory?.page.hasMore && <p>还有待确认操作，可在待确认列表中继续查看。</p>}
       {pending.map((current) => {
         const heading = approvalHeading(current.kind);
-        return <section className="approval-center" key={current.id} aria-label={heading.title}>
+        return <ConversationApprovalCard key={current.id} id={current.id} title={heading.title} selected={decisions.openedDecisionId === current.id}>
           <header className="approval-center-header">
             <span className="approval-center-icon"><ShieldCheck size={16} /></span>
             <div>
@@ -92,10 +100,15 @@ export function ConversationApprovalCards(
             question={current.question}
             decisions={services.decisions}
           />}
-        </section>;
+        </ConversationApprovalCard>;
       })}
     </div>
   );
+}
+
+function ConversationApprovalCard({ id, title, selected, children }: { id: string; title: string; selected: boolean; children: ReactNode }) {
+  const detail = usePanelDetailFocus(selected, id);
+  return <section ref={detail} className="approval-center" data-decision-id={id} tabIndex={-1} aria-label={title} aria-current={selected}>{children}</section>;
 }
 
 function UserQuestionAnswer({ question, decisions }: {

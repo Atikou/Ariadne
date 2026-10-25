@@ -22,6 +22,42 @@ afterEach(async () => {
 });
 
 describe('Conversation navigation authority', () => {
+  it('freezes lineage before later parent messages and replays that exact fork after restart', async () => {
+    const root = tempRoot();
+    let unit = track(new SqliteConversationRunHandoffUnitOfWork(root));
+    const authority = new ConversationAuthorityService(unit);
+    await authority.createSession(createSession('parent', 'create-parent'));
+    await authority.acceptUserMessage(acceptMessage('parent', 'first', 'accept-first', 1, 'frozen requirement'));
+    const frozen = await unit.captureFrozenContext('session-parent', 2);
+    await authority.acceptUserMessage(acceptMessage('parent', 'later', 'accept-later', 2, 'later unrelated requirement'));
+    await expect(unit.captureFrozenContext('session-parent', 2)).rejects.toThrow('workflow_context_version_conflict');
+    const request = { commandId: 'frozen-fork', eventId: 'frozen-event', sessionId: 'session-child',
+      workspaceId: 'workspace-navigation', expectedSourceSessionVersion: frozen.sourceSessionVersion,
+      sourceSessionId: frozen.sourceSessionId, boundary: frozen.boundary!, sourceVersionMode: 'frozen' as const,
+      title: 'Exact task title', occurredAt: at(2) };
+    await expect(unit.forkSession({ ...request, commandId: 'current-fork', sourceVersionMode: 'current' }))
+      .rejects.toThrow('conversation_fork_source_authority_changed');
+    const later = await unit.captureFrozenContext('session-parent', 3);
+    await expect(unit.forkSession({ ...request, commandId: 'invalid-boundary', boundary: later.boundary! }))
+      .rejects.toThrow('conversation_fork_boundary_not_settled');
+    expect((await unit.forkSession(request)).session.title).toBe('Exact task title');
+    expect(await unit.captureFrozenContext('session-child', 1)).toEqual(frozen);
+    await closeUnit(unit); units.delete(unit);
+    unit = track(new SqliteConversationRunHandoffUnitOfWork(root));
+    await expect(unit.forkSession(request)).resolves.toMatchObject({ replayed: true });
+    const child = await new ConversationAuthorityService(unit).acceptUserMessage(
+      acceptMessage('child', 'task', 'task-command', 1, 'execute task'));
+    const history = await unit.authorityTransaction(tx => tx.loadSessionMessageHistoryThrough(
+      child.session.sessionId, child.messageVersion.messageId, child.messageVersion.version));
+    expect(history.map(message => message.payload.content)).toEqual(['frozen requirement', 'execute task']);
+  });
+
+  it('captures a genuinely empty session without inventing a message boundary', async () => {
+    const unit = track(new SqliteConversationRunHandoffUnitOfWork(tempRoot()));
+    await new ConversationAuthorityService(unit).createSession(createSession('empty', 'create-empty'));
+    expect(await unit.captureFrozenContext('session-empty', 1)).toEqual({ sourceSessionId: 'session-empty', sourceSessionVersion: 1 });
+  });
+
   it('forks at an immutable boundary and inherits history without copying messages', async () => {
     const root = tempRoot();
     const unit = track(new SqliteConversationRunHandoffUnitOfWork(root));

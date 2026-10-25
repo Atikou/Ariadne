@@ -1,8 +1,8 @@
 import {
-  conversationMessageExecutionV3Schema,
-  imageAttachmentRefV3Schema,
-  type ImageAttachmentRefV3,
-  type ConversationMessageExecutionV3
+  conversationMessageExecutionSchema,
+  imageAttachmentRefSchema,
+  type ImageAttachmentRef,
+  type ConversationMessageExecution
 } from '@ariadne/protocol/public';
 import type { ConversationRunResultStatus } from './ConversationRunHandoffSaga.js';
 
@@ -27,8 +27,8 @@ export interface ConversationMessageHead {
 
 export interface ConversationMessagePayload {
   readonly content: string;
-  readonly attachments?: readonly ImageAttachmentRefV3[];
-  readonly execution?: ConversationMessageExecutionV3;
+  readonly attachments?: readonly ImageAttachmentRef[];
+  readonly execution?: ConversationMessageExecution;
 }
 
 export interface ConversationMessageVersion {
@@ -75,8 +75,8 @@ extends ConversationAuthorityCommandBase {
   readonly messageId: string;
   readonly expectedMessageVersion: null;
   readonly content: string;
-  readonly attachments?: readonly ImageAttachmentRefV3[];
-  readonly execution?: ConversationMessageExecutionV3;
+  readonly attachments?: readonly ImageAttachmentRef[];
+  readonly execution?: ConversationMessageExecution;
   readonly sagaId: string;
   readonly handoffCommandId: string;
   readonly handoffOutboxMessageId: string;
@@ -1203,14 +1203,14 @@ function assertConversationMessagePayload(
 }
 
 function assertImageAttachments(
-  attachments: readonly ImageAttachmentRefV3[],
+  attachments: readonly ImageAttachmentRef[],
   location: string
 ): void {
   if (!Array.isArray(attachments) || attachments.length === 0 || attachments.length > 4) {
     throw invariant(`${location} must contain one through four images.`);
   }
   for (const [index, attachment] of attachments.entries()) {
-    if (!imageAttachmentRefV3Schema.safeParse(attachment).success) {
+    if (!imageAttachmentRefSchema.safeParse(attachment).success) {
       throw invariant(`${location}[${String(index)}] is invalid.`);
     }
   }
@@ -1399,7 +1399,7 @@ function assertMessageContent(content: unknown): asserts content is string {
 
 function assertMessageContentOrAttachments(
   content: unknown,
-  attachments: readonly ImageAttachmentRefV3[] | undefined
+  attachments: readonly ImageAttachmentRef[] | undefined
 ): asserts content is string {
   if (
     typeof content !== 'string'
@@ -1414,8 +1414,8 @@ function assertMessageContentOrAttachments(
 
 function assertConversationMessageExecution(
   value: unknown
-): asserts value is ConversationMessageExecutionV3 {
-  if (!conversationMessageExecutionV3Schema.safeParse(value).success) {
+): asserts value is ConversationMessageExecution {
+  if (!conversationMessageExecutionSchema.safeParse(value).success) {
     throw invariant('Conversation message execution preferences are invalid.');
   }
 }

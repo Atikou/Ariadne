@@ -32,7 +32,7 @@ describe('AgentControlPublicCommandRouter SubAgent interruption', () => {
       outcome: {
         ok: true,
         result: {
-          kind: 'agent.subagent.interrupted.v3',
+          kind: 'agent.subagent.interrupted',
           parentRunId: 'run-parent',
           childRunId: 'run-child',
           childRunVersion: 9,
@@ -70,7 +70,7 @@ describe('AgentControlPublicCommandRouter SubAgent interruption', () => {
       outcome: {
         ok: true,
         result: {
-          kind: 'agent.subagent.interrupted.v3',
+          kind: 'agent.subagent.interrupted',
           childRunVersion: 7,
           previousStatus: 'inactive'
         }
@@ -124,7 +124,7 @@ describe('AgentControlPublicCommandRouter SubAgent interruption', () => {
       deadlineAt: '2026-08-28T00:01:00.000Z',
       signal: new AbortController().signal,
       command: {
-        kind: 'agent.tool_result.detail.get.v3',
+        kind: 'agent.tool_result.detail.get',
         contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         runId: 'run-detail',
         workspaceId: 'workspace-detail',
@@ -138,7 +138,7 @@ describe('AgentControlPublicCommandRouter SubAgent interruption', () => {
       outcome: {
         ok: true,
         result: {
-          kind: 'agent.tool_result.detail.v3',
+          kind: 'agent.tool_result.detail',
           workspaceId: 'workspace-detail',
           effectId: 'effect-detail',
           presentation: { kind: 'file_read', label: '读取工作区文件' },
@@ -197,7 +197,7 @@ function envelope(parentRunId: string): RuntimeCommandEnvelope {
     deadlineAt: '2026-08-28T00:01:00.000Z',
     signal: new AbortController().signal,
     command: {
-      kind: 'agent.subagent.interrupt.v3',
+      kind: 'agent.subagent.interrupt',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       parentRunId,
       childRunId: 'run-child',

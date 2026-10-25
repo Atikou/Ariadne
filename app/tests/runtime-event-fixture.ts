@@ -39,30 +39,7 @@ function metadataFor(event: RuntimeEvent): {
         aggregateId: `${event.runId}:${event.turnId}:${event.attemptId}`,
         aggregateVersion: event.finalSequence + 1,
       };
-    case "companion.reasoning.delta":
-    case "companion.token.delta":
-      return { aggregateType: "companion", aggregateId: event.messageId };
-    case "companion.message.changed":
-      return { aggregateType: "companion", aggregateId: event.message.messageId };
-    case "companion.message.removed":
-      return { aggregateType: "companion", aggregateId: event.messageId };
-    case "agent.proposal.changed":
-      return { aggregateType: "proposal", aggregateId: event.proposal.proposalId };
-    case "run.changed":
-      return {
-        aggregateType: event.run.origin === "agent" ? "run" : "companion",
-        aggregateId: event.run.runId,
-        aggregateVersion: event.run.aggregateVersion,
-      };
-    case "run.activity":
-      return { aggregateType: "trace", aggregateId: event.activity.activityId };
-    case "permission.changed":
-      return { aggregateType: "permission", aggregateId: event.request.requestId };
-    case "planHandoff.changed":
-      return { aggregateType: "plan_handoff", aggregateId: event.handoff.handoffId };
     case "projection.changed":
       return { aggregateType: "projection", aggregateId: event.feature };
-    case "trace.appended":
-      return { aggregateType: "trace", aggregateId: event.entry.traceId };
   }
 }

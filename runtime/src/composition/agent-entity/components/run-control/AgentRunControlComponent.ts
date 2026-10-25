@@ -1,17 +1,17 @@
-import { AgentRunCommandService } from '@ariadne/agent-core';
-
 import type { SqliteAgentRunUnitOfWork } from '../../../../adapters/persistence/SqliteAgentRunUnitOfWork.js';
 import type { RuntimeApplicationCommandResult } from '../../../../ingress/RuntimeApplication.js';
 import type { RuntimeCommandEnvelope } from '../../../../ingress/RuntimeIngress.js';
 import { publicRunMutationFailure } from '../../../AgentPublicCommandFailures.js';
 import type { AgentControlExecutionPipeline } from '../../../ProductionAgentControlExecutionPipelineFactory.js';
+import { AgentRunCancellationService } from './AgentRunCancellationService.js';
+import type { AgentRunCancellationOwner, AgentRunCancellationReceipt } from './AgentRunCancellationContracts.js';
 import {
   defineAgentPublicCommandOwner,
   type AgentPublicCommandOwner
 } from '../../command-owners/AgentPublicCommandOwnerTable.js';
 
 type CancelCommand = Extract<RuntimeCommandEnvelope['command'], {
-  readonly kind: 'agent.run.cancel.v3';
+  readonly kind: 'agent.run.cancel';
 }>;
 
 export interface AgentRunControlComponentInput {
@@ -35,16 +35,17 @@ export function createAgentRunControlComponent(
 }
 
 class DefaultAgentRunControlComponent implements AgentRunControlComponentHandle {
-  private readonly commands: AgentRunCommandService;
+  private readonly cancellations: AgentRunCancellationOwner;
 
   public constructor(private readonly input: AgentRunControlComponentInput) {
-    this.commands = new AgentRunCommandService(input.unitOfWork);
+    this.cancellations = input.executionPipeline?.cancellations
+      ?? new AgentRunCancellationService(input.unitOfWork, input.executionPipeline);
   }
 
   public commandOwners(): readonly AgentPublicCommandOwner[] {
     return Object.freeze([
       defineAgentPublicCommandOwner('agent.run', [
-        'agent.run.cancel.v3'
+        'agent.run.cancel'
       ], (envelope, command) => this.executeCancellation(envelope, command),
       async (envelope, command) => {
         const result = await this.executeCancellation(envelope, command);
@@ -63,55 +64,9 @@ class DefaultAgentRunControlComponent implements AgentRunControlComponentHandle 
     command: CancelCommand
   ): Promise<RuntimeApplicationCommandResult> {
     envelope.signal.throwIfAborted();
-    const replayed = await this.loadCommittedCancellation(envelope.commandId, command.runId);
-    if (replayed !== null) return cancellationResult(replayed.runId, replayed.runVersion);
-
-    const active = await this.input.executionPipeline?.executionScheduler.cancelActiveRun({
-      commandId: envelope.commandId,
-      runId: command.runId,
-      expectedVersion: command.expectedVersion,
-      finalize: async (recovery) => {
-        const snapshot = await this.input.unitOfWork.transaction((transaction) => (
-          transaction.loadRun(recovery.runId)
-        ));
-        if (
-          snapshot === null
-          || snapshot.version !== recovery.runVersion
-          || snapshot.state.status !== 'recovering'
-          || snapshot.state.reason !== 'uncertain_inference'
-        ) {
-          throw new Error('agent_run_active_cancellation_recovery_drifted');
-        }
-        const occurredAt = new Date(Math.max(
-          Date.parse(command.occurredAt), Date.parse(snapshot.updatedAt)
-        )).toISOString();
-        const committed = await this.commands.execute({
-          kind: 'run.cancel',
-          commandId: envelope.commandId,
-          runId: recovery.runId,
-          expectedVersion: recovery.runVersion,
-          occurredAt,
-          reason: command.reason,
-          recoveryDecisionId: recovery.recoveryDecisionId
-        }, { turnInputPayloads: [], effectPayloads: [] });
-        return { runVersion: committed.run.version };
-      }
-    }) ?? { status: 'not_active' as const };
-    if (active.status === 'cancelled') {
-      this.wakeRunAndProjection();
-      return cancellationResult(command.runId, active.runVersion);
-    }
-
     let result;
     try {
-      result = await this.commands.execute({
-        kind: 'run.cancel',
-        commandId: envelope.commandId,
-        runId: command.runId,
-        expectedVersion: command.expectedVersion,
-        occurredAt: command.occurredAt,
-        reason: command.reason
-      }, { turnInputPayloads: [], effectPayloads: [] });
+      result = await this.cancellations.cancel(envelope.commandId, command);
     } catch (error) {
       envelope.signal.throwIfAborted();
       const failure = publicRunMutationFailure(envelope, error);
@@ -119,46 +74,22 @@ class DefaultAgentRunControlComponent implements AgentRunControlComponentHandle 
       throw error;
     }
     this.wakeRunAndProjection();
-    return cancellationResult(result.run.runId, result.run.version);
+    return cancellationResult(result);
   }
 
   private wakeRunAndProjection(): void {
     this.input.executionPipeline?.runWorkScheduler.wake();
+    this.cancellations.wake();
     this.input.wakeProjectionDrain();
-  }
-
-  private async loadCommittedCancellation(
-    commandId: string,
-    runId: string
-  ): Promise<{ readonly runId: string; readonly runVersion: number } | null> {
-    const receipt = await this.input.unitOfWork.loadCommittedCommandReceipt(commandId);
-    if (receipt === null) return null;
-    const mutation = receipt.mutations[0];
-    const cancellation = mutation?.events.filter(
-      (event) => event.payload.type === 'run.cancelled'
-    );
-    if (
-      receipt.commandId !== commandId
-      || receipt.mutations.length !== 1
-      || mutation === undefined
-      || mutation.runId !== runId
-      || mutation.run.runId !== runId
-      || mutation.resultingVersion !== mutation.run.version
-      || mutation.run.state.status !== 'cancelled'
-      || cancellation?.length !== 1
-    ) {
-      throw new Error('agent_run_cancel_receipt_invalid');
-    }
-    return { runId, runVersion: mutation.run.version };
   }
 }
 
 function cancellationResult(
-  runId: string,
-  runVersion: number
+  receipt: AgentRunCancellationReceipt
 ): RuntimeApplicationCommandResult {
   return {
-    outcome: { ok: true, result: { kind: 'agent.run.cancelled.v3', runId, runVersion } },
+    outcome: { ok: true, result: { kind: receipt.status === 'cancelled'
+      ? 'agent.run.cancelled' : 'agent.run.cancellation.requested', runId: receipt.runId, runVersion: receipt.runVersion } },
     settlement: 'completed'
   };
 }

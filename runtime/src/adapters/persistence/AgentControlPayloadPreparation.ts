@@ -27,7 +27,7 @@ import {
 import { assertStableRunIdentity, parseRunRow } from './AgentControlStorageValidation.js';
 import {
   assertDurableEffectResultContinuationArtifacts,
-  checkpointCoversInboxOnlyAdvance,
+  checkpointCoversControlSideChannelAdvance,
   loadTurnInputPayload
 } from './AgentControlPayloadReader.js';
 import {
@@ -47,11 +47,11 @@ export async function prepareCommandMutations(
     const currentRow = database.prepare(
       `SELECT run_id, version, state_status, aggregate_json,
               created_at, updated_at
-       FROM agent_v3_runs WHERE run_id=?`
+       FROM agent_runs WHERE run_id=?`
     ).get(mutation.runId) as AgentRunRow | undefined;
     const current = currentRow === undefined
       ? null
-      : parseRunRow(currentRow, 'agent_v3_runs');
+      : parseRunRow(currentRow, 'agent_runs');
     const actualVersion = current?.version ?? null;
     if (actualVersion !== mutation.expectedVersion) {
       throw new AgentRunVersionConflictError(
@@ -181,7 +181,7 @@ export async function prepareCommandMutations(
     for (const payload of artifacts.directivePayloads ?? []) {
       if (
         database.prepare(
-          'SELECT 1 FROM agent_v3_directive_payloads WHERE artifact_id=?'
+          'SELECT 1 FROM agent_directive_payloads WHERE artifact_id=?'
         ).get(payload.artifactId) !== undefined
       ) {
         throw new AgentRunRecoveryConflictError(
@@ -283,14 +283,14 @@ function assertRecoveryMaterialComplete(database: DatabaseSync, run: AgentRun): 
     && run.state.status !== 'cancelled'
   ) {
     const checkpoint = database.prepare(
-      `SELECT run_version FROM agent_v3_checkpoints
+      `SELECT run_version FROM agent_checkpoints
        WHERE run_id=? AND checkpoint_version=?`
     ).get(run.runId, run.state.checkpointVersion) as { run_version: number } | undefined;
     if (
       checkpoint === undefined
       || (
         checkpoint.run_version !== run.version
-        && !checkpointCoversInboxOnlyAdvance(database, run, checkpoint.run_version)
+        && !checkpointCoversControlSideChannelAdvance(database, run, checkpoint.run_version)
       )
     ) {
       throw new AgentRunRecoveryConflictError(
@@ -327,7 +327,7 @@ async function assertStoredTurnInputsComplete(
   run: AgentRun
 ): Promise<void> {
   const rows = database.prepare(
-    'SELECT * FROM agent_v3_turn_inputs WHERE run_id=? ORDER BY turn_id'
+    'SELECT * FROM agent_turn_inputs WHERE run_id=? ORDER BY turn_id'
   ).all(run.runId) as unknown as AgentTurnInputPayloadRow[];
   if (run.state.status === 'queued') {
     if (run.turns.length !== 0 || rows.length !== 0) {

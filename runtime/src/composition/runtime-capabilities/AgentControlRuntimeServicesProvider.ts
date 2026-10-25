@@ -14,6 +14,9 @@ export function agentControlRuntimeServicesProvider(): RuntimeCapabilityProvider
       { serviceId: 'agent.hooks.lifecycle', optional: false },
       { serviceId: 'agent.live-work', optional: false },
       { serviceId: 'agent.skills.catalog', optional: false },
+      { serviceId: 'agent.memory.authority', optional: true },
+      { serviceId: 'agent.memory.health', optional: false },
+      { serviceId: 'workspace.documents', optional: false },
       { serviceId: 'agent.telemetry', optional: true }
     ],
     provides: [{ serviceId: AGENT_CONTROL_RUNTIME_SERVICES_ID, optional: false }],
@@ -21,7 +24,11 @@ export function agentControlRuntimeServicesProvider(): RuntimeCapabilityProvider
       const telemetry = context.services.optional<
         NonNullable<AgentControlRuntimeServices['telemetry']>
       >('agent.telemetry');
+      const memoryAuthority = context.services.optional<NonNullable<AgentControlRuntimeServices['memoryAuthority']>>('agent.memory.authority');
       const services: AgentControlRuntimeServices = Object.freeze({
+        ...(memoryAuthority === undefined ? {} : { memoryAuthority }),
+        memoryHealth: context.services.required<NonNullable<AgentControlRuntimeServices['memoryHealth']>>('agent.memory.health'),
+        workspaceDocuments: context.services.required<NonNullable<AgentControlRuntimeServices['workspaceDocuments']>>('workspace.documents'),
         instructionAssembly: context.services.required<
           AgentControlRuntimeServices['instructionAssembly']
         >('agent.instructions.assembly'),

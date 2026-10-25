@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  admitV3TokenizedProjections,
-  planV3LongContext,
-  type V3ModelContextGroup
-} from '../src/adapters/model/V3LongContextLifecycle.js';
+  admitTokenizedProjections,
+  planLongContext,
+  type ModelContextGroup
+} from '../src/adapters/model/LongContextLifecycle.js';
 
 const HEADER_DIGEST = `sha256:${'a'.repeat(64)}`;
 
 describe('v3 long-context token authority', () => {
   it('records a route-bound exact source tokenizer and final projection admission', () => {
-    const planned = planV3LongContext({
+    const planned = planLongContext({
       pinnedMessages: [textMessage('system', 'fixed protocol')],
       groups: [{ kind: 'conversation', messages: [textMessage('user', 'objective')] }],
       capacity: { contextWindowTokens: 8_192, maxOutputTokens: 1_024 },
@@ -21,7 +21,7 @@ describe('v3 long-context token authority', () => {
         tokenizer: 'embedded:model-a:llama.cpp'
       }
     });
-    const admitted = admitV3TokenizedProjections({
+    const admitted = admitTokenizedProjections({
       plan: planned,
       capacity: { contextWindowTokens: 8_192, maxOutputTokens: 1_024 },
       primary: { tokens: 123, exact: true, tokenizer: 'embedded:model-a:llama.cpp' },
@@ -47,7 +47,7 @@ describe('v3 long-context token authority', () => {
   });
 
   it('promotes only a tokenized recovery that fits the hard input limit', () => {
-    const plan = planV3LongContext({
+    const plan = planLongContext({
       pinnedMessages: [textMessage('system', 'fixed protocol')],
       groups: Array.from({ length: 20 }, (_, index) => ({
         kind: 'conversation' as const,
@@ -59,7 +59,7 @@ describe('v3 long-context token authority', () => {
     });
     expect(plan.overflowRecoveryMessages).not.toBeNull();
 
-    const admitted = admitV3TokenizedProjections({
+    const admitted = admitTokenizedProjections({
       plan,
       capacity: { contextWindowTokens: 8_192, maxOutputTokens: 1_024 },
       primary: { tokens: 7_500, exact: true, tokenizer: 'embedded:test' },
@@ -75,7 +75,7 @@ describe('v3 long-context token authority', () => {
     });
   });
   it('records the exact semantic compaction input and output evidence', () => {
-    const planned = planV3LongContext({
+    const planned = planLongContext({
       pinnedMessages: [textMessage('system', 'fixed protocol')],
       groups: Array.from({ length: 80 }, (_, index) => ({
         kind: 'conversation' as const,
@@ -108,7 +108,7 @@ describe('v3 long-context token authority', () => {
 
   it('uses a matching Provider usage anchor in capacity decisions', () => {
     const pinnedMessages = [textMessage('system', 'fixed protocol')];
-    const groups: readonly V3ModelContextGroup[] = Array.from(
+    const groups: readonly ModelContextGroup[] = Array.from(
       { length: 5 },
       (_, index) => ({
         kind: 'conversation' as const,
@@ -125,8 +125,8 @@ describe('v3 long-context token authority', () => {
       requestHeaderDigest: HEADER_DIGEST
     };
 
-    const estimated = planV3LongContext(common);
-    const anchored = planV3LongContext({
+    const estimated = planLongContext(common);
+    const anchored = planLongContext({
       ...common,
       usageBaseline: {
         attemptId: 'attempt-meter-anchor',
@@ -164,7 +164,7 @@ describe('v3 long-context token authority', () => {
   });
 
   it('rejects a usage anchor from a different request header', () => {
-    expect(() => planV3LongContext({
+    expect(() => planLongContext({
       pinnedMessages: [textMessage('system', 'fixed protocol')],
       groups: [{
         kind: 'conversation',

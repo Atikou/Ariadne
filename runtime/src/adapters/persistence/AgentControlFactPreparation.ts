@@ -55,7 +55,7 @@ export async function prepareCommandFacts(
   for (const fact of facts.planVersions) {
     const runVersion = requireMutationVersion(fact.runId, 'Plan version');
     const existing = database.prepare(
-      `SELECT 1 FROM agent_v3_plan_versions
+      `SELECT 1 FROM agent_plan_versions
        WHERE plan_id=? AND plan_version=?`
     ).get(fact.ref.planId, fact.ref.version);
     if (existing !== undefined) {
@@ -87,7 +87,7 @@ export async function prepareCommandFacts(
     const runVersion = requireMutationVersion(approval.runId, 'Plan approval');
     const run = mutationRuns.get(approval.runId);
     const persisted = database.prepare(
-      `SELECT run_id, content_hash FROM agent_v3_plan_versions
+      `SELECT run_id, content_hash FROM agent_plan_versions
        WHERE plan_id=? AND plan_version=?`
     ).get(approval.plan.planId, approval.plan.version) as {
       run_id: string;
@@ -118,7 +118,7 @@ export async function prepareCommandFacts(
   for (const grant of facts.budgetGrants) {
     requireMutationVersion(grant.runId, 'Budget grant');
     if (
-      database.prepare('SELECT 1 FROM agent_v3_budget_grants WHERE grant_id=?')
+      database.prepare('SELECT 1 FROM agent_budget_grants WHERE grant_id=?')
         .get(grant.grantId) !== undefined
     ) {
       throw new AgentRunInvariantError('A Budget grant is immutable once created.');
@@ -152,7 +152,7 @@ export async function prepareCommandFacts(
     const childRun = mutationRuns.get(delegation.childRunId);
     if (
       database.prepare(
-        'SELECT 1 FROM agent_v3_delegations WHERE delegation_id=? OR child_run_id=?'
+        'SELECT 1 FROM agent_delegations WHERE delegation_id=? OR child_run_id=?'
       ).get(delegation.delegationId, delegation.childRunId) !== undefined
       || childRun?.binding.objectiveRef.kind !== 'parent_delegation'
       || childRun.binding.objectiveRef.parentRunId !== delegation.parentRunId
@@ -192,7 +192,7 @@ export async function prepareCommandFacts(
   for (const terminal of facts.childTerminals) {
     requireMutationVersion(terminal.parentRunId, 'Child terminal parent');
     const delegation = database.prepare(
-      `SELECT parent_run_id, child_run_id FROM agent_v3_delegations
+      `SELECT parent_run_id, child_run_id FROM agent_delegations
        WHERE delegation_id=?`
     ).get(terminal.delegationId) as {
       parent_run_id: string;
@@ -202,16 +202,16 @@ export async function prepareCommandFacts(
       (item) => item.delegationId === terminal.delegationId
     );
     const childRow = database.prepare(
-      `SELECT 1 AS present FROM agent_v3_command_runs
+      `SELECT 1 AS present FROM agent_command_runs
        WHERE run_id=? AND resulting_version=?`
     ).get(terminal.childRunId, terminal.childRunVersion) as { present: number } | undefined;
     const childCurrent = database.prepare(
       `SELECT run_id, version, state_status, aggregate_json, created_at, updated_at
-       FROM agent_v3_runs WHERE run_id=?`
+       FROM agent_runs WHERE run_id=?`
     ).get(terminal.childRunId) as AgentRunRow | undefined;
     const child = childCurrent === undefined
       ? null
-      : parseRunRow(childCurrent, 'agent_v3_runs');
+      : parseRunRow(childCurrent, 'agent_runs');
     if (
       (delegation?.parent_run_id ?? inCommand?.parentRunId) !== terminal.parentRunId
       || (delegation?.child_run_id ?? inCommand?.childRunId) !== terminal.childRunId
@@ -281,7 +281,7 @@ async function assertBudgetFactsBalanced(
   });
   for (const entry of ordered) {
     if (
-      database.prepare('SELECT 1 FROM agent_v3_budget_entries WHERE entry_id=?')
+      database.prepare('SELECT 1 FROM agent_budget_entries WHERE entry_id=?')
         .get(entry.entryId) !== undefined
     ) {
       throw new AgentRunInvariantError('Budget ledger entry IDs are immutable.');
@@ -373,7 +373,7 @@ async function assertBudgetFactsBalanced(
       }
       case 'child_release': {
         const allocation = database.prepare(
-          `SELECT * FROM agent_v3_budget_entries
+          `SELECT * FROM agent_budget_entries
            WHERE grant_id=? AND delegation_id=? AND entry_kind='parent_allocation'`
         ).get(entry.grantId, entry.delegationId) as AgentBudgetEntryRow | undefined;
         const terminal = facts.childTerminals.find(

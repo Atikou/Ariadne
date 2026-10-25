@@ -5,67 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function New-SmokeProviderCertificate {
-  param(
-    [Parameter(Mandatory = $true)][string]$PfxPath,
-    [Parameter(Mandatory = $true)][string]$CertificatePath,
-    [Parameter(Mandatory = $true)][string]$Passphrase
-  )
-
-  $rsa = [Security.Cryptography.RSA]::Create(2048)
-  try {
-    $request = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
-      "CN=localhost",
-      $rsa,
-      [Security.Cryptography.HashAlgorithmName]::SHA256,
-      [Security.Cryptography.RSASignaturePadding]::Pkcs1
-    )
-    $san = [Security.Cryptography.X509Certificates.SubjectAlternativeNameBuilder]::new()
-    $san.AddDnsName("localhost")
-    $san.AddIpAddress([Net.IPAddress]::Loopback)
-    $request.CertificateExtensions.Add($san.Build())
-    $request.CertificateExtensions.Add(
-      [Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($false, $false, 0, $true)
-    )
-    $usage = [Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature `
-      -bor [Security.Cryptography.X509Certificates.X509KeyUsageFlags]::KeyEncipherment
-    $request.CertificateExtensions.Add(
-      [Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new($usage, $true)
-    )
-    $oids = [Security.Cryptography.OidCollection]::new()
-    [void]$oids.Add([Security.Cryptography.Oid]::new("1.3.6.1.5.5.7.3.1"))
-    $request.CertificateExtensions.Add(
-      [Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($oids, $false)
-    )
-    $certificate = $request.CreateSelfSigned(
-      [DateTimeOffset]::UtcNow.AddMinutes(-5),
-      [DateTimeOffset]::UtcNow.AddDays(2)
-    )
-    try {
-      [IO.File]::WriteAllBytes(
-        $PfxPath,
-        $certificate.Export([Security.Cryptography.X509Certificates.X509ContentType]::Pfx, $Passphrase)
-      )
-      $certificateBytes = $certificate.Export(
-        [Security.Cryptography.X509Certificates.X509ContentType]::Cert
-      )
-      $certificatePem = "-----BEGIN CERTIFICATE-----`n" `
-        + [Convert]::ToBase64String($certificateBytes, [Base64FormattingOptions]::InsertLineBreaks) `
-        + "`n-----END CERTIFICATE-----`n"
-      [IO.File]::WriteAllText(
-        $CertificatePath,
-        $certificatePem,
-        [Text.UTF8Encoding]::new($false)
-      )
-    }
-    finally {
-      $certificate.Dispose()
-    }
-  }
-  finally {
-    $rsa.Dispose()
-  }
-}
+. (Join-Path $PSScriptRoot 'smoke\provider-certificate.ps1')
 
 function Find-SmokeRuntimeProcess {
   param(
@@ -141,6 +81,7 @@ $questionBoundaryPath = Join-Path $smokeDataRoot "question-waiting-boundary.mark
 $effectBoundaryPath = Join-Path $smokeDataRoot "effect-started-boundary.marker"
 $projectionBoundaryPath = Join-Path $smokeDataRoot "projection-pending-boundary.marker"
 $runtimeKillAckRoot = Join-Path $workspaceRoot "runtime-kills"
+$inferenceObservedPath = Join-Path $runtimeKillAckRoot "inference-observed.json"
 $runtimeKillAckNames = @(
   "inbox-killed.json",
   "question-killed.json",
@@ -169,6 +110,7 @@ $environmentNames = @(
   "ARIADNE_SMOKE_FORCE_MAIN_CRASH_AFTER_RESULT",
   "ARIADNE_SMOKE_TEST_OUTPUT",
   "ARIADNE_SMOKE_USER_DATA",
+  "ARIADNE_SMOKE_PROJECTION_PROBE",
   "ARIADNE_SMOKE_PROVIDER_BASE_URL",
   "ARIADNE_SMOKE_PROVIDER_MODEL",
   "ARIADNE_SMOKE_PROVIDER_STATE",
@@ -205,11 +147,19 @@ if ($KeepData) {
 New-Item -ItemType Directory -Path (Join-Path $workspaceRoot "fixtures") -Force | Out-Null
 New-Item -ItemType Directory -Path $runtimeKillAckRoot -Force | Out-Null
 [IO.File]::WriteAllText(
+  (Join-Path $workspaceRoot "fixtures\editor-crlf.txt"),
+  ("ARIADNE_SMOKE_EDITOR_ORIGINAL`r`n" + [char]0x7B2C + [char]0x4E8C + [char]0x884C + "`r`n"),
+  [Text.UTF8Encoding]::new($false)
+)
+[IO.File]::WriteAllText(
   (Join-Path $workspaceRoot "fixtures\read.txt"),
   "ARIADNE_SMOKE_READ_FIXTURE",
   [Text.UTF8Encoding]::new($false)
 )
 try {
+  $projectionProbePath = Join-Path $smokeDataRoot "projection-probe.js"
+  & $nodePath (Join-Path $PSScriptRoot "build-smoke-projection-probe.mjs") $projectionProbePath
+  if ($LASTEXITCODE -ne 0) { throw "Electron smoke projection probe build failed." }
   Remove-Item -LiteralPath $resultPath, $desktopRecoveryResultPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $stdoutPath, $stderrPath, $providerStdoutPath, $providerStderrPath, `
     $boundaryStdoutPath, $boundaryStderrPath, $desktopRecoveryStdoutPath, `
@@ -244,6 +194,7 @@ try {
   $env:ARIADNE_SMOKE_TEST = "1"
   $env:ARIADNE_SMOKE_TEST_OUTPUT = $artifactRoot
   $env:ARIADNE_SMOKE_USER_DATA = $smokeDataRoot
+  $env:ARIADNE_SMOKE_PROJECTION_PROBE = $projectionProbePath
   $env:ARIADNE_SMOKE_PROVIDER_BASE_URL = [string]$providerReady.baseUrl
   $env:ARIADNE_SMOKE_PROVIDER_MODEL = $providerModel
   $env:ARIADNE_SMOKE_PROVIDER_STATE = $providerStatePath
@@ -272,7 +223,7 @@ try {
   # exit code after the asynchronous crash/restart watcher completes.
   [void]$process.Handle
   $runtimeKillPhase = 0
-  $mainCrashDeadline = [DateTime]::UtcNow.AddMinutes(3)
+  $mainCrashDeadline = [DateTime]::UtcNow.AddMinutes(5)
   while (-not $process.HasExited) {
     if ([DateTime]::UtcNow -ge $mainCrashDeadline) {
       throw "Electron smoke did not reach the Main crash boundary before the deadline."
@@ -290,7 +241,16 @@ try {
         $shouldKill = switch ($runtimeKillPhase) {
           0 { Test-Path -LiteralPath $inboxBoundaryPath -PathType Leaf }
           1 { Test-Path -LiteralPath $questionBoundaryPath -PathType Leaf }
-          2 { $providerSnapshot.scenarios.crash_inference.requests -ge 1 }
+          2 {
+            if ($providerSnapshot.scenarios.crash_inference.requests -ge 1 -and (Test-Path -LiteralPath $inferenceObservedPath -PathType Leaf)) {
+              $inferenceWitness = Get-Content -Raw -Encoding UTF8 -LiteralPath $inferenceObservedPath | ConvertFrom-Json
+              if ($inferenceWitness.format -ne 'ariadne-smoke-inference-observed.v1' -or $inferenceWitness.status -ne 'running' -or
+                [string]::IsNullOrWhiteSpace($inferenceWitness.runId) -or $inferenceWitness.runVersion -lt 1) {
+                throw 'Inference kill witness is invalid.'
+              }
+              $true
+            } else { $false }
+          }
           3 { Test-Path -LiteralPath $effectBoundaryPath -PathType Leaf }
           4 { Test-Path -LiteralPath $projectionBoundaryPath -PathType Leaf }
         }

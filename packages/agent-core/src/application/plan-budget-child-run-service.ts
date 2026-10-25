@@ -49,6 +49,7 @@ import { isTerminalEffect } from '../domain/effect.js';
 import { isTerminalInferenceAttempt } from '../domain/turn.js';
 import { sha256AgentControlData } from './control-command-digest.js';
 import { transitionAgentRun } from './transition-agent-run.js';
+import { planApprovalInputForRun } from './plan-approval-input.js';
 import type { AgentRunEvent, AgentRunEventPayload } from './events.js';
 import type {
   AgentRunCommandCommit,
@@ -268,7 +269,7 @@ export class AgentPlanBudgetChildRunService {
           outcome: 'approve',
           resolvedAt: command.occurredAt
         }
-      });
+      }, await planApprovalInputForRun(current));
       const mutation = createMutation(
         current,
         transition.run,
@@ -554,11 +555,8 @@ export class AgentPlanBudgetChildRunService {
           childRunId: child.runId,
           childRunVersion: child.version,
           childStatus: command.childStatus
-        }, {
-          type: 'run.state_changed',
-          from: parent.state.status,
-          to: nextParent.state
-        }],
+        }, ...(nextParent.state.status === 'cancelled'
+          ? [{ type: 'run.cancelled' as const, reason: nextParent.state.reason }] : [])],
         checkpointArtifacts(nextParent, command.occurredAt, {
           phase: nextParent.state.status,
           terminalChildRunIds
@@ -582,9 +580,9 @@ export class AgentPlanBudgetChildRunService {
       );
       if (replay !== null) return replay;
       const parent = await requireExpectedRun(transaction, command);
-      if (parent.state.status !== 'waiting_children') {
+      if (parent.state.status !== 'waiting_children' && parent.state.status !== 'cancelling') {
         throw new AgentRunInvariantError(
-          'Parent cancellation coordination requires waiting_children state.'
+          'Parent cancellation coordination requires waiting_children or cancelling state.'
         );
       }
       const delegations = await requireControl(transaction)
@@ -595,18 +593,20 @@ export class AgentPlanBudgetChildRunService {
         .map((item) => item.childRunId)
         .sort(codeUnitCompare);
       const allTerminal = terminalChildRunIds.length === required.length;
+      const reason = parent.state.status === 'cancelling' ? parent.state.reason : command.reason;
+      if (reason !== command.reason) throw new AgentRunInvariantError('A pending cancellation reason is immutable.');
       const state: AgentRunState = allTerminal
         ? {
             status: 'cancelled',
             checkpointVersion: parent.state.checkpointVersion + 1,
             cancelledAt: command.occurredAt,
-            reason: command.reason
+            reason
           }
         : {
             status: 'cancelling',
             checkpointVersion: parent.state.checkpointVersion + 1,
-            requestedAt: command.occurredAt,
-            reason: command.reason,
+            requestedAt: parent.state.status === 'cancelling' ? parent.state.requestedAt : command.occurredAt,
+            reason,
             requiredChildRunIds: required.map((item) => item.childRunId).sort(codeUnitCompare),
             terminalChildRunIds
           };
@@ -623,7 +623,8 @@ export class AgentPlanBudgetChildRunService {
         command.commandId,
         digest,
         command.occurredAt,
-        [{ type: 'run.cancellation_requested', reason: command.reason }],
+        [{ type: 'run.cancellation_requested', reason },
+          ...(state.status === 'cancelled' ? [{ type: 'run.cancelled' as const, reason }] : [])],
         checkpointArtifacts(next, command.occurredAt, {
           phase: state.status,
           terminalChildRunIds
@@ -853,7 +854,9 @@ function createMutation(
   payloads: readonly AgentRunEventPayload[],
   artifacts: AgentRunCommitArtifacts
 ): AgentRunCommitMutation {
-  const events: AgentRunEvent[] = payloads.map((payload, index) => ({
+  const completePayloads: readonly AgentRunEventPayload[] = [...payloads,
+    { type: 'run.state_changed', from: current?.state.status ?? 'absent', to: run.state }];
+  const events: AgentRunEvent[] = completePayloads.map((payload, index) => ({
     eventId: `event:${commandDigest.slice(7)}:${run.runId}:${String(index + 1)}`,
     commandId,
     runId: run.runId,

@@ -3,27 +3,33 @@ import { describe, expect, it } from 'vitest';
 import {
   PUBLIC_PROJECTION_CONTRACT_VERSION,
   PUBLIC_PROJECTION_GENESIS_DIGEST,
-  assertPublicProjectionCommitV3,
-  assertPublicProjectionReadBatchV3,
-  assertPublicProjectionSnapshotV3,
-  projectionCommitV3Schema,
-  publicDecisionActionTokenV1,
-  publicDecisionProjectionV3Schema,
-  publicAgentInboxInputV3Schema,
-  publicMessageProjectionV3Schema,
+  assertPublicProjectionCommit,
+  assertPublicProjectionReadBatch,
+  assertPublicProjectionSnapshot,
+  projectionCommitSchema,
+  publicDecisionActionToken,
+  publicDecisionProjectionSchema,
+  publicAgentInboxInputSchema,
+  publicMessageProjectionSchema,
   publicProjectionCanonicalTimestampSchema,
-  publicProjectionReadBatchV3Schema,
-  publicRunProjectionV3Schema,
-  publicProjectionSnapshotV3Schema,
-  redactPublicProjectionTextV3,
+  publicProjectionReadBatchSchema,
+  publicRunProjectionSchema,
+  publicProjectionSnapshotSchema,
+  redactPublicProjectionText,
   runtimeCommandSchema,
-  runtimeResultSchema,
-  runtimeSnapshotSchema
+  runtimeResultSchema
 } from '../src/public.js';
 
 const TIME = '2032-01-01T00:00:00.000Z';
 
 describe('public projection contract v3', () => {
+  it('keeps a durable cancellation request distinct from a terminal cancellation receipt', () => {
+    expect(runtimeResultSchema.parse({ kind: 'agent.run.cancellation.requested', runId: 'run-parent', runVersion: 4 })).toEqual({
+      kind: 'agent.run.cancellation.requested', runId: 'run-parent', runVersion: 4
+    });
+    expect(runtimeResultSchema.safeParse({ kind: 'agent.run.cancellation.requested', runId: 'run-parent', runVersion: 0 }).success).toBe(false);
+    expect(runtimeResultSchema.safeParse({ kind: 'agent.run.cancellation.requested', runId: 'run-parent', runVersion: 4, childRunIds: [] }).success).toBe(false);
+  });
   it('accepts only bounded public-static Tool presentation metadata', () => {
     const run = {
       runId: 'run-tool-presentation',
@@ -51,9 +57,9 @@ describe('public projection contract v3', () => {
       startedAt: TIME
     } as const;
 
-    expect(publicRunProjectionV3Schema.parse(run).toolActivities[0]?.presentation)
+    expect(publicRunProjectionSchema.parse(run).toolActivities[0]?.presentation)
       .toEqual({ kind: 'file_change', label: '写入工作区文件' });
-    expect(publicRunProjectionV3Schema.safeParse({
+    expect(publicRunProjectionSchema.safeParse({
       ...run,
       toolActivities: [{
         ...run.toolActivities[0],
@@ -82,14 +88,14 @@ describe('public projection contract v3', () => {
       interactionMessages: [],
       updatedAt: TIME
     } as const;
-    expect(publicRunProjectionV3Schema.parse(child).subagentProviderId)
+    expect(publicRunProjectionSchema.parse(child).subagentProviderId)
       .toBe('external.codex');
     const { subagentProviderId: _providerId, ...missingProvider } = child;
-    expect(publicRunProjectionV3Schema.safeParse(missingProvider).success).toBe(false);
+    expect(publicRunProjectionSchema.safeParse(missingProvider).success).toBe(false);
   });
 
   it('distinguishes system live-work completion from editable user inbox input', () => {
-    expect(publicAgentInboxInputV3Schema.parse({
+    expect(publicAgentInboxInputSchema.parse({
       inputId: 'input-live-work',
       messageId: 'message-live-work',
       version: 1,
@@ -110,7 +116,7 @@ describe('public projection contract v3', () => {
       workKind: 'process',
       status: 'completed'
     });
-    expect(publicAgentInboxInputV3Schema.parse({
+    expect(publicAgentInboxInputSchema.parse({
       inputId: 'input-user-question-answer',
       messageId: 'message-user-question-answer',
       version: 1,
@@ -131,14 +137,14 @@ describe('public projection contract v3', () => {
   });
 
   it('redacts private substrings before intentionally public text is committed', () => {
-    const redacted = redactPublicProjectionTextV3(
+    const redacted = redactPublicProjectionText(
       'inspect C:\\private\\repo and /srv/private; api_key=topsecretvalue'
     );
     expect(redacted).toContain('[redacted path]');
     expect(redacted).toContain('[redacted credential]');
     expect(redacted).not.toContain('C:\\private');
     expect(redacted).not.toContain('/srv/private');
-    expect(() => assertPublicProjectionCommitV3({
+    expect(() => assertPublicProjectionCommit({
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       eventId: 'event-redacted-message',
       sourceId: 'source-redacted-message',
@@ -208,60 +214,60 @@ describe('public projection contract v3', () => {
       contentDigest: `sha256:${'a'.repeat(64)}`
     } as const;
     expect(runtimeCommandSchema.parse({
-      kind: 'conversation.session.create.v3',
+      kind: 'conversation.session.create',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       sessionId: 'session-v3',
       workspaceId: 'workspace-v3'
-    })).toMatchObject({ kind: 'conversation.session.create.v3' });
+    })).toMatchObject({ kind: 'conversation.session.create' });
     expect(runtimeCommandSchema.parse({
-      kind: 'conversation.session.rename.v3',
+      kind: 'conversation.session.rename',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       sessionId: 'session-v3',
       workspaceId: 'workspace-v3',
       expectedSessionVersion: 1,
       title: 'Durable title'
-    })).toMatchObject({ kind: 'conversation.session.rename.v3' });
+    })).toMatchObject({ kind: 'conversation.session.rename' });
     expect(runtimeCommandSchema.parse({
-      kind: 'conversation.session.archive.v3',
+      kind: 'conversation.session.archive',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       sessionId: 'session-v3',
       workspaceId: 'workspace-v3',
       expectedSessionVersion: 2
-    })).toMatchObject({ kind: 'conversation.session.archive.v3' });
+    })).toMatchObject({ kind: 'conversation.session.archive' });
     expect(runtimeCommandSchema.parse({
-      kind: 'conversation.session.restore.v3',
+      kind: 'conversation.session.restore',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       sessionId: 'session-v3',
       workspaceId: 'workspace-v3',
       expectedSessionVersion: 3
-    })).toMatchObject({ kind: 'conversation.session.restore.v3' });
+    })).toMatchObject({ kind: 'conversation.session.restore' });
     expect(runtimeCommandSchema.parse({
-      kind: 'conversation.session.fork.v3',
+      kind: 'conversation.session.fork',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       sessionId: 'session-fork-v3',
       sourceSessionId: 'session-v3',
       workspaceId: 'workspace-v3',
       expectedSourceSessionVersion: 2,
       boundary: stableReference
-    })).toMatchObject({ kind: 'conversation.session.fork.v3' });
+    })).toMatchObject({ kind: 'conversation.session.fork' });
     expect(runtimeCommandSchema.parse({
-      kind: 'conversation.sessions.query.v3',
+      kind: 'conversation.sessions.query',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       workspaceId: 'workspace-v3',
       query: 'needle'
     })).toMatchObject({ status: 'active', limit: 20 });
     expect(runtimeCommandSchema.parse({
-      kind: 'conversation.message.resolve.v3',
+      kind: 'conversation.message.resolve',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       reference: stableReference
-    })).toMatchObject({ kind: 'conversation.message.resolve.v3' });
+    })).toMatchObject({ kind: 'conversation.message.resolve' });
     expect(runtimeCommandSchema.safeParse({
-      kind: 'conversation.message.resolve.v3',
+      kind: 'conversation.message.resolve',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       reference: { ...stableReference, contentDigest: 'not-a-digest' }
     }).success).toBe(false);
     expect(runtimeCommandSchema.safeParse({
-      kind: 'conversation.session.rename.v3',
+      kind: 'conversation.session.rename',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       sessionId: 'session-v3',
       workspaceId: 'workspace-v3',
@@ -269,16 +275,16 @@ describe('public projection contract v3', () => {
       title: '   '
     }).success).toBe(false);
     expect(runtimeCommandSchema.parse({
-      kind: 'conversation.message.accept.v3',
+      kind: 'conversation.message.accept',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       sessionId: 'session-v3',
       workspaceId: 'workspace-v3',
       expectedSessionVersion: 1,
       messageId: 'message-v3',
       content: 'hello'
-    })).toMatchObject({ kind: 'conversation.message.accept.v3' });
+    })).toMatchObject({ kind: 'conversation.message.accept' });
     expect(runtimeCommandSchema.safeParse({
-      kind: 'conversation.message.accept.v3',
+      kind: 'conversation.message.accept',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       sessionId: 'session-v3',
       workspaceId: 'workspace-v3',
@@ -286,7 +292,7 @@ describe('public projection contract v3', () => {
       content: 'hello'
     }).success).toBe(false);
     expect(runtimeCommandSchema.parse({
-      kind: 'conversation.message.accept.v3',
+      kind: 'conversation.message.accept',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       sessionId: 'session-v3',
       workspaceId: 'workspace-v3',
@@ -298,9 +304,9 @@ describe('public projection contract v3', () => {
         data: 'aGVsbG8=',
         name: 'screen.png'
       }]
-    })).toMatchObject({ kind: 'conversation.message.accept.v3', content: '' });
+    })).toMatchObject({ kind: 'conversation.message.accept', content: '' });
     expect(runtimeCommandSchema.safeParse({
-      kind: 'conversation.message.accept.v3',
+      kind: 'conversation.message.accept',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       sessionId: 'session-v3',
       workspaceId: 'workspace-v3',
@@ -309,40 +315,40 @@ describe('public projection contract v3', () => {
       content: '   '
     }).success).toBe(false);
     expect(runtimeCommandSchema.safeParse({
-      kind: 'conversation.session.create.v3',
+      kind: 'conversation.session.create',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       sessionId: 'session-v3',
       workspaceId: 'workspace-v3',
       occurredAt: '2099-01-01T00:00:00.000Z'
     }).success).toBe(false);
     expect(runtimeResultSchema.parse({
-      kind: 'conversation.message.accepted.v3',
+      kind: 'conversation.message.accepted',
       sessionId: 'session-v3',
       sessionVersion: 2,
       messageId: 'message-v3',
       messageVersion: 1,
       sagaId: 'saga-v3'
-    })).toMatchObject({ kind: 'conversation.message.accepted.v3' });
+    })).toMatchObject({ kind: 'conversation.message.accepted' });
     expect(runtimeResultSchema.parse({
-      kind: 'conversation.session.updated.v3',
+      kind: 'conversation.session.updated',
       sessionId: 'session-v3',
       version: 2
-    })).toMatchObject({ kind: 'conversation.session.updated.v3' });
+    })).toMatchObject({ kind: 'conversation.session.updated' });
     expect(runtimeResultSchema.parse({
-      kind: 'conversation.session.forked.v3',
+      kind: 'conversation.session.forked',
       sessionId: 'session-fork-v3',
       version: 1,
       sourceSessionId: 'session-v3',
       boundary: stableReference
-    })).toMatchObject({ kind: 'conversation.session.forked.v3' });
+    })).toMatchObject({ kind: 'conversation.session.forked' });
     expect(runtimeResultSchema.parse({
-      kind: 'conversation.message.resolved.v3',
+      kind: 'conversation.message.resolved',
       reference: stableReference,
       workspaceId: 'workspace-v3',
       role: 'user',
       content: 'hello',
       createdAt: '2030-01-01T00:00:00.000Z'
-    })).toMatchObject({ kind: 'conversation.message.resolved.v3' });
+    })).toMatchObject({ kind: 'conversation.message.resolved' });
   });
 
   it('projects only safe image metadata and permits an image-only user Message', () => {
@@ -354,7 +360,7 @@ describe('public projection contract v3', () => {
       height: 600,
       name: 'diagram.webp'
     };
-    expect(publicMessageProjectionV3Schema.parse({
+    expect(publicMessageProjectionSchema.parse({
       messageId: 'message-image-projection',
       sessionId: 'session-image-projection',
       version: 1,
@@ -365,7 +371,7 @@ describe('public projection contract v3', () => {
       createdAt: TIME,
       updatedAt: TIME
     }).attachments).toEqual([attachment]);
-    expect(publicMessageProjectionV3Schema.safeParse({
+    expect(publicMessageProjectionSchema.safeParse({
       messageId: 'message-image-assistant',
       sessionId: 'session-image-projection',
       version: 1,
@@ -380,7 +386,7 @@ describe('public projection contract v3', () => {
 
   it('defines strict direct-parent continuable SubAgent send receipts', () => {
     const command = {
-      kind: 'agent.subagent.send.v3',
+      kind: 'agent.subagent.send',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       parentRunId: 'run-parent',
       childRunId: 'run-child',
@@ -394,19 +400,19 @@ describe('public projection contract v3', () => {
       delivery: 'next_step'
     }).success).toBe(false);
     expect(runtimeResultSchema.parse({
-      kind: 'agent.subagent.input.sent.v3',
+      kind: 'agent.subagent.input.sent',
       parentRunId: command.parentRunId,
       childRunId: command.childRunId,
       childRunVersion: 5,
       inputId: command.inputId,
       inputVersion: 1
     })).toMatchObject({
-      kind: 'agent.subagent.input.sent.v3',
+      kind: 'agent.subagent.input.sent',
       childRunVersion: 5
     });
 
     const interrupt = {
-      kind: 'agent.subagent.interrupt.v3',
+      kind: 'agent.subagent.interrupt',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       parentRunId: command.parentRunId,
       childRunId: command.childRunId,
@@ -421,13 +427,13 @@ describe('public projection contract v3', () => {
       keepInbox: true
     }).success).toBe(false);
     expect(runtimeResultSchema.parse({
-      kind: 'agent.subagent.interrupted.v3',
+      kind: 'agent.subagent.interrupted',
       parentRunId: command.parentRunId,
       childRunId: command.childRunId,
       childRunVersion: 7,
       previousStatus: 'active'
     })).toMatchObject({
-      kind: 'agent.subagent.interrupted.v3',
+      kind: 'agent.subagent.interrupted',
       previousStatus: 'active'
     });
   });
@@ -435,7 +441,7 @@ describe('public projection contract v3', () => {
   it('defines a strict opaque Decision resolution command and result', () => {
     const actionToken = `decision-action.v1:${'a'.repeat(64)}`;
     const command = {
-      kind: 'agent.decision.resolve.v3',
+      kind: 'agent.decision.resolve',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       runId: 'run-decision-v3',
       decisionId: 'decision-v3',
@@ -447,11 +453,11 @@ describe('public projection contract v3', () => {
     } as const;
     expect(runtimeCommandSchema.parse(command)).toEqual(command);
     expect(runtimeResultSchema.parse({
-      kind: 'agent.decision.resolved.v3',
+      kind: 'agent.decision.resolved',
       runId: command.runId,
       decisionId: command.decisionId,
       runVersion: 4
-    })).toMatchObject({ kind: 'agent.decision.resolved.v3', runVersion: 4 });
+    })).toMatchObject({ kind: 'agent.decision.resolved', runVersion: 4 });
 
     for (const privateField of [
       { permissionItems: [] },
@@ -470,7 +476,7 @@ describe('public projection contract v3', () => {
       action: { ...command.action, privatePlanBody: 'do not accept' }
     }).success).toBe(false);
     expect(runtimeResultSchema.safeParse({
-      kind: 'agent.decision.resolved.v3',
+      kind: 'agent.decision.resolved',
       runId: command.runId,
       decisionId: command.decisionId,
       runVersion: 4,
@@ -513,7 +519,7 @@ describe('public projection contract v3', () => {
       capabilityIds: ['workspace.read', 'workspace.write'],
       scope: ['workspace']
     } as const;
-    await expect(publicDecisionActionTokenV1(source, 'session-token'))
+    await expect(publicDecisionActionToken(source, 'session-token'))
       .resolves.toMatch(/^decision-action\.v1:[0-9a-f]{64}$/u);
 
     for (const invalid of [
@@ -523,12 +529,12 @@ describe('public projection contract v3', () => {
       { ...source, capabilityIds: ['workspace.write', 'workspace.read'] },
       { ...source, privatePlanBody: 'must not enter the token preimage' }
     ]) {
-      await expect(publicDecisionActionTokenV1(invalid, 'session-token')).rejects.toThrow();
+      await expect(publicDecisionActionToken(invalid, 'session-token')).rejects.toThrow();
     }
   });
 
   it('exports a strict ordered commit without changing the v2 snapshot contract', () => {
-    const commit = projectionCommitV3Schema.parse({
+    const commit = projectionCommitSchema.parse({
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       eventId: 'event-1',
       sourceId: 'conversation',
@@ -553,14 +559,6 @@ describe('public projection contract v3', () => {
       }]
     });
     expect(commit.changes).toHaveLength(1);
-    expect(runtimeSnapshotSchema.parse({
-      revision: 0,
-      capturedAt: TIME,
-      runs: [],
-      permissions: [],
-      planHandoffs: [],
-      proposals: []
-    }).revision).toBe(0);
   });
 
   it('rejects noncanonical time, extra keys, DTO identity drift, and non-null deletes', () => {
@@ -591,13 +589,13 @@ describe('public projection contract v3', () => {
         }
       }]
     };
-    expect(projectionCommitV3Schema.safeParse({ ...base, privateValue: true }).success)
+    expect(projectionCommitSchema.safeParse({ ...base, privateValue: true }).success)
       .toBe(false);
-    expect(projectionCommitV3Schema.safeParse({
+    expect(projectionCommitSchema.safeParse({
       ...base,
       changes: [{ ...base.changes[0], aggregateId: 'different-session' }]
     }).success).toBe(false);
-    expect(projectionCommitV3Schema.safeParse({
+    expect(projectionCommitSchema.safeParse({
       ...base,
       changes: [{ ...base.changes[0], operation: 'delete' }]
     }).success).toBe(false);
@@ -629,8 +627,8 @@ describe('public projection contract v3', () => {
       }
     };
 
-    expect(publicDecisionProjectionV3Schema.parse(pending)).toEqual(pending);
-    expect(publicDecisionProjectionV3Schema.safeParse({
+    expect(publicDecisionProjectionSchema.parse(pending)).toEqual(pending);
+    expect(publicDecisionProjectionSchema.safeParse({
       ...pending,
       sessionId: undefined
     }).success).toBe(false);
@@ -660,44 +658,44 @@ describe('public projection contract v3', () => {
         choices: ['answer'] as const
       }
     };
-    expect(publicDecisionProjectionV3Schema.parse(userQuestion)).toEqual(userQuestion);
-    expect(publicDecisionProjectionV3Schema.safeParse({
+    expect(publicDecisionProjectionSchema.parse(userQuestion)).toEqual(userQuestion);
+    expect(publicDecisionProjectionSchema.safeParse({
       ...userQuestion,
       presentation: {
         ...userQuestion.presentation,
         options: [userQuestion.presentation.options[0]]
       }
     }).success).toBe(false);
-    expect(publicDecisionProjectionV3Schema.safeParse({
+    expect(publicDecisionProjectionSchema.safeParse({
       ...userQuestion,
       action: { ...userQuestion.action, choices: ['approve'] }
     }).success).toBe(false);
-    expect(publicDecisionProjectionV3Schema.safeParse({
+    expect(publicDecisionProjectionSchema.safeParse({
       ...pending,
       permissionItems: [{ path: 'C:\\private\\secret.txt' }]
     }).success).toBe(false);
-    expect(publicDecisionProjectionV3Schema.safeParse({
+    expect(publicDecisionProjectionSchema.safeParse({
       ...pending,
       presentation: { ...pending.presentation, kind: 'plan' }
     }).success).toBe(false);
-    expect(publicDecisionProjectionV3Schema.safeParse({
+    expect(publicDecisionProjectionSchema.safeParse({
       ...pending,
       presentation: {
         ...pending.presentation,
         capabilityIds: ['workspace.write', 'workspace.read']
       }
     }).success).toBe(false);
-    expect(publicDecisionProjectionV3Schema.safeParse({
+    expect(publicDecisionProjectionSchema.safeParse({
       ...pending,
       action: { ...pending.action, choices: ['allow_once', 'deny'] }
     }).success).toBe(false);
-    expect(publicDecisionProjectionV3Schema.safeParse({
+    expect(publicDecisionProjectionSchema.safeParse({
       ...pending,
       status: 'approved',
       resolvedAt: TIME
     }).success).toBe(false);
     const { action: _pendingAction, ...terminal } = pending;
-    expect(publicDecisionProjectionV3Schema.parse({
+    expect(publicDecisionProjectionSchema.parse({
       ...terminal,
       status: 'approved',
       resolvedAt: TIME
@@ -716,14 +714,14 @@ describe('public projection contract v3', () => {
         impact: 'workspace_change' as const
       }]
     };
-    expect(publicDecisionProjectionV3Schema.parse({
+    expect(publicDecisionProjectionSchema.parse({
       ...terminal,
       kind: 'plan',
       presentation: planPresentation,
       status: 'rejected',
       resolvedAt: TIME
     })).toMatchObject({ presentation: planPresentation });
-    expect(publicDecisionProjectionV3Schema.safeParse({
+    expect(publicDecisionProjectionSchema.safeParse({
       ...terminal,
       kind: 'plan',
       presentation: {
@@ -736,7 +734,7 @@ describe('public projection contract v3', () => {
   });
 
   it('defines complete snapshot and reset-required batch envelopes', () => {
-    expect(publicProjectionSnapshotV3Schema.parse({
+    expect(publicProjectionSnapshotSchema.parse({
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       streamId: 'stream-1',
       cursor: 0,
@@ -751,7 +749,7 @@ describe('public projection contract v3', () => {
       inferenceStreams: [],
       tombstones: []
     }).streamId).toBe('stream-1');
-    expect(publicProjectionReadBatchV3Schema.parse({
+    expect(publicProjectionReadBatchSchema.parse({
       status: 'reset_required',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       streamId: 'stream-1',
@@ -772,14 +770,14 @@ describe('public projection contract v3', () => {
       }]
     };
 
-    expect(assertPublicProjectionSnapshotV3(deleted).tombstones).toEqual(
+    expect(assertPublicProjectionSnapshot(deleted).tombstones).toEqual(
       deleted.tombstones
     );
-    expect(() => assertPublicProjectionSnapshotV3({
+    expect(() => assertPublicProjectionSnapshot({
       ...deleted,
       tombstones: [deleted.tombstones[0], deleted.tombstones[0]]
     })).toThrow('public_projection_snapshot_order_invalid:tombstones');
-    expect(() => assertPublicProjectionSnapshotV3({
+    expect(() => assertPublicProjectionSnapshot({
       ...deleted,
       sessions: sessionSnapshot('Visible session').sessions
     })).toThrow('public_projection_snapshot_head_overlap:sessions');
@@ -794,18 +792,18 @@ describe('public projection contract v3', () => {
       'sk-proj-abcdefghijklmnopqrstuvwxyz0123456789'
     ];
     for (const unsafe of unsafeValues) {
-      expect(() => assertPublicProjectionCommitV3(sessionCommit(unsafe)))
+      expect(() => assertPublicProjectionCommit(sessionCommit(unsafe)))
         .toThrow();
-      expect(() => assertPublicProjectionSnapshotV3(sessionSnapshot(unsafe)))
+      expect(() => assertPublicProjectionSnapshot(sessionSnapshot(unsafe)))
         .toThrow();
     }
-    expect(() => assertPublicProjectionCommitV3(
+    expect(() => assertPublicProjectionCommit(
       sessionCommit('See https://example.com/docs for public help.')
     )).not.toThrow();
   });
 
   it('makes cursor tokens and ordered batches canonical', () => {
-    expect(publicProjectionReadBatchV3Schema.safeParse({
+    expect(publicProjectionReadBatchSchema.safeParse({
       status: 'ok',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       streamId: 'stream-1',
@@ -818,7 +816,7 @@ describe('public projection contract v3', () => {
     }).success).toBe(false);
 
     const commit = sessionCommit('Session');
-    expect(assertPublicProjectionReadBatchV3({
+    expect(assertPublicProjectionReadBatch({
       status: 'ok',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       streamId: 'stream-1',
@@ -830,7 +828,7 @@ describe('public projection contract v3', () => {
       commits: [{ cursor: 1, cursorDigest: digestOf('1'), commit }]
     })).toMatchObject({ nextCursor: 1, nextDigest: digestOf('1') });
 
-    expect(() => assertPublicProjectionReadBatchV3({
+    expect(() => assertPublicProjectionReadBatch({
       status: 'ok',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       streamId: 'stream-1',
@@ -857,7 +855,7 @@ describe('public projection contract v3', () => {
         commit: messageCommit(cursor, id, 'x'.repeat(100_000))
       };
     });
-    expect(() => assertPublicProjectionReadBatchV3({
+    expect(() => assertPublicProjectionReadBatch({
       status: 'ok',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       streamId: 'stream-1',
@@ -874,30 +872,30 @@ describe('public projection contract v3', () => {
 describe('productivity v3 public contract', () => {
   it('accepts bounded Goal and Schedule commands and their public results', () => {
     expect(runtimeCommandSchema.parse({
-      kind: 'goal.put.v3', contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      kind: 'goal.put', contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       workspaceId: 'workspace-1', sessionId: 'session-1', goalId: 'goal-1', expectedVersion: null,
       title: 'Ship v3', phase: 'implementation', status: 'active', roundCap: 12
-    }).kind).toBe('goal.put.v3');
+    }).kind).toBe('goal.put');
     expect(runtimeCommandSchema.parse({
-      kind: 'schedule.create.v3', contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      kind: 'schedule.create', contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       workspaceId: 'workspace-1', sessionId: 'session-1', scheduleId: 'schedule-1',
       prompt: 'Continue ordinary turn',
       timing: { kind: 'cron', expression: '0 9 * * *', timezone: 'Asia/Shanghai', missPolicy: 'run_once' }
-    }).kind).toBe('schedule.create.v3');
+    }).kind).toBe('schedule.create');
     expect(runtimeResultSchema.parse({
-      kind: 'schedule.updated.v3',
+      kind: 'schedule.updated',
       schedule: {
         scheduleId: 'schedule-1', workspaceId: 'workspace-1', sessionId: 'session-1', version: 1,
         status: 'active', prompt: 'Continue ordinary turn',
         timing: { kind: 'cron', expression: '0 9 * * *', timezone: 'Asia/Shanghai', missPolicy: 'run_once' },
         nextFireAt: TIME, fireCount: 0
       }
-    }).kind).toBe('schedule.updated.v3');
+    }).kind).toBe('schedule.updated');
   });
 
   it('rejects unbounded Workflow concurrency and transition budgets', () => {
     const command = {
-      kind: 'workflow.start.v3', contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      kind: 'workflow.start', contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       workspaceId: 'workspace-1', sessionId: 'session-1', workflowId: 'workflow-1', goalId: 'goal-1',
       expectedGoalVersion: 1, expectedTodoRevision: 1, todoIds: ['todo-1'],
       maxConcurrency: 17, maxTransitions: 10_001, deadlineAt: TIME

@@ -7,10 +7,10 @@ export type AgentInboxCommand = Extract<
   RuntimeCommandEnvelope['command'],
   {
     readonly kind:
-      | 'agent.inbox.enqueue.v3'
-      | 'agent.inbox.replace.v3'
-      | 'agent.inbox.remove.v3'
-      | 'agent.subagent.send.v3';
+      | 'agent.inbox.enqueue'
+      | 'agent.inbox.replace'
+      | 'agent.inbox.remove'
+      | 'agent.subagent.send';
   }
 >;
 
@@ -33,20 +33,20 @@ export class AgentInboxMutationScope {
     command: AgentInboxCommand
   ): Promise<RuntimeApplicationCommandResult> {
     switch (command.kind) {
-      case 'agent.inbox.enqueue.v3':
+      case 'agent.inbox.enqueue':
         return this.enqueue(envelope, command);
-      case 'agent.inbox.replace.v3':
+      case 'agent.inbox.replace':
         return this.replace(envelope, command);
-      case 'agent.inbox.remove.v3':
+      case 'agent.inbox.remove':
         return this.remove(envelope, command);
-      case 'agent.subagent.send.v3':
+      case 'agent.subagent.send':
         return this.sendToSubagent(envelope, command);
     }
   }
 
   private async enqueue(
     envelope: RuntimeCommandEnvelope,
-    command: Extract<AgentInboxCommand, { readonly kind: 'agent.inbox.enqueue.v3' }>
+    command: Extract<AgentInboxCommand, { readonly kind: 'agent.inbox.enqueue' }>
   ): Promise<RuntimeApplicationCommandResult> {
     envelope.signal.throwIfAborted();
     const replayed = await this.loadCommittedMutation(
@@ -102,7 +102,7 @@ export class AgentInboxMutationScope {
 
   private async sendToSubagent(
     envelope: RuntimeCommandEnvelope,
-    command: Extract<AgentInboxCommand, { readonly kind: 'agent.subagent.send.v3' }>
+    command: Extract<AgentInboxCommand, { readonly kind: 'agent.subagent.send' }>
   ): Promise<RuntimeApplicationCommandResult> {
     envelope.signal.throwIfAborted();
     const replayed = await this.loadCommittedMutation(
@@ -168,7 +168,7 @@ export class AgentInboxMutationScope {
 
   private async replace(
     envelope: RuntimeCommandEnvelope,
-    command: Extract<AgentInboxCommand, { readonly kind: 'agent.inbox.replace.v3' }>
+    command: Extract<AgentInboxCommand, { readonly kind: 'agent.inbox.replace' }>
   ): Promise<RuntimeApplicationCommandResult> {
     envelope.signal.throwIfAborted();
     const replayed = await this.loadCommittedMutation(
@@ -215,7 +215,7 @@ export class AgentInboxMutationScope {
 
   private async remove(
     envelope: RuntimeCommandEnvelope,
-    command: Extract<AgentInboxCommand, { readonly kind: 'agent.inbox.remove.v3' }>
+    command: Extract<AgentInboxCommand, { readonly kind: 'agent.inbox.remove' }>
   ): Promise<RuntimeApplicationCommandResult> {
     envelope.signal.throwIfAborted();
     const replayed = await this.loadCommittedMutation(
@@ -312,21 +312,21 @@ function completedInboxResult(
 ): RuntimeApplicationCommandResult {
   const result = operation === 'removed'
     ? {
-        kind: 'agent.inbox.removed.v3' as const,
+        kind: 'agent.inbox.removed' as const,
         runId: receipt.runId,
         runVersion: receipt.runVersion,
         inputId: receipt.inputId
       }
     : operation === 'enqueued'
       ? {
-          kind: 'agent.inbox.enqueued.v3' as const,
+          kind: 'agent.inbox.enqueued' as const,
           runId: receipt.runId,
           runVersion: receipt.runVersion,
           inputId: receipt.inputId,
           inputVersion: 1 as const
         }
       : {
-          kind: 'agent.inbox.replaced.v3' as const,
+          kind: 'agent.inbox.replaced' as const,
           runId: receipt.runId,
           runVersion: receipt.runVersion,
           inputId: receipt.inputId,
@@ -343,7 +343,7 @@ function completedSubagentSendResult(
     outcome: {
       ok: true,
       result: {
-        kind: 'agent.subagent.input.sent.v3',
+        kind: 'agent.subagent.input.sent',
         parentRunId,
         childRunId: receipt.runId,
         childRunVersion: receipt.runVersion,

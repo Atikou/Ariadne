@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { parse as parseToml, stringify as stringifyToml, type TomlTable } from 'smol-toml';
 import { z } from 'zod';
+import { unrestrictedMainWrites, type MainWriteAdmission } from '../data-management/main-maintenance-gate';
 import { modelInferenceProfileSchema, type ModelInferenceProfile } from '@ariadne/protocol/public';
 import {
   acpSubagentProviderConfigurationSchema,
@@ -195,7 +196,8 @@ export class AgentSettingsRepository {
   constructor(
     private readonly filePath: string,
     private readonly cipher: SecretCipher,
-    private readonly legacyJsonPath = join(dirname(filePath), 'agent-settings.json')
+    private readonly legacyJsonPath = join(dirname(filePath), 'agent-settings.json'),
+    private readonly writes: MainWriteAdmission = unrestrictedMainWrites
   ) {
     this.settings = createDefaultAgentSettings();
   }
@@ -301,6 +303,7 @@ export class AgentSettingsRepository {
   }
 
   async mutate(input: AgentSettingsMutation): Promise<AgentSettingsMutationResult> {
+    return this.writes.write(async () => {
     const mutation = agentSettingsMutationSchema.parse(input);
     let result: AgentSettingsMutationResult | undefined;
     const operation = this.writeQueue
@@ -342,6 +345,7 @@ export class AgentSettingsRepository {
     await operation;
     if (!result) throw new Error('Settings mutation completed without a result.');
     return result;
+    });
   }
 
   async addWorkspaceRoot(rootPath: string): Promise<AddWorkspaceResult> {
@@ -407,6 +411,21 @@ export class AgentSettingsRepository {
     await this.writeQueue;
   }
 
+  /** Validate only this writer's current TOML format, with no legacy defaults,
+   * normalization, migration, rewriting or changes to in-memory settings. */
+  validateBackup(raw: string): void {
+    const input = persistedAgentSettingsFileSchema.parse(parseToml(raw));
+    if (input.schemaVersion !== 7) throw new Error('settings_backup_current_format_required');
+    const settings = persistedAgentSettingsSchema.parse({ ...input,
+      providers: Object.fromEntries(AGENT_PROVIDER_IDS.map(id => {
+        const provider = input.providers[id];
+        if (!provider) throw new Error('settings_backup_provider_missing');
+        return [id, { ...provider, encryptedApiKey: provider.encryptedApiKey ?? null }];
+      })) });
+    for (const provider of Object.values(settings.providers)) if (provider.encryptedApiKey !== null
+      && !this.cipher.decrypt(provider.encryptedApiKey)) throw new Error('settings_backup_credential_empty');
+  }
+
   private async initializeMissingSettings(): Promise<void> {
     let legacyRaw: string | undefined;
     try {
@@ -448,17 +467,20 @@ export class AgentSettingsRepository {
   }
 
   private async queueWrite(settings: PersistedAgentSettings): Promise<void> {
+    return this.writes.write(async () => {
     const snapshot = structuredClone(settings);
     const operation = this.writeQueue
       .catch(() => undefined)
       .then(() => this.writeSnapshot(snapshot));
     this.writeQueue = operation;
     await operation;
+    });
   }
 
   private async commitSettings(
     mutator: (current: PersistedAgentSettings) => PersistedAgentSettings
   ): Promise<void> {
+    return this.writes.write(async () => {
     const operation = this.writeQueue
       .catch(() => undefined)
       .then(async () => {
@@ -474,6 +496,7 @@ export class AgentSettingsRepository {
       });
     this.writeQueue = operation;
     await operation;
+    });
   }
 
   private async writeSnapshot(settings: PersistedAgentSettings): Promise<void> {

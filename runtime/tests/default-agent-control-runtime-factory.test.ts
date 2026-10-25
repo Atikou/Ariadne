@@ -17,7 +17,7 @@ import {
   resolveAgentControlDatabasePath
 } from '../src/adapters/persistence/agentControlDbSchema.js';
 import {
-  PUBLIC_PROJECTION_DB_SCHEMA_VERSION
+  PUBLIC_PROJECTION_CURRENT_DB_SCHEMA_VERSION
 } from '../src/adapters/persistence/PublicProjectionDbSchema.js';
 import {
   SqliteAgentRunUnitOfWork
@@ -30,6 +30,8 @@ import {
 } from '../src/composition/PublicProjectionWakeCommitSink.js';
 import type { HostCapabilityClient } from '../src/ingress/HostCapabilityClient.js';
 import type { ShutdownContext } from '../src/ingress/ShutdownContext.js';
+import { SqliteProductivityStore } from '../src/adapters/persistence/SqliteProductivityStore.js';
+import { createShutdownContext } from '../src/ingress/ShutdownContext.js';
 
 const roots: string[] = [];
 const runtimeInstanceId = '00000000-0000-4000-8000-000000000030';
@@ -44,6 +46,36 @@ afterEach(() => {
 });
 
 describe('DefaultAgentControlRuntimeFactory', () => {
+  it('isolates a known Productivity opening fault, retains malformed authority bytes and admits unrelated durable Conversation work', async () => {
+    const root = createRoot(), source = new SqliteProductivityStore(root);
+    await source.execute('seed-goal', { kind: 'goal.put', contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+      workspaceId: 'workspace-independent', sessionId: 'session-productivity', goalId: 'goal-corrupted',
+      expectedVersion: null, title: 'Original Goal', phase: 'implementation', status: 'active', roundCap: 2 });
+    const close = createShutdownContext(Date.now() + 5_000);
+    try { await source.close(close); } finally { close.dispose(); }
+    const file = path.join(root, 'data/productivity/productivity.db'), corrupt = new DatabaseSync(file);
+    try { corrupt.exec("UPDATE productivity_goals SET goal_json='{}'; PRAGMA wal_checkpoint(TRUNCATE);"); }
+    finally { corrupt.close(); }
+    const bytes = readFileSync(file);
+    const runtime = await new DefaultAgentControlRuntimeFactory().create({ dataRoot: root, production: true,
+      runtimeInstanceId, agentAdmissionAuthoritySource: disabledAdmissionAuthoritySource(), modelProviders: [],
+      modelCatalog: emptyModelCatalog, publicEventSink: discardPublicEventSink, liveInferenceEventSink: discardPublicEventSink,
+      hostCapabilities: broker(keyRing(2, activeKeyId, Buffer.alloc(32, 73).toString('base64'))) });
+    try {
+      await runtime.start();
+      expect(runtime.storageSchemas).not.toHaveProperty('productivity');
+      const command = { kind: 'conversation.session.create', contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+        workspaceId: 'workspace-independent', sessionId: 'session-independent' } as const;
+      const result = await runtime.executeOwnedCommand({ command, commandId: 'independent-create', correlationId: 'independent-create',
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(), signal: new AbortController().signal });
+      expect(result).toMatchObject({ outcome: { ok: true, result: { kind: 'conversation.session.created', sessionId: 'session-independent' } } });
+      const health = runtime.readDomainHealth();
+      expect(health.find(row => row.domain === 'productivity')).toMatchObject({ availability: 'unavailable', code: 'authority_unavailable' });
+      expect(health.find(row => row.domain === 'conversation')).toMatchObject({ availability: 'healthy' });
+      expect(JSON.stringify(health)).not.toContain('goal_json');
+      expect(readFileSync(file)).toEqual(bytes);
+    } finally { await runtime.shutdown(shutdownContext()); }
+  });
   it('loads instance-bound keys, anchors them, and never persists key material', async () => {
     const root = createRoot();
     const keyMaterialBase64 = Buffer.alloc(32, 71).toString('base64');
@@ -242,6 +274,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
         Buffer.alloc(32, 97).toString('base64')
       ))
     });
+    try {
     await runtime.start();
     const signal = new AbortController().signal;
     const snapshotResult = await runtime.executeOwnedCommand({
@@ -271,8 +304,8 @@ describe('DefaultAgentControlRuntimeFactory', () => {
     expect(runtime.storageSchemas).toEqual({
       agentControl: runtime.schemaVersion,
       conversation: 4,
-      productivity: 1,
-      publicProjection: PUBLIC_PROJECTION_DB_SCHEMA_VERSION
+      productivity: 3,
+      publicProjection: PUBLIC_PROJECTION_CURRENT_DB_SCHEMA_VERSION
     });
     await expect(runtime.executeOwnedCommand({
       commandId: 'legacy-query',
@@ -281,7 +314,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       signal,
       command: { kind: 'runtime.status.get' }
     })).resolves.toBeNull();
-    await runtime.shutdown(shutdownContext());
+    } finally { await runtime.shutdown(shutdownContext()); }
   });
 
   it('binds live-work completion before start and drains it before Agent stores close', async () => {
@@ -431,7 +464,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       deadlineAt: '2031-01-01T00:00:00.000Z',
       signal,
       command: {
-        kind: 'conversation.session.create.v3' as const,
+        kind: 'conversation.session.create' as const,
         contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         sessionId: 'session-control-v3',
         workspaceId: 'workspace-control-v3'
@@ -443,7 +476,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       outcome: {
         ok: true,
         result: {
-          kind: 'conversation.session.created.v3',
+          kind: 'conversation.session.created',
           version: 1
         }
       }
@@ -455,7 +488,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       deadlineAt: '2031-01-01T00:00:00.000Z',
       signal,
       command: {
-        kind: 'conversation.message.accept.v3',
+        kind: 'conversation.message.accept',
         contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         sessionId: 'session-control-v3',
         workspaceId: 'workspace-control-v3',
@@ -480,7 +513,7 @@ describe('DefaultAgentControlRuntimeFactory', () => {
       deadlineAt: '2031-01-01T00:00:00.000Z',
       signal,
       command: {
-        kind: 'conversation.message.accept.v3',
+        kind: 'conversation.message.accept',
         contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         sessionId: 'session-control-v3',
         workspaceId: 'workspace-control-v3',

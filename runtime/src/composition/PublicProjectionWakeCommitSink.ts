@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 
 import type {
-  ProjectionCommitV3,
-  PublicProjectionFeatureV3
+  ProjectionCommit,
+  PublicRunDocumentCommit,
+  PublicProjectionFeature
 } from '@ariadne/protocol/public';
 
 import type { RuntimePublicEventSink } from '../ingress/RuntimePublicEventSink.js';
@@ -24,7 +25,7 @@ implements PublicProjectionCommitSink {
     this.wakePublisher = new PublicProjectionWakePublisher(wakeEvents);
   }
 
-  public async append(commit: ProjectionCommitV3): Promise<unknown> {
+  public async append(commit: ProjectionCommit): Promise<unknown> {
     const result = await this.projection.append(commit);
     await this.wakePublisher.publish(commit);
     return result;
@@ -35,7 +36,7 @@ implements PublicProjectionCommitSink {
 export class PublicProjectionWakePublisher {
   public constructor(private readonly wakeEvents: RuntimePublicEventSink) {}
 
-  public async publish(commit: ProjectionCommitV3): Promise<void> {
+  public async publish(commit: ProjectionCommit | PublicRunDocumentCommit): Promise<void> {
     const features = uniqueFeatures(commit);
     await Promise.all(features.map(async (feature) => {
       await this.wakeEvents.append({
@@ -56,19 +57,19 @@ export class PublicProjectionWakePublisher {
 
 export function projectionWakeEventId(
   projectionEventId: string,
-  feature: PublicProjectionFeatureV3
+  feature: PublicProjectionFeature
 ): string {
   return hashedWakeIdentity('projection.changed', [projectionEventId, feature]);
 }
 
 export function projectionWakeAggregateId(
   sourceId: string,
-  feature: PublicProjectionFeatureV3
+  feature: PublicProjectionFeature
 ): string {
   return hashedWakeIdentity('projection', [sourceId, feature]);
 }
 
-function uniqueFeatures(commit: ProjectionCommitV3): readonly PublicProjectionFeatureV3[] {
+function uniqueFeatures(commit: ProjectionCommit | PublicRunDocumentCommit): readonly PublicProjectionFeature[] {
   return [...new Set(commit.changes.map((change) => change.feature))];
 }
 

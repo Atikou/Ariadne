@@ -2,6 +2,7 @@ import {
   AgentInferenceDispatchRecoveryRequiredError,
   AgentRunInvariantError,
   assertValidAgentRun,
+  assertAgentRunInboxOnlyMutation,
   deriveStableAgentId,
   type AgentInferenceAttempt,
   type AgentInferenceDispatchService,
@@ -37,6 +38,11 @@ export interface AgentRunExecutionDispatchReceiptV1 {
 
 export type AgentRunExecutionDispatchOutcome =
   | {
+      /** The dispatcher has joined; authority proves no Provider boundary was crossed. */
+      readonly status: 'not_started';
+      readonly evidence: AgentRunExecutionNotStartedEvidence;
+    }
+  | {
       readonly status: 'completed';
       readonly outcome: 'completed' | 'failed' | 'cancelled';
       readonly receipt: AgentRunExecutionDispatchReceiptV1;
@@ -47,6 +53,15 @@ export type AgentRunExecutionDispatchOutcome =
       /** Present only when this process durably recorded the uncertain outcome. */
       readonly receipt?: AgentRunExecutionDispatchReceiptV1;
     };
+
+export interface AgentRunExecutionNotStartedEvidence {
+  readonly executionIntentId: string;
+  readonly dispatchAttemptId: string;
+  readonly runId: string;
+  readonly runVersion: number;
+  readonly turnId: string;
+  readonly attemptId: string;
+}
 
 export interface AgentRunExecutionDispatcher {
   dispatchClaimedExecution(
@@ -71,16 +86,22 @@ implements AgentRunExecutionDispatcher {
     request: DispatchClaimedAgentRunExecutionRequest,
     signal: AbortSignal
   ): Promise<AgentRunExecutionDispatchOutcome> {
-    const run = await this.runs.transaction((transaction) => (
-      transaction.loadRun(request.intent.runId)
-    ));
+    const run = await this.runs.transaction(async (transaction) => {
+      const current = await transaction.loadRun(request.intent.runId);
+      if (current !== null && current.version !== request.intent.admittedRunVersion) {
+        const admitted = await transaction.loadRunVersion?.(request.intent.runId, request.intent.admittedRunVersion);
+        if (admitted === null || admitted === undefined) throw invariant('Execution intent has no exact admitted Run version.');
+        assertAgentRunInboxOnlyMutation(admitted, current);
+      }
+      return current;
+    });
     if (run === null) throw invariant('The execution intent Run does not exist.');
     assertValidAgentRun(run);
     const turn = run.turns[0];
     const attempt = turn?.attempts[0];
     if (
       run.runId !== request.intent.runId
-      || run.version !== request.intent.admittedRunVersion
+      || run.version < request.intent.admittedRunVersion
       || run.binding.sessionId !== request.intent.sessionId
       || run.binding.workspace.workspaceId !== request.intent.workspaceId
       || run.binding.objectiveRef.kind !== 'conversation_message'
@@ -115,6 +136,24 @@ implements AgentRunExecutionDispatcher {
     } catch (error) {
       if (error instanceof AgentInferenceDispatchRecoveryRequiredError) {
         return { status: 'recovery_required', reason: 'inference_already_crossed_boundary' };
+      }
+      if (signal.aborted) {
+        // An Abort signal alone proves nothing. Only after joining the dispatch
+        // and rereading exact authority may an unstarted Attempt be cancelled.
+        const current = await this.runs.transaction(transaction => transaction.loadRun(run.runId));
+        if (current !== null) {
+          assertAgentRunInboxOnlyMutation(run, current);
+          const currentAttempt = current.turns.find(candidate => candidate.turnId === turn.turnId)
+            ?.attempts.find(candidate => candidate.attemptId === attempt.attemptId);
+          if (current.state.status === 'running' && currentAttempt?.state.status === 'intended') {
+            return { status: 'not_started', evidence: {
+              executionIntentId: request.intent.executionIntentId,
+              dispatchAttemptId: request.dispatchAttemptId,
+              runId: current.runId, runVersion: current.version,
+              turnId: turn.turnId, attemptId: attempt.attemptId
+            } };
+          }
+        }
       }
       throw error;
     }

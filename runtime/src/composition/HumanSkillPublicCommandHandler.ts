@@ -10,19 +10,23 @@ import {
 
 type HumanSkillCommand = Extract<RuntimeCommandEnvelope['command'], {
   readonly kind:
-    | 'skill.commands.query.v3'
-    | 'skill.command.load.v3'
-    | 'skill.command.resource.read.v3';
+    | 'skill.commands.query'
+    | 'skill.command.load'
+    | 'skill.command.resource.read';
 }>;
 
 const MAX_PUBLIC_RESOURCE_BYTES = 192 * 1024;
+
+export function composeHumanSkillCommandOwners(catalog: HumanSkillCatalog | undefined, workspaceIds: readonly string[]) {
+  return createHumanSkillCommandOwners(catalog === undefined ? undefined : new HumanSkillPublicCommandHandler(catalog, workspaceIds));
+}
 
 export function createHumanSkillCommandOwners(
   handler: HumanSkillPublicCommandHandler | undefined
 ): readonly AgentPublicCommandOwner[] {
   return Object.freeze([
     defineAgentPublicCommandOwner('skills.human', [
-      'skill.commands.query.v3', 'skill.command.load.v3', 'skill.command.resource.read.v3'
+      'skill.commands.query', 'skill.command.load', 'skill.command.resource.read'
     ], (envelope, command) => handler?.execute(envelope, command)
       ?? Promise.resolve(completedPublicError(
         envelope, 'skill_catalog_unavailable',
@@ -58,11 +62,11 @@ export class HumanSkillPublicCommandHandler {
     );
     try {
       switch (command.kind) {
-        case 'skill.commands.query.v3':
+        case 'skill.commands.query':
           return this.query(envelope, command.workspaceId);
-        case 'skill.command.load.v3':
+        case 'skill.command.load':
           return this.load(envelope, command);
-        case 'skill.command.resource.read.v3':
+        case 'skill.command.resource.read':
           return this.readResource(envelope, command);
       }
     } catch (error) {
@@ -82,7 +86,7 @@ export class HumanSkillPublicCommandHandler {
   ): Promise<RuntimeApplicationCommandResult> {
     const snapshot = await this.catalog.snapshot(workspaceId, envelope.signal);
     return completed({
-      kind: 'skill.commands.query_result.v3',
+      kind: 'skill.commands.query_result',
       workspaceId,
       catalogDigest: snapshot.catalogDigest,
       complete: snapshot.complete,
@@ -100,7 +104,7 @@ export class HumanSkillPublicCommandHandler {
 
   private async load(
     envelope: RuntimeCommandEnvelope,
-    command: Extract<HumanSkillCommand, { readonly kind: 'skill.command.load.v3' }>
+    command: Extract<HumanSkillCommand, { readonly kind: 'skill.command.load' }>
   ): Promise<RuntimeApplicationCommandResult> {
     const skill = await this.catalog.loadForUser(
       command.workspaceId,
@@ -109,7 +113,7 @@ export class HumanSkillPublicCommandHandler {
       envelope.signal
     );
     return completed({
-      kind: 'skill.command.loaded.v3',
+      kind: 'skill.command.loaded',
       workspaceId: command.workspaceId,
       name: skill.name,
       description: skill.description,
@@ -123,7 +127,7 @@ export class HumanSkillPublicCommandHandler {
   private async readResource(
     envelope: RuntimeCommandEnvelope,
     command: Extract<HumanSkillCommand, {
-      readonly kind: 'skill.command.resource.read.v3';
+      readonly kind: 'skill.command.resource.read';
     }>
   ): Promise<RuntimeApplicationCommandResult> {
     const resource = await this.catalog.readResourceForUser(
@@ -138,7 +142,7 @@ export class HumanSkillPublicCommandHandler {
     }
     const utf8 = decodeTextResource(resource.mediaType, resource.bytes);
     return completed({
-      kind: 'skill.command.resource.v3',
+      kind: 'skill.command.resource',
       workspaceId: command.workspaceId,
       name: command.name,
       revision: command.revision,

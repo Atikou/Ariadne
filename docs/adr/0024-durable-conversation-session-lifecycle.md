@@ -27,7 +27,7 @@ Each accepted mutation commits one immutable `conversation.session.updated`
 event, command receipt and Session version in the same SQLite transaction. The
 `conversation_session_versions` table is append-only and supplies the exact
 Session record used by event replay and Public Projection. Schema v3 migrates
-existing Sessions and historical event versions to the legacy-equivalent
+existing current-format Sessions and historical event versions to the default
 `Conversation`/`active` state.
 
 Archived Sessions reject new user Messages. An Agent result that was already in

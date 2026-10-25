@@ -8,22 +8,67 @@ import {
 import {
   PUBLIC_DECISION_ACTION_CONTRACT_VERSION,
   PUBLIC_PROJECTION_CONTRACT_VERSION,
-  publicDecisionActionTokenV1Schema,
-  publicDecisionChoiceV3Schema,
+  publicDecisionActionTokenSchema,
+  publicDecisionChoiceSchema,
   publicProjectionCanonicalIdSchema,
-  publicProjectionFeatureV3Schema,
-  publicProjectionReadBatchV3Schema,
-  publicProjectionReadRequestV3Schema,
-  publicProjectionSnapshotV3Schema
-} from './public/projection-v3.js';
-import { encodedImageAttachmentsV3Schema } from './public/attachments-v3.js';
-import { publicInferenceStreamEventV1Schema } from './public/inference-stream-v3.js';
-import { productivityCommandSchemas, productivityResultSchemas } from './public/productivity-v3.js';
-export * from './public/projection-v3.js';
-export * from './public/inference-stream-v3.js';
-export * from './public/attachments-v3.js';
-export * from './public/decision-action-v1.js';
-export * from './public/productivity-v3.js';
+  publicProjectionFeatureSchema,
+  publicProjectionReadBatchSchema,
+  publicProjectionReadRequestSchema,
+  publicProjectionSnapshotSchema
+} from './public/projection.js';
+import { encodedImageAttachmentsSchema } from './public/attachments.js';
+import { publicInferenceStreamEventSchema } from './public/inference-stream.js';
+import { publicProjectionSnapshotBeginRequestSchema, publicProjectionSnapshotManifestSchema,
+  publicProjectionSnapshotPageRequestSchema, publicProjectionSnapshotPageResetSchema,
+  publicProjectionSnapshotPageResultSchema } from './public/projection-pages.js';
+import { publicProjectionScopedReadRequestSchema, publicProjectionScopedReadBatchSchema } from './public/projection-scoped-read.js';
+import { publicProjectionViewBeginRequestSchema, publicProjectionViewManifestSchema,
+  publicProjectionViewPageRequestSchema, publicProjectionViewPageResultSchema,
+  publicProjectionMessageWindowRequestSchema, publicProjectionMessageWindowResultSchema } from './public/projection-views.js';
+import { productivityCommandSchemas, productivityResultSchemas } from './public/productivity.js';
+import { productivityTaskIsolationCommandSchemas, productivityTaskIsolationResultSchemas } from './public/productivity-task-isolation.js';
+export * from './public/productivity-task-isolation.js';
+import { publicProjectionCatalogBeginRequestSchema, publicProjectionCatalogManifestSchema, publicProjectionCatalogResetSchema,
+  publicProjectionCatalogPageRequestSchema, publicProjectionCatalogPageResultSchema,
+  publicProjectionCatalogDetailRequestSchema, publicProjectionCatalogDetailResultSchema,
+  publicProjectionCatalogReadRequestSchema, publicProjectionCatalogBatchResultSchema } from './public/projection-catalog.js';
+import { publicProjectionFeatureWindowRequestSchema, publicProjectionFeatureWindowResultSchema } from './public/projection-feature-window.js';
+import { publicProjectionFeatureReceiptRequestSchema, publicProjectionFeatureReceiptResultSchema } from './public/projection-feature-receipts.js';
+import { publicRunDocumentRootRequestSchema, publicRunDocumentRootResultSchema,
+  publicRunDocumentMetadataRequestSchema, publicRunDocumentMetadataResultSchema,
+  publicRunDocumentInboxRequestSchema, publicRunDocumentInboxResultSchema,
+  publicRunDocumentChunkRequestSchema, publicRunDocumentChunkResultSchema } from './public/projection-run-document-query.js';
+import { publicMessageMetadataWindowRequestSchema, publicMessageMetadataWindowResultSchema,
+  publicMessageBodyRequestSchema, publicMessageBodyResultSchema } from './public/projection-message-metadata.js';
+import { publicConversationReceiptRequestSchema, publicConversationReceiptResultSchema,
+  publicConversationInferenceRequestSchema, publicConversationInferenceResultSchema } from './public/projection-conversation.js';
+import { longMemoryCommandSchemas, longMemoryResultSchemas } from './public/long-memory.js';
+import { modelQualityCommandSchema, modelQualityResultSchema, modelQualitySummarySchema } from './public/model-quality.js';
+import { workspaceDocumentCommandSchemas,workspaceDocumentResultSchemas } from './public/workspace-documents.js';
+import { runtimeHealthSchema } from './public/runtime-health.js';
+import { createTaskCenterNavigationResultSchema, taskCenterQuerySchema, taskCenterNavigationSchema,
+  taskCenterPageSchema, taskCenterResetSchema, taskCenterRelationsQuerySchema, taskCenterRelationsResultSchema } from './public/task-center.js';
+export * from './public/runtime-health.js';
+export * from './public/projection.js';
+export * from './public/projection-pages.js';
+export * from './public/projection-scoped-read.js';
+export * from './public/projection-views.js';
+export * from './public/projection-catalog.js';
+export * from './public/projection-feature-window.js';
+export * from './public/projection-feature-receipts.js';
+export * from './public/projection-conversation.js';
+export * from './public/projection-run-document.js';
+export * from './public/projection-run-document-commit.js';
+export * from './public/projection-run-document-query.js';
+export * from './public/projection-message-metadata.js';
+export * from './public/inference-stream.js';
+export * from './public/attachments.js';
+export * from './public/decision-action.js';
+export * from './public/productivity.js';
+export * from './public/task-center.js';
+export * from './public/long-memory.js';
+export * from './public/model-quality.js';
+export * from './public/workspace-documents.js';
 export type { JsonValue } from './common.js';
 export { ARIADNE_RUNTIME_PROTOCOL_VERSION } from './common.js';
 
@@ -41,7 +86,7 @@ export const runtimeCapabilitySchema = z.enum([
   'companion.chat',
   'companion.agent-plan',
   'companion.sessions',
-  'agent.proposals',
+  'agent.proposals', // Historical status decoding only; production declaration is retired.
   'agent.runs',
   'agent.inbox',
   'agent.permissions',
@@ -58,7 +103,7 @@ export const runtimeCapabilitySchema = z.enum([
   'live.work',
   'scheduler',
   'productivity.workflow',
-  'resources',
+  'resources', // Historical status decoding only; attachment/Tool owners replace this public surface.
   'memory.manage',
   'mcp.tools',
   'skills.catalog',
@@ -140,6 +185,7 @@ export const modelSummarySchema = z
     supportsPlan: z.boolean(),
     supportsVision: z.boolean(),
     qualificationState: z.enum(['unknown', 'testing', 'qualified', 'rejected']),
+    quality: modelQualitySummarySchema.optional(),
     providerQualification: z.object({
       nativeTools: z.enum(['supported', 'unsupported', 'unknown']),
       streaming: z.enum(['supported', 'unsupported', 'unknown']),
@@ -169,15 +215,22 @@ export const conversationSessionSchema = z
   .strict();
 export type ConversationSession = z.infer<typeof conversationSessionSchema>;
 
-export const conversationMessageReferenceV3Schema = z.object({
+export const conversationMessageReferenceSchema = z.object({
   sessionId: publicProjectionCanonicalIdSchema,
   messageId: publicProjectionCanonicalIdSchema,
   messageVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/u)
 }).strict();
-export type ConversationMessageReferenceV3 = z.infer<
-  typeof conversationMessageReferenceV3Schema
+export type ConversationMessageReference = z.infer<
+  typeof conversationMessageReferenceSchema
 >;
+export const taskCenterNavigationResultSchema = createTaskCenterNavigationResultSchema(conversationMessageReferenceSchema)
+  .superRefine((result, context) => {
+    if (result.target?.resultReference && (result.target.moduleId !== 'chat.main'
+      || result.target.resultReference.sessionId !== result.target.sessionId))
+      context.addIssue({ code: 'custom', message: 'Task result reference escaped its navigation Session.' });
+  });
+export type TaskCenterNavigationResult = z.infer<typeof taskCenterNavigationResultSchema>;
 
 export const companionMessageErrorSchema = z
   .object({
@@ -186,7 +239,6 @@ export const companionMessageErrorSchema = z
     retryable: z.boolean().optional()
   })
   .strict();
-export type CompanionMessageError = z.infer<typeof companionMessageErrorSchema>;
 
 export const companionReasoningSegmentSchema = z
   .object({
@@ -228,35 +280,6 @@ export const companionMessageSchema = z
   })
   .strict();
 export type CompanionMessage = z.infer<typeof companionMessageSchema>;
-
-export const agentCapabilitySchema = z.enum(['file-read', 'file-write', 'browser', 'shell']);
-export type AgentCapability = z.infer<typeof agentCapabilitySchema>;
-
-export const agentProposalSchema = z
-  .object({
-    proposalId: nonEmptyIdSchema,
-    sessionId: nonEmptyIdSchema,
-    title: z.string().trim().min(1).max(512),
-    reason: z.string().trim().min(1).max(4_096),
-    originalRequest: z.string().trim().min(1).max(200_000),
-    workspaceIds: z.array(nonEmptyIdSchema).max(32),
-    requestedScopes: z.array(z.string().trim().min(1).max(1_024)).min(1).max(16),
-    requestedCapabilities: z.array(agentCapabilitySchema).min(1).max(4),
-    risk: z.enum(['read-only', 'write', 'destructive']),
-    status: z.enum([
-      'pending',
-      'approved',
-      'rejected',
-      'executing',
-      'waiting_permission',
-      'waiting_plan_handoff',
-      'completed',
-      'failed'
-    ]),
-    createdAt: isoDateTimeSchema
-  })
-  .strict();
-export type AgentProposal = z.infer<typeof agentProposalSchema>;
 
 export const runStatusSchema = z.enum([
   'queued',
@@ -338,24 +361,6 @@ export const runActivityStatusSchema = z.enum([
   'failed',
   'skipped'
 ]);
-export type RunActivityStatus = z.infer<typeof runActivityStatusSchema>;
-
-export const runFileChangeSchema = z.object({
-  path: z.string().trim().min(1).max(32_768),
-  changeKind: z.enum(['created', 'modified', 'deleted', 'observed']),
-  additions: z.number().int().nonnegative(),
-  deletions: z.number().int().nonnegative(),
-  checkpointId: nonEmptyIdSchema.optional(),
-  beforeHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-  afterHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-  diffHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-  diff: z.string().max(2 * 1024 * 1024).optional(),
-  diffTruncated: z.boolean(),
-  changedStartLine: z.number().int().positive().optional(),
-  changedEndLine: z.number().int().positive().optional(),
-  evidence: z.enum(['authoritative', 'observed'])
-}).strict();
-export type RunFileChange = z.infer<typeof runFileChangeSchema>;
 
 export const runActivityNodeSchema = z
   .object({
@@ -391,7 +396,6 @@ export const runActivityNodeSchema = z
     changedFileCount: z.number().int().nonnegative()
   })
   .strict();
-export type RunActivityNode = z.infer<typeof runActivityNodeSchema>;
 
 export const runSystemActivitySchema = z.object({
   activityType: z.literal('system'),
@@ -410,58 +414,12 @@ export const runSystemActivitySchema = z.object({
   afterChars: z.number().int().nonnegative().optional(),
   summaryType: z.string().trim().min(1).max(128).optional()
 }).strict();
-export type RunSystemActivity = z.infer<typeof runSystemActivitySchema>;
 
 export const runActivitySchema = z.discriminatedUnion('activityType', [
   runActivityNodeSchema,
   runSystemActivitySchema
 ]);
 export type RunActivity = z.infer<typeof runActivitySchema>;
-
-export const runActivityEdgeSchema = z.object({
-  edgeId: nonEmptyIdSchema,
-  runId: nonEmptyIdSchema,
-  sourceActivityId: nonEmptyIdSchema,
-  targetActivityId: nonEmptyIdSchema,
-  kind: z.enum(['sequence', 'verification', 'delegation'])
-}).strict();
-export type RunActivityEdge = z.infer<typeof runActivityEdgeSchema>;
-
-export const runActivityGraphSchema = z.object({
-  runId: nonEmptyIdSchema,
-  sessionId: nonEmptyIdSchema.optional(),
-  status: runStatusSchema,
-  timing: z.object({
-    activeDurationMs: z.number().int().nonnegative(),
-    activeSince: isoDateTimeSchema.optional()
-  }).strict(),
-  nodes: z.array(runActivityNodeSchema).max(20_000),
-  edges: z.array(runActivityEdgeSchema).max(40_000),
-  systemActivities: z.array(runSystemActivitySchema).max(10_000),
-  updatedAt: isoDateTimeSchema
-}).strict();
-export type RunActivityGraph = z.infer<typeof runActivityGraphSchema>;
-
-export const runActivityDetailSchema = z.object({
-  activityId: nonEmptyIdSchema,
-  runId: nonEmptyIdSchema,
-  toolCallId: nonEmptyIdSchema,
-  toolName: z.string().trim().min(1).max(256),
-  args: z.record(z.string(), jsonValueSchema).optional(),
-  command: z.string().max(64 * 1024).optional(),
-  cwd: z.string().max(32_768).optional(),
-  exitCode: z.number().int().optional(),
-  stdoutPreview: z.string().max(64 * 1024).optional(),
-  stderrPreview: z.string().max(64 * 1024).optional(),
-  outputPreview: z.string().max(64 * 1024).optional(),
-  resultSummary: z.string().max(64 * 1024).optional(),
-  errorMessage: z.string().max(64 * 1024).optional(),
-  permissionAudit: z.record(z.string(), jsonValueSchema).optional(),
-  outputTruncated: z.boolean(),
-  redacted: z.boolean(),
-  fileChanges: z.array(runFileChangeSchema).max(2_000)
-}).strict();
-export type RunActivityDetail = z.infer<typeof runActivityDetailSchema>;
 
 export const permissionRequestSchema = z
   .object({
@@ -610,96 +568,9 @@ export const traceEntrySchema = z
   .strict();
 export type TraceEntry = z.infer<typeof traceEntrySchema>;
 
-export const resourceRecordSchema = resourceReferenceSchema.extend({
-  owner: z.object({
-    type: z.string().trim().min(1).max(128),
-    id: nonEmptyIdSchema
-  }).strict(),
-  expiresAt: isoDateTimeSchema.optional(),
-  createdAt: isoDateTimeSchema,
-  updatedAt: isoDateTimeSchema
-}).strict();
-export type ResourceRecord = z.infer<typeof resourceRecordSchema>;
-
-export const memoryRecordSchema = z.object({
-  memoryId: nonEmptyIdSchema,
-  scope: z.enum(['global', 'session', 'project', 'task']),
-  scopeId: nonEmptyIdSchema.optional(),
-  memoryType: z.enum([
-    'preference',
-    'habit',
-    'decision',
-    'fact',
-    'lesson',
-    'project_note',
-    'recent_state',
-    'task_state',
-    'known_issue',
-    'tech_stack'
-  ]),
-  key: z.string().trim().min(1).max(512).optional(),
-  value: z.string().max(200_000),
-  summary: z.string().max(4_096).optional(),
-  importance: z.number().min(0).max(1),
-  confidence: z.number().min(0).max(1),
-  lifecycleState: z.enum(['candidate', 'active', 'rejected', 'superseded', 'expired']),
-  provenance: z.object({
-    origin: z.enum(['user', 'model_summary', 'tool_ledger', 'workspace', 'system']),
-    sourceId: nonEmptyIdSchema.optional(),
-    evidence: z.string().max(4_096).optional()
-  }).strict(),
-  sensitivity: z.enum(['public', 'workspace', 'sensitive']),
-  retentionUntil: isoDateTimeSchema.optional(),
-  createdAt: isoDateTimeSchema,
-  updatedAt: isoDateTimeSchema,
-  lastUsedAt: isoDateTimeSchema.optional(),
-  supersedesId: nonEmptyIdSchema.optional()
-}).strict();
-export type MemoryRecord = z.infer<typeof memoryRecordSchema>;
-
-export const taskCheckpointSchema = z.object({
-  checkpointId: nonEmptyIdSchema,
-  runId: nonEmptyIdSchema,
-  toolName: z.string().trim().min(1).max(128),
-  path: z.string().trim().min(1).max(32_768),
-  beforeHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-  afterHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-  currentHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-  comparison: z.enum(['matches', 'modified', 'missing', 'unexpected_file']),
-  restorable: z.boolean(),
-  diff: z.string().max(2 * 1024 * 1024).optional(),
-  createdAt: isoDateTimeSchema
-}).strict();
-export type TaskCheckpoint = z.infer<typeof taskCheckpointSchema>;
-
 export const runtimeEventSchema = z.discriminatedUnion('kind', [
-  ...publicInferenceStreamEventV1Schema.options,
-  z.object({
-    kind: z.literal('companion.reasoning.delta'),
-    runId: nonEmptyIdSchema,
-    sessionId: nonEmptyIdSchema,
-    messageId: nonEmptyIdSchema,
-    text: z.string().min(1).max(64_000),
-    source: z.enum(['provider', 'summary']),
-    startedAt: isoDateTimeSchema
-  }).strict(),
-  z.object({ kind: z.literal('companion.token.delta'), runId: nonEmptyIdSchema, sessionId: nonEmptyIdSchema, messageId: nonEmptyIdSchema, text: z.string().min(1).max(64_000) }).strict(),
-  z.object({ kind: z.literal('companion.message.changed'), message: companionMessageSchema }).strict(),
-  z.object({
-    kind: z.literal('companion.message.removed'),
-    sessionId: nonEmptyIdSchema,
-    messageId: nonEmptyIdSchema
-  }).strict(),
-  z.object({ kind: z.literal('agent.proposal.changed'), proposal: agentProposalSchema }).strict(),
-  z.object({ kind: z.literal('run.changed'), run: runSummarySchema }).strict(),
-  z.object({ kind: z.literal('run.activity'), activity: runActivitySchema }).strict(),
-  z.object({ kind: z.literal('permission.changed'), request: permissionRequestSchema }).strict(),
-  z.object({ kind: z.literal('planHandoff.changed'), handoff: planHandoffSchema }).strict(),
-  z.object({
-    kind: z.literal('projection.changed'),
-    feature: publicProjectionFeatureV3Schema
-  }).strict(),
-  z.object({ kind: z.literal('trace.appended'), entry: traceEntrySchema }).strict()
+  ...publicInferenceStreamEventSchema.options,
+  z.object({ kind: z.literal('projection.changed'), feature: publicProjectionFeatureSchema }).strict()
 ]);
 export type RuntimeEvent = z.infer<typeof runtimeEventSchema>;
 
@@ -708,16 +579,7 @@ export const runtimeEventEnvelopeSchema = z
     eventId: nonEmptyIdSchema,
     cursor: z.number().int().positive(),
     schemaVersion: z.literal('2.0'),
-    aggregateType: z.enum([
-      'run',
-      'companion',
-      'permission',
-      'plan_handoff',
-      'proposal',
-      'projection',
-      'inference_stream',
-      'trace'
-    ]),
+    aggregateType: z.enum(['projection', 'inference_stream']),
     aggregateId: nonEmptyIdSchema,
     aggregateVersion: z.number().int().positive(),
     correlationId: nonEmptyIdSchema.optional(),
@@ -728,24 +590,12 @@ export const runtimeEventEnvelopeSchema = z
   .strict();
 export type RuntimeEventEnvelope = z.infer<typeof runtimeEventEnvelopeSchema>;
 
-export const runtimeSnapshotSchema = z
-  .object({
-    revision: z.number().int().nonnegative(),
-    capturedAt: isoDateTimeSchema,
-    runs: z.array(runSummarySchema),
-    permissions: z.array(permissionRequestSchema),
-    planHandoffs: z.array(planHandoffSchema),
-    proposals: z.array(agentProposalSchema)
-  })
-  .strict();
-export type RuntimeSnapshot = z.infer<typeof runtimeSnapshotSchema>;
-
 const emptyCommand = <T extends string>(kind: T) => z.object({ kind: z.literal(kind) }).strict();
 
-export const publicDecisionResolutionActionV3Schema = z.object({
+export const publicDecisionResolutionActionSchema = z.object({
   contractVersion: z.literal(PUBLIC_DECISION_ACTION_CONTRACT_VERSION),
-  actionToken: publicDecisionActionTokenV1Schema,
-  choice: publicDecisionChoiceV3Schema,
+  actionToken: publicDecisionActionTokenSchema,
+  choice: publicDecisionChoiceSchema,
   answer: z.string().min(1).max(100_000).refine(
     (value) => value.trim().length > 0,
     'A user-question answer cannot contain only whitespace.'
@@ -759,33 +609,30 @@ export const publicDecisionResolutionActionV3Schema = z.object({
     });
   }
 });
-export type PublicDecisionResolutionActionV3 = z.infer<
-  typeof publicDecisionResolutionActionV3Schema
->;
 
 export const PERSONAL_ASSISTANT_WORKSPACE_ID = 'ariadne-personal-assistant' as const;
 export const COMPUTER_READ_SCOPE_ID = 'computer-read-all' as const;
 
-export const conversationMessageExecutionV3Schema = z.object({
+export const conversationMessageExecutionSchema = z.object({
   mode: z.enum(['chat', 'agent', 'plan']),
   modelId: publicProjectionCanonicalIdSchema.optional(),
   inference: modelInferenceOptionsSchema.optional(),
   routingStrategy: chatRoutingStrategySchema.optional()
 }).strict();
-export type ConversationMessageExecutionV3 = z.infer<
-  typeof conversationMessageExecutionV3Schema
+export type ConversationMessageExecution = z.infer<
+  typeof conversationMessageExecutionSchema
 >;
 
-const conversationMessageAcceptCommandV3Schema = z.object({
-  kind: z.literal('conversation.message.accept.v3'),
+const conversationMessageAcceptCommandSchema = z.object({
+  kind: z.literal('conversation.message.accept'),
   contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
   sessionId: publicProjectionCanonicalIdSchema,
   workspaceId: publicProjectionCanonicalIdSchema,
   expectedSessionVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   messageId: publicProjectionCanonicalIdSchema,
   content: z.string().max(100_000),
-  attachments: encodedImageAttachmentsV3Schema.optional(),
-  execution: conversationMessageExecutionV3Schema.optional()
+  attachments: encodedImageAttachmentsSchema.optional(),
+  execution: conversationMessageExecutionSchema.optional()
 }).strict().superRefine((value, context) => {
   if (value.content.trim().length === 0 && value.attachments === undefined) {
     context.addIssue({
@@ -797,15 +644,22 @@ const conversationMessageAcceptCommandV3Schema = z.object({
 });
 
 export const runtimeCommandSchema = z.discriminatedUnion('kind', [
+  taskCenterQuerySchema, taskCenterNavigationSchema,
+  taskCenterRelationsQuerySchema,
+  modelQualityCommandSchema,
   ...productivityCommandSchemas,
+  ...productivityTaskIsolationCommandSchemas,
+  ...longMemoryCommandSchemas,
+  ...workspaceDocumentCommandSchemas,
   emptyCommand('runtime.status.get'),
+  emptyCommand('runtime.health.get'),
   z.object({
-    kind: z.literal('model.qualification.run.v3'),
+    kind: z.literal('model.qualification.run'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     modelId: publicProjectionCanonicalIdSchema
   }).strict(),
   z.object({
-    kind: z.literal('model.availability.check.v3'),
+    kind: z.literal('model.availability.check'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     modelId: publicProjectionCanonicalIdSchema
   }).strict(),
@@ -815,26 +669,46 @@ export const runtimeCommandSchema = z.discriminatedUnion('kind', [
   }).strict(),
   z.object({
     kind: z.literal('projection.commits.read'),
-    request: publicProjectionReadRequestV3Schema
+    request: publicProjectionReadRequestSchema
   }).strict(),
   z.object({
-    kind: z.literal('conversation.session.create.v3'),
+    kind: z.literal('conversation.session.create'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     sessionId: publicProjectionCanonicalIdSchema,
     workspaceId: publicProjectionCanonicalIdSchema,
     title: z.string().trim().min(1).max(80).optional()
   }).strict(),
+  z.object({ kind: z.literal('projection.snapshot.begin'), request: publicProjectionSnapshotBeginRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.snapshot.page'), request: publicProjectionSnapshotPageRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.scope.read'), request: publicProjectionScopedReadRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.view.begin'), request: publicProjectionViewBeginRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.view.page'), request: publicProjectionViewPageRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.messages.window'), request: publicProjectionMessageWindowRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.catalog.begin'), request: publicProjectionCatalogBeginRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.catalog.page'), request: publicProjectionCatalogPageRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.catalog.detail'), request: publicProjectionCatalogDetailRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.catalog.read'), request: publicProjectionCatalogReadRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.features.window'), request: publicProjectionFeatureWindowRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.features.receipts'), request: publicProjectionFeatureReceiptRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.run_document.root'), request: publicRunDocumentRootRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.run_document.metadata'), request: publicRunDocumentMetadataRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.run_document.inbox'), request: publicRunDocumentInboxRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.run_document.chunk'), request: publicRunDocumentChunkRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.messages.metadata'), request: publicMessageMetadataWindowRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.messages.body'), request: publicMessageBodyRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.conversation.receipts'), request: publicConversationReceiptRequestSchema }).strict(),
+  z.object({ kind: z.literal('projection.conversation.inference_window'), request: publicConversationInferenceRequestSchema }).strict(),
   z.object({
-    kind: z.literal('conversation.session.title.generate.v3'),
+    kind: z.literal('conversation.session.title.generate'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     sessionId: publicProjectionCanonicalIdSchema,
     workspaceId: publicProjectionCanonicalIdSchema,
     expectedSessionVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     content: z.string().trim().min(1).max(100_000),
-    execution: conversationMessageExecutionV3Schema.optional()
+    execution: conversationMessageExecutionSchema.optional()
   }).strict(),
   z.object({
-    kind: z.literal('conversation.session.rename.v3'),
+    kind: z.literal('conversation.session.rename'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     sessionId: publicProjectionCanonicalIdSchema,
     workspaceId: publicProjectionCanonicalIdSchema,
@@ -842,30 +716,32 @@ export const runtimeCommandSchema = z.discriminatedUnion('kind', [
     title: z.string().trim().min(1).max(80)
   }).strict(),
   z.object({
-    kind: z.literal('conversation.session.archive.v3'),
+    kind: z.literal('conversation.session.archive'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     sessionId: publicProjectionCanonicalIdSchema,
     workspaceId: publicProjectionCanonicalIdSchema,
     expectedSessionVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
   }).strict(),
   z.object({
-    kind: z.literal('conversation.session.restore.v3'),
+    kind: z.literal('conversation.session.restore'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     sessionId: publicProjectionCanonicalIdSchema,
     workspaceId: publicProjectionCanonicalIdSchema,
     expectedSessionVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
   }).strict(),
   z.object({
-    kind: z.literal('conversation.session.fork.v3'),
+    kind: z.literal('conversation.session.fork'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     sessionId: publicProjectionCanonicalIdSchema,
     sourceSessionId: publicProjectionCanonicalIdSchema,
     workspaceId: publicProjectionCanonicalIdSchema,
     expectedSourceSessionVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-    boundary: conversationMessageReferenceV3Schema
+    boundary: conversationMessageReferenceSchema,
+    sourceVersionMode: z.enum(['current', 'frozen']).optional(),
+    title: z.string().trim().min(1).max(80).optional()
   }).strict(),
   z.object({
-    kind: z.literal('conversation.sessions.query.v3'),
+    kind: z.literal('conversation.sessions.query'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     workspaceId: publicProjectionCanonicalIdSchema,
     query: z.string().trim().max(512),
@@ -873,24 +749,24 @@ export const runtimeCommandSchema = z.discriminatedUnion('kind', [
     limit: z.number().int().min(1).max(50).default(20)
   }).strict(),
   z.object({
-    kind: z.literal('conversation.message.resolve.v3'),
+    kind: z.literal('conversation.message.resolve'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
-    reference: conversationMessageReferenceV3Schema
+    reference: conversationMessageReferenceSchema
   }).strict(),
   z.object({
-    kind: z.literal('skill.commands.query.v3'),
+    kind: z.literal('skill.commands.query'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     workspaceId: publicProjectionCanonicalIdSchema
   }).strict(),
   z.object({
-    kind: z.literal('skill.command.load.v3'),
+    kind: z.literal('skill.command.load'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     workspaceId: publicProjectionCanonicalIdSchema,
     name: z.string().regex(/^[a-z][a-z0-9_-]*$/u),
     revision: z.string().regex(/^sha256:[a-f0-9]{64}$/u)
   }).strict(),
   z.object({
-    kind: z.literal('skill.command.resource.read.v3'),
+    kind: z.literal('skill.command.resource.read'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     workspaceId: publicProjectionCanonicalIdSchema,
     name: z.string().regex(/^[a-z][a-z0-9_-]*$/u),
@@ -898,7 +774,7 @@ export const runtimeCommandSchema = z.discriminatedUnion('kind', [
     relativePath: z.string().min(1).max(512)
   }).strict(),
   z.object({
-    kind: z.literal('agent.tool_result.detail.get.v3'),
+    kind: z.literal('agent.tool_result.detail.get'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     runId: publicProjectionCanonicalIdSchema,
     workspaceId: publicProjectionCanonicalIdSchema,
@@ -906,16 +782,16 @@ export const runtimeCommandSchema = z.discriminatedUnion('kind', [
     cursor: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
     maxBytes: z.number().int().min(1).max(64 * 1024).default(64 * 1024)
   }).strict(),
-  conversationMessageAcceptCommandV3Schema,
+  conversationMessageAcceptCommandSchema,
   z.object({
-    kind: z.literal('agent.decision.resolve.v3'),
+    kind: z.literal('agent.decision.resolve'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     runId: publicProjectionCanonicalIdSchema,
     decisionId: publicProjectionCanonicalIdSchema,
-    action: publicDecisionResolutionActionV3Schema
+    action: publicDecisionResolutionActionSchema
   }).strict(),
   z.object({
-    kind: z.literal('agent.run.cancel.v3'),
+    kind: z.literal('agent.run.cancel'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     runId: publicProjectionCanonicalIdSchema,
     expectedVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
@@ -923,7 +799,7 @@ export const runtimeCommandSchema = z.discriminatedUnion('kind', [
     reason: z.literal('user_requested')
   }).strict(),
   z.object({
-    kind: z.literal('agent.inbox.enqueue.v3'),
+    kind: z.literal('agent.inbox.enqueue'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     runId: publicProjectionCanonicalIdSchema,
     sessionId: publicProjectionCanonicalIdSchema,
@@ -935,7 +811,7 @@ export const runtimeCommandSchema = z.discriminatedUnion('kind', [
     )
   }).strict(),
   z.object({
-    kind: z.literal('agent.inbox.replace.v3'),
+    kind: z.literal('agent.inbox.replace'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     runId: publicProjectionCanonicalIdSchema,
     inputId: publicProjectionCanonicalIdSchema,
@@ -946,14 +822,14 @@ export const runtimeCommandSchema = z.discriminatedUnion('kind', [
     )
   }).strict(),
   z.object({
-    kind: z.literal('agent.inbox.remove.v3'),
+    kind: z.literal('agent.inbox.remove'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     runId: publicProjectionCanonicalIdSchema,
     inputId: publicProjectionCanonicalIdSchema,
     expectedInputVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
   }).strict(),
   z.object({
-    kind: z.literal('agent.subagent.send.v3'),
+    kind: z.literal('agent.subagent.send'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     parentRunId: publicProjectionCanonicalIdSchema,
     childRunId: publicProjectionCanonicalIdSchema,
@@ -965,7 +841,7 @@ export const runtimeCommandSchema = z.discriminatedUnion('kind', [
     )
   }).strict(),
   z.object({
-    kind: z.literal('agent.subagent.interrupt.v3'),
+    kind: z.literal('agent.subagent.interrupt'),
     contractVersion: z.literal(PUBLIC_PROJECTION_CONTRACT_VERSION),
     parentRunId: publicProjectionCanonicalIdSchema,
     childRunId: publicProjectionCanonicalIdSchema,
@@ -979,10 +855,17 @@ export const runtimeCommandSchema = z.discriminatedUnion('kind', [
 export type RuntimeCommand = z.infer<typeof runtimeCommandSchema>;
 
 export const runtimeResultSchema = z.discriminatedUnion('kind', [
+  taskCenterPageSchema, taskCenterResetSchema, taskCenterNavigationResultSchema,
+  taskCenterRelationsResultSchema,
+  modelQualityResultSchema,
   ...productivityResultSchemas,
+  ...productivityTaskIsolationResultSchemas,
+  ...longMemoryResultSchemas,
+  ...workspaceDocumentResultSchemas,
   z.object({ kind: z.literal('runtime.status'), status: runtimeStatusSchema }).strict(),
+  z.object({ kind: z.literal('runtime.health'), health: runtimeHealthSchema }).strict(),
   z.object({
-    kind: z.literal('model.qualification.completed.v3'),
+    kind: z.literal('model.qualification.completed'),
     modelId: publicProjectionCanonicalIdSchema,
     supportsTextChat: z.boolean(),
     supportsAgent: z.boolean(),
@@ -991,43 +874,65 @@ export const runtimeResultSchema = z.discriminatedUnion('kind', [
     qualificationState: z.enum(['unknown', 'testing', 'qualified', 'rejected'])
   }).strict(),
   z.object({
-    kind: z.literal('model.availability.completed.v3'),
+    kind: z.literal('model.availability.completed'),
     modelId: publicProjectionCanonicalIdSchema,
     available: z.boolean()
   }).strict(),
   z.object({
     kind: z.literal('projection.snapshot'),
-    snapshot: publicProjectionSnapshotV3Schema
+    snapshot: publicProjectionSnapshotSchema
   }).strict(),
   z.object({
     kind: z.literal('projection.commits'),
-    batch: publicProjectionReadBatchV3Schema
+    batch: publicProjectionReadBatchSchema
   }).strict(),
   z.object({
-    kind: z.literal('conversation.session.created.v3'),
+    kind: z.literal('conversation.session.created'),
     sessionId: publicProjectionCanonicalIdSchema,
     version: z.literal(1)
   }).strict(),
+  z.object({ kind: z.literal('projection.snapshot.manifest'),
+    manifest: z.union([publicProjectionSnapshotManifestSchema, publicProjectionSnapshotPageResetSchema]) }).strict(),
+  z.object({ kind: z.literal('projection.snapshot.page_result'), page: publicProjectionSnapshotPageResultSchema }).strict(),
+  z.object({ kind: z.literal('projection.scope.batch'), batch: publicProjectionScopedReadBatchSchema }).strict(),
+  z.object({ kind: z.literal('projection.view.manifest'),
+    manifest: z.union([publicProjectionViewManifestSchema, publicProjectionSnapshotPageResetSchema]) }).strict(),
+  z.object({ kind: z.literal('projection.view.page_result'), page: publicProjectionViewPageResultSchema }).strict(),
+  z.object({ kind: z.literal('projection.messages.window_result'), window: publicProjectionMessageWindowResultSchema }).strict(),
+  z.object({ kind: z.literal('projection.catalog.manifest'), manifest: z.union([publicProjectionCatalogManifestSchema, publicProjectionCatalogResetSchema]) }).strict(),
+  z.object({ kind: z.literal('projection.catalog.page_result'), page: publicProjectionCatalogPageResultSchema }).strict(),
+  z.object({ kind: z.literal('projection.catalog.detail_result'), detail: publicProjectionCatalogDetailResultSchema }).strict(),
+  z.object({ kind: z.literal('projection.catalog.batch'), batch: publicProjectionCatalogBatchResultSchema }).strict(),
+  z.object({ kind: z.literal('projection.features.window_result'), window: publicProjectionFeatureWindowResultSchema }).strict(),
+  z.object({ kind: z.literal('projection.features.receipts_result'), batch: publicProjectionFeatureReceiptResultSchema }).strict(),
+  z.object({ kind: z.literal('projection.run_document.root_result'), document: publicRunDocumentRootResultSchema }).strict(),
+  z.object({ kind: z.literal('projection.run_document.metadata_result'), page: publicRunDocumentMetadataResultSchema }).strict(),
+  z.object({ kind: z.literal('projection.run_document.inbox_result'), input: publicRunDocumentInboxResultSchema }).strict(),
+  z.object({ kind: z.literal('projection.run_document.chunk_result'), chunk: publicRunDocumentChunkResultSchema }).strict(),
+  z.object({ kind: z.literal('projection.messages.metadata_result'), window: publicMessageMetadataWindowResultSchema }).strict(),
+  z.object({ kind: z.literal('projection.messages.body_result'), body: publicMessageBodyResultSchema }).strict(),
+  z.object({ kind: z.literal('projection.conversation.receipts_result'), batch: publicConversationReceiptResultSchema }).strict(),
+  z.object({ kind: z.literal('projection.conversation.inference_window_result'), window: publicConversationInferenceResultSchema }).strict(),
   z.object({
-    kind: z.literal('conversation.session.updated.v3'),
+    kind: z.literal('conversation.session.updated'),
     sessionId: publicProjectionCanonicalIdSchema,
     version: z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
   }).strict(),
   z.object({
-    kind: z.literal('conversation.session.title.generated.v3'),
+    kind: z.literal('conversation.session.title.generated'),
     sessionId: publicProjectionCanonicalIdSchema,
     sessionVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     title: z.string().trim().min(1).max(80)
   }).strict(),
   z.object({
-    kind: z.literal('conversation.session.forked.v3'),
+    kind: z.literal('conversation.session.forked'),
     sessionId: publicProjectionCanonicalIdSchema,
     version: z.literal(1),
     sourceSessionId: publicProjectionCanonicalIdSchema,
-    boundary: conversationMessageReferenceV3Schema
+    boundary: conversationMessageReferenceSchema
   }).strict(),
   z.object({
-    kind: z.literal('conversation.sessions.query_result.v3'),
+    kind: z.literal('conversation.sessions.query_result'),
     items: z.array(z.object({
       sessionId: publicProjectionCanonicalIdSchema,
       workspaceId: publicProjectionCanonicalIdSchema,
@@ -1037,25 +942,25 @@ export const runtimeResultSchema = z.discriminatedUnion('kind', [
       updatedAt: isoDateTimeSchema,
       lineage: z.object({
         sourceSessionId: publicProjectionCanonicalIdSchema,
-        boundary: conversationMessageReferenceV3Schema
+        boundary: conversationMessageReferenceSchema
       }).strict().nullable(),
       matches: z.array(z.object({
-        reference: conversationMessageReferenceV3Schema,
+        reference: conversationMessageReferenceSchema,
         role: z.enum(['user', 'assistant']),
         snippet: z.string().max(512)
       }).strict()).max(3)
     }).strict()).max(50)
   }).strict(),
   z.object({
-    kind: z.literal('conversation.message.resolved.v3'),
-    reference: conversationMessageReferenceV3Schema,
+    kind: z.literal('conversation.message.resolved'),
+    reference: conversationMessageReferenceSchema,
     workspaceId: publicProjectionCanonicalIdSchema,
     role: z.enum(['user', 'assistant']),
     content: z.string().max(100_000),
     createdAt: isoDateTimeSchema
   }).strict(),
   z.object({
-    kind: z.literal('skill.commands.query_result.v3'),
+    kind: z.literal('skill.commands.query_result'),
     workspaceId: publicProjectionCanonicalIdSchema,
     catalogDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
     complete: z.boolean(),
@@ -1068,7 +973,7 @@ export const runtimeResultSchema = z.discriminatedUnion('kind', [
     }).strict()).max(1_024)
   }).strict(),
   z.object({
-    kind: z.literal('skill.command.loaded.v3'),
+    kind: z.literal('skill.command.loaded'),
     workspaceId: publicProjectionCanonicalIdSchema,
     name: z.string().regex(/^[a-z][a-z0-9_-]*$/u),
     description: z.string().min(1).max(2_000),
@@ -1083,7 +988,7 @@ export const runtimeResultSchema = z.discriminatedUnion('kind', [
     }).strict()).max(2_048)
   }).strict(),
   z.object({
-    kind: z.literal('skill.command.resource.v3'),
+    kind: z.literal('skill.command.resource'),
     workspaceId: publicProjectionCanonicalIdSchema,
     name: z.string().regex(/^[a-z][a-z0-9_-]*$/u),
     revision: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
@@ -1093,7 +998,7 @@ export const runtimeResultSchema = z.discriminatedUnion('kind', [
     content: z.string().max(300_000)
   }).strict(),
   z.object({
-    kind: z.literal('agent.tool_result.detail.v3'),
+    kind: z.literal('agent.tool_result.detail'),
     runId: publicProjectionCanonicalIdSchema,
     workspaceId: publicProjectionCanonicalIdSchema,
     effectId: publicProjectionCanonicalIdSchema,
@@ -1114,7 +1019,7 @@ export const runtimeResultSchema = z.discriminatedUnion('kind', [
     complete: z.boolean()
   }).strict(),
   z.object({
-    kind: z.literal('conversation.message.accepted.v3'),
+    kind: z.literal('conversation.message.accepted'),
     sessionId: publicProjectionCanonicalIdSchema,
     sessionVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     messageId: publicProjectionCanonicalIdSchema,
@@ -1122,38 +1027,43 @@ export const runtimeResultSchema = z.discriminatedUnion('kind', [
     sagaId: publicProjectionCanonicalIdSchema
   }).strict(),
   z.object({
-    kind: z.literal('agent.decision.resolved.v3'),
+    kind: z.literal('agent.decision.resolved'),
     runId: publicProjectionCanonicalIdSchema,
     decisionId: publicProjectionCanonicalIdSchema,
     runVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
   }).strict(),
   z.object({
-    kind: z.literal('agent.run.cancelled.v3'),
+    kind: z.literal('agent.run.cancelled'),
     runId: publicProjectionCanonicalIdSchema,
     runVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
   }).strict(),
   z.object({
-    kind: z.literal('agent.inbox.enqueued.v3'),
+    kind: z.literal('agent.run.cancellation.requested'),
+    runId: publicProjectionCanonicalIdSchema,
+    runVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
+  }).strict(),
+  z.object({
+    kind: z.literal('agent.inbox.enqueued'),
     runId: publicProjectionCanonicalIdSchema,
     runVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     inputId: publicProjectionCanonicalIdSchema,
     inputVersion: z.literal(1)
   }).strict(),
   z.object({
-    kind: z.literal('agent.inbox.replaced.v3'),
+    kind: z.literal('agent.inbox.replaced'),
     runId: publicProjectionCanonicalIdSchema,
     runVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     inputId: publicProjectionCanonicalIdSchema,
     inputVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
   }).strict(),
   z.object({
-    kind: z.literal('agent.inbox.removed.v3'),
+    kind: z.literal('agent.inbox.removed'),
     runId: publicProjectionCanonicalIdSchema,
     runVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     inputId: publicProjectionCanonicalIdSchema
   }).strict(),
   z.object({
-    kind: z.literal('agent.subagent.input.sent.v3'),
+    kind: z.literal('agent.subagent.input.sent'),
     parentRunId: publicProjectionCanonicalIdSchema,
     childRunId: publicProjectionCanonicalIdSchema,
     childRunVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
@@ -1161,7 +1071,7 @@ export const runtimeResultSchema = z.discriminatedUnion('kind', [
     inputVersion: z.literal(1)
   }).strict(),
   z.object({
-    kind: z.literal('agent.subagent.interrupted.v3'),
+    kind: z.literal('agent.subagent.interrupted'),
     parentRunId: publicProjectionCanonicalIdSchema,
     childRunId: publicProjectionCanonicalIdSchema,
     childRunVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
@@ -1171,10 +1081,3 @@ export const runtimeResultSchema = z.discriminatedUnion('kind', [
 ]);
 
 export type RuntimeResult = z.infer<typeof runtimeResultSchema>;
-
-export const publicRuntimeApiSchema = z
-  .object({
-    command: runtimeCommandSchema,
-    requestId: nonEmptyIdSchema
-  })
-  .strict();

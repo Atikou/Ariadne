@@ -2,15 +2,50 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { RuntimeEventEnvelope } from '@ariadne/protocol/public';
 import type { AriadneApi, SpeechEvent, TerminalExitEvent, TerminalOutputEvent } from '@shared/contract';
 import { IPC_CHANNELS } from '@shared/ipc';
+import { notificationNavigationRequestSchema } from '@shared/task-notification';
 import {
   runtimeRequestResultSchema,
   runtimeStatusResultSchema,
-  parseAgentInputDeliveryOutboxRecords,
-  parseAgentInputDeliveryOutboxStageRequest
+  parseInputDeliveryOutboxRecords,
+  parseInputDeliveryOutboxStageRequest,
+  parseInputDeliveryOutboxBatch
 } from '@shared/schemas';
 import { runtimeStatusSchema } from '@ariadne/protocol/public';
+import { encodedImageAttachmentSchema } from '@ariadne/protocol/public';
+import { chatDraftAttachmentReadSchema, chatDraftCatalogSchema, chatDraftMoveSchema, chatDraftRecordSchema,
+  chatDraftWriteSchema } from '@shared/chat-drafts';
+import { fileDraftCatalogSchema, fileDraftReplaceSchema, fileDraftPathRequestSchema, fileDraftPathResultSchema } from '@shared/file-drafts';
+import { backupCreatedViewSchema, dataRestorePreviewSchema, dataRestoreTicketSchema, dataUsageViewSchema,
+  sessionTextExportRequestSchema, sessionTextExportResultSchema, dataCleanupPreviewSchema, dataCleanupCommitSchema,
+  dataCleanupResultSchema } from '@shared/data-management';
 
 const api: AriadneApi = {
+  dataManagement: {
+    inspectCleanup: async () => dataCleanupPreviewSchema.parse(await ipcRenderer.invoke(IPC_CHANNELS.dataCleanupInspect)),
+    commitCleanup: async request => dataCleanupResultSchema.parse(await ipcRenderer.invoke(IPC_CHANNELS.dataCleanupCommit, dataCleanupCommitSchema.parse(request))),
+    discardCleanup: request => ipcRenderer.invoke(IPC_CHANNELS.dataCleanupDiscard, dataRestoreTicketSchema.parse(request)),
+    exportSession: async request => { const result: unknown = await ipcRenderer.invoke(IPC_CHANNELS.dataSessionExport, sessionTextExportRequestSchema.parse(request));
+      return result === null ? null : sessionTextExportResultSchema.parse(result); },
+    measureUsage: async () => dataUsageViewSchema.parse(await ipcRenderer.invoke(IPC_CHANNELS.dataUsageMeasure)),
+    createBackup: async () => { const result: unknown = await ipcRenderer.invoke(IPC_CHANNELS.dataBackupCreate);
+      return result === null ? null : backupCreatedViewSchema.parse(result); },
+    inspectRestore: async () => { const result: unknown = await ipcRenderer.invoke(IPC_CHANNELS.dataRestoreInspect);
+      return result === null ? null : dataRestorePreviewSchema.parse(result); },
+    commitRestore: request => ipcRenderer.invoke(IPC_CHANNELS.dataRestoreCommit, dataRestoreTicketSchema.parse(request)),
+    discardRestore: request => ipcRenderer.invoke(IPC_CHANNELS.dataRestoreDiscard, dataRestoreTicketSchema.parse(request))
+  },
+  fileDrafts: {
+    resolvePath: async request => fileDraftPathResultSchema.parse(await ipcRenderer.invoke(IPC_CHANNELS.fileDraftResolvePath,fileDraftPathRequestSchema.parse(request))),
+    list: async () => fileDraftCatalogSchema.parse(await ipcRenderer.invoke(IPC_CHANNELS.fileDraftList)),
+    replace: async request => fileDraftCatalogSchema.parse(await ipcRenderer.invoke(IPC_CHANNELS.fileDraftReplace, fileDraftReplaceSchema.parse(request)))
+  },
+  chatDrafts: {
+    list: async () => chatDraftCatalogSchema.parse(await ipcRenderer.invoke(IPC_CHANNELS.chatDraftList)),
+    write: async request => chatDraftRecordSchema.parse(await ipcRenderer.invoke(IPC_CHANNELS.chatDraftWrite, chatDraftWriteSchema.parse(request))),
+    move: async request => chatDraftRecordSchema.parse(await ipcRenderer.invoke(IPC_CHANNELS.chatDraftMove, chatDraftMoveSchema.parse(request))),
+    readAttachment: async request => encodedImageAttachmentSchema.parse(await ipcRenderer.invoke(IPC_CHANNELS.chatDraftReadAttachment,
+      chatDraftAttachmentReadSchema.parse(request)))
+  },
   agentSettings: {
     load: () => ipcRenderer.invoke(IPC_CHANNELS.agentSettingsLoad),
     apply: (mutation) => ipcRenderer.invoke(IPC_CHANNELS.agentSettingsApply, mutation),
@@ -46,19 +81,21 @@ const api: AriadneApi = {
     ),
     onEvent: (listener) => subscribe<RuntimeEventEnvelope>(IPC_CHANNELS.runtimeEvent, listener)
   },
-  agentInputDeliveryOutbox: {
-    list: async () => parseAgentInputDeliveryOutboxRecords(
-      await ipcRenderer.invoke(IPC_CHANNELS.agentInputDeliveryOutboxList)
+  inputDeliveryOutbox: {
+    stageBatch: async requests => parseInputDeliveryOutboxRecords(await ipcRenderer.invoke(
+      IPC_CHANNELS.inputDeliveryOutboxStageBatch, parseInputDeliveryOutboxBatch(requests))),
+    list: async () => parseInputDeliveryOutboxRecords(
+      await ipcRenderer.invoke(IPC_CHANNELS.inputDeliveryOutboxList)
     ),
     stage: async (request) => {
-      const parsed = parseAgentInputDeliveryOutboxStageRequest(request);
-      const records = parseAgentInputDeliveryOutboxRecords([
-        await ipcRenderer.invoke(IPC_CHANNELS.agentInputDeliveryOutboxStage, parsed)
+      const parsed = parseInputDeliveryOutboxStageRequest(request);
+      const records = parseInputDeliveryOutboxRecords([
+        await ipcRenderer.invoke(IPC_CHANNELS.inputDeliveryOutboxStage, parsed)
       ]);
       return records[0]!;
     },
     settle: (request) => ipcRenderer.invoke(
-      IPC_CHANNELS.agentInputDeliveryOutboxSettle,
+      IPC_CHANNELS.inputDeliveryOutboxSettle,
       request
     )
   },
@@ -79,7 +116,12 @@ const api: AriadneApi = {
     getGameActivity: () => ipcRenderer.invoke(IPC_CHANNELS.systemGameActivity),
     testApprovalNotification: () => ipcRenderer.invoke(IPC_CHANNELS.systemApprovalNotificationTest),
     onApprovalNavigation: (listener) =>
-      subscribe(IPC_CHANNELS.systemApprovalNavigation, listener)
+      subscribe(IPC_CHANNELS.systemApprovalNavigation, (value) => {
+        const result = notificationNavigationRequestSchema.safeParse(value);
+        if (result.success) listener({ sessionId: result.data.sessionId,
+          ...(result.data.decisionId === undefined ? {} : { decisionId: result.data.decisionId }),
+          ...(result.data.taskNavigation === undefined ? {} : { taskNavigation: result.data.taskNavigation }) });
+      })
   },
   terminal: {
     listRecoveryRecords: () => ipcRenderer.invoke(IPC_CHANNELS.terminalRecoveryList),

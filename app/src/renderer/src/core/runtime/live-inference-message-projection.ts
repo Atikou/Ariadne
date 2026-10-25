@@ -1,4 +1,4 @@
-import type { ProjectionCacheSnapshot } from './projection/projection-cache';
+import type { ProjectionPresentation } from './projection/projection-presentation';
 import { LiveInferenceStreamStore } from './live-inference-stream-store';
 import { memoizeInputs } from './memoize-inputs';
 import {
@@ -8,7 +8,7 @@ import {
 
 export function reconcileLiveInferenceStreams(
   store: LiveInferenceStreamStore,
-  projection: ProjectionCacheSnapshot
+  projection: ProjectionPresentation
 ): void {
   const settledRunIds = new Set(projection.runs
     .filter((run) => ['completed', 'failed', 'cancelled'].includes(run.status))

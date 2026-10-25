@@ -80,7 +80,7 @@ export class SqliteAgentExecutionIntentStore {
     callerSignal.throwIfAborted();
     try {
       this.database.prepare(
-        `INSERT INTO agent_v3_execution_intents (
+        `INSERT INTO agent_execution_intents (
            execution_intent_id, source_outbox_message_id,
            intent_digest, intent_json, run_id, admitted_run_version,
            admission_command_id, created_at, state
@@ -109,7 +109,7 @@ export class SqliteAgentExecutionIntentStore {
     const inserted = loadExecutionIntentRow(this.database, intent.executionIntentId);
     if (inserted === undefined) {
       throw storageCorruption(
-        `agent_v3_execution_intents:${intent.executionIntentId}:insert_missing`
+        `agent_execution_intents:${intent.executionIntentId}:insert_missing`
       );
     }
     await decodeAndVerifyExecutionIntent(inserted);
@@ -173,7 +173,7 @@ async function claimPendingExecutionIntents(
   leaseExpiresAt: string
 ): Promise<readonly ClaimedAgentRunExecutionIntent[]> {
   const existing = database.prepare(
-    `SELECT * FROM agent_v3_execution_intents
+    `SELECT * FROM agent_execution_intents
      WHERE state='pending' AND claim_id=?
      ORDER BY created_at, execution_intent_id`
   ).all(request.claimId) as unknown as AgentExecutionIntentRow[];
@@ -190,7 +190,7 @@ async function claimPendingExecutionIntents(
 
   const candidates = database.prepare(
     `SELECT execution_intent_id
-     FROM agent_v3_execution_intents
+     FROM agent_execution_intents
      WHERE state='pending'
        AND (claim_id IS NULL OR claim_expires_at <= ?)
      ORDER BY created_at, execution_intent_id
@@ -199,7 +199,7 @@ async function claimPendingExecutionIntents(
     execution_intent_id: string;
   }>;
   const update = database.prepare(
-    `UPDATE agent_v3_execution_intents
+    `UPDATE agent_execution_intents
      SET claim_id=?, claimed_at=?, claim_expires_at=?,
          claim_attempts=claim_attempts + 1
      WHERE execution_intent_id=? AND state='pending'
@@ -220,7 +220,7 @@ async function claimPendingExecutionIntents(
     }
   }
   const claimed = database.prepare(
-    `SELECT * FROM agent_v3_execution_intents
+    `SELECT * FROM agent_execution_intents
      WHERE state='pending' AND claim_id=?
      ORDER BY created_at, execution_intent_id`
   ).all(request.claimId) as unknown as AgentExecutionIntentRow[];
@@ -237,7 +237,7 @@ async function claimedExecutionIntent(
     || row.claim_expires_at === null
   ) {
     throw storageCorruption(
-      `agent_v3_execution_intents:${row.execution_intent_id}:claim_missing`
+      `agent_execution_intents:${row.execution_intent_id}:claim_missing`
     );
   }
   return {
@@ -257,13 +257,13 @@ async function listExecutionIntentRecovery(
   const limit = request.limit ?? 100;
   const rows = request.after === undefined
     ? database.prepare(
-      `SELECT * FROM agent_v3_execution_intents
+      `SELECT * FROM agent_execution_intents
        WHERE state<>'settled'
        ORDER BY created_at, execution_intent_id
        LIMIT ?`
     ).all(limit + 1) as unknown as AgentExecutionIntentRow[]
     : database.prepare(
-      `SELECT * FROM agent_v3_execution_intents
+      `SELECT * FROM agent_execution_intents
        WHERE state<>'settled'
          AND (created_at > ? OR (created_at = ? AND execution_intent_id > ?))
        ORDER BY created_at, execution_intent_id
@@ -294,7 +294,7 @@ async function recoverableExecutionIntent(
   const intent = await decodeAndVerifyExecutionIntent(row);
   if (row.state === 'settled') {
     throw storageCorruption(
-      `agent_v3_execution_intents:${row.execution_intent_id}:settled_in_recovery`
+      `agent_execution_intents:${row.execution_intent_id}:settled_in_recovery`
     );
   }
   return {
@@ -346,7 +346,7 @@ async function markExecutionDispatchStarted(
     );
   }
   const changed = database.prepare(
-    `UPDATE agent_v3_execution_intents
+    `UPDATE agent_execution_intents
      SET state='dispatching', claim_id=NULL, claimed_at=NULL,
          claim_expires_at=NULL, dispatch_attempt_id=?, dispatch_started_at=?
      WHERE execution_intent_id=? AND state='pending' AND claim_id=?`
@@ -394,7 +394,7 @@ async function markExecutionDispatched(
     );
   }
   const changed = database.prepare(
-    `UPDATE agent_v3_execution_intents
+    `UPDATE agent_execution_intents
      SET state='dispatched', external_dispatch_id=?,
          dispatch_receipt_digest=?, dispatched_at=?
      WHERE execution_intent_id=? AND state='dispatching'
@@ -446,7 +446,7 @@ async function settleExecutionIntent(
     );
   }
   const changed = database.prepare(
-    `UPDATE agent_v3_execution_intents
+    `UPDATE agent_execution_intents
      SET state='settled', settlement_outcome=?, settlement_digest=?, settled_at=?
      WHERE execution_intent_id=? AND state='dispatched'
        AND dispatch_attempt_id=? AND external_dispatch_id=?`
@@ -485,7 +485,7 @@ function executionStateReceipt(
 ): AgentRunExecutionIntentStateReceipt {
   if (row.dispatch_attempt_id === null) {
     throw storageCorruption(
-      `agent_v3_execution_intents:${row.execution_intent_id}:dispatch_attempt_missing`
+      `agent_execution_intents:${row.execution_intent_id}:dispatch_attempt_missing`
     );
   }
   return {
@@ -500,7 +500,7 @@ function recoverAbandonedAgentExecutionIntentClaims(database: DatabaseSync): voi
   database.exec('BEGIN IMMEDIATE;');
   try {
     database.exec(
-      `UPDATE agent_v3_execution_intents
+      `UPDATE agent_execution_intents
        SET claim_id=NULL, claimed_at=NULL, claim_expires_at=NULL
        WHERE state='pending' AND claim_id IS NOT NULL;`
     );
@@ -508,7 +508,7 @@ function recoverAbandonedAgentExecutionIntentClaims(database: DatabaseSync): voi
   } catch (error) {
     if (database.isTransaction) database.exec('ROLLBACK;');
     throw storageCorruption(
-      'agent_v3_execution_intents:owner_takeover_recovery_failed',
+      'agent_execution_intents:owner_takeover_recovery_failed',
       error
     );
   }

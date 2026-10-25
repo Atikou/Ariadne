@@ -1,5 +1,7 @@
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import { DATABASE_PATHS } from './DatabasePaths.js';
+import { markAuthorityIntegrityError, markAuthorityUnavailableError } from './SqliteAuthorityHealth.js';
 
 interface RuntimeCommandDbMigration {
   readonly version: number;
@@ -44,11 +46,7 @@ const RUNTIME_COMMANDS_STATUS_INDEX_SQL = `
 `;
 
 export const RUNTIME_COMMAND_DB_SCHEMA_VERSION = 1;
-export const RUNTIME_COMMAND_DB_RELATIVE_PATH = path.join(
-  'data',
-  'runtime-control',
-  'runtime-command.db'
-);
+export const RUNTIME_COMMAND_DB_RELATIVE_PATH = DATABASE_PATHS.runtimeCommand;
 
 export const RUNTIME_COMMAND_DB_MIGRATIONS: readonly RuntimeCommandDbMigration[] = [
   {
@@ -73,16 +71,16 @@ export function resolveRuntimeCommandDatabasePath(dataRoot: string): string {
 export function migrateRuntimeCommandDatabase(database: DatabaseSync): void {
   const initialVersion = getUserVersion(database);
   if (initialVersion > RUNTIME_COMMAND_DB_SCHEMA_VERSION) {
-    throw new Error(
+    throw markAuthorityUnavailableError('journal', new Error(
       `runtime_command_db_schema_newer_than_runtime:${String(initialVersion)}:`
       + String(RUNTIME_COMMAND_DB_SCHEMA_VERSION)
-    );
+    ));
   }
 
   if (initialVersion === 0) {
     const existingObjects = listApplicationObjects(database);
     if (existingObjects.length > 0) {
-      throw new Error(`runtime_command_db_unmanaged_schema:${existingObjects.join(',')}`);
+      throw markAuthorityUnavailableError('journal', new Error(`runtime_command_db_unmanaged_schema:${existingObjects.join(',')}`));
     }
   }
 
@@ -109,7 +107,10 @@ export function migrateRuntimeCommandDatabase(database: DatabaseSync): void {
       }
       database.exec('COMMIT');
     } catch (error) {
-      if (database.isTransaction) database.exec('ROLLBACK');
+      if (database.isTransaction) {
+        try { database.exec('ROLLBACK'); }
+        catch (rollbackError) { throw markAuthorityUnavailableError('journal', new AggregateError([error, rollbackError], 'runtime_command_db_migration_rollback_failed')); }
+      }
       throw error;
     }
   }
@@ -120,10 +121,10 @@ export function migrateRuntimeCommandDatabase(database: DatabaseSync): void {
 export function assertRuntimeCommandDatabaseSchema(database: DatabaseSync): void {
   const version = getUserVersion(database);
   if (version !== RUNTIME_COMMAND_DB_SCHEMA_VERSION) {
-    throw new Error(
+    throw markAuthorityIntegrityError('journal', new Error(
       `runtime_command_db_schema_version_invalid:${String(version)}:`
       + String(RUNTIME_COMMAND_DB_SCHEMA_VERSION)
-    );
+    ));
   }
 
   assertExactValues(
@@ -174,12 +175,12 @@ export function assertRuntimeCommandDatabaseSchema(database: DatabaseSync): void
         || !isIsoTimestamp(row.applied_at);
     })
   ) {
-    throw new Error('runtime_command_db_schema_invalid:migration_audit');
+    throw markAuthorityIntegrityError('journal', new Error('runtime_command_db_schema_invalid:migration_audit'));
   }
 
   const integrity = database.prepare('PRAGMA integrity_check').get() as { integrity_check: string };
   if (integrity.integrity_check !== 'ok') {
-    throw new Error('runtime_command_db_schema_invalid:integrity_check');
+    throw markAuthorityIntegrityError('journal', new Error('runtime_command_db_schema_invalid:integrity_check'));
   }
 }
 
@@ -235,7 +236,7 @@ function assertExactColumns(
 ): void {
   const actual = database.prepare(`PRAGMA table_info(${table})`).all() as unknown as SqliteColumn[];
   if (JSON.stringify(actual.map(normalizeColumn)) !== JSON.stringify(expected.map(normalizeColumn))) {
-    throw new Error(`runtime_command_db_schema_invalid:${table}_columns`);
+    throw markAuthorityIntegrityError('journal', new Error(`runtime_command_db_schema_invalid:${table}_columns`));
   }
 }
 
@@ -259,7 +260,7 @@ function assertSchemaSql(
     `SELECT sql FROM sqlite_master WHERE type=? AND name=?`
   ).get(type, name) as { sql: string | null } | undefined;
   if (!row?.sql || normalizeSql(row.sql) !== normalizeSql(expected)) {
-    throw new Error(`runtime_command_db_schema_invalid:${name}_sql`);
+    throw markAuthorityIntegrityError('journal', new Error(`runtime_command_db_schema_invalid:${name}_sql`));
   }
 }
 
@@ -269,7 +270,7 @@ function normalizeSql(value: string): string {
 
 function assertExactValues(actual: string[], expected: string[], label: string): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    throw new Error(`runtime_command_db_schema_invalid:${label}:${actual.join(',')}`);
+    throw markAuthorityIntegrityError('journal', new Error(`runtime_command_db_schema_invalid:${label}:${actual.join(',')}`));
   }
 }
 

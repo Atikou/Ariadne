@@ -24,6 +24,7 @@ import {
   type AgentEntityHandleOptions
 } from './agent-entity/AgentEntityHandle.js';
 import { compileAgentEntityManifest } from './agent-entity/AgentEntityManifest.js';
+import type { RuntimeStartupTrace } from './RuntimeStartupTrace.js';
 import {
   startAgentPersistenceComponent
 } from './agent-entity/components/persistence/AgentPersistenceComponent.js';
@@ -31,29 +32,35 @@ import {
 export class DefaultAgentControlRuntimeFactory implements AgentControlRuntimeFactory {
   public constructor(
     private readonly lifecycleOptions: AgentEntityHandleOptions = {},
-    private readonly executionPipelineFactory?: AgentControlExecutionPipelineFactory
+    private readonly executionPipelineFactory?: AgentControlExecutionPipelineFactory,
+    private readonly startupTrace?: RuntimeStartupTrace
   ) {}
 
   public async create(input: AgentControlRuntimeFactoryInput): Promise<AgentEntityHandle> {
     assertCanonicalAbsoluteDataRoot(input.dataRoot);
     const executionPipelineFactory = this.executionPipelineFactory
       ?? createProductionExecutionPipelineFactory(input);
-    const persistence = await startAgentPersistenceComponent(input);
+    const persistence = await startAgentPersistenceComponent(input, this.startupTrace);
     try {
       const inferenceStreams = new InferenceStreamPublicProjectionPublisher(
         persistence.publicProjection,
         input.liveInferenceEventSink
       );
+      this.startupTrace?.point('inference_stream_reconcile');
       await inferenceStreams.reconcileOpenStreams(
         (identity) => resolveInferenceStreamTerminalState(persistence.unitOfWork, identity)
       );
+      this.startupTrace?.point('agent_observability');
       const observability = await createPublicAgentObservability(
         input,
         persistence.publicProjection
       );
+      this.startupTrace?.point('execution_pipeline_create');
       const executionPipeline = await executionPipelineFactory?.create({
         unitOfWork: persistence.unitOfWork,
         conversation: persistence.conversation,
+        productivity: persistence.productivity,
+        ...(input.runtimeServices?.memoryAuthority === undefined ? {} : { memoryAuthority: input.runtimeServices.memoryAuthority }),
         agentAdmissionAuthoritySource: input.agentAdmissionAuthoritySource,
         modelProviders: input.modelProviders,
         subagentProviders: input.subagentProviders,
@@ -70,17 +77,22 @@ export class DefaultAgentControlRuntimeFactory implements AgentControlRuntimeFac
           ? {}
           : { modelInferenceGateway: input.modelInferenceGateway })
       });
+      this.startupTrace?.point('agent_entity_create');
       return new AgentEntityHandle(compileAgentEntityManifest({
         persistence,
-        options: this.lifecycleOptions,
+        options: { ...this.lifecycleOptions, startupTrace: this.startupTrace },
         ...(executionPipeline === null || executionPipeline === undefined
           ? {}
           : { executionPipeline }),
         modelCatalog: input.modelCatalog,
+        ...(input.inferenceAdmission === undefined ? {} : { inferenceAdmission: input.inferenceAdmission }),
+        ...(input.runtimeServices?.workspaceDocuments===undefined?{}:{workspaceDocuments:input.runtimeServices.workspaceDocuments}),
         projectionWakeEventSink: input.publicEventSink,
         authorizedWorkspaceIds:
           input.workspaces?.map((workspace) => workspace.workspaceId) ?? [],
         observability,
+        ...(input.runtimeServices?.memoryHealth === undefined ? {} : { memoryHealth: input.runtimeServices.memoryHealth }),
+        ...(input.runtimeServices?.memoryAuthority === undefined ? {} : { memoryAuthority: input.runtimeServices.memoryAuthority }),
         ...(input.runtimeServices?.liveWorkLifecycle === undefined
           ? {}
           : { liveWork: input.runtimeServices.liveWorkLifecycle }),

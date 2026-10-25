@@ -12,7 +12,7 @@ export function persistPreparedCommandFacts(
   prepared: PreparedCommandFacts
 ): void {
   const insertPlan = database.prepare(
-    `INSERT INTO agent_v3_plan_versions (
+    `INSERT INTO agent_plan_versions (
        plan_id, plan_version, content_hash, run_id, run_version,
        command_id, codec_id, payload_json, created_at
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -32,7 +32,7 @@ export function persistPreparedCommandFacts(
   }
 
   const insertApproval = database.prepare(
-    `INSERT INTO agent_v3_plan_approvals (
+    `INSERT INTO agent_plan_approvals (
        approval_id, decision_id, run_id, checkpoint_version,
        plan_id, plan_version, content_hash, command_id, run_version, approved_at
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -53,7 +53,7 @@ export function persistPreparedCommandFacts(
   }
 
   const insertGrant = database.prepare(
-    `INSERT INTO agent_v3_budget_grants (
+    `INSERT INTO agent_budget_grants (
        grant_id, run_id, model_turns, tool_calls, read_calls, write_calls,
        shell_calls, cost_microusd, deadline_at, source_kind,
        parent_run_id, parent_grant_id, delegation_id,
@@ -83,7 +83,7 @@ export function persistPreparedCommandFacts(
   }
 
   const insertEntry = database.prepare(
-    `INSERT INTO agent_v3_budget_entries (
+    `INSERT INTO agent_budget_entries (
        entry_id, command_id, run_id, run_version, grant_id, entry_kind,
        model_turns, tool_calls, read_calls, write_calls, shell_calls,
        cost_microusd, reservation_id, delegation_id, child_run_id,
@@ -113,7 +113,7 @@ export function persistPreparedCommandFacts(
   }
 
   const insertDelegation = database.prepare(
-    `INSERT INTO agent_v3_delegations (
+    `INSERT INTO agent_delegations (
        delegation_id, parent_run_id, child_run_id,
        parent_grant_id, child_grant_id, objective_digest,
        objective_codec_id, objective_payload_json, required,
@@ -139,7 +139,7 @@ export function persistPreparedCommandFacts(
   }
 
   const insertTerminal = database.prepare(
-    `INSERT INTO agent_v3_child_terminals (
+    `INSERT INTO agent_child_terminals (
        delegation_id, parent_run_id, child_run_id, child_run_version,
        child_status, command_id, parent_run_version, observed_at
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`

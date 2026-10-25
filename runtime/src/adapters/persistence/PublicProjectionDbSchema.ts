@@ -2,6 +2,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { attributeSqliteOpeningFault, markAuthorityIntegrityError, markAuthorityUnavailableError } from './SqliteAuthorityHealth.js';
+import { DATABASE_PATHS } from './DatabasePaths.js';
+import { createRunDocumentSchemaObjects, RUN_DOCUMENT_SCHEMA_NAME } from './RunDocumentSchemaLayout.js';
 
 import {
   PUBLIC_PROJECTION_CONTRACT_VERSION,
@@ -15,13 +18,14 @@ import {
 } from './SqliteOwnerLease.js';
 
 export const PUBLIC_PROJECTION_DB_SCHEMA_VERSION = 3;
-export const PUBLIC_PROJECTION_DB_RELATIVE_PATH = path.join(
-  'data',
-  'public-projection',
-  'projection.db'
-);
+export const PUBLIC_PROJECTION_CURRENT_DB_SCHEMA_VERSION = 4;
+export const PUBLIC_PROJECTION_DB_RELATIVE_PATH = DATABASE_PATHS.publicProjection;
 
-const PUBLIC_PROJECTION_SCHEMA_NAME = 'public_projection_v4_store_v3';
+const PUBLIC_PROJECTION_SCHEMA_NAME = 'public_projection_store';
+export type PublicProjectionDatabaseOpenStage = 'owner_lease' | 'owner_lease_acquired'
+  | 'sqlite_open' | 'sqlite_opened' | 'layout_validation' | 'layout_validated'
+  | 'integrity_check' | 'integrity_checked' | 'foreign_key_check' | 'foreign_keys_checked'
+  | 'wal_configuration' | 'wal_configured';
 
 interface SchemaObject {
   readonly type: string;
@@ -37,7 +41,7 @@ export function resolvePublicProjectionDatabasePath(dataRoot: string): string {
   return path.resolve(dataRoot, PUBLIC_PROJECTION_DB_RELATIVE_PATH);
 }
 
-export function openPublicProjectionDatabase(dataRoot: string): {
+export function openPublicProjectionDatabase(dataRoot: string, onStage?: (stage: PublicProjectionDatabaseOpenStage) => void): {
   readonly database: DatabaseSync;
   readonly databasePath: string;
   readonly ownerLease: SqliteOwnerLease;
@@ -45,58 +49,64 @@ export function openPublicProjectionDatabase(dataRoot: string): {
 } {
   const databasePath = resolvePublicProjectionDatabasePath(dataRoot);
   mkdirSync(path.dirname(databasePath), { recursive: true });
+  onStage?.('owner_lease');
   const ownerLease = acquireSqliteOwnerLease(databasePath, 'public_projection');
   let database: DatabaseSync | null = null;
   try {
+    onStage?.('owner_lease_acquired');
+    onStage?.('sqlite_open');
     database = new DatabaseSync(databasePath);
+    onStage?.('sqlite_opened');
     database.exec('PRAGMA foreign_keys = ON;');
     database.exec('PRAGMA busy_timeout = 0;');
-    initializeOrValidatePublicProjectionSchema(database);
+    initializeOrValidatePublicProjectionSchema(database, onStage);
+    onStage?.('wal_configuration');
     database.exec('PRAGMA journal_mode = WAL;');
     database.exec('PRAGMA synchronous = FULL;');
     assertPublicProjectionDatabasePragmas(database);
     const metadata = readMetadata(database);
+    onStage?.('wal_configured');
     return { database, databasePath, ownerLease, streamId: metadata.streamId };
   } catch (error) {
+    attributeSqliteOpeningFault('projection', error);
     if (database === null) {
       ownerLease.close();
     } else {
       try {
         closeOwnedSqliteDatabase(database, ownerLease);
-      } catch {
-        // Preserve the opening failure. Shared close fencing retains an
-        // uncertain connection and its lease until process exit.
+      } catch (closeError) {
+        throw new AggregateError([error, closeError], 'public_projection_open_cleanup_failed');
       }
     }
     throw error;
   }
 }
 
-function initializeOrValidatePublicProjectionSchema(database: DatabaseSync): void {
+function initializeOrValidatePublicProjectionSchema(database: DatabaseSync, onStage?: (stage: PublicProjectionDatabaseOpenStage) => void): void {
   const version = readUserVersion(database);
-  if (version > PUBLIC_PROJECTION_DB_SCHEMA_VERSION) {
-    throw new Error(
+  if (version > PUBLIC_PROJECTION_CURRENT_DB_SCHEMA_VERSION) {
+    throw markAuthorityUnavailableError('projection', new Error(
       `public_projection_schema_newer_than_runtime:${String(version)}:`
-      + String(PUBLIC_PROJECTION_DB_SCHEMA_VERSION)
-    );
+      + String(PUBLIC_PROJECTION_CURRENT_DB_SCHEMA_VERSION)
+    ));
   }
   if (version > 0 && version < PUBLIC_PROJECTION_DB_SCHEMA_VERSION) {
-    throw new Error(
+    throw markAuthorityUnavailableError('projection', new Error(
       `public_projection_protocol_reset_required:${String(version)}:`
       + String(PUBLIC_PROJECTION_DB_SCHEMA_VERSION)
-    );
+    ));
   }
   if (version === 0) {
     const objects = listSchemaObjects(database);
     if (objects.length !== 0) {
-      throw new Error(
+      throw markAuthorityUnavailableError('projection', new Error(
         `public_projection_unversioned_schema_not_empty:`
         + objects.map(schemaObjectIdentity).join(',')
-      );
+      ));
     }
     createPublicProjectionSchema(database);
   }
-  assertPublicProjectionSchema(database);
+  assertPublicProjectionSchema(database, onStage);
 }
 
 function createPublicProjectionSchema(database: DatabaseSync): void {
@@ -262,13 +272,14 @@ function createPublicProjectionSchemaObjects(database: DatabaseSync): void {
   `);
 }
 
-function assertPublicProjectionSchema(database: DatabaseSync): void {
+export function assertPublicProjectionSchema(database: DatabaseSync, onStage?: (stage: PublicProjectionDatabaseOpenStage) => void): void {
+  onStage?.('layout_validation');
   const version = readUserVersion(database);
-  if (version !== PUBLIC_PROJECTION_DB_SCHEMA_VERSION) {
-    throw new Error(
+  if (version !== PUBLIC_PROJECTION_DB_SCHEMA_VERSION && version !== PUBLIC_PROJECTION_CURRENT_DB_SCHEMA_VERSION) {
+    throw markAuthorityIntegrityError('projection', new Error(
       `public_projection_schema_version_mismatch:${String(version)}:`
       + String(PUBLIC_PROJECTION_DB_SCHEMA_VERSION)
-    );
+    ));
   }
   const actual = listSchemaObjects(database);
   const canonical = new DatabaseSync(':memory:');
@@ -276,15 +287,16 @@ function assertPublicProjectionSchema(database: DatabaseSync): void {
   try {
     canonical.exec('PRAGMA foreign_keys = ON;');
     createPublicProjectionSchemaObjects(canonical);
+    if (version === PUBLIC_PROJECTION_CURRENT_DB_SCHEMA_VERSION) createRunDocumentSchemaObjects(canonical);
     expected = listSchemaObjects(canonical);
   } finally {
     canonical.close();
   }
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    throw new Error(
+    throw markAuthorityIntegrityError('projection', new Error(
       `public_projection_schema_definition_mismatch:`
       + actual.map(schemaObjectIdentity).join(',')
-    );
+    ));
   }
 
   const migrations = database.prepare(
@@ -295,28 +307,38 @@ function assertPublicProjectionSchema(database: DatabaseSync): void {
     applied_at: string;
   }>;
   if (
-    migrations.length !== 1
+    migrations.length !== (version === PUBLIC_PROJECTION_CURRENT_DB_SCHEMA_VERSION ? 2 : 1)
     || migrations[0]?.version !== PUBLIC_PROJECTION_DB_SCHEMA_VERSION
     || migrations[0]?.name !== PUBLIC_PROJECTION_SCHEMA_NAME
     || !isCanonicalTimestamp(migrations[0]?.applied_at)
+    || (version === PUBLIC_PROJECTION_CURRENT_DB_SCHEMA_VERSION && (
+      migrations[1]?.version !== PUBLIC_PROJECTION_CURRENT_DB_SCHEMA_VERSION
+      || migrations[1]?.name !== RUN_DOCUMENT_SCHEMA_NAME
+      || !isCanonicalTimestamp(migrations[1]?.applied_at)
+    ))
   ) {
-    throw new Error('public_projection_schema_migration_ledger_invalid');
+    throw markAuthorityIntegrityError('projection', new Error('public_projection_schema_migration_ledger_invalid'));
   }
 
   const metadata = readMetadata(database);
   if (metadata.createdAt !== migrations[0].applied_at) {
-    throw new Error('public_projection_metadata_ledger_mismatch');
+    throw markAuthorityIntegrityError('projection', new Error('public_projection_metadata_ledger_mismatch'));
   }
+  onStage?.('layout_validated');
+  onStage?.('integrity_check');
   const integrity = database.prepare('PRAGMA integrity_check;').get() as {
     integrity_check: string;
   };
+  onStage?.('integrity_checked');
+  onStage?.('foreign_key_check');
   const foreignKeyFailures = database.prepare('PRAGMA foreign_key_check;').all();
+  onStage?.('foreign_keys_checked');
   if (integrity.integrity_check !== 'ok' || foreignKeyFailures.length !== 0) {
-    throw new Error('public_projection_schema_integrity_check_failed');
+    throw markAuthorityIntegrityError('projection', new Error('public_projection_schema_integrity_check_failed'));
   }
 }
 
-function readMetadata(database: DatabaseSync): {
+export function readMetadata(database: DatabaseSync): {
   readonly streamId: string;
   readonly createdAt: string;
 } {
@@ -347,7 +369,7 @@ function readMetadata(database: DatabaseSync): {
       row.created_at
     )
   ) {
-    throw new Error('public_projection_metadata_invalid');
+    throw markAuthorityIntegrityError('projection', new Error('public_projection_metadata_invalid'));
   }
   return { streamId: row.stream_id, createdAt: row.created_at };
 }
@@ -385,7 +407,7 @@ function assertPublicProjectionDatabasePragmas(database: DatabaseSync): void {
     || journalMode.journal_mode.toLowerCase() !== 'wal'
     || Number(synchronous.synchronous) !== 2
   ) {
-    throw new Error('public_projection_pragma_verification_failed');
+    throw markAuthorityUnavailableError('projection', new Error('public_projection_pragma_verification_failed'));
   }
 }
 
@@ -409,7 +431,7 @@ function readUserVersion(database: DatabaseSync): number {
   };
   const version = Number(row.user_version);
   if (!Number.isSafeInteger(version) || version < 0) {
-    throw new Error('public_projection_schema_user_version_invalid');
+    throw markAuthorityIntegrityError('projection', new Error('public_projection_schema_user_version_invalid'));
   }
   return version;
 }

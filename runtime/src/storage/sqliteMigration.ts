@@ -1,6 +1,6 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync,mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 
 export interface SqliteMigration {
   readonly version: number;
@@ -46,11 +46,34 @@ export function assertDatabaseVersionSupported(
   maximumSupportedVersion: number,
 ): void {
   const current = getUserVersion(db);
+  if (!Number.isSafeInteger(maximumSupportedVersion) || maximumSupportedVersion < 0
+    || !Number.isSafeInteger(current) || current < 0) {
+    throw new Error("sqlite_schema_version_invalid");
+  }
   if (current > maximumSupportedVersion) {
     throw new Error(
       `sqlite_schema_newer_than_runtime:${current}:${maximumSupportedVersion}`,
     );
   }
+  // Historical owners use both user_version and this durable audit ledger.
+  // Read it before WAL, backups or compatibility DDL; neither identity may
+  // authorize an older Runtime to mutate a newer or inconsistent database.
+  const audit=db.prepare("SELECT type FROM sqlite_master WHERE name='schema_migrations'").get() as {type:string}|undefined;
+  if (!audit) return;
+  if (audit.type!=="table") throw new Error("sqlite_schema_audit_invalid");
+  const versions=db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{version:number}>;
+  for(const row of versions) {
+    if(!Number.isSafeInteger(row.version)||row.version<=0)throw new Error("sqlite_schema_audit_invalid");
+    if(row.version>maximumSupportedVersion)throw new Error(`sqlite_schema_newer_than_runtime:${row.version}:${maximumSupportedVersion}`);
+    if(row.version>current)throw new Error(`sqlite_schema_audit_version_ahead:${row.version}:${current}`);
+  }
+}
+
+/** Inspect an existing historical database before creating folders or acquiring a writable connection. */
+export function assertDatabaseFileVersionSupported(databasePath:string,maximumSupportedVersion:number):void {
+  if(!existsSync(databasePath))return;
+  const database=new DatabaseSync(databasePath,{readOnly:true});
+  try{assertDatabaseVersionSupported(database,maximumSupportedVersion);}finally{database.close();}
 }
 
 export function listAppliedMigrations(db: DatabaseSync): AppliedMigration[] {

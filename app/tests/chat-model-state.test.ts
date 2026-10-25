@@ -36,6 +36,14 @@ describe('Chat model state', () => {
       expectedPlaceholder: '当前 Runtime 构建不支持计划模式'
     },
     {
+      name: 'ready Runtime still loading its model read range',
+      input: { modelsReadReady: false, models: [] },
+      expectedKind: 'loading',
+      expectedCanChat: false,
+      expectedStatus: '正在读取模型',
+      expectedPlaceholder: '正在读取模型配置'
+    },
+    {
       name: 'no configured model',
       input: { models: [] },
       expectedKind: 'unconfigured',
@@ -106,6 +114,7 @@ describe('Chat model state', () => {
   ])('$name', ({ input, expectedKind, expectedCanChat, expectedStatus, expectedPlaceholder }) => {
     const state = deriveChatModelState({
       runtimeAvailability: 'ready',
+      modelsReadReady: true,
       planModeAvailable: true,
       planModeEnabled: false,
       executionMode: 'chat',
@@ -124,6 +133,7 @@ describe('Chat model state', () => {
   it('keeps checking and unavailable configured models out of the ready lists', () => {
     const state = deriveChatModelState({
       runtimeAvailability: 'ready',
+      modelsReadReady: true,
       planModeAvailable: true,
       planModeEnabled: false,
       executionMode: 'chat',
@@ -142,6 +152,7 @@ describe('Chat model state', () => {
   it('keeps a disabled local model out of chat candidates', () => {
     const state = deriveChatModelState({
       runtimeAvailability: 'ready',
+      modelsReadReady: true,
       planModeAvailable: true,
       planModeEnabled: false,
       executionMode: 'chat',

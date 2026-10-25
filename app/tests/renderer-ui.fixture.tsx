@@ -1,6 +1,7 @@
 // Isolated UI fixtures: no Preload, Runtime, credentials, network, or user stores.
 import { useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { DataManagementFixture } from './renderer-data-management.fixture';
 import { Mic, Send } from 'lucide-react';
 import type { ModuleServices } from '../src/renderer/src/core/modules/module-contract';
 import { moduleId } from '../src/renderer/src/core/modules/module-contract';
@@ -16,10 +17,18 @@ import { SettingsDialog } from '../src/renderer/src/modules/settings/SettingsDia
 import { ChatPanel } from '../src/renderer/src/modules/chat/ChatPanel';
 import type { RuntimeMessage } from '../src/renderer/src/core/runtime/runtime-store';
 import { AGENT_PROVIDER_IDS, createDefaultAssistantChatProfile } from '../src/shared/contract';
+import { PERSONAL_ASSISTANT_WORKSPACE_ID } from '@ariadne/protocol/public';
+import { chatFixtureDrafts, chatDraftUiFixture } from './renderer-chat-drafts.fixture';
 import 'dockview-react/dist/styles/dockview.css';
 import '../src/renderer/src/app/styles.css';
 import { TaskPageFixture } from './renderer-task-pages.fixture';
+import { TaskCenterFixture } from './renderer-task-center.fixture';
 import { WorkspaceFixture } from './renderer-workspace.fixture';
+import { ProductivityPageFixture } from './renderer-productivity.fixture';
+import { MemoryPageFixture } from './renderer-memory.fixture';
+import { ModelQualityFixture } from './renderer-model-quality.fixture';
+import { DocumentsFixture } from './renderer-documents.fixture';
+import { WorkspaceDocumentFeatureStore } from '../src/renderer/src/core/runtime/features/workspace-document-feature-store';
 
 function source<T>(initial: T) {
   let snapshot = initial;
@@ -44,6 +53,7 @@ const pending: Array<{ effectId: string; cursor: number; resolve(value: unknown)
 const directoryRequests: string[] = [];
 const services = {
   runs: { view: runs }, sessions: { view: sessions },
+  documents: new WorkspaceDocumentFeatureStore({ execute: async () => { throw new Error('The file-tree layout fixture does not execute document commands.'); } }),
   toolResults: { loadDetail: (_run: string, _workspace: string, effectId: string, cursor = 0) => new Promise(resolve => pending.push({ effectId, cursor, resolve })) },
   conversationNavigation: {
     getSelectedWorkspaceId: () => 'workspace-a',
@@ -58,7 +68,7 @@ const services = {
     ] : [{ name: 'index.ts', relativePath: 'src/index.ts', type: 'file' }] };
   } },
   diagnostics: { view: source({ trace: [], status: { availability: 'ready' } }) },
-  models: { view: source({ models: [] }) },
+  models: { view: source({ models: [], modelsReadReady: true }) },
   speech: source({ status: { availability: 'disabled', detail: '【UI 夹具】未连接语音', inputDevices: [], outputDevices: [], voices: [], capabilities: [] } }),
   preferences: { load: async () => ({ runInBackground: false, startAtLogin: false, theme: 'light', suppressAutomaticWakeDuringGames: false, gameDetectionRules: [], speech: {
     enabled: false, moduleRoot: '', foregroundSttMode: 'compose', backgroundWakeEnabled: false, wakeKeywords: [], listenWhenLocked: false, inputDeviceId: 'default', outputDeviceId: 'default', activeVoiceId: null, activeVoiceVersion: null
@@ -70,18 +80,30 @@ const services = {
 const registry = { list: () => Array.from({ length: 18 }, (_, i) => ({ id: `module-${i}`, name: `测试模块 ${i}`, description: 'UI 交互测试，不执行任务', icon: 'bot' })) } as unknown as ModuleRegistry;
 
 const chatMessages = source<{ messages: RuntimeMessage[] }>({ messages: [] });
+const chatSessions = source({ sessions: ['fixture-chat-a', 'fixture-chat-b'].map(sessionId => ({ sessionId,
+  workspaceId: PERSONAL_ASSISTANT_WORKSPACE_ID, version: 1, title: `【UI夹具】${sessionId}`, pinned: false, status: 'active',
+  createdAt: '2026-10-06T00:00:00Z', updatedAt: '2026-10-06T00:00:00Z' })), selectedSessionId: null as string | null, planModeSessionIds: [], sessionDirectory: null });
+const exportRequests: { request: unknown; resolve(value: unknown): void; reject(error: Error): void }[] = [];
 const chatServices = {
   ...services,
+  dataManagement: { exportSession: (request: unknown) => new Promise((resolve, reject) => exportRequests.push({ request, resolve, reject })) },
+  drafts: chatFixtureDrafts,
+  draftDelivery: { send: async () => { throw new Error('UI fixture does not dispatch Core commands'); }, reconcile: async () => { throw new Error('UI fixture does not reconcile Core outcomes'); } },
   diagnostics: { view: source({ status: { availability: 'ready', capabilities: [] } }), refresh: async () => {} },
-  messages: { view: chatMessages },
+  messages: { view: chatMessages, selectDraftOwner: () => {} },
   models: { view: source({ models: [{ id: 'fixture-model', label: '【UI 夹具】模型', availability: 'ready', location: 'local', supportsTextChat: true, inference: {} }] }) },
-  runs: { view: source({ runs: [], activities: [], agentInputDeliveries: [] }) },
-  sessions: { view: source({ sessions: [], selectedSessionId: null }), isPlanModeEnabled: () => false },
-  decisions: { view: source({ permissions: [], planHandoffs: [], userQuestions: [] }) },
+  runs: { view: source({ runs: [], activities: [], agentInputDeliveries: [], runSummaries: [], runDirectory: null, sessionRunDirectory: null }) },
+  sessions: { view: chatSessions, isPlanModeEnabled: () => false,
+    select: async (sessionId: string) => { chatSessions.update({ ...chatSessions.getSnapshot(), selectedSessionId: sessionId }); } },
+  decisions: { view: source({ permissions: [], planHandoffs: [], userQuestions: [], decisionSummaries: [], decisionDirectory: null }) },
   events: { subscribe: () => () => {} },
   system: { onApprovalNavigation: () => () => {} },
   conversationNavigation: {
     ...services.conversationNavigation,
+    getSelectedWorkspaceId: () => null,
+    onSelectedWorkspaceChanged: (listener: (workspaceId: string | null) => void) => { listener(null); return () => {}; },
+    selectAssistant: () => {}, setSessionUnread: () => {}, isSessionUnread: () => false,
+    isSessionPinned: (_sessionId: string, pinned: boolean) => pinned,
     getSessionPresentationRevision: () => 0,
     onSessionPresentationChanged: () => () => {},
     onWorkspacesChanged: () => () => {},
@@ -107,7 +129,12 @@ const api = {
   pendingCount: () => pending.length,
   setChatHistory: (count: number) => chatMessages.update({ messages: Array.from({ length: count }, (_, i) => ({
     messageId: `fixture-message-${i}`, sessionId: 'fixture-chat', role: 'user', status: 'completed', content: `【UI 夹具】消息 ${i}`, createdAt: '2026-09-05T00:00:00Z'
-  })) })
+  })) }),
+  chatDrafts: chatDraftUiFixture,
+  exportRequests: () => exportRequests.map(item => item.request),
+  resolveExport: (index: number, cancelled = false) => exportRequests[index]!.resolve(cancelled ? null : { messages: 2, bytes: 1024, attachmentReferences: 1 }),
+  rejectExport: (index: number) => exportRequests[index]!.reject(new Error('Synthetic fixture export failure.')),
+  selectChatSession: (sessionId: string) => { chatMessages.update({ messages: [] }); chatSessions.update({ ...chatSessions.getSnapshot(), selectedSessionId: sessionId }); }
 };
 Object.assign(window, { __uiFixture: api });
 
@@ -148,6 +175,12 @@ function Fixture() {
       {page === 'dialogs' && <DialogFixtures />}
       {page === 'chat' && <ChatPanel moduleId={moduleId('chat.main')} services={chatServices} />}
       <TaskPageFixture page={page} />
+      <TaskCenterFixture page={page} />
+      <ProductivityPageFixture page={page} />
+      <MemoryPageFixture page={page} />
+      <ModelQualityFixture page={page} />
+      <DataManagementFixture page={page} />
+      <DocumentsFixture page={page} />
       {page === 'workspace' && <WorkspaceFixture />}
       {page === 'composer-controls' && <div className="composer"><div className="composer-actions">
         <button className="composer-mic-button" aria-label="测试麦克风"><Mic size={16} /></button>

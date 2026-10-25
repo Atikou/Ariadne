@@ -7,8 +7,8 @@ import { speechComponentDefinitions } from '../speech/entity/SpeechComponentCata
 
 const UI_COMPONENT_IDS = Object.freeze([
   'agent.plan', 'agent.status', 'chat.main', 'files.explorer', 'logs',
-  'permissions', 'productivity.control', 'session.activity',
-  'settings', 'terminal', 'tools.output'
+  'permissions', 'productivity.control', 'memory.manage', 'session.activity',
+  'settings', 'terminal', 'tools.output', 'tasks.center'
 ]);
 // Preview-only modules stay registered for development and future completion,
 // but must not enter the formal desktop product profiles by default.
@@ -66,7 +66,7 @@ function profile(
 ): ApplicationProfileDefinition {
   return Object.freeze({
     id,
-    revision: 4,
+    revision: 6,
     entities: Object.freeze([
       Object.freeze({ entity: 'agent' as const, componentIds: Object.freeze(['*']) }),
       Object.freeze({ entity: 'ui' as const, componentIds: Object.freeze([...uiComponentIds]) }),

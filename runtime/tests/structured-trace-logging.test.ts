@@ -4,7 +4,6 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { projectTraceEvent } from "../src/application/publicProjection.js";
 import {
   normalizeTraceEvent,
   prepareTraceEvent,
@@ -37,52 +36,6 @@ describe("structured runtime logging", () => {
     })).toMatchObject({
       level: "warning",
       category: "tool_audit",
-    });
-  });
-
-  it("redacts structured metadata and projects it to the Logs panel contract", () => {
-    const prepared = prepareTraceEvent({
-      type: "companion.proposal.protocol.error",
-      level: "error",
-      category: "companion.proposal.protocol",
-      message: "Agent 提案自动修复后仍无效",
-      metadata: {
-        lifecycleStage: "schema_validation",
-        fieldPaths: ["risk"],
-        token: "secret-token-value",
-      },
-    });
-    const projected = projectTraceEvent({
-      time: prepared.time,
-      eventId: prepared.eventId,
-      ...prepared.payload,
-    }, "fallback");
-
-    expect(projected).toMatchObject({
-      level: "error",
-      category: "companion.proposal.protocol",
-      message: "Agent 提案自动修复后仍无效",
-      metadata: {
-        lifecycleStage: "schema_validation",
-        fieldPaths: ["risk"],
-        token: "[REDACTED]",
-      },
-    });
-  });
-
-  it("projects concise user-facing messages instead of raw diagnostic or user-input text", () => {
-    expect(projectTraceEvent({
-      type: "companion.turn.input",
-      message: "收到 Companion 输入：不要在日志中重复用户原文",
-    }, "input")).toMatchObject({
-      message: "已提交一轮对话。",
-    });
-    expect(projectTraceEvent({
-      type: "companion.turn.error",
-      level: "error",
-      message: "INTERNAL_ERROR: 模型暂时不可用。",
-    }, "error")).toMatchObject({
-      message: "模型暂时不可用。",
     });
   });
 

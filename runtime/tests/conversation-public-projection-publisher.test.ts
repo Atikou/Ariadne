@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
-import type { ProjectionCommitV3 } from '@ariadne/protocol/public';
+import type { ProjectionCommit } from '@ariadne/protocol/public';
 
 import { SqliteConversationRunHandoffUnitOfWork } from '../src/adapters/persistence/SqliteConversationRunHandoffUnitOfWork.js';
 import { SqlitePublicProjectionStore } from '../src/adapters/persistence/SqlitePublicProjectionStore.js';
@@ -158,7 +158,7 @@ describe('ConversationPublicProjectionPublisher', () => {
       at(2)
     ));
 
-    const commits: ProjectionCommitV3[] = [];
+    const commits: ProjectionCommit[] = [];
     const publisher = new ConversationPublicProjectionPublisher(conversation, {
       append: async (commit) => { commits.push(commit); }
     });

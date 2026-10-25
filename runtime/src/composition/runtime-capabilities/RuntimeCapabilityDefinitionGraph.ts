@@ -3,6 +3,7 @@ import { runtimeCapabilitySchema, type RuntimeCapability } from '@ariadne/protoc
 
 import { toAgentComponentDefinition } from './RuntimeCapabilityComponentAdapter.js';
 import type { RuntimeCapabilityProvider } from './RuntimeCapabilityProvider.js';
+import { isRetiredRuntimeCapability } from './RetiredRuntimeCapabilities.js';
 
 /** Freeze, validate, and order the Agent capability graph through the shared Component Kernel. */
 export function compileRuntimeCapabilityDefinitionGraph(
@@ -29,6 +30,9 @@ function validatePublicCapabilityOwnership(providers: readonly RuntimeCapability
     const declared = new Set<RuntimeCapability>();
     for (const capability of provider.definition.publicCapabilities) {
       runtimeCapabilitySchema.parse(capability);
+      if (isRetiredRuntimeCapability(capability)) {
+        throw new Error(`runtime_capability_retired:${capability}`);
+      }
       if (declared.has(capability)) {
         throw new Error(`runtime_capability_public_declaration_duplicate:${capability}`);
       }

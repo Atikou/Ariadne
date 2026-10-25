@@ -16,17 +16,19 @@ import {
   type ClaimedAgentRunOutboxMessage
 } from '@ariadne/agent-core';
 import {
-  PUBLIC_PROJECTION_CONTRACT_VERSION,
-  derivePublicDecisionActionDescriptorV1,
-  publicDecisionProjectionV3Schema,
-  publicDecisionChoicesV1,
-  publicPlanDecisionPresentationSourceV1Schema,
-  publicRunProjectionV3Schema,
-  redactPublicProjectionTextV3,
-  type ProjectionCommitV3,
-  type PublicDecisionPresentationV1,
-  type PublicDecisionProjectionV3,
-  type PublicRunProjectionV3
+  RUN_DOCUMENT_COMMIT_VERSION,
+  assertPublicRunDocumentCommit,
+  derivePublicDecisionActionDescriptor,
+  publicDecisionProjectionSchema,
+  publicDecisionChoices,
+  publicPlanDecisionPresentationSourceSchema,
+  publicRunProjectionSchema,
+  publicRunCatalogSummarySchema,
+  redactPublicProjectionText,
+  type PublicRunDocumentCommit,
+  type PublicDecisionPresentation,
+  type PublicDecisionProjection,
+  type PublicRunProjection
 } from '@ariadne/protocol/public';
 import type {
   AgentPublicToolPresentationMetadata,
@@ -36,9 +38,9 @@ import type {
   AgentRunVersionReader,
   AgentToolPresentationResolver
 } from './AgentRunProjectionPorts.js';
-import type { PublicProjectionCommitSink } from './PublicProjectionPorts.js';
-import { assertValidProjectionCommitV3 } from './PublicProjectionContractV3.js';
+import type { PublicProjectionRunDocumentCommitSinkV1 } from './PublicProjectionRunDocumentWritePortsV1.js';
 import { parseProtectedAgentUserQuestion } from '../conversation/ProtectedAgentUserQuestion.js';
+import { RunDocumentPlan } from './RunDocumentPlan.js';
 
 const DEFAULT_CLAIM_LEASE_MS = 30_000;
 const DEFAULT_CLAIM_LIMIT = 1_000;
@@ -111,7 +113,7 @@ export class AgentRunPublicProjectionPublisher {
   public constructor(
     private readonly outbox: AgentRunOutboxStore,
     private readonly runVersions: AgentRunVersionReader,
-    private readonly sink: PublicProjectionCommitSink,
+    private readonly sink: PublicProjectionRunDocumentCommitSinkV1,
     options: AgentRunPublicProjectionPublisherOptions = {}
   ) {
     this.claimLeaseMs = options.claimLeaseMs ?? DEFAULT_CLAIM_LEASE_MS;
@@ -167,12 +169,8 @@ export class AgentRunPublicProjectionPublisher {
         immutable.run,
         this.toolPresentationResolver
       );
-      const commit = publicCommit(
-        immutable.run,
-        decision,
-        interactions,
-        toolPresentations
-      );
+      const plan = projectAgentRunDocumentV1(immutable.run, interactions, toolPresentations);
+      const commit = publicCommit(immutable.run, decision, plan);
 
       if (isTerminalRun(immutable.run) && this.terminalResultSink !== undefined) {
         const terminalEvent = terminalEventForRun(immutable.events, immutable.run);
@@ -183,7 +181,7 @@ export class AgentRunPublicProjectionPublisher {
         });
       }
 
-      await this.sink.append(commit);
+      await this.sink.appendRunDocument(commit, plan);
       const acknowledgements = group.messages.map((message) => ({
         cursor: message.cursor,
         eventId: message.eventId
@@ -202,18 +200,17 @@ export class AgentRunPublicProjectionPublisher {
 
 function publicCommit(
   run: AgentRun,
-  decision: PublicDecisionProjectionV3 | null,
-  interactions: readonly AgentRunInteractionProjectionMessage[],
-  toolPresentations: readonly AgentRunToolPresentationProjection[]
-): ProjectionCommitV3 {
-  const changes: ProjectionCommitV3['changes'] = [
+  decision: PublicDecisionProjection | null,
+  plan: RunDocumentPlan
+): PublicRunDocumentCommit {
+  const changes: PublicRunDocumentCommit['changes'] = [
     {
       feature: 'runs',
       operation: 'upsert',
       aggregateId: run.runId,
       aggregateVersion: run.version,
       projectedAt: run.updatedAt,
-      dto: projectAgentRunV3(run, interactions, toolPresentations)
+      dto: plan.header
     },
     ...(decision === null
       ? []
@@ -227,8 +224,8 @@ function publicCommit(
         }])
   ];
 
-  return assertValidProjectionCommitV3({
-    contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+  return assertPublicRunDocumentCommit({
+    contractVersion: RUN_DOCUMENT_COMMIT_VERSION,
     eventId: agentRunChangedPublicEventId(run.runId, run.version),
     sourceId: agentRunProjectionSourceId(run.runId),
     sourceCursor: run.version,
@@ -276,7 +273,29 @@ export function projectAgentRunV3(
   run: AgentRun,
   interactions: readonly AgentRunInteractionProjectionMessage[] = [],
   toolPresentations: readonly AgentRunToolPresentationProjection[] = []
-): PublicRunProjectionV3 {
+): PublicRunProjection {
+  return publicRunProjectionSchema.parse(projectAgentRunFields(run, interactions, toolPresentations));
+}
+
+/** The production publisher's multipart representation. Legacy DTO conversion
+ * remains explicit and retains its original limits. */
+export function projectAgentRunDocumentV1(
+  run: AgentRun,
+  interactions: readonly AgentRunInteractionProjectionMessage[] = [],
+  toolPresentations: readonly AgentRunToolPresentationProjection[] = []
+): RunDocumentPlan {
+  const { toolActivities, inbox, interactionMessages, ...metadata } = projectAgentRunFields(run, interactions, toolPresentations);
+  const summary = publicRunCatalogSummarySchema.parse({ ...metadata, toolActivityCount: toolActivities.length,
+    queuedInputCount: inbox.filter(input => input.state === 'queued').length,
+    claimedInputCount: inbox.filter(input => input.state === 'claimed').length, interactionMessageCount: interactionMessages.length });
+  return new RunDocumentPlan({ summary, toolActivities, inbox, interactionMessages });
+}
+
+function projectAgentRunFields(
+  run: AgentRun,
+  interactions: readonly AgentRunInteractionProjectionMessage[],
+  toolPresentations: readonly AgentRunToolPresentationProjection[]
+) {
   assertValidAgentRun(run);
   const presentationByEffectId = new Map(
     toolPresentations.map((entry) => [entry.effectId, entry] as const)
@@ -284,7 +303,7 @@ export function projectAgentRunV3(
   if (presentationByEffectId.size !== toolPresentations.length) {
     throw new Error('agent_run_projection_tool_presentation_duplicate');
   }
-  return publicRunProjectionV3Schema.parse({
+  return {
     runId: run.runId,
     sessionId: run.binding.sessionId,
     ...(run.binding.objectiveRef.kind === 'conversation_message'
@@ -301,6 +320,8 @@ export function projectAgentRunV3(
       : 'Agent run',
     status: publicRunStatus(run),
     label: publicRunLabel(run),
+    ...(run.state.status === 'cancelling' || (run.cancellationRequest !== undefined && !isTerminalRun(run))
+      ? { cancellationPending: true } : {}),
     toolActivities: run.effects.map((effect) => {
       const state = effect.state;
       const occurredAt = effectTimestamp(state);
@@ -338,7 +359,7 @@ export function projectAgentRunV3(
       messageId: input.messageId,
       version: input.version,
       delivery: input.delivery,
-      content: redactPublicProjectionTextV3(input.content),
+      content: redactPublicProjectionText(input.content),
       ...(input.source === undefined ? {} : { source: { ...input.source } }),
       state: input.state,
       queuedAt: input.queuedAt,
@@ -351,7 +372,7 @@ export function projectAgentRunV3(
       runId: run.runId,
       version: 1,
       role: message.role,
-      content: redactPublicProjectionTextV3(message.content),
+      content: redactPublicProjectionText(message.content),
       status: 'completed' as const,
       createdAt: message.occurredAt,
       updatedAt: message.occurredAt
@@ -359,7 +380,7 @@ export function projectAgentRunV3(
     updatedAt: run.updatedAt,
     ...(run.state.status === 'queued' ? {} : { startedAt: run.createdAt }),
     ...terminalTimestamp(run)
-  });
+  };
 }
 
 async function resolveInteractionMessages(
@@ -411,13 +432,13 @@ async function projectRequestedDecision(
   decision: AgentDecision,
   run: AgentRun,
   runVersions: AgentRunVersionReader
-): Promise<PublicDecisionProjectionV3> {
+): Promise<PublicDecisionProjection> {
   const presentation = await publicDecisionPresentation(decision, run, runVersions);
-  const action = await derivePublicDecisionActionDescriptorV1(
+  const action = await derivePublicDecisionActionDescriptor(
     decision,
     run.binding.sessionId
   );
-  return publicDecisionProjectionV3Schema.parse({
+  return publicDecisionProjectionSchema.parse({
     decisionId: decision.decisionId,
     runId: run.runId,
     sessionId: run.binding.sessionId,
@@ -435,10 +456,10 @@ async function projectResolvedDecision(
   resolution: AgentDecisionResolution,
   run: AgentRun,
   runVersions: AgentRunVersionReader
-): Promise<PublicDecisionProjectionV3> {
+): Promise<PublicDecisionProjection> {
   const status = publicResolutionStatus(resolution);
   const presentation = await publicDecisionPresentation(decision, run, runVersions);
-  return publicDecisionProjectionV3Schema.parse({
+  return publicDecisionProjectionSchema.parse({
     decisionId: decision.decisionId,
     runId: run.runId,
     sessionId: run.binding.sessionId,
@@ -455,9 +476,9 @@ async function projectExpiredDecision(
   decision: AgentDecision,
   run: AgentRun,
   runVersions: AgentRunVersionReader
-): Promise<PublicDecisionProjectionV3> {
+): Promise<PublicDecisionProjection> {
   const presentation = await publicDecisionPresentation(decision, run, runVersions);
-  return publicDecisionProjectionV3Schema.parse({
+  return publicDecisionProjectionSchema.parse({
     decisionId: decision.decisionId,
     runId: run.runId,
     sessionId: run.binding.sessionId,
@@ -474,7 +495,7 @@ async function projectDecisionForVersion(
   run: AgentRun,
   events: readonly AgentRunEvent[],
   runVersions: AgentRunVersionReader
-): Promise<PublicDecisionProjectionV3 | null> {
+): Promise<PublicDecisionProjection | null> {
   const requested = events.filter(isRequestedDecisionEvent);
   const resolved = events.filter(isResolvedDecisionEvent);
   if (requested.length + resolved.length > 1) {
@@ -723,7 +744,7 @@ function assertResolutionMatchesDecision(
     if (
       resolution.effectId !== decision.effectId
       || !decision.allowedActions.includes(resolution.outcome)
-      || !publicDecisionChoicesV1(decision).includes(resolution.outcome)
+      || !publicDecisionChoices(decision).includes(resolution.outcome)
     ) {
       throw new Error('agent_run_projection_decision_resolution_drift');
     }
@@ -761,7 +782,7 @@ async function publicDecisionPresentation(
   decision: AgentDecision,
   run: AgentRun,
   runVersions: AgentRunVersionReader
-): Promise<PublicDecisionPresentationV1> {
+): Promise<PublicDecisionPresentation> {
   if (decision.kind === 'permission') {
     const effect = run.effects.find((candidate) => (
       candidate.effectId === decision.effectId
@@ -844,16 +865,16 @@ async function publicDecisionPresentation(
       contractVersion: '1.0',
       kind: 'user_question',
       headline: 'Agent needs your input',
-      question: redactPublicProjectionTextV3(question.prompt),
+      question: redactPublicProjectionText(question.prompt),
       ...(question.options === undefined
         ? {}
         : {
             options: question.options.map((option) => ({
               optionId: option.optionId,
-              label: redactPublicProjectionTextV3(option.label),
+              label: redactPublicProjectionText(option.label),
               ...(option.description === undefined
                 ? {}
-                : { description: redactPublicProjectionTextV3(option.description) })
+                : { description: redactPublicProjectionText(option.description) })
             }))
           }),
       allowsFreeText: true
@@ -870,7 +891,7 @@ async function publicDecisionPresentation(
 
 function extractPlanPublicPresentation(
   payload: unknown
-): ReturnType<typeof publicPlanDecisionPresentationSourceV1Schema.parse> {
+): ReturnType<typeof publicPlanDecisionPresentationSourceSchema.parse> {
   if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
     throw new Error('agent_run_projection_plan_presentation_missing');
   }
@@ -886,12 +907,13 @@ function extractPlanPublicPresentation(
   ) {
     throw new Error('agent_run_projection_plan_presentation_missing');
   }
-  return publicPlanDecisionPresentationSourceV1Schema.parse(descriptor.value);
+  return publicPlanDecisionPresentationSourceSchema.parse(descriptor.value);
 }
 
-function publicRunStatus(
+export function publicRunStatus(
   run: AgentRun
-): PublicRunProjectionV3['status'] {
+): PublicRunProjection['status'] {
+  if (run.cancellationRequest !== undefined && run.state.status === 'running') return 'cancelling';
   switch (run.state.status) {
     case 'queued': return 'queued';
     case 'running': return 'running';
@@ -910,6 +932,8 @@ function publicRunStatus(
 }
 
 function publicRunLabel(run: AgentRun): string {
+  if (run.cancellationRequest !== undefined && run.state.status === 'running') return 'Waiting for tool cancellation';
+  if (run.cancellationRequest !== undefined && run.state.status === 'recovering') return 'Recovery required before cancellation';
   switch (run.state.status) {
     case 'queued': return 'Waiting to run';
     case 'running': return 'Running';
@@ -931,7 +955,7 @@ function publicRunLabel(run: AgentRun): string {
 
 function terminalTimestamp(
   run: AgentRun
-): Pick<PublicRunProjectionV3, 'completedAt'> {
+): Pick<PublicRunProjection, 'completedAt'> {
   switch (run.state.status) {
     case 'completed': return { completedAt: run.state.completedAt };
     case 'failed': return { completedAt: run.state.failedAt };

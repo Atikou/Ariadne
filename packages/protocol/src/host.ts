@@ -12,7 +12,7 @@ import {
   runtimeCommandSchema,
   runtimeEventEnvelopeSchema as publicRuntimeEventEnvelopeSchema,
   runtimeResultSchema,
-  modelInferenceProfileSchema
+  modelInferenceProfileSchema, runtimeHealthSchema
 } from './public.js';
 import {
   acpSubagentProviderConfigurationSchema,
@@ -23,6 +23,10 @@ import {
   type SubagentProviderConfiguration
 } from './settings.js';
 import { agentAdmissionAuthoritySourceSchema } from './host/agent-admission-authority-source.js';
+import { isCanonicalAbsoluteDataRoot } from './host/runtime-data-root.js';
+import { agentPersistenceKeyRingSchema } from './host/agent-persistence-key-ring.js';
+export { agentPersistenceKeyIdSchema, agentPersistenceKeyRingSchema } from './host/agent-persistence-key-ring.js';
+export { isCanonicalAbsoluteDataRoot, assertCanonicalAbsoluteDataRoot } from './host/runtime-data-root.js';
 
 export {
   agentAdmissionAuthoritySourceManifestSchema,
@@ -35,6 +39,9 @@ export {
   type AgentAdmissionRootBudgetVector
 } from './host/agent-admission-authority-source.js';
 export * from './host/first-party-agent-tool-catalog.js';
+export { RUNTIME_DATABASE_PATHS, RUNTIME_DERIVED_DATABASE_PATHS, isUnpublishedConversationAttachmentObjectName } from './host/runtime-persistence-layout.js';
+export { storageMaintenanceRequestSchema, storageMaintenanceResponseSchema,
+  type StorageMaintenanceRequest, type StorageMaintenanceResponse } from './host/storage-maintenance.js';
 
 export {
   ARIADNE_RUNTIME_PROTOCOL,
@@ -51,59 +58,10 @@ const envelopeFields = {
 
 export const runtimeBuildFingerprintSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
-/**
- * Accepts one lexical, absolute path identity without consulting the local
- * filesystem. Both Windows and POSIX forms are recognized because Main and
- * Runtime can validate bootstrap fixtures on a different host platform.
- */
-export function isCanonicalAbsoluteDataRoot(value: string): boolean {
-  if (value.length === 0 || value !== value.trim() || /[\u0000-\u001f\u007f]/u.test(value)) {
-    return false;
-  }
-
-  if (value.startsWith('/')) {
-    if (value === '/') return true;
-    if (value.endsWith('/') || value.includes('//')) return false;
-    return value.slice(1).split('/').every((segment) => segment !== '.' && segment !== '..');
-  }
-
-  if (/^[A-Za-z]:\\/u.test(value)) {
-    if (value.length === 3) return true;
-    if (value.endsWith('\\') || value.includes('/') || value.slice(3).includes('\\\\')) {
-      return false;
-    }
-    return value.slice(3).split('\\').every(isCanonicalWindowsPathSegment);
-  }
-
-  if (value.startsWith('\\\\')) {
-    if (value.endsWith('\\') || value.includes('/') || value.slice(2).includes('\\\\')) {
-      return false;
-    }
-    const segments = value.slice(2).split('\\');
-    return segments.length >= 2 && segments.every(isCanonicalWindowsPathSegment);
-  }
-
-  return false;
-}
-
-export function assertCanonicalAbsoluteDataRoot(value: string): void {
-  if (!isCanonicalAbsoluteDataRoot(value)) {
-    throw new Error('runtime_bootstrap_data_root_not_canonical_absolute');
-  }
-}
-
 const canonicalAbsoluteDataRootSchema = z.string().min(1).max(32_768).refine(
   isCanonicalAbsoluteDataRoot,
   'Runtime dataRoot must be a canonical absolute Windows or POSIX path.'
 );
-
-function isCanonicalWindowsPathSegment(segment: string): boolean {
-  return segment.length > 0
-    && segment !== '.'
-    && segment !== '..'
-    && !/[<>:"|?*]/u.test(segment)
-    && !/[ .]$/u.test(segment);
-}
 
 export const runtimeBuildManifestSchema = z.object({
   schemaVersion: z.literal(1),
@@ -197,6 +155,17 @@ export const runtimeReadySchema = z
     readyAt: isoDateTimeSchema
   })
   .strict();
+
+/** Body-free failure metadata sent before an unready process disconnects. */
+export const runtimeInitializationFailureSchema = z.object({
+  ...envelopeFields, type: z.literal('initialization_failed'), contractVersion: z.literal('1.0'),
+  phase: z.enum(['bootstrap', 'communication_contract_preflight', 'legacy_control_preflight', 'capability_manifest',
+    'command_journal', 'runtime_application', 'agent_control', 'agent_control_start', 'runtime_application_start',
+    'projection_wake_enable', 'ready', 'unknown']),
+  health: runtimeHealthSchema.refine(health => health.domains.length <= 1 && health.domains.every(domain =>
+    domain.availability === 'unavailable' && domain.source === domain.domain && domain.code === 'authority_unavailable'))
+}).strict();
+export type RuntimeInitializationFailure = z.infer<typeof runtimeInitializationFailureSchema>;
 
 export const runtimeRequestSchema = z
   .object({
@@ -397,53 +366,6 @@ export const credentialCapabilityOperationSchema = z.discriminatedUnion('kind', 
   }).strict()
 ]);
 
-export const agentPersistenceKeyIdSchema = z.string().regex(
-  /^agent-key-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
-);
-
-const agentPersistenceKeyMaterialSchema = z.string().regex(
-  /^[A-Za-z0-9+/]{43}=$/u
-);
-
-export const agentPersistenceKeyRingSchema = z.object({
-  schemaVersion: z.literal(1),
-  runtimeInstanceId: runtimeInstanceIdSchema,
-  generation: z.number().int().positive().safe(),
-  activeKeyId: agentPersistenceKeyIdSchema,
-  keys: z.array(z.object({
-    keyId: agentPersistenceKeyIdSchema,
-    keyMaterialBase64: agentPersistenceKeyMaterialSchema
-  }).strict()).min(1).max(32)
-}).strict().superRefine((ring, context) => {
-  const keyIds = new Set<string>();
-  const keyMaterials = new Set<string>();
-  for (const [index, key] of ring.keys.entries()) {
-    if (keyIds.has(key.keyId)) {
-      context.addIssue({
-        code: 'custom',
-        path: ['keys', index, 'keyId'],
-        message: 'Agent persistence key ids must be unique.'
-      });
-    }
-    if (keyMaterials.has(key.keyMaterialBase64)) {
-      context.addIssue({
-        code: 'custom',
-        path: ['keys', index, 'keyMaterialBase64'],
-        message: 'Agent persistence key material must be unique.'
-      });
-    }
-    keyIds.add(key.keyId);
-    keyMaterials.add(key.keyMaterialBase64);
-  }
-  if (!keyIds.has(ring.activeKeyId)) {
-    context.addIssue({
-      code: 'custom',
-      path: ['activeKeyId'],
-      message: 'The active Agent persistence key must be present.'
-    });
-  }
-});
-
 export const runtimeCapabilityRequestSchema = z.discriminatedUnion('capability', [
   z.object({
     ...envelopeFields,
@@ -502,6 +424,7 @@ export const hostToRuntimeMessageSchema = z.discriminatedUnion('type', [
 
 export const runtimeToHostMessageSchema = z.discriminatedUnion('type', [
   runtimeReadySchema,
+  runtimeInitializationFailureSchema,
   runtimeResponseSchema,
   runtimeCancelAcknowledgedSchema,
   runtimeEventMessageSchema,
@@ -551,3 +474,6 @@ export function parseRuntimeToHostMessage(input: unknown): RuntimeToHostMessage 
   assertRuntimeMessageSize(input);
   return runtimeToHostMessageSchema.parse(input);
 }
+export { goalDecisionSchema, type GoalDecision } from './host/goal-planning.js';
+export { memoryRecallToolInputSchema, memoryReadToolInputSchema, memoryCandidateToolInputSchema,
+  memoryToolRequestSchema, type MemoryToolRequest } from './host/long-memory-tools.js';

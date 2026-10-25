@@ -98,7 +98,8 @@ extends ConversationRunHandoffTransaction {
     version: number
   ): Promise<ConversationMessageVersion | null>;
 
-  /** Exact immutable message history through one authoritative objective. */
+  /** Exact immutable history through the objective, including only ancestors proven by frozen lineage.
+   * Inherited messages retain their original Session identity; the final objective belongs to sessionId. */
   loadSessionMessageHistoryThrough(
     sessionId: string,
     messageId: string,

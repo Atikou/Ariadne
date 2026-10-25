@@ -7,6 +7,7 @@ import { formatRuntimeAvailability } from '@renderer/core/runtime/runtime-labels
 
 export type ChatModelStateKind =
   | 'runtime-unavailable'
+  | 'loading'
   | 'plan-unavailable'
   | 'unconfigured'
   | 'checking'
@@ -24,6 +25,7 @@ export interface ChatModelStateInput {
   readonly executionMode: 'chat' | 'agent' | 'plan';
   readonly routingStrategy: ChatRoutingStrategy;
   readonly models: readonly ModelSummary[];
+  readonly modelsReadReady: boolean;
 }
 
 export interface ChatModelState {
@@ -60,6 +62,7 @@ export function deriveChatModelState(input: ChatModelStateInput): ChatModelState
 
   let kind: ChatModelStateKind;
   if (input.runtimeAvailability !== 'ready') kind = 'runtime-unavailable';
+  else if (!input.modelsReadReady) kind = 'loading';
   else if (input.planModeEnabled && !input.planModeAvailable) kind = 'plan-unavailable';
   else if (input.models.length === 0) kind = 'unconfigured';
   else if (
@@ -97,6 +100,14 @@ function presentation(
   'statusTone' | 'statusLabel' | 'composerPlaceholder' | 'emptyTitle' | 'emptyDescription'
 > {
   switch (kind) {
+    case 'loading':
+      return {
+        statusTone: 'warning',
+        statusLabel: '正在读取模型',
+        composerPlaceholder: '正在读取模型配置，请稍候',
+        emptyTitle: '正在读取模型',
+        emptyDescription: '模型配置读取完成后即可继续对话。'
+      };
     case 'runtime-unavailable':
       return {
         statusTone: 'danger',

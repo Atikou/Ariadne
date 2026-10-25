@@ -12,6 +12,7 @@ import {
 import { z } from 'zod';
 
 import type { SecretCipher } from './secret-cipher';
+import { unrestrictedMainWrites, type MainWriteAdmission } from '../data-management/main-maintenance-gate';
 
 const credentialRefSchema = z.string().regex(/^[a-z][a-z0-9._:-]{2,255}$/u);
 const encryptedRecordSchema = z.object({
@@ -45,7 +46,8 @@ export class McpOAuthCredentialVault {
 
   constructor(
     private readonly filePath: string,
-    private readonly cipher: SecretCipher
+    private readonly cipher: SecretCipher,
+    private readonly writes: MainWriteAdmission = unrestrictedMainWrites
   ) {}
 
   async initialize(): Promise<void> {
@@ -141,6 +143,11 @@ export class McpOAuthCredentialVault {
     await this.writeQueue;
   }
 
+  validateBackup(raw: string): void {
+    const file = vaultFileSchema.parse(JSON.parse(raw));
+    for (const encrypted of Object.values(file.records)) secretRecordSchema.parse(JSON.parse(this.cipher.decrypt(encrypted.ciphertext)));
+  }
+
   hasCredentialRecord(credentialRef: string): boolean {
     this.assertInitialized();
     return this.file.records[credentialRefSchema.parse(credentialRef)] !== undefined;
@@ -158,6 +165,7 @@ export class McpOAuthCredentialVault {
     credentialRef: string,
     mutate: (record: SecretRecord) => SecretRecord
   ): Promise<void> {
+    return this.writes.write(async () => {
     this.assertInitialized();
     const ref = credentialRefSchema.parse(credentialRef);
     const next = secretRecordSchema.parse(mutate(this.read(ref)));
@@ -171,6 +179,7 @@ export class McpOAuthCredentialVault {
     };
     this.writeQueue = this.writeQueue.then(() => this.persist(this.file));
     await this.writeQueue;
+    });
   }
 
   private async persist(file: VaultFile): Promise<void> {

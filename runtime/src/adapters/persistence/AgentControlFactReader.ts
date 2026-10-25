@@ -50,36 +50,13 @@ async function loadPersistedCommandFacts(
   commandId: string
 ): Promise<AgentControlCommitFacts> {
   const planRows = database.prepare(
-    'SELECT * FROM agent_v3_plan_versions WHERE command_id=? ORDER BY plan_id, plan_version'
+    'SELECT * FROM agent_plan_versions WHERE command_id=? ORDER BY plan_id, plan_version'
   ).all(commandId) as unknown as AgentPlanVersionRow[];
-  const planVersions = await Promise.all(planRows.map(async (row) => {
-    const payload = decodePayload(codec, row.codec_id, row.payload_json, {
-      kind: 'plan_payload',
-      runId: row.run_id,
-      commandId: row.command_id,
-      runVersion: row.run_version,
-      planId: row.plan_id,
-      planVersion: row.plan_version,
-      contentHash: row.content_hash
-    }, `agent_v3_plan_versions:${row.plan_id}:${String(row.plan_version)}`);
-    if (await sha256AgentControlData(payload) !== row.content_hash) {
-      throw storageCorruption('plan_payload_hash_mismatch');
-    }
-    return {
-      ref: {
-        planId: row.plan_id,
-        version: row.plan_version,
-        contentHash: row.content_hash
-      },
-      runId: row.run_id,
-      payload,
-      createdAt: row.created_at
-    };
-  }));
+  const planVersions = await Promise.all(planRows.map(row => decodePlanVersionRecord(codec, row)));
   const approvalRows = database.prepare(
     `SELECT approval_id, decision_id, run_id, checkpoint_version,
             plan_id, plan_version, content_hash, approved_at
-     FROM agent_v3_plan_approvals WHERE command_id=? ORDER BY approval_id`
+     FROM agent_plan_approvals WHERE command_id=? ORDER BY approval_id`
   ).all(commandId) as unknown as Array<{
     approval_id: string;
     decision_id: string;
@@ -91,16 +68,16 @@ async function loadPersistedCommandFacts(
     approved_at: string;
   }>;
   const grantRows = database.prepare(
-    'SELECT * FROM agent_v3_budget_grants WHERE command_id=? ORDER BY grant_id'
+    'SELECT * FROM agent_budget_grants WHERE command_id=? ORDER BY grant_id'
   ).all(commandId) as unknown as AgentBudgetGrantRow[];
   const entryRows = database.prepare(
-    'SELECT * FROM agent_v3_budget_entries WHERE command_id=? ORDER BY entry_id'
+    'SELECT * FROM agent_budget_entries WHERE command_id=? ORDER BY entry_id'
   ).all(commandId) as unknown as AgentBudgetEntryRow[];
   const delegationRows = database.prepare(
-    'SELECT * FROM agent_v3_delegations WHERE command_id=? ORDER BY delegation_id'
+    'SELECT * FROM agent_delegations WHERE command_id=? ORDER BY delegation_id'
   ).all(commandId) as unknown as AgentDelegationRow[];
   const terminalRows = database.prepare(
-    'SELECT * FROM agent_v3_child_terminals WHERE command_id=? ORDER BY delegation_id'
+    'SELECT * FROM agent_child_terminals WHERE command_id=? ORDER BY delegation_id'
   ).all(commandId) as unknown as AgentChildTerminalRow[];
   const delegations = await Promise.all(delegationRows.map(async (row) => {
     const decoded = await decodeDelegationRecord(database, codec, row);
@@ -139,15 +116,25 @@ async function loadPersistedCommandFacts(
   return facts;
 }
 
+export async function decodePlanVersionRecord(codec: AgentPersistencePayloadCodec, row: AgentPlanVersionRow): Promise<AgentControlCommitFacts['planVersions'][number]> {
+  const payload = decodePayload(codec, row.codec_id, row.payload_json, {
+    kind: 'plan_payload', runId: row.run_id, commandId: row.command_id, runVersion: row.run_version,
+    planId: row.plan_id, planVersion: row.plan_version, contentHash: row.content_hash
+  }, `agent_plan_versions:${row.plan_id}:${String(row.plan_version)}`);
+  if (await sha256AgentControlData(payload) !== row.content_hash) throw storageCorruption('plan_payload_hash_mismatch');
+  return { ref: { planId: row.plan_id, version: row.plan_version, contentHash: row.content_hash },
+    runId: row.run_id, payload, createdAt: row.created_at };
+}
+
 export function countPersistedCommandFacts(database: DatabaseSync, commandId: string): number {
   const row = database.prepare(
     `SELECT
-       (SELECT COUNT(*) FROM agent_v3_plan_versions WHERE command_id=?)
-       + (SELECT COUNT(*) FROM agent_v3_plan_approvals WHERE command_id=?)
-       + (SELECT COUNT(*) FROM agent_v3_budget_grants WHERE command_id=?)
-       + (SELECT COUNT(*) FROM agent_v3_budget_entries WHERE command_id=?)
-       + (SELECT COUNT(*) FROM agent_v3_delegations WHERE command_id=?)
-       + (SELECT COUNT(*) FROM agent_v3_child_terminals WHERE command_id=?) AS count`
+       (SELECT COUNT(*) FROM agent_plan_versions WHERE command_id=?)
+       + (SELECT COUNT(*) FROM agent_plan_approvals WHERE command_id=?)
+       + (SELECT COUNT(*) FROM agent_budget_grants WHERE command_id=?)
+       + (SELECT COUNT(*) FROM agent_budget_entries WHERE command_id=?)
+       + (SELECT COUNT(*) FROM agent_delegations WHERE command_id=?)
+       + (SELECT COUNT(*) FROM agent_child_terminals WHERE command_id=?) AS count`
   ).get(commandId, commandId, commandId, commandId, commandId, commandId) as {
     count: number;
   };
@@ -159,7 +146,7 @@ export function loadBudgetGrantRecord(
   grantId: string
 ): AgentBudgetGrantCommit | null {
   const row = database.prepare(
-    'SELECT * FROM agent_v3_budget_grants WHERE grant_id=?'
+    'SELECT * FROM agent_budget_grants WHERE grant_id=?'
   ).get(grantId) as AgentBudgetGrantRow | undefined;
   return row === undefined ? null : parseBudgetGrantRow(row);
 }
@@ -171,7 +158,7 @@ export function loadBudgetSnapshotRecord(
   const grant = loadBudgetGrantRecord(database, grantId);
   if (grant === null) return null;
   const rows = database.prepare(
-    `SELECT * FROM agent_v3_budget_entries
+    `SELECT * FROM agent_budget_entries
      WHERE grant_id=? ORDER BY occurred_at, entry_id`
   ).all(grantId) as unknown as AgentBudgetEntryRow[];
   let spent = zeroAgentBudgetVector();
@@ -186,26 +173,26 @@ export function loadBudgetSnapshotRecord(
       case 'root_grant':
         rootEntries += 1;
         if (canonicalJson(entry.vector) !== canonicalJson(grant.vector)) {
-          throw storageCorruption(`agent_v3_budget_entries:${entry.entryId}:root_mismatch`);
+          throw storageCorruption(`agent_budget_entries:${entry.entryId}:root_mismatch`);
         }
         break;
       case 'parent_allocation':
         if (allocatedDelegations.has(entry.delegationId)) {
-          throw storageCorruption(`agent_v3_budget_entries:${entry.entryId}:duplicate_allocation`);
+          throw storageCorruption(`agent_budget_entries:${entry.entryId}:duplicate_allocation`);
         }
         allocatedDelegations.set(entry.delegationId, entry.vector);
         allocated = addAgentBudgetVectors(allocated, entry.vector);
         break;
       case 'reservation':
         if (reservations.has(entry.reservationId)) {
-          throw storageCorruption(`agent_v3_budget_entries:${entry.entryId}:duplicate_reservation`);
+          throw storageCorruption(`agent_budget_entries:${entry.entryId}:duplicate_reservation`);
         }
         reservations.set(entry.reservationId, entry.vector);
         break;
       case 'settlement': {
         const reserved = reservations.get(entry.reservationId);
         if (reserved === undefined || !agentBudgetVectorFits(entry.vector, reserved)) {
-          throw storageCorruption(`agent_v3_budget_entries:${entry.entryId}:settlement_mismatch`);
+          throw storageCorruption(`agent_budget_entries:${entry.entryId}:settlement_mismatch`);
         }
         reservations.delete(entry.reservationId);
         spent = addAgentBudgetVectors(spent, entry.vector);
@@ -214,7 +201,7 @@ export function loadBudgetSnapshotRecord(
       case 'release': {
         const reserved = reservations.get(entry.reservationId);
         if (reserved === undefined || canonicalJson(reserved) !== canonicalJson(entry.vector)) {
-          throw storageCorruption(`agent_v3_budget_entries:${entry.entryId}:release_mismatch`);
+          throw storageCorruption(`agent_budget_entries:${entry.entryId}:release_mismatch`);
         }
         reservations.delete(entry.reservationId);
         break;
@@ -226,7 +213,7 @@ export function loadBudgetSnapshotRecord(
           || releasedDelegations.has(entry.delegationId)
           || !agentBudgetVectorFits(entry.vector, allocation)
         ) {
-          throw storageCorruption(`agent_v3_budget_entries:${entry.entryId}:child_release_mismatch`);
+          throw storageCorruption(`agent_budget_entries:${entry.entryId}:child_release_mismatch`);
         }
         releasedDelegations.add(entry.delegationId);
         allocated = subtractAgentBudgetVectors(allocated, entry.vector, 'persisted child release');
@@ -235,10 +222,10 @@ export function loadBudgetSnapshotRecord(
     }
   }
   if (grant.source.kind === 'root' && rootEntries !== 1) {
-    throw storageCorruption(`agent_v3_budget_grants:${grantId}:root_entry_missing`);
+    throw storageCorruption(`agent_budget_grants:${grantId}:root_entry_missing`);
   }
   if (grant.source.kind === 'parent_allocation' && rootEntries !== 0) {
-    throw storageCorruption(`agent_v3_budget_grants:${grantId}:unexpected_root_entry`);
+    throw storageCorruption(`agent_budget_grants:${grantId}:unexpected_root_entry`);
   }
   let reserved = zeroAgentBudgetVector();
   for (const vector of reservations.values()) {
@@ -256,7 +243,7 @@ export function loadBudgetSnapshotRecord(
       'persisted allocations'
     );
   } catch (error) {
-    throw storageCorruption(`agent_v3_budget_grants:${grantId}:overdrawn`, error);
+    throw storageCorruption(`agent_budget_grants:${grantId}:overdrawn`, error);
   }
   return {
     grant,
@@ -356,13 +343,13 @@ export async function decodeDelegationRecord(
       delegationId: row.delegation_id,
       objectiveDigest: row.objective_digest
     },
-    `agent_v3_delegations:${row.delegation_id}`
+    `agent_delegations:${row.delegation_id}`
   );
   if (await sha256AgentControlData(objective) !== row.objective_digest) {
-    throw storageCorruption(`agent_v3_delegations:${row.delegation_id}:objective_hash_mismatch`);
+    throw storageCorruption(`agent_delegations:${row.delegation_id}:objective_hash_mismatch`);
   }
   const terminalRow = database.prepare(
-    'SELECT * FROM agent_v3_child_terminals WHERE delegation_id=?'
+    'SELECT * FROM agent_child_terminals WHERE delegation_id=?'
   ).get(row.delegation_id) as AgentChildTerminalRow | undefined;
   return {
     delegationId: row.delegation_id,

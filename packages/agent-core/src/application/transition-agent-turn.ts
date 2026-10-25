@@ -4,6 +4,7 @@ import {
   cloneAgentRunBinding
 } from '../domain/run-binding.js';
 import { isTerminalEffect } from '../domain/effect.js';
+import { hasExactApprovedPlanBoundary } from './plan-approval-input.js';
 import {
   AgentRunInvariantError,
   AgentRunTransitionError
@@ -211,7 +212,8 @@ function assertExactInboxCause(
     || sourceAttempt?.state.status !== 'succeeded'
     || (sourceAttempt.state.directive.kind !== 'respond'
       && sourceAttempt.state.directive.kind !== 'complete'
-      && sourceAttempt.state.directive.kind !== 'ask_user')
+      && sourceAttempt.state.directive.kind !== 'ask_user'
+      && !hasExactApprovedPlanBoundary(run, cause.inputIds))
     || sourceTurn.turnId !== cause.sourceTurnId
     || sourceAttempt.attemptId !== cause.sourceAttemptId
     || sourceAttempt.state.directiveDigest !== cause.sourceDirectiveDigest

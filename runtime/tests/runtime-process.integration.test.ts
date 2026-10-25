@@ -14,7 +14,7 @@ import {
 } from '@ariadne/protocol/host';
 import {
   PUBLIC_PROJECTION_CONTRACT_VERSION,
-  type PublicModelProjectionV3,
+  type PublicModelProjection,
   type RuntimeCommand
 } from '@ariadne/protocol/public';
 import { createDefaultRuntimePolicySnapshot } from '@ariadne/protocol/settings';
@@ -23,7 +23,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { AGENT_CONTROL_DB_SCHEMA_VERSION } from '../src/adapters/persistence/agentControlDbSchema.js';
 import { CONVERSATION_DB_SCHEMA_VERSION } from '../src/adapters/persistence/ConversationDbSchema.js';
 import { PRODUCTIVITY_DB_SCHEMA_VERSION } from '../src/adapters/persistence/SqliteProductivityStore.js';
-import { PUBLIC_PROJECTION_DB_SCHEMA_VERSION } from '../src/adapters/persistence/PublicProjectionDbSchema.js';
+import { PUBLIC_PROJECTION_CURRENT_DB_SCHEMA_VERSION } from '../src/adapters/persistence/PublicProjectionDbSchema.js';
 import { RUNTIME_COMMAND_DB_SCHEMA_VERSION } from '../src/adapters/persistence/runtimeCommandDbMigrations.js';
 import { projectionWakeAggregateId } from '../src/composition/PublicProjectionWakeCommitSink.js';
 
@@ -60,8 +60,9 @@ describe('portless Runtime process', () => {
       runtimeCommand: RUNTIME_COMMAND_DB_SCHEMA_VERSION,
       agentControl: AGENT_CONTROL_DB_SCHEMA_VERSION,
       conversation: CONVERSATION_DB_SCHEMA_VERSION,
-      publicProjection: PUBLIC_PROJECTION_DB_SCHEMA_VERSION,
-      productivity: PRODUCTIVITY_DB_SCHEMA_VERSION
+      publicProjection: PUBLIC_PROJECTION_CURRENT_DB_SCHEMA_VERSION,
+      productivity: PRODUCTIVITY_DB_SCHEMA_VERSION,
+      longMemory: 1
     });
 
     child.send(request(bootstrap, 'status-1', { kind: 'runtime.status.get' }));
@@ -71,7 +72,7 @@ describe('portless Runtime process', () => {
       result: { kind: 'runtime.status', status: { availability: 'ready' } }
     });
 
-    let projectedModel: PublicModelProjectionV3 | undefined;
+    let projectedModel: PublicModelProjection | undefined;
     let serializedProjection = '';
     const modelDeadline = Date.now() + 10_000;
     let projectionAttempt = 0;
@@ -127,7 +128,7 @@ describe('portless Runtime process', () => {
 
     const sessionId = 'ipc-integration-session';
     child.send(request(bootstrap, 'session-create', {
-      kind: 'conversation.session.create.v3',
+      kind: 'conversation.session.create',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       sessionId,
       workspaceId: 'secondary'
@@ -136,7 +137,7 @@ describe('portless Runtime process', () => {
     expect(created.outcome).toMatchObject({
       ok: true,
       result: {
-        kind: 'conversation.session.created.v3',
+        kind: 'conversation.session.created',
         sessionId,
         version: 1
       }
@@ -156,7 +157,7 @@ describe('portless Runtime process', () => {
     ]));
 
     child.send(request(bootstrap, 'session-create-invalid-workspace', {
-      kind: 'conversation.session.create.v3',
+      kind: 'conversation.session.create',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       sessionId: 'invalid-workspace-session',
       workspaceId: 'untrusted'

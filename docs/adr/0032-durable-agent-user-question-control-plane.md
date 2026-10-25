@@ -14,7 +14,7 @@
 - `ask_user` 是第一类 Agent Directive。问题正文和可选的 2–8 个选项进入受保护 `ariadne.user-question` Directive payload；committed Directive 只保存稳定 decision ID、question ref 和 digest。
 - 成功 Attempt 将 Run 转为 `waiting/user_question`，Decision 绑定 Run checkpoint、question ref/digest 和 requested time。
 - Public Projection 从精确 succeeded Attempt 读取并校验受保护 payload，脱敏后以公开字段 `question` 和 options 发布；它只暴露 opaque `answer` action token，不发布受保护 `prompt`。
-- Renderer 的选择和自由文本都通过 `agent.decision.resolve.v3` 提交。Runtime 将 command ID、Run、Decision 和回答正文稳定绑定为 answer input/message ID 与 digest。
+- Renderer 的选择和自由文本都通过 `agent.decision.resolve` 提交。Runtime 将 command ID、Run、Decision 和回答正文稳定绑定为 answer input/message ID 与 digest。
 - `decision.resolved`、answer receipt 和带 `source.kind=user_question_answer` 的 `next_step` inbox 输入在一个 Agent Control transaction 中提交。同一命令精确重放；token、question、checkpoint 或回答正文漂移 fail closed。
 - scheduler 复用既有 inbox continuation。只有后续 Turn 原子 claim 回答后，受保护历史才出现 assistant question → user answer；Public Projection transcript 使用同一因果边界。
 - Agent Control schema v7 / ledger revision 55 仅扩大受保护 Directive payload kind。v6→v7 通过显式、有 owner lease 和 durable backup 的离线迁移完成；Runtime startup 不自动迁移。

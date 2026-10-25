@@ -4,6 +4,7 @@ import type { MessageFeatureStore } from '../src/renderer/src/core/runtime/featu
 import type { RunFeatureStore } from '../src/renderer/src/core/runtime/features/run-feature-store';
 import type { SessionFeatureStore } from '../src/renderer/src/core/runtime/features/session-feature-store';
 import { SpeechAgentBridge } from '../src/renderer/src/core/speech/speech-agent-bridge';
+import type { RuntimeMessage } from '../src/renderer/src/core/runtime/runtime-projection-presenter';
 
 describe('SpeechAgentBridge', () => {
   it('routes recognized text through the ordinary message feature command', async () => {
@@ -45,12 +46,31 @@ describe('SpeechAgentBridge', () => {
     await vi.waitFor(() => expect(listener).toHaveBeenCalledWith(expected));
     bridge.dispose();
   });
+  it('requests unread terminal content and delays final synthesis until the complete body arrives', async () => {
+    const api = speechApi(), send = vi.fn(async () => ({ messageId: 'source', sessionId: 'session-1' })), loadBody = vi.fn(async () => undefined);
+    const messages = feature({ messages: [] as RuntimeMessage[], pendingOverlayIds: [] as string[] }, { send, loadBody });
+    const runs = feature({ runs: [] as Array<{ runId: string; sessionId: string; sourceMessageId: string; status: string }>, activities: [], agentInputDeliveries: [] });
+    const bridge = new SpeechAgentBridge(api, messages as unknown as MessageFeatureStore, runs as unknown as RunFeatureStore,
+      feature({ sessions: [], selectedSessionId: 'session-1', planModeSessionIds: [] }) as unknown as SessionFeatureStore, memoryStorage());
+    bridge.initialize(); bridge.acceptVoiceText('请回答', false); await vi.waitFor(() => expect(send).toHaveBeenCalled());
+    await Promise.resolve();
+    runs.update({ runs: [{ runId: 'run-1', sessionId: 'session-1', sourceMessageId: 'source', status: 'running' }], activities: [], agentInputDeliveries: [] });
+    const unread: RuntimeMessage = { messageId: 'answer', sessionId: 'session-1', runId: 'run-1', role: 'assistant', status: 'completed',
+      bodyState: 'unloaded', bodyReadToken: `sha256:${'a'.repeat(64)}`, createdAt: '2032-01-01T00:00:00.000Z' };
+    messages.update({ messages: [unread], pendingOverlayIds: [] });
+    runs.update({ runs: [{ runId: 'run-1', sessionId: 'session-1', sourceMessageId: 'source', status: 'completed' }], activities: [], agentInputDeliveries: [] });
+    expect(loadBody).toHaveBeenCalledTimes(1); expect(api.synthesize).not.toHaveBeenCalled();
+    messages.update({ messages: [{ ...unread, bodyState: 'loaded', content: '完整回答。' }], pendingOverlayIds: [] });
+    await vi.waitFor(() => expect(api.synthesize).toHaveBeenCalledWith({ turnId: 'run-1', sequence: 0, text: '完整回答。', final: true }));
+    bridge.dispose();
+  });
 });
 
 function feature<T>(snapshot: T, commands: Record<string, unknown> = {}) {
   const listeners = new Set<() => void>();
   return {
     ...commands,
+    update(next: T) { snapshot = next; for (const listener of listeners) listener(); },
     view: {
       getSnapshot: () => snapshot,
       subscribe: (listener: () => void) => {

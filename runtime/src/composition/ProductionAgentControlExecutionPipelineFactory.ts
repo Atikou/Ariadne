@@ -11,6 +11,10 @@ import type {
   ExactAgentModelInferenceRuntime
 } from '../control/ports/AgentModelInference.js';
 import type { AgentProcessSandbox } from '../control/ports/AgentProcessSandbox.js';
+import type { SqliteProductivityStore } from '../adapters/persistence/SqliteProductivityStore.js';
+import { ProductionGoalPlanningAuthority } from './ProductionGoalPlanningAuthority.js';
+import { ProductionAgentMemoryToolAuthority } from './ProductionAgentMemoryToolAuthority.js';
+import type { LongMemoryAuthority } from '../control/ports/LongMemoryAuthority.js';
 import type { AgentSubagentSessionStore } from '../control/ports/AgentSubagentSessionStore.js';
 import type {
   SqliteAgentRunUnitOfWork
@@ -71,16 +75,20 @@ export interface AgentControlExecutionPipeline {
   readonly handoffProducer: ConversationAgentHandoffProducer;
   readonly executionScheduler: AgentRunExecutionIntentScheduler;
   readonly runWorkScheduler: AgentRunWorkScheduler;
+  readonly cancellations?: import('./agent-entity/components/run-control/AgentRunCancellationContracts.js').AgentRunCancellationOwner;
   readonly toolPresentationResolver: AgentToolPresentationResolver;
   readonly protectedEffectResultReader?: ProtectedAgentEffectResultReader;
   /** Synchronous, pre-write gate for one new Conversation objective. */
   assertConversationMessageAdmission(workspaceId: string): void;
+  readonly assertGoalAutonomyAdmission?: (workspaceId: string) => void;
   observeRuntimeStop(occurredAt: string): void;
 }
 
 export interface AgentControlExecutionPipelineFactoryInput {
   readonly unitOfWork: SqliteAgentRunUnitOfWork;
   readonly conversation: SqliteConversationRunHandoffUnitOfWork;
+  readonly productivity?: SqliteProductivityStore;
+  readonly memoryAuthority?: LongMemoryAuthority;
   readonly agentAdmissionAuthoritySource: AgentAdmissionAuthoritySource;
   readonly modelProviders: RuntimeBootstrap['modelProviders'];
   readonly subagentProviders?: RuntimeBootstrap['subagentProviders'];
@@ -185,6 +193,12 @@ implements AgentControlExecutionPipelineFactory {
       unitOfWork: input.unitOfWork,
       authoritySource: source,
       catalogSnapshots: this.options.toolCatalogSnapshots,
+      ...(input.memoryAuthority === undefined ? {} : { memory: new ProductionAgentMemoryToolAuthority(input.memoryAuthority,
+        runId => input.unitOfWork.transaction(transaction => transaction.loadRun(runId)),
+        (runId, effectId) => input.unitOfWork.loadEffectExecutionInput(runId, effectId), this.options.toolCatalogSnapshots) }),
+      ...(input.productivity === undefined ? {} : { goalPlanning: new ProductionGoalPlanningAuthority(input.productivity,
+        input.conversation, runId => input.unitOfWork.transaction(transaction => transaction.loadRun(runId)),
+        (runId, effectId) => input.unitOfWork.loadEffectExecutionInput(runId, effectId), input.unitOfWork) }),
       lifecycleHooks
     });
     const catalogs = tools.catalogs;
@@ -246,8 +260,17 @@ implements AgentControlExecutionPipelineFactory {
       handoffProducer: scheduler.handoffProducer,
       executionScheduler: scheduler.executionScheduler,
       runWorkScheduler: scheduler.runWorkScheduler,
+      cancellations: scheduler.cancellations,
       toolPresentationResolver: catalogs,
       protectedEffectResultReader: tools.protectedEffectResultReader,
+      ...(input.productivity === undefined ? {} : { assertGoalAutonomyAdmission: (workspaceId: string): void => {
+        const manifest = manifests.get(workspaceId);
+        if (manifest === undefined || !manifest.toolCatalog.allowedToolNames.includes('productivity.record_goal_decision')
+          || !tools.hasExactAuthority(manifest) || !loop.hasExactModelAuthority(manifest)
+          || !Number.isFinite(this.now()) || Date.parse(manifest.rootBudget.deadlinePolicy.deadlineAt) <= this.now()) {
+          throw new ProductivityCommandRejected('goal_autonomy_unavailable');
+        }
+      } }),
       assertConversationMessageAdmission: (workspaceId: string): void => {
         const manifest = manifests.get(workspaceId);
         if (manifest === undefined) {
@@ -277,3 +300,4 @@ implements AgentControlExecutionPipelineFactory {
     });
   }
 }
+import { ProductivityCommandRejected } from '../adapters/persistence/ProductivityCommandRejected.js';

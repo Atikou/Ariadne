@@ -1,3 +1,4 @@
+import { markAuthorityIntegrityError } from '../../SqliteAuthorityHealth.js';
 import type {
   AgentRunExecutionIntent,
   AgentRunExecutionIntentClaimRequest,
@@ -273,5 +274,5 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function storageCorruption(message: string, cause?: unknown): Error {
-  return new Error(`agent_v3_storage_corruption:${message}`, { cause });
+  return markAuthorityIntegrityError('execution', new Error(`agent_storage_corruption:${message}`, { cause }));
 }

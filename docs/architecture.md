@@ -1,8 +1,8 @@
 # Ariadne 当前实现架构
 
 > 状态：Current implementation
-> 核对日期：2026-08-26
-> 本文描述当前生产接线；长期不变量见 [目标架构](architecture-v3.md)。
+> 核对日期：2026-10-04
+> 本文描述当前生产接线；长期不变量见 ADR 索引，当前整改证据见 remediation-verification.md。
 
 ## 1. 进程与信任边界
 
@@ -36,14 +36,19 @@ Runtime 不启动入站 HTTP Server。远程 MCP HTTP/OAuth 和系统凭据由 M
 
 Host 与 Headless 协议当前均使用版本 `3.0`。所有入站消息执行严格 schema、版本、实例、尺寸、deadline 和 command identity 校验。
 
-Public v3 命令面为：
+Public 契约版本为 `5.0`，Host/Headless 传输版本仍为 `3.0`。命令、结果、当前 schema/type 和协议文件使用固定名称；版本只描述真正的协议或持久格式。以下是全部 49 个当前公共命令：
 
 | 所有者 | 命令 |
 |---|---|
 | Runtime Kernel | `runtime.status.get` |
-| Agent Control | `projection.snapshot.get`、`projection.commits.read` |
-| Conversation Authority | `conversation.session.create.v3`、`conversation.session.rename.v3`、`conversation.session.archive.v3`、`conversation.session.restore.v3`、`conversation.message.accept.v3` |
-| Agent Control | `agent.decision.resolve.v3`、`agent.run.cancel.v3` |
+| Model Capability | `model.qualification.run`、`model.availability.check`、`model.quality.evaluate` |
+| Public Projection | `projection.snapshot.get`、`projection.commits.read` |
+| Conversation Authority | `conversation.session.create`、`conversation.session.title.generate`、`conversation.session.rename`、`conversation.session.archive`、`conversation.session.restore`、`conversation.session.fork`、`conversation.sessions.query`、`conversation.message.accept`、`conversation.message.resolve` |
+| Agent Control | `agent.decision.resolve`、`agent.run.cancel`、`agent.inbox.enqueue`、`agent.inbox.replace`、`agent.inbox.remove`、`agent.subagent.send`、`agent.subagent.interrupt`、`agent.tool_result.detail.get` |
+| Human Skills | `skill.commands.query`、`skill.command.load`、`skill.command.resource.read` |
+| Productivity | `goal.put`、`todo.snapshot.replace`、`productivity.query`、`workflow.start`、`workflow.advance`、`workflow.cancel`、`schedule.create`、`schedule.transition`、`schedules.query`、`schedule.occurrences.query`、`schedule.occurrence.retry`、`goal.autonomy.start`、`goal.autonomy.transition` |
+| Long Memory | `memory.query`、`memory.read`、`memory.put`、`memory.transition`、`memory.delete`、`memory.recall` |
+| Workspace Documents | `workspace.document.read`、`workspace.document.save`、`workspace.document.move`、`workspace.document.delete` |
 
 任何未归属命令都返回 `runtime_command_not_supported`。Ingress 不会先尝试新 Control 再回退到旧实现。
 
@@ -55,13 +60,22 @@ dataRoot/data/
   conversation/conversation.db
   agent-control/agent-control.db
   public-projection/projection.db
+  productivity/productivity.db
+  model-capability/model-capability.db
+  long-memory/long-memory.db
+  long-memory/search-index.db (派生索引，可重建)
 ```
 
 - Runtime Command Journal 只拥有 command identity、digest、执行确定性和有界 replay outcome。
 - Conversation Store 是版本化 Session title/status、Message 和 Conversation-to-Agent Handoff 的唯一 Writer；精确 Session version 是不可变 replay source。
 - Agent Control Store 是 Run、Turn、Inference Attempt、Decision、Effect、Plan、Budget、Delegation、Checkpoint、Receipt 和 Outbox 的唯一 Writer。
 - Public Projection 是可重建读模型，只由 Conversation、Agent Run、Model、inference stream 和 observability publisher 更新。
+- Productivity 拥有 Goal/Todo/Workflow/Schedule、持久执行身份、依赖结果和调度提交退避；其 Worker 经普通 Conversation/Agent 路径执行任务。
+- Model Capability 拥有 qualification、模型 fingerprint 和有时效的实测质量；Long Memory 原权威拥有正文、审核、作用域、FTS、命令回执和忘记 tombstone。独立派生记忆索引保存元数据、向量空间、桶和增量任务；后台补算，前台有界检索并回读原权威，不作为第二个正文写入者。见 [ADR 0041](adr/0041-incremental-memory-search-index.md)。
+- `DatabasePaths.ts` 固定七个数据库名称，`database-layout.json` 固定表、索引和约束，`persistence-contract.json` 固定九个业务访问契约。普通功能更新不改这些基线；大改必须经过明确离线迁移、记录保留和恢复验收。
 - Trace、Renderer cache 和进程内队列都不能驱动恢复。
+
+记忆索引恢复消费同事务原回执，并将位置绑定 commandId；失配只重扫派生元数据，不重放业务命令。补算绑定记录版本、嵌入空间和索引 scanTag；重建期间旧计算不能发布或删除新代任务。查询有五秒截止和取消信号；取消结束调用方等待，真实原生计算仍占容量，关闭等待它结束。候选最多 128 向量／131072 坐标，指令检索先做 indexed Top-N；受限结果明确 complete=false，不将词法命中标成语义。七个原权威／日志的布局和九访问契约保持；新派生库使用自己的布局审计，未知格式保持原样并拒绝使用。
 
 跨数据库流程使用持久 Saga/Inbox/Outbox，不做长期双写。外部 I/O 前先提交 intention/start；未知结果进入明确的 `uncertain` 或 recovery 状态。
 
@@ -98,7 +112,7 @@ Renderer 冷启动读取 `projection.snapshot.get`，随后通过 `projection.co
 
 Agent lifecycle diagnostics 由独立 observability publisher 脱敏后写入同一 Projection，支持 cursor/digest 重放、稳定 delivery 去重和 512 条 retention。它不是完整 Prompt/Tool 日志，也不拥有恢复权威。
 
-Renderer 使用 v3 Session/Message、Decision、Cancel、Agent inbox、模型资格检测和 productivity 等对应 owner 的命令与查询。Session title 与 archive/restore 只来自 Runtime Projection；本机导航存储仅保留 pin/unread。Renderer 不再使用旧 `runtime.snapshot.get`、`events.replay`、Proposal/Permission/Plan 分散命令，也不从多个 legacy Store 修补领域状态。
+Renderer 使用当前 Session/Message、Decision、Cancel、Agent inbox、模型资格检测和 productivity 等对应 owner 的固定命令与查询。Session title 与 archive/restore 只来自 Runtime Projection；本机导航存储仅保留 pin/unread。Renderer 不再使用旧 `runtime.snapshot.get`、`events.replay`、Proposal/Permission/Plan 分散命令，也不从多个 legacy Store 修补领域状态。
 
 实时推理事件是可丢失的显示增量：Renderer 按精确 Attempt 对账持久 head 与连续后缀，缺口拉取现有 Projection，最终 Message 仍拥有正式答案。终态不能降级为 streaming。Main 的投递游标属于单个 Runtime 实例，自动重启也必须重置。Renderer 派生结果和订阅按数据切片隔离，live token 批量发布，数据库 commit 仍原子可见。
 
@@ -112,13 +126,16 @@ Renderer 使用 v3 Session/Message、Decision、Cancel、Agent inbox、模型资
 | Skills | 静态 Provider 按 Workspace 生成可取消 complete/incomplete snapshot；瞬时失败使用 last-good，权威缺失清除它；package revision 覆盖正文与有界资源，model/user policy 进入 invocation-neutral snapshot；正文与资源只经 admission-pinned `skill.load` / `skill.resource.read` 进入 protected continuation |
 | Hooks | 8 个 typed lifecycle extension point 由 Manifest-owned 静态可信 Provider service 管理；pre 可拒绝、admission 只能收窄，post observer-only；handler set 与 Provider 按反向顺序关闭 |
 | Context | Conversation 历史、确定性 semantic compaction、protected Effect result spill、usage anchor、逐 binding tokenizer、最终投影硬准入和 overflow recovery 已进入 v3；真实本地 llama.cpp 跨进程长上下文验收已通过，远程 Live Provider 仍待有 credential 的环境执行 |
-| Memory/Embedding | 有旧实现和测试，但没有完整 v3 生产 consumer |
+| Memory/Embedding | 独立生产 owner、六个公共命令、审核 UI、三个固定 Agent 工具和指令贡献已接通；实际本地 GGUF embedding 已有隔离验收；不支持退役格式导入，原文件保持不变 |
+| Quality-first | 六项固定文本任务产生带 fingerprint、摘要和 30 天时效的实测质量；按有效分数排序，资格和可用性仍是前提，不宣称通用事实正确性评测 |
+| Workspace Documents | 共享生产文件权威提供 UTF-8 读/存/移动/删除，编辑器使用文件版本 CAS、有界草稿和显式冲突；没有完整 IDE 或 Git 审阅台 |
+| Workflow/Goal | 持久任务领取、普通 Agent Run、冻结会话边界、精确前置结果、取消等待和自主规划/执行/验收闭环已接通；模型的语义判断仍需有效证据来源 |
 | SubAgent | 单个/批量 Child、one-shot/continuable ordinary Run、list/status/send/interrupt、ACP resume、Codex app-server 与 Claude Code one-shot 已接入；structured report、真实窗口与 Claude live credential gate 待验收 |
-| Scheduler | v3 productivity authority 持有 once/interval/cron、稳定 occurrence 与原 Session Turn 投递；旧 JSONL 仅供显式迁移，event trigger 不自动映射 |
+| Scheduler | v3 productivity authority 持有 once/interval/cron、稳定 occurrence 与原 Session Turn 投递；不支持退役 JSONL 导入 |
 | Diagnostics/Telemetry | lifecycle diagnostics 已持久、脱敏、可重放；Telemetry 只在 exporter 启动成功后宣告 |
 | Provider Resilience | 冻结 policy 已进入 exact v3 transport；按 Provider/model/settings 隔离并发、速率、首语义输出前重试和熔断，429/5xx/timeout 与有界 Retry-After 有确定性测试 |
 
-Runtime status 只读取 bootstrap 冻结 Manifest 中已成功启动 Provider 的输出，不再自行读取配置拼接清单。协议枚举但没有 Provider owner 的条目进入 `unwiredPublicCapabilities` 审计结果，不能出现在 status。详见 [Runtime Capability Manifest](capability-manifest.md)。
+Runtime status 只读取 bootstrap 冻结 Manifest 中已成功启动 Provider 的输出，不再自行读取配置拼接清单。旧 `agent.proposals` 和 `resources` 明确列入 `retiredPublicCapabilities`，声明它们会在 Provider 启动前拒绝；当前 `unwiredPublicCapabilities` 为空。保留历史状态解码不代表复活旧能力。详见 [Runtime Capability Manifest](capability-manifest.md)。
 
 ## 7. 生命周期与安全
 
@@ -143,19 +160,10 @@ Runtime status 只读取 bootstrap 冻结 Manifest 中已成功启动 Provider �
 - BGE-M3 或其他实际 Embedding 资产；
 - 正式签名安装包的全新安装、N-1 升级、失败回滚、降级和卸载。
 
-验证证据见 [验证说明](verification.md)，能力差距与路线见 [deepseek-harness 对比审计](deepseek-harness-comparison-audit-2026-08-28.md)。
+验证证据见 [验证说明](verification.md)，能力差距与路线见 [整改验证记录](remediation-verification.md)。
 
-## 9. 内部边界与旧源码消费者（2026-09-05）
+## 9. 当前内部边界（2026-10-05）
 
 模型适配器只协调已绑定的模型调用；历史构建、请求校验、工具 schema 和响应解析分别位于 `AgentModelHistory/Request/ToolContracts/Response`。SQLite 的行读取、payload codec、准备校验、事实写入、恢复与 admission 校验已经分开，但仍由原 `SqliteAgentRunUnitOfWork` / `SqliteConversationRunHandoffUnitOfWork` 和同一个 `SqliteTransactionOwner` 提交。内部模块不能获取新数据库连接或另行 BEGIN/COMMIT；启动时 owner 接管 outbox 的同步恢复仍留在 UoW 初始化边界。未改变 schema、存储格式或 command receipt 身份。
 
-| 保留源码 | 当前消费者 | 归属与移除条件 |
-|---|---|---|
-| `RuntimeKernelApplication` / `ComposedRuntimeIngress` | `entry/runtime-process.ts`、`entry/headless.ts` | 当前生产装配；Profile/Manifest 装配到这些入口 |
-| `application/createRuntimeContext.ts` → `app/createAppContext.ts` | `runtime-workspace-access.test.ts` 的四条旧配置/工作区回归；`app/index.ts` 仅 re-export | 未找到生产或 CLI 调用；保留为旧模型回归支持，迁移这四条测试后才移除根装配 |
-| `CompanionAgentPlanWorkflow` 与 `AppContext` 类型 | `companion-agent-plan-workflow.test.ts`；`PublicConfigContracts.ts` 只引用类型 | 旧流程的测试消费者；不能据文件存在推断生产仍启用旧控制平面 |
-| `config`、`model/ModelFactory`、本地模型与存储工具 | 生产精确模型适配器及 `cli/main.ts`、`check-models.ts`、storage/sandbox 等 CLI | 当前共享库或独立 CLI；不能随旧 AppContext 目录关系批量删除 |
-| `LegacySchedulerJournalReader` | 显式 `cli/migrate-scheduler-v3.ts` | 只读旧日志迁移；没有生产定时执行权，保留至旧格式迁移支持结束 |
-| Agent Control v5→v6、v6→v7 migration 与受保护 payload/keyring 校验 | 显式迁移 CLI、启动校验、恢复路径及对应测试 | 数据迁移、完整性和安全设施；保留 |
-
-这份清单区分入口装配与共享源码，依据当前静态 import/callsite 和 package scripts。未发现的外部私有消费者不作为已知契约；本次不运行旧构造器清理或迁移用户数据。代码修复的剩余事项统一维护在 [修复入口](architecture-review-and-remediation.md)，日期审计只作历史快照。
+当前入口、Worker、共享模型适配器和 Schema 升级的归属及验证边界见 [整改验证记录](remediation-verification.md)。

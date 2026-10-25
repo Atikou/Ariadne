@@ -26,13 +26,10 @@ describe('Dockview module size constraints', () => {
     expect(chat?.source).toContain('minimumWidth: 620');
   });
 
-  it('applies current constraints to new panels and restored layouts', async () => {
+  it('requires module size constraints in the registration contract', async () => {
     const contract = await readFile(join(rendererRoot, 'core', 'modules', 'module-contract.ts'), 'utf8');
-    const workspace = await readFile(join(rendererRoot, 'app', 'Workspace.tsx'), 'utf8');
-
     expect(contract).toContain('layoutConstraints: ModuleLayoutConstraints;');
-    expect(workspace).toContain('minimumWidth: definition.layoutConstraints.minimumWidth');
-    expect(workspace).toMatch(/api\.fromJSON\(layout\);\s*applyModuleConstraints\(api, registry\);/);
-    expect(workspace).toMatch(/function applyModuleConstraints[\s\S]*?api\.setConstraints\(\{[\s\S]*?minimumWidth:/);
+    // New panel and persisted-layout behavior is exercised through the actual
+    // production Workspace in scripts/renderer-ui-smoke.cjs.
   });
 });

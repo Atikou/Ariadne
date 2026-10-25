@@ -333,10 +333,10 @@ function agentControlCounts(root: string): {
       `SELECT COUNT(*) AS count FROM ${table}`
     ).get() as { count: number }).count);
     return {
-      runs: count('agent_v3_runs'),
-      commands: count('agent_v3_commands'),
-      events: count('agent_v3_events'),
-      checkpoints: count('agent_v3_checkpoints')
+      runs: count('agent_runs'),
+      commands: count('agent_commands'),
+      events: count('agent_events'),
+      checkpoints: count('agent_checkpoints')
     };
   } finally {
     database.close();

@@ -75,7 +75,7 @@ const boundaries = [
     file: 'runtime/src/composition/agent-entity/AgentEntityHandle.ts',
     maxLines: 250,
     required: [
-      './AgentEntityCommandAssembly.js',
+      './AgentEntityServices.js',
       './AgentEntityManifest.js',
       './components/persistence/AgentPersistenceComponent.js',
       './components/projection/AgentProjectionComponent.js',
@@ -299,7 +299,7 @@ const boundaries = [
     file: 'runtime/src/composition/agent-entity/components/run-control/AgentRunControlComponent.ts',
     maxLines: 180,
     required: [
-      'AgentRunCommandService'
+      'AgentRunCancellationService'
     ],
     forbidden: [
       /AgentDecisionAuthorityService/,
@@ -313,7 +313,7 @@ const boundaries = [
     maxLines: 145,
     required: [
       '../../../../control/run/AgentDecisionAuthorityService.js',
-      'agent.decision.resolve.v3'
+      'agent.decision.resolve'
     ],
     forbidden: [
       /AgentRunCommandService/,
@@ -470,7 +470,7 @@ const boundaries = [
     file: 'app/src/renderer/src/core/runtime/runtime-store.ts',
     maxLines: 635,
     required: [
-      'ProjectionCache',
+      'RendererProjectionRepository',
       'ProjectionRuntimeClient',
       'DecisionFeatureStore',
       'HumanSkillFeatureStore',

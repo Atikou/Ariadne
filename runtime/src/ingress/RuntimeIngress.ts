@@ -6,7 +6,7 @@ import type {
 import type {
   RuntimeCommand,
   RuntimeEventEnvelope,
-  RuntimeStatus
+  RuntimeStatus, RuntimeHealth
 } from '@ariadne/protocol/public';
 
 import type { HostCapabilityClient } from './HostCapabilityClient.js';
@@ -62,13 +62,15 @@ export interface RuntimeIngress {
 
 /** Safe startup failure projected by Composition for protocol adapters. */
 export class RuntimeIngressInitializationError extends Error {
+  public readonly health: RuntimeHealth | undefined;
   public constructor(
     public readonly phase: string,
     public readonly code: string,
     public readonly publicMessage: string,
-    options?: ErrorOptions
+    options?: ErrorOptions & { readonly health?: RuntimeHealth }
   ) {
     super(publicMessage, options);
     this.name = 'RuntimeIngressInitializationError';
+    this.health = options?.health;
   }
 }

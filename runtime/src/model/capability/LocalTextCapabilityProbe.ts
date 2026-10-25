@@ -5,13 +5,13 @@ import {
   unknownQualification,
   type ModelCapabilityQualification
 } from './ModelCapabilityQualification.js';
-import type { ModelCapabilityRegistry } from './ModelCapabilityRegistry.js';
+import type { ModelCapabilityAuthority } from './ModelCapabilityAuthority.js';
 
 const PROBE_PROMPT = '请只回复一段非空的自然语言文本，用一句话说明一加一等于几。';
 
 /** Isolated model probe: no Conversation, Agent Run, workspace, or real Tool state exists here. */
 export class LocalTextCapabilityProbe {
-  public constructor(private readonly registry: ModelCapabilityRegistry) {}
+  public constructor(private readonly registry: ModelCapabilityAuthority) {}
 
   public async run(input: {
     readonly providerId: string;

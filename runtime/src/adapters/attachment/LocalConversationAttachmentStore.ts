@@ -3,14 +3,14 @@ import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
-  MAX_IMAGE_ATTACHMENT_DIMENSION_V3,
-  MAX_IMAGE_ATTACHMENT_MESSAGE_BYTES_V3,
-  MAX_IMAGE_ATTACHMENT_PIXELS_V3,
-  MAX_IMAGE_ATTACHMENT_SOURCE_BYTES_V3,
-  encodedImageAttachmentV3Schema,
-  imageAttachmentRefV3Schema,
-  type EncodedImageAttachmentV3,
-  type ImageAttachmentRefV3
+  MAX_IMAGE_ATTACHMENT_DIMENSION,
+  MAX_IMAGE_ATTACHMENT_MESSAGE_BYTES,
+  MAX_IMAGE_ATTACHMENT_PIXELS,
+  MAX_IMAGE_ATTACHMENT_SOURCE_BYTES,
+  encodedImageAttachmentSchema,
+  imageAttachmentRefSchema,
+  type EncodedImageAttachment,
+  type ImageAttachmentRef
 } from '@ariadne/protocol/public';
 import sharp from 'sharp';
 
@@ -25,7 +25,7 @@ const NORMALIZED_MAX_BYTES = 1536 * 1024;
 const QUALITY_LADDER = [90, 82, 74, 66, 58, 50] as const;
 
 interface PreparedImage {
-  readonly ref: ImageAttachmentRefV3;
+  readonly ref: ImageAttachmentRef;
   readonly bytes: Buffer;
 }
 
@@ -41,21 +41,21 @@ export class LocalConversationAttachmentStore implements ConversationAttachmentS
   }
 
   public async saveImages(
-    inputs: readonly EncodedImageAttachmentV3[],
+    inputs: readonly EncodedImageAttachment[],
     signal?: AbortSignal
-  ): Promise<readonly ImageAttachmentRefV3[]> {
+  ): Promise<readonly ImageAttachmentRef[]> {
     signal?.throwIfAborted();
     if (!Array.isArray(inputs) || inputs.length === 0 || inputs.length > 4) {
       throw attachmentError('batch_invalid');
     }
     const parsed = inputs.map((input) => {
-      const result = encodedImageAttachmentV3Schema.safeParse(input);
+      const result = encodedImageAttachmentSchema.safeParse(input);
       if (!result.success) throw attachmentError('input_invalid', result.error);
       return result.data;
     });
     const sourceBytes = parsed.map((input) => decodeCanonicalBase64(input.data));
     if (sourceBytes.reduce((sum, bytes) => sum + bytes.byteLength, 0)
-      > MAX_IMAGE_ATTACHMENT_MESSAGE_BYTES_V3) {
+      > MAX_IMAGE_ATTACHMENT_MESSAGE_BYTES) {
       throw attachmentError('batch_too_large');
     }
 
@@ -64,7 +64,7 @@ export class LocalConversationAttachmentStore implements ConversationAttachmentS
       prepareImage(input, sourceBytes[index]!, signal)
     )));
     if (prepared.reduce((sum, image) => sum + image.bytes.byteLength, 0)
-      > MAX_IMAGE_ATTACHMENT_MESSAGE_BYTES_V3) {
+      > MAX_IMAGE_ATTACHMENT_MESSAGE_BYTES) {
       throw attachmentError('normalized_batch_too_large');
     }
     signal?.throwIfAborted();
@@ -73,11 +73,11 @@ export class LocalConversationAttachmentStore implements ConversationAttachmentS
   }
 
   public async readImage(
-    rawRef: ImageAttachmentRefV3,
+    rawRef: ImageAttachmentRef,
     signal?: AbortSignal
   ): Promise<StoredConversationImageAttachment> {
     signal?.throwIfAborted();
-    const parsed = imageAttachmentRefV3Schema.safeParse(rawRef);
+    const parsed = imageAttachmentRefSchema.safeParse(rawRef);
     if (!parsed.success) throw attachmentError('reference_invalid', parsed.error);
     const ref = parsed.data;
     const data = await readFile(this.objectPath(ref.attachmentId));
@@ -137,20 +137,20 @@ export class LocalConversationAttachmentStore implements ConversationAttachmentS
 }
 
 async function prepareImage(
-  input: EncodedImageAttachmentV3,
+  input: EncodedImageAttachment,
   bytes: Buffer,
   signal?: AbortSignal
 ): Promise<PreparedImage> {
   signal?.throwIfAborted();
-  if (bytes.byteLength === 0 || bytes.byteLength > MAX_IMAGE_ATTACHMENT_SOURCE_BYTES_V3) {
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_IMAGE_ATTACHMENT_SOURCE_BYTES) {
     throw attachmentError('source_size_invalid');
   }
   const source = await inspectImage(bytes);
   if (source.mediaType !== input.mediaType) throw attachmentError('media_type_mismatch');
   if (
-    source.width > MAX_IMAGE_ATTACHMENT_DIMENSION_V3
-    || source.height > MAX_IMAGE_ATTACHMENT_DIMENSION_V3
-    || source.width * source.height > MAX_IMAGE_ATTACHMENT_PIXELS_V3
+    source.width > MAX_IMAGE_ATTACHMENT_DIMENSION
+    || source.height > MAX_IMAGE_ATTACHMENT_DIMENSION
+    || source.width * source.height > MAX_IMAGE_ATTACHMENT_PIXELS
   ) throw attachmentError('source_dimensions_invalid');
 
   const scale = Math.min(
@@ -164,7 +164,7 @@ async function prepareImage(
   let smallest: Buffer | undefined;
   for (const quality of QUALITY_LADDER) {
     signal?.throwIfAborted();
-    const pipeline = sharp(bytes, { failOn: 'warning', limitInputPixels: MAX_IMAGE_ATTACHMENT_PIXELS_V3 })
+    const pipeline = sharp(bytes, { failOn: 'warning', limitInputPixels: MAX_IMAGE_ATTACHMENT_PIXELS })
       .rotate()
       .resize({ width, height, fit: 'inside', withoutEnlargement: true })
       .toColorspace('srgb');
@@ -179,7 +179,7 @@ async function prepareImage(
   }
   const normalized = await inspectImage(smallest);
   const id = attachmentId(smallest);
-  const ref: ImageAttachmentRefV3 = {
+  const ref: ImageAttachmentRef = {
     attachmentId: id,
     mediaType: normalized.mediaType,
     bytes: smallest.byteLength,
@@ -190,11 +190,11 @@ async function prepareImage(
       ? {}
       : { originalDimensions: { width: source.width, height: source.height } })
   };
-  return { ref: imageAttachmentRefV3Schema.parse(ref), bytes: smallest };
+  return { ref: imageAttachmentRefSchema.parse(ref), bytes: smallest };
 }
 
 async function inspectImage(bytes: Buffer): Promise<{
-  readonly mediaType: ImageAttachmentRefV3['mediaType'];
+  readonly mediaType: ImageAttachmentRef['mediaType'];
   readonly width: number;
   readonly height: number;
   readonly hasAlpha: boolean;
@@ -203,7 +203,7 @@ async function inspectImage(bytes: Buffer): Promise<{
   try {
     metadata = await sharp(bytes, {
       failOn: 'warning',
-      limitInputPixels: MAX_IMAGE_ATTACHMENT_PIXELS_V3
+      limitInputPixels: MAX_IMAGE_ATTACHMENT_PIXELS
     }).metadata();
   } catch (error) {
     throw attachmentError('decode_failed', error);

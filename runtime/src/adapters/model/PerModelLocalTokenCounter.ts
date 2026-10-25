@@ -6,7 +6,7 @@ import type {
   ExactAgentModelInferenceToolContract,
   ExactAgentModelTokenCount
 } from '../../control/ports/AgentModelInference.js';
-import { estimateMessagesTokens } from './V3LongContextLifecycle.js';
+import { estimateMessagesTokens } from './LongContextLifecycle.js';
 
 /**
  * A route-local tokenizer must be bound to the exact Provider/model revision.

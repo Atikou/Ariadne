@@ -5,6 +5,7 @@ import {
   AgentRunNotFoundError,
   AgentRunVersionConflictError
 } from '../domain/errors.js';
+import { assertAgentRunExternalStartAllowed } from './agent-run-cancellation-authority.js';
 import {
   assertCanonicalPublicId,
   assertPositiveInteger,
@@ -24,6 +25,7 @@ import type {
 import type {
   AgentEffectResultContinuationAuthorityCheck,
   AgentRunCommandCommit,
+  AgentRunTransaction,
   AgentRunUnitOfWork,
   CommittedAgentRunMutation,
   CommittedAgentRunCommand
@@ -43,6 +45,8 @@ import {
   type AgentCommittedDirectiveDigester
 } from './directive-digest.js';
 import { admitAgentRun } from './admit-agent-run.js';
+import { sha256AgentControlData } from './control-command-digest.js';
+import { planApprovalInputForRun } from './plan-approval-input.js';
 import {
   EMPTY_AGENT_CONTROL_COMMIT_FACTS,
   assertAgentControlCommitFacts,
@@ -72,6 +76,27 @@ export class AgentRunCommandService {
     artifacts: AgentRunCommitArtifacts,
     facts: AgentControlCommitFacts = EMPTY_AGENT_CONTROL_COMMIT_FACTS
   ): Promise<AgentRunCommandResult> {
+    const prepared = await this.prepare(command, facts);
+    return this.unitOfWork.transaction((transaction) => (
+      this.commitPrepared(transaction, command, artifacts, prepared)
+    ));
+  }
+
+  /** Derive and commit an internal command under the same authority transaction. */
+  public async executeInTransaction(
+    transaction: AgentRunTransaction,
+    command: AgentRunCommand,
+    artifacts: AgentRunCommitArtifacts,
+    facts: AgentControlCommitFacts = EMPTY_AGENT_CONTROL_COMMIT_FACTS
+  ): Promise<AgentRunCommandResult> {
+    const prepared = await this.prepare(command, facts);
+    return this.commitPrepared(transaction, command, artifacts, prepared);
+  }
+
+  private async prepare(command: AgentRunCommand, facts: AgentControlCommitFacts): Promise<{
+    readonly commandDigest: string;
+    readonly controlFacts: AgentControlCommitFacts;
+  }> {
     assertCanonicalPublicId(command.commandId, 'command.commandId');
     assertCanonicalPublicId(command.runId, 'command.runId');
     assertTimestamp(command.occurredAt, 'command.occurredAt');
@@ -93,119 +118,139 @@ export class AgentRunCommandService {
     }
     const commandDigest = await this.commandDigester.digest(command);
     const controlFacts = controlFactsForCommand(command, facts);
+    return { commandDigest, controlFacts };
+  }
 
-    return this.unitOfWork.transaction(async (transaction) => {
-      const committed = await transaction.loadCommittedCommand(
-        command.commandId,
-        [{ runId: command.runId, artifacts }],
-        controlFacts
-      );
-      if (committed !== null) {
-        const mutation = requireSingleMutation(committed, command.runId);
-        if (mutation.runId !== command.runId) {
-          throw new AgentRunCommandConflictError(
-            command.commandId,
-            mutation.runId,
-            command.runId
-          );
-        }
-        if (committed.commandDigest !== commandDigest) {
-          throw new AgentRunCommandConflictError(
-            command.commandId,
-            mutation.runId,
-            command.runId,
-            'command_mismatch'
-          );
-        }
-        return replayResult(committed.commandId, mutation);
-      }
-
-      const current = await transaction.loadRun(command.runId);
-      let transition;
-      let expectedVersion: number | null;
-
-      if (command.kind === 'run.start' || command.kind === 'run.admit') {
-        if (current !== null) {
-          throw new AgentRunAlreadyExistsError(command.runId);
-        }
-        transition = command.kind === 'run.admit'
-          ? admitAgentRun(command)
-          : createAgentRun(command);
-        expectedVersion = null;
-      } else {
-        if (current === null) {
-          throw new AgentRunNotFoundError(command.runId);
-        }
-        if (current.version !== command.expectedVersion) {
-          throw new AgentRunVersionConflictError(
-            command.runId,
-            command.expectedVersion,
-            current.version
-          );
-        }
-        transition = transitionAgentRun(current, command);
-        expectedVersion = current.version;
-      }
-
-      const events = decorateEvents(
-        command,
-        commandDigest,
-        transition.run.version,
-        transition.events
-      );
-      assertAgentRunCommitArtifacts(current, transition.run, artifacts);
-      await assertAgentRunCommitArtifactDigests(current, transition.run, artifacts);
-      if (
-        command.kind === 'run.register_turn'
-        && command.turn.cause.kind === 'effect_results'
-      ) {
-        const assertAuthority = transaction.assertEffectResultContinuationAuthority;
-        if (assertAuthority === undefined) {
-          throw new AgentRunInvariantError(
-            'The persistence transaction cannot prove effect-result continuation authority.'
-          );
-        }
-        const turnInput = artifacts.turnInputPayloads.find(
-          (candidate) => candidate.turnId === command.turn.turnId
+  private async commitPrepared(
+    transaction: AgentRunTransaction,
+    command: AgentRunCommand,
+    artifacts: AgentRunCommitArtifacts,
+    { commandDigest, controlFacts }: { readonly commandDigest: string; readonly controlFacts: AgentControlCommitFacts }
+  ): Promise<AgentRunCommandResult> {
+    const committed = await transaction.loadCommittedCommand(
+      command.commandId,
+      [{ runId: command.runId, artifacts }],
+      controlFacts
+    );
+    if (committed !== null) {
+      const mutation = requireSingleMutation(committed, command.runId);
+      if (mutation.runId !== command.runId) {
+        throw new AgentRunCommandConflictError(
+          command.commandId,
+          mutation.runId,
+          command.runId
         );
-        if (turnInput === undefined) {
-          throw new AgentRunInvariantError(
-            'An effect-result continuation requires its exact protected Turn input snapshot.'
-          );
-        }
-        const authorityCheck: AgentEffectResultContinuationAuthorityCheck = {
-          commandId: command.commandId,
-          runId: command.runId,
-          expectedVersion: command.expectedVersion,
-          resultingVersion: transition.run.version,
-          turnId: command.turn.turnId,
-          inputDigest: command.turn.inputDigest,
-          snapshot: turnInput.payload
-        };
-        await assertAuthority.call(transaction, authorityCheck);
       }
-      const commit: AgentRunCommandCommit = {
-        commandId: command.commandId,
-        commandDigest,
-        mutations: [{
-          runId: command.runId,
-          expectedVersion,
-          resultingVersion: transition.run.version,
-          run: transition.run,
-          events,
-          artifacts
-        }],
-        facts: controlFacts
-      };
-      await transaction.commitCommand(commit);
+      if (committed.commandDigest !== commandDigest) {
+        throw new AgentRunCommandConflictError(
+          command.commandId,
+          mutation.runId,
+          command.runId,
+          'command_mismatch'
+        );
+      }
+      return replayResult(committed.commandId, mutation);
+    }
 
-      return {
+    const current = await transaction.loadRun(command.runId);
+    let transition;
+    let expectedVersion: number | null;
+
+    if (command.kind === 'run.start' || command.kind === 'run.admit') {
+      if (current !== null) {
+        throw new AgentRunAlreadyExistsError(command.runId);
+      }
+      transition = command.kind === 'run.admit'
+        ? admitAgentRun(command)
+        : createAgentRun(command);
+      expectedVersion = null;
+    } else {
+      if (current === null) {
+        throw new AgentRunNotFoundError(command.runId);
+      }
+      if (current.version !== command.expectedVersion) {
+        throw new AgentRunVersionConflictError(
+          command.runId,
+          command.expectedVersion,
+          current.version
+        );
+      }
+      if (command.kind === 'run.start_effect' || command.kind === 'run.start_inference_attempt') {
+        await assertAgentRunExternalStartAllowed(transaction, current);
+      }
+      const approvalInput = command.kind === 'run.resolve_decision' && command.resolution.kind === 'plan'
+        && command.resolution.outcome === 'approve' ? await planApprovalInputForRun(current) : undefined;
+      transition = transitionAgentRun(current, command, approvalInput);
+      if (command.kind === 'run.resolve_decision' && command.resolution.kind === 'plan'
+        && command.resolution.outcome === 'approve') {
+        const resolution = command.resolution;
+        const reference = { planId: resolution.planId, version: resolution.planVersion, contentHash: resolution.planHash };
+        const plan = await transaction.loadPlanVersion?.(reference);
+        if (plan == null || plan.runId !== current.runId || await sha256AgentControlData(plan.payload) !== reference.contentHash) {
+          throw new AgentRunInvariantError('Plan approval requires the exact intact protected Plan.');
+        }
+      }
+      expectedVersion = current.version;
+    }
+
+    const events = decorateEvents(
+      command,
+      commandDigest,
+      transition.run.version,
+      transition.events
+    );
+    assertAgentRunCommitArtifacts(current, transition.run, artifacts);
+    await assertAgentRunCommitArtifactDigests(current, transition.run, artifacts);
+    if (
+      command.kind === 'run.register_turn'
+      && command.turn.cause.kind === 'effect_results'
+    ) {
+      const assertAuthority = transaction.assertEffectResultContinuationAuthority;
+      if (assertAuthority === undefined) {
+        throw new AgentRunInvariantError(
+          'The persistence transaction cannot prove effect-result continuation authority.'
+        );
+      }
+      const turnInput = artifacts.turnInputPayloads.find(
+        (candidate) => candidate.turnId === command.turn.turnId
+      );
+      if (turnInput === undefined) {
+        throw new AgentRunInvariantError(
+          'An effect-result continuation requires its exact protected Turn input snapshot.'
+        );
+      }
+      const authorityCheck: AgentEffectResultContinuationAuthorityCheck = {
         commandId: command.commandId,
+        runId: command.runId,
+        expectedVersion: command.expectedVersion,
+        resultingVersion: transition.run.version,
+        turnId: command.turn.turnId,
+        inputDigest: command.turn.inputDigest,
+        snapshot: turnInput.payload
+      };
+      await assertAuthority.call(transaction, authorityCheck);
+    }
+    const commit: AgentRunCommandCommit = {
+      commandId: command.commandId,
+      commandDigest,
+      mutations: [{
+        runId: command.runId,
+        expectedVersion,
+        resultingVersion: transition.run.version,
         run: transition.run,
         events,
-        replayed: false
-      };
-    });
+        artifacts
+      }],
+      facts: controlFacts
+    };
+    await transaction.commitCommand(commit);
+
+    return {
+      commandId: command.commandId,
+      run: transition.run,
+      events,
+      replayed: false
+    };
   }
 }
 
@@ -214,6 +259,16 @@ function controlFactsForCommand(
   supplied: AgentControlCommitFacts
 ): AgentControlCommitFacts {
   assertAgentControlCommitFacts(supplied);
+  if (command.kind === 'run.resolve_decision' && command.resolution.kind === 'plan'
+    && command.resolution.outcome === 'approve') {
+    if (!emptyControlFacts(supplied)) throw new AgentRunInvariantError('Plan approval facts are derived from the exact resolution.');
+    const resolution = command.resolution;
+    return { ...EMPTY_AGENT_CONTROL_COMMIT_FACTS, planApprovals: [{
+      approvalId: command.commandId, decisionId: resolution.decisionId, runId: command.runId,
+      checkpointVersion: resolution.checkpoint.version, approvedAt: command.occurredAt,
+      plan: { planId: resolution.planId, version: resolution.planVersion, contentHash: resolution.planHash }
+    }] };
+  }
   if (command.kind === 'run.start' || command.kind === 'run.admit') {
     if (!emptyControlFacts(supplied)) {
       throw new AgentRunInvariantError(

@@ -25,7 +25,7 @@ import type {
 } from '../src/control/ports/AgentModelInference.js';
 import { SqlitePublicProjectionStore } from '../src/adapters/persistence/SqlitePublicProjectionStore.js';
 import { InferenceStreamPublicProjectionPublisher } from '../src/projection/InferenceStreamPublicProjectionPublisher.js';
-import { estimateMessagesTokens } from '../src/adapters/model/V3LongContextLifecycle.js';
+import { estimateMessagesTokens } from '../src/adapters/model/LongContextLifecycle.js';
 
 const PROTOCOL = 'ariadne.agent-directive.v3';
 

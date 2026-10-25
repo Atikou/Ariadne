@@ -42,7 +42,7 @@ import {
   observeAgentDispatchLifecycle,
   type AgentDispatchLifecycleObserver
 } from './agent-dispatch-lifecycle-observer.js';
-import { canonicalizeAgentControlData } from './control-command-digest.js';
+import { assertAgentRunInboxOnlyMutation } from './agent-run-inbox-authority.js';
 import type {
   AgentInferenceDirectivePlanner,
   AgentSubagentDelegationPlan
@@ -249,10 +249,10 @@ export class AgentInferenceDispatchService {
       throw recoveryRequired(request);
     }
     if (current.version !== request.expectedVersion) {
-      throw new AgentRunTransitionError(
-        `Inference dispatch expected Run version ${String(request.expectedVersion)}, `
-          + `found ${String(current.version)}.`
-      );
+      const baseline = await this.unitOfWork.transaction(transaction =>
+        transaction.loadRunVersion?.(request.runId, request.expectedVersion) ?? Promise.resolve(null));
+      if (baseline === null) throw new AgentRunTransitionError('Inference dispatch has no exact expected Run version.');
+      assertAgentRunInboxOnlyMutation(baseline, current);
     }
     if (current.state.status !== 'running') {
       throw new AgentRunTransitionError(
@@ -296,17 +296,6 @@ export class AgentInferenceDispatchService {
     // start checkpoint onto that exact authority only when inbox state is the
     // sole concurrent mutation. The prepared request remains the current
     // Turn's immutable input; newly queued inbox input belongs to a later Turn.
-    const startAuthority = await this.loadRun(current.runId);
-    const startTurn = requireTurn(startAuthority, request.turnId);
-    const startAttempt = requireAttempt(startTurn, request.attemptId);
-    assertInboxOnlyPreparationMutation(
-      current,
-      startAuthority,
-      startTurn,
-      startAttempt
-    );
-    signal.throwIfAborted();
-
     const startCommandId = await deriveStableAgentId(
       'inference-start',
       request.commandId,
@@ -314,23 +303,31 @@ export class AgentInferenceDispatchService {
       request.turnId,
       request.attemptId
     );
-    const started = await this.commands.execute({
-      kind: 'run.start_inference_attempt',
-      commandId: startCommandId,
-      runId: startAuthority.runId,
-      expectedVersion: startAuthority.version,
-      occurredAt: request.occurredAt,
-      turnId: startTurn.turnId,
-      attemptId: startAttempt.attemptId
-    }, checkpointArtifacts(this.checkpoints.create({
-      run: startAuthority,
-      turn: startTurn,
-      attempt: startAttempt,
-      checkpointVersion: startAuthority.state.checkpointVersion + 1,
-      phase: 'inference_started',
-      occurredAt: request.occurredAt,
-      modelContext: prepared.modelContext
-    })));
+    const started = await this.unitOfWork.transaction(async (transaction) => {
+      const startAuthority = await transaction.loadRun(current.runId);
+      if (startAuthority === null) throw new AgentRunNotFoundError(current.runId);
+      const startTurn = requireTurn(startAuthority, request.turnId);
+      const startAttempt = requireAttempt(startTurn, request.attemptId);
+      assertInboxOnlyPreparationMutation(current, startAuthority, startTurn, startAttempt);
+      signal.throwIfAborted();
+      return this.commands.executeInTransaction(transaction, {
+        kind: 'run.start_inference_attempt',
+        commandId: startCommandId,
+        runId: startAuthority.runId,
+        expectedVersion: startAuthority.version,
+        occurredAt: new Date(Math.max(Date.parse(request.occurredAt), Date.parse(startAuthority.updatedAt))).toISOString(),
+        turnId: startTurn.turnId,
+        attemptId: startAttempt.attemptId
+      }, checkpointArtifacts(this.checkpoints.create({
+        run: startAuthority,
+        turn: startTurn,
+        attempt: startAttempt,
+        checkpointVersion: startAuthority.state.checkpointVersion + 1,
+        phase: 'inference_started',
+        occurredAt: new Date(Math.max(Date.parse(request.occurredAt), Date.parse(startAuthority.updatedAt))).toISOString(),
+        modelContext: prepared.modelContext
+      })));
+    });
     if (started.replayed) throw recoveryRequired(request);
 
     const startedTurn = requireTurn(started.run, request.turnId);
@@ -546,21 +543,12 @@ function assertInboxOnlyPreparationMutation(
   turn: AgentTurn,
   attempt: AgentInferenceAttempt
 ): void {
+  assertAgentRunInboxOnlyMutation(preparedFrom, current);
   if (
-    current.runId !== preparedFrom.runId
-    || current.version < preparedFrom.version
-    || current.state.status !== 'running'
+    current.state.status !== 'running'
     || attempt.state.status !== 'intended'
     || turn.turnId
       !== preparedFrom.turns.find((candidate) => candidate.turnId === turn.turnId)?.turnId
-    || canonicalizeAgentControlData(current.binding)
-      !== canonicalizeAgentControlData(preparedFrom.binding)
-    || canonicalizeAgentControlData(current.turns)
-      !== canonicalizeAgentControlData(preparedFrom.turns)
-    || canonicalizeAgentControlData(current.effects)
-      !== canonicalizeAgentControlData(preparedFrom.effects)
-    || canonicalizeAgentControlData(current.state)
-      !== canonicalizeAgentControlData(preparedFrom.state)
   ) {
     throw new AgentRunTransitionError(
       'Inference preparation authority changed outside the durable Agent inbox boundary.'
@@ -574,20 +562,11 @@ function assertInboxOnlyConcurrentMutation(
   turn: AgentTurn,
   attempt: AgentInferenceAttempt
 ): void {
+  assertAgentRunInboxOnlyMutation(started, current);
   if (
-    current.runId !== started.runId
-    || current.version < started.version
-    || current.state.status !== 'running'
+    current.state.status !== 'running'
     || attempt.state.status !== 'started'
     || turn.turnId !== started.turns.find((candidate) => candidate.turnId === turn.turnId)?.turnId
-    || canonicalizeAgentControlData(current.binding)
-      !== canonicalizeAgentControlData(started.binding)
-    || canonicalizeAgentControlData(current.turns)
-      !== canonicalizeAgentControlData(started.turns)
-    || canonicalizeAgentControlData(current.effects)
-      !== canonicalizeAgentControlData(started.effects)
-    || canonicalizeAgentControlData(current.state)
-      !== canonicalizeAgentControlData(started.state)
   ) {
     throw new AgentRunTransitionError(
       'Inference result authority changed outside the durable Agent inbox boundary.'
@@ -601,13 +580,14 @@ async function assertExactExecutionInput(
   turn: AgentTurn,
   attempt: AgentInferenceAttempt
 ): Promise<void> {
+  assertAgentRunInboxOnlyMutation(run, payload.input.run);
   if (
     payload.runId !== run.runId
     || payload.turnId !== turn.turnId
     || payload.attemptId !== attempt.attemptId
     || payload.inputDigest !== turn.intention.inputDigest
     || payload.input.run.runId !== run.runId
-    || payload.input.run.version !== run.version
+    || payload.input.run.version < run.version
   ) {
     throw new AgentRunInvariantError(
       'The durable inference input must match the exact Run, Turn, Attempt, and input digest.'

@@ -1,3 +1,4 @@
+import { markAuthorityIntegrityError } from '../../SqliteAuthorityHealth.js';
 import type { DatabaseSync } from 'node:sqlite';
 
 import {
@@ -37,6 +38,15 @@ function readProjectionRecordsUnchecked(
      ORDER BY rowid ASC
      LIMIT ?`
   ).all(request.afterCursor, request.limit) as unknown as AuthorityProjectionEventRow[];
+  const readSession = database.prepare(
+    `SELECT session_id, workspace_id, version, title, status, created_at, updated_at
+     FROM conversation_session_versions WHERE session_id=? AND version=?`
+  );
+  const readMessage = database.prepare(
+    `SELECT message_id, version, session_id, workspace_id, role,
+            payload_json, content_digest, created_at
+     FROM conversation_message_versions WHERE message_id=? AND version=?`
+  );
 
   return rows.map((row) => {
     const cursor = Number(row.projection_cursor);
@@ -55,10 +65,7 @@ function readProjectionRecordsUnchecked(
         error
       );
     }
-    const sessionRow = database.prepare(
-      `SELECT session_id, workspace_id, version, title, status, created_at, updated_at
-       FROM conversation_session_versions WHERE session_id=? AND version=?`
-    ).get(event.sessionId, event.sessionVersion) as SessionRow | undefined;
+    const sessionRow = readSession.get(event.sessionId, event.sessionVersion) as SessionRow | undefined;
     if (sessionRow === undefined) {
       throw authorityStorageCorruption(
         `projection-event:${String(cursor)}:session_missing`
@@ -91,12 +98,7 @@ function readProjectionRecordsUnchecked(
       || event.type === 'conversation.agent_result.projected'
       || event.type === 'conversation.agent_start.failed'
     ) {
-      const messageRow = database.prepare(
-        `SELECT message_id, version, session_id, workspace_id, role,
-                payload_json, content_digest, created_at
-         FROM conversation_message_versions
-         WHERE message_id=? AND version=?`
-      ).get(event.messageId, event.messageVersion) as MessageVersionRow | undefined;
+      const messageRow = readMessage.get(event.messageId, event.messageVersion) as MessageVersionRow | undefined;
       if (messageRow === undefined) {
         throw authorityStorageCorruption(
           `projection-event:${String(cursor)}:message_missing`
@@ -155,9 +157,9 @@ function authorityStorageCorruption(
   message: string,
   cause?: unknown
 ): ConversationAuthorityError {
-  return new ConversationAuthorityError(
+  return markAuthorityIntegrityError('conversation', new ConversationAuthorityError(
     'CONVERSATION_STORAGE_CORRUPTION',
     `Conversation storage corruption: ${message}.`,
     cause === undefined ? undefined : { cause }
-  );
+  ));
 }

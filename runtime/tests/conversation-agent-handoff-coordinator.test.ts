@@ -685,9 +685,9 @@ function agentCounts(root: string): {
       `SELECT COUNT(*) AS count FROM ${table}`
     ).get() as { count: number }).count);
     return {
-      runs: count('agent_v3_runs'),
-      commands: count('agent_v3_commands'),
-      checkpoints: count('agent_v3_checkpoints')
+      runs: count('agent_runs'),
+      commands: count('agent_commands'),
+      checkpoints: count('agent_checkpoints')
     };
   } finally {
     database.close();
@@ -732,10 +732,10 @@ function serializedPersistence(root: string): {
     ).get() as { value: string };
     const agentValue = agent.prepare(
       `SELECT group_concat(aggregate_json || result_run_json || event_json || payload_json, '') AS value
-       FROM agent_v3_runs
-       CROSS JOIN agent_v3_command_runs
-       CROSS JOIN agent_v3_events
-       CROSS JOIN agent_v3_checkpoints`
+       FROM agent_runs
+       CROSS JOIN agent_command_runs
+       CROSS JOIN agent_events
+       CROSS JOIN agent_checkpoints`
     ).get() as { value: string };
     return { conversation: conversationValue.value, agent: agentValue.value };
   } finally {

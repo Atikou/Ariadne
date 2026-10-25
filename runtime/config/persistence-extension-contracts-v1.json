@@ -1,0 +1,20 @@
+{
+  "contractVersion": 1,
+  "policy": "Explicit versioned replacements; released V1 contracts remain unchanged. Ingress validates replay settlements and projection pages retain strict public DTO validation.",
+  "contracts": [
+    {
+      "owner": "runtimeCommandV2",
+      "file": "runtime/src/control/ports/RuntimeCommandJournalV2.ts",
+      "export": "RuntimeCommandJournalV2",
+      "digest": "sha256:a1041683990aa1c24c6a0a1483d477d070af5ccb2b60ca042fc910dbbeddf8c9",
+      "graphNodes": 19
+    },
+    {
+      "owner": "publicProjectionPagedReadV1",
+      "file": "runtime/src/projection/PublicProjectionPagedQueryPortsV1.ts",
+      "export": "PublicProjectionPagedQueryStoreV1",
+      "digest": "sha256:1da0fbf569ccaf2d6271624a8a5d12e6809aaa078ea3a7c3422dd30cbc3c7b36",
+      "graphNodes": 126
+    }
+  ]
+}

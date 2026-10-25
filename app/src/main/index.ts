@@ -1,22 +1,54 @@
-import { app } from 'electron';
+import { app, Notification } from 'electron';
 import { isAbsolute } from 'node:path';
 import { ApplicationController } from './application';
+import { installProjectionCapacityMetrics } from './smoke/projection-capacity-metrics';
+import { parseDecisionNotificationActivation } from './services/decision-notification-activation';
+import { parseTaskNotificationActivation } from './services/task-notification-activation';
+import { DraftQuitBlockedError } from './services/renderer-draft-quit';
+import { isElectronBackupValidationProcess, startElectronBackupValidationProcess } from './runtime/electron-backup-validation-process';
+import { hasDataRootSwitchJournal, prepareDataRootRecoveryStartup } from './runtime/data-root-recovery-startup';
+import { acquireDataRootOwnerLease } from './runtime/data-root-owner-lease';
+import { installDataRecoveryStartupFixture } from './smoke/data-recovery-startup-fixture';
+
+if (isElectronBackupValidationProcess()) {
+  startElectronBackupValidationProcess();
+} else {
 
 const smokeUserData = process.env.ARIADNE_SMOKE_USER_DATA;
 const isSmokeTest = process.env.ARIADNE_SMOKE_TEST === '1' && Boolean(smokeUserData);
 if (isSmokeTest && smokeUserData) {
   if (!isAbsolute(smokeUserData)) throw new Error('ARIADNE_SMOKE_USER_DATA must be absolute.');
   app.setPath('userData', smokeUserData);
+  app.setPath('sessionData', smokeUserData);
+  if (process.env.ARIADNE_SMOKE_PROJECTION_CAPACITY === '1') installProjectionCapacityMetrics();
 }
 
 if (process.platform === 'win32') app.setAppUserModelId('com.ariadne.desktop');
-if (app.isPackaged) app.setAsDefaultProtocolClient('ariadne');
+if (app.isPackaged && !isSmokeTest) app.setAsDefaultProtocolClient('ariadne');
+
+const originalDataRoot = app.getPath('userData');
+installDataRecoveryStartupFixture();
+const recoveryStartup = prepareDataRootRecoveryStartup();
 
 const hasSingleInstanceLock = isSmokeTest || app.requestSingleInstanceLock();
 
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
+  void startOriginalApplication().catch(() => {
+    console.error('Application data owners could not be admitted.'); app.exit(1);
+  });
+
+  async function startOriginalApplication(): Promise<void> {
+  if (recoveryStartup) { await recoveryStartup.run(); return; }
+  await app.whenReady();
+  const ownerLease = process.platform === 'win32' ? await acquireDataRootOwnerLease(originalDataRoot) : null;
+  let ownerLeaseReleased = false;
+  void ownerLease?.exited.catch(() => { if (!ownerLeaseReleased) { console.error('Application profile owner lease was lost.'); app.exit(1); } });
+  app.once('will-quit', () => { ownerLeaseReleased = true; ownerLease?.dispose(); });
+  // A journal can appear while this launch waits for readiness. Do not create
+  // owners under it; another launch will enter the separate recovery profile.
+  if (hasDataRootSwitchJournal(originalDataRoot)) { ownerLeaseReleased = true; ownerLease?.dispose(); app.exit(1); return; }
   const application = new ApplicationController();
   let quitPrepared = false;
   let quitPreparation: Promise<void> | null = null;
@@ -52,6 +84,12 @@ if (!hasSingleInstanceLock) {
         app.quit();
       })
       .catch((error: unknown) => {
+        if (error instanceof DraftQuitBlockedError) {
+          quitPreparation = null;
+          console.error('Quit cancelled; editable drafts and windows are retained.');
+          showFromUserAction();
+          return;
+        }
         console.error('Application cleanup failed.', error);
         app.exit(1);
       });
@@ -59,6 +97,14 @@ if (!hasSingleInstanceLock) {
 
   void app.whenReady()
     .then(async () => {
+      if (process.platform === 'win32') Notification.handleActivation(details => {
+        const reference = parseDecisionNotificationActivation(details);
+        if (reference) void application.activateDecisionNotification(reference)
+          .catch(() => { console.error('Notification activation could not be completed.'); });
+        const task = parseTaskNotificationActivation(details);
+        if (task) void application.activateTaskNotification(task)
+          .catch(() => { console.error('Task notification activation could not be completed.'); });
+      });
       await application.start();
       const startupCallback = findMcpOAuthCallback(process.argv);
       if (startupCallback) {
@@ -83,6 +129,9 @@ if (!hasSingleInstanceLock) {
       process.exitCode = 1;
       app.quit();
     });
+  }
+}
+
 }
 
 function findMcpOAuthCallback(values: readonly string[]): string | undefined {

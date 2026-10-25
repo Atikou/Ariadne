@@ -10,8 +10,39 @@ import type {
 } from '../src/control/ports/AgentModelInference.js';
 import type { LocalModelService } from '../src/model/local/LocalModelService.js';
 import type { ModelClient } from '../src/model/types.js';
+import type { ModelQualitySummary } from '@ariadne/protocol/public';
 
 describe('RuntimeKernelModelInferenceGateway', () => {
+  function rankedGateway(scores:Record<string,ModelQualitySummary|null>,unqualified=new Set<string>(),disableLocal=false) {
+    const remote:ExactAgentModelInferenceRuntime={inferExact:async()=>({status:'binding_unavailable'}),countRequestTokens:async()=>({tokens:1,exact:false,tokenizer:'fixture'}),
+      hasExactBinding:()=>true,resolveBinding:()=>null,describeContextCapacity:()=>null,
+      describeExecutionQualification:(binding)=>({supportsTextResponse:!unqualified.has(binding.modelId),supportsAgent:!unqualified.has(binding.modelId),supportsPlan:false,supportsVision:false})};
+    const providers=['cloud-a','cloud-b'].map(model=>({providerId:'fixture',model,enabled:true}));
+    const locals={clients:()=>[{name:'local',toolCallCapability:'native'}]} as unknown as LocalModelService;
+    return new RuntimeKernelModelInferenceGateway(remote,locals,providers as never,'quality-first',undefined,()=>true,new Set(disableLocal?['local']:[]),(_provider,model)=>scores[model]??null);
+  }
+  const score=(passed:number,state:'current'|'expired'='current'):ModelQualitySummary=>({benchmarkId:'ariadne-text-quality-v1',benchmarkDigest:`sha256:${'a'.repeat(64)}`,
+    passed,total:6,score:passed/6,state,evaluatedAt:'2026-10-04T03:00:00.000Z',validUntil:'2026-11-03T03:00:00.000Z'});
+  it('quality-first selects measured local quality above cloud order',()=>{
+    expect(rankedGateway({'cloud-a':score(2),'cloud-b':score(4),local:score(6)}).resolveBinding(1)?.modelId).toBe('local');
+  });
+  it('excludes expired, missing and unqualified scores and retains deterministic ties',()=>{
+    expect(rankedGateway({'cloud-a':score(6,'expired'),'cloud-b':score(4),local:score(4)}).resolveBinding(1)?.modelId).toBe('cloud-b');
+    expect(rankedGateway({'cloud-a':score(6),'cloud-b':score(3)},new Set(['cloud-a'])).resolveBinding(1)?.modelId).toBe('cloud-b');
+  });
+  it('reports missing current evidence rather than silently choosing the first cloud model',()=>{
+    expect(()=>rankedGateway({local:score(6,'expired')}).resolveBinding(1)).toThrow('model_quality_evaluation_required');
+  });
+  it('preserves explicit selection and other strategies without requiring quality evidence',()=>{
+    const gateway=rankedGateway({});expect(gateway.resolveBinding(1,{modelId:'local'})?.modelId).toBe('local');
+    expect(gateway.resolveBinding(1,{routingStrategy:'cloud-first'})?.modelId).toBe('cloud-a');
+    expect(gateway.resolveBinding(1,{routingStrategy:'privacy-first'})?.modelId).toBe('local');
+  });
+  it('does not allow quality scores to replace missing vision or Plan qualification',()=>{
+    const gateway=rankedGateway({'cloud-a':score(6),local:score(6)});
+    expect(()=>gateway.resolveBinding(1,{requiresVision:true})).toThrow('model_vision_qualification_required');
+    expect(()=>rankedGateway({'cloud-a':score(6)},new Set(),true).resolveBinding(1,{executionMode:'plan'})).toThrow('model_plan_qualification_required');
+  });
   it('projects typed Tool history to the embedded model native Chat boundary', async () => {
     const chat = vi.fn<ModelClient['chat']>(async () => ({
       content: 'continued locally',

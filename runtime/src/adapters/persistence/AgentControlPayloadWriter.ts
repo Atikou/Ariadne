@@ -16,7 +16,7 @@ export function persistPreparedCommitArtifacts(
   const checkpoint = prepared.checkpoint;
   if (checkpoint !== undefined) {
     database.prepare(
-      `INSERT INTO agent_v3_checkpoints (
+      `INSERT INTO agent_checkpoints (
          run_id, checkpoint_version, run_version, command_id,
          codec_id, payload_json, created_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?)`
@@ -33,7 +33,7 @@ export function persistPreparedCommitArtifacts(
 
   const commandId = mutation.events[0]!.commandId;
   const insertTurnInput = database.prepare(
-    `INSERT INTO agent_v3_turn_inputs (
+    `INSERT INTO agent_turn_inputs (
        run_id, turn_id, input_digest, command_id, run_version,
        codec_id, payload_json, created_at
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
@@ -54,7 +54,7 @@ export function persistPreparedCommitArtifacts(
     const payload = item.payload;
     if (payload.kind === 'record_input') {
       database.prepare(
-        `INSERT INTO agent_v3_effect_payloads (
+        `INSERT INTO agent_effect_payloads (
            run_id, effect_id, input_digest,
            input_command_id, input_run_version,
            input_codec_id, input_payload_json,
@@ -76,7 +76,7 @@ export function persistPreparedCommitArtifacts(
       continue;
     }
     const update = database.prepare(
-      `UPDATE agent_v3_effect_payloads
+      `UPDATE agent_effect_payloads
        SET result_command_id=?, result_run_version=?,
            result_codec_id=?, result_payload_json=?, updated_at=?
        WHERE run_id=? AND effect_id=? AND result_command_id IS NULL`
@@ -98,7 +98,7 @@ export function persistPreparedCommitArtifacts(
     }
   }
   const insertDirective = database.prepare(
-    `INSERT INTO agent_v3_directive_payloads (
+    `INSERT INTO agent_directive_payloads (
        artifact_id, run_id, command_id, run_version, payload_kind,
        directive_digest, content_digest, codec_id, payload_json, recorded_at
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`

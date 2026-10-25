@@ -16,6 +16,7 @@ import type { McpRemoteCapabilityOperation } from '@ariadne/protocol/host';
 import type { RuntimePolicySnapshot } from '@ariadne/protocol/settings';
 
 import type { MainCredentialAuthority } from './credential-authority';
+import { unrestrictedMainWrites, type MainWriteAdmission } from '../data-management/main-maintenance-gate';
 
 const REDIRECT_URL = new URL('ariadne://oauth/mcp');
 const AUTHORIZATION_TIMEOUT_MS = 4 * 60_000;
@@ -74,7 +75,8 @@ export class McpRemoteService {
   constructor(
     private readonly vault: McpCredentialVault,
     private readonly openAuthorizationUrl: (url: string) => Promise<void>,
-    private readonly transportFactory: TransportFactory = createTransport
+    private readonly transportFactory: TransportFactory = createTransport,
+    private readonly writes: MainWriteAdmission = unrestrictedMainWrites
   ) {}
 
   async configure(servers: RuntimePolicySnapshot['mcp']['servers']): Promise<void> {
@@ -98,14 +100,16 @@ export class McpRemoteService {
   async handle(operation: McpRemoteCapabilityOperation): Promise<Record<string, unknown>> {
     switch (operation.kind) {
       case 'mcp.remote.connect':
-        return this.connect(
+        return this.writes.write(() => this.connect(
           operation.serverId,
           operation.endpoint,
           operation.credentialRef
-        );
+        ));
       case 'mcp.remote.send':
-        await this.send(operation.connectionId, operation.message as JSONRPCMessage);
-        return {};
+        return this.writes.write(async () => {
+          await this.send(operation.connectionId, operation.message as JSONRPCMessage);
+          return {};
+        });
       case 'mcp.remote.receive':
         return this.receive(operation.connectionId, operation.maxWaitMs);
       case 'mcp.remote.close':
@@ -115,6 +119,7 @@ export class McpRemoteService {
   }
 
   async handleOAuthCallback(rawUrl: string): Promise<boolean> {
+    return this.writes.write(async () => {
     const callback = new URL(rawUrl);
     if (
       callback.protocol !== REDIRECT_URL.protocol
@@ -142,6 +147,7 @@ export class McpRemoteService {
       if (accepted) return true;
     }
     throw new Error('mcp_oauth_callback_state_unknown');
+    });
   }
 
   async dispose(): Promise<void> {

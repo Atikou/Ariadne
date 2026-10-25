@@ -1,11 +1,11 @@
 import type {
-  EncodedImageAttachmentV3,
-  ImageAttachmentRefV3
+  EncodedImageAttachment,
+  ImageAttachmentRef
 } from '@ariadne/protocol/public';
 import type { ConversationMessageVersion } from '../../conversation/ConversationAuthority.js';
 
 export interface StoredConversationImageAttachment {
-  readonly ref: ImageAttachmentRefV3;
+  readonly ref: ImageAttachmentRef;
   readonly data: Uint8Array;
 }
 
@@ -16,7 +16,7 @@ export interface OwnedConversationImageAttachment {
     readonly messageId: string;
     readonly messageVersion: number;
   };
-  readonly ref: ImageAttachmentRefV3;
+  readonly ref: ImageAttachmentRef;
 }
 
 export interface ConversationAttachmentReader {
@@ -37,12 +37,12 @@ export interface ConversationAttachmentOwnerReader {
 /** Immutable binary owner below the v3 Conversation data root. */
 export interface ConversationAttachmentStore {
   saveImages(
-    inputs: readonly EncodedImageAttachmentV3[],
+    inputs: readonly EncodedImageAttachment[],
     signal?: AbortSignal
-  ): Promise<readonly ImageAttachmentRefV3[]>;
+  ): Promise<readonly ImageAttachmentRef[]>;
 
   readImage(
-    ref: ImageAttachmentRefV3,
+    ref: ImageAttachmentRef,
     signal?: AbortSignal
   ): Promise<StoredConversationImageAttachment>;
 }

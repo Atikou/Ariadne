@@ -18,8 +18,7 @@
 |---|---|
 | [源码快照复现契约](source-reproducibility.md) | 固定工具链、lockfile、干净检出和 CI 复现边界 |
 | [当前实现架构](architecture.md) | 生产进程、命令、持久化、能力接线和未验收边界 |
-| [全局架构审阅与修复计划](architecture-review-and-remediation.md) | 当前工作树的客观评价、已复现缺陷、结构债务与分阶段验收条件（2026-09-05） |
-| [目标架构](architecture-v3.md) | 长期依赖方向、Owner、事务和安全不变量 |
+| [全局架构审阅与修复计划](remediation-verification.md) | 当前工作树的客观评价、已复现缺陷、结构债务与分阶段验收条件（2026-09-05） |
 | [项目结构](project-structure.md) | 当前目录、依赖方向和数据目录 |
 | [验证说明](verification.md) | 当前门禁、Electron smoke 的准确边界和发布验收 |
 | [Agent inbox 与运行中交互](agent-inbox.md) | 同一 Run 的 next-turn/next-step、持久领取、投影和恢复语义 |
@@ -30,11 +29,10 @@
 | [Renderer UI 架构](ui-architecture.md) | Feature Store、Public Projection 和桌面能力边界 |
 | [Provider 与模型配置](Provider协议与模型推理配置.md) | 稳定 Provider/Protocol/Profile 规则 |
 | [Runtime 独立性审计](Runtime独立性审计.md) | 仓库与入站网络边界 |
-| [Companion 能力请求协议](agent-proposal-protocol.md) | Companion 意图解释到 v3 Decision 的边界 |
 
 ## 审计快照
 
-[Ariadne 与 deepseek-harness 对比审计](deepseek-harness-comparison-audit-2026-08-28.md) 固定了 Ariadne 当前工作树和 deepseek-harness 指定 commit，用于记录差距、优先级和验收条件。它是日期化审计，不替代当前实现架构。
+[Ariadne 与 deepseek-harness 对比审计](remediation-verification.md) 固定了 Ariadne 当前工作树和 deepseek-harness 指定 commit，用于记录差距、优先级和验收条件。它是日期化审计，不替代当前实现架构。
 
 ## 架构决策
 

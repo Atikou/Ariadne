@@ -43,6 +43,7 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
   theme: 'system',
   suppressAutomaticWakeDuringGames: true,
   gameDetectionRules: [],
+  taskNotifications: { completed: false, failed: false },
   speech: {
     enabled: false,
     moduleRoot: 'E:\\AI\\AriadneSpeech',
@@ -65,7 +66,7 @@ export function createDefaultState(): PersistedState {
       isMaximized: false
     },
     layout: null,
-    preferences: structuredClone(DEFAULT_PREFERENCES)
+    preferences: userPreferencesSchema.parse(structuredClone(DEFAULT_PREFERENCES))
   };
 }
 

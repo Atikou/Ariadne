@@ -1,0 +1,40 @@
+const { writeFileSync } = require('node:fs');
+const { join } = require('node:path');
+module.exports = async function attachmentCleanupUi({ evaluate, wait, check, window, reviewDirectory }) {
+  const click = label => evaluate(`Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()===${JSON.stringify(label)}).click()`);
+  await click('预览附件清理'); await click('正在核验附件…');
+  await check('cleanup inspection blocks duplicate operations before any preview', "window.__dataFixture.cleanupRequests().length===1&&Array.from(document.querySelectorAll('.data-management-settings button')).every(button=>button.disabled)");
+  await evaluate('window.__dataFixture.resolveCleanup(0)'); await wait("document.querySelector('[aria-label=附件清理影响预览]')");
+  await check('cleanup preview keeps immutable and archived references and requires an explicit category selection', "(()=>{const p=document.querySelector('[aria-label=附件清理影响预览]');return p.textContent.includes('保留的历史引用图像')&&p.querySelectorAll('input:checked').length===0&&Array.from(p.querySelectorAll('button')).find(b=>b.textContent==='清理所选附件').disabled&&document.body.textContent.includes('归档与分支历史')&&document.body.textContent.includes('恢复证据保持保留')})()");
+  await evaluate("document.querySelector('[aria-label=附件清理影响预览] input').click()");
+  if (reviewDirectory) for (const width of [1000, 360]) {
+    window.setContentSize(width, 780);
+    await evaluate("document.querySelector('[aria-label=附件清理影响预览]').scrollIntoView();new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+    await check('cleanup preview fits viewport ' + width, "(()=>{const p=document.querySelector('[aria-label=附件清理影响预览]');return p.scrollWidth<=p.clientWidth+1&&document.documentElement.scrollWidth<=innerWidth+1})()");
+    writeFileSync(join(reviewDirectory, `data-cleanup-${width}.png`), (await window.webContents.capturePage()).toPNG());
+  }
+  await click('清理所选附件'); await wait("document.querySelector('[role=alertdialog]')");
+  await check('cleanup confirmation focuses cancel and explains exact selected impact and irreversibility', "document.activeElement?.textContent==='取消'&&document.querySelector('[role=alertdialog]').textContent.includes('删除 1 个文件')&&document.querySelector('[role=alertdialog]').textContent.includes('80 B')&&document.querySelector('[role=alertdialog]').textContent.includes('删除无法撤销')");
+  await click('取消'); await check('cancel confirmation never invokes deletion', "window.__dataFixture.cleanupRequests().length===1&&!document.querySelector('[role=alertdialog]')");
+  await click('清理所选附件'); await wait("document.querySelector('[role=alertdialog]')");
+  await evaluate("document.querySelector('[role=alertdialog] .primary-button').click();document.querySelector('[role=alertdialog] .primary-button')?.click()");
+  await wait('window.__dataFixture.cleanupRequests().length===2');
+  await check('cleanup dispatch is one-use and binds the selected category and exact preview without paths', "(()=>{const r=window.__dataFixture.cleanupRequests()[1].request;return JSON.stringify(Object.keys(r).sort())===JSON.stringify(['selected','ticket','version'])&&r.ticket==='00000000-0000-4000-8000-000000000100'&&r.version==='a'.repeat(64)&&r.selected.join(',')==='orphan-attachment'})()");
+  await evaluate("window.__dataFixture.resolveCleanup(1,'interrupted')"); await wait("document.querySelector('[role=alert]')?.textContent.includes('清理中断')");
+  await check('interrupted cleanup reports retained evidence and never claims completion', "document.querySelector('[role=alert]').textContent.includes('已删除 0 个文件，1 个文件保留')&&!document.querySelector('[aria-label=附件清理影响预览]')&&!document.querySelector('[aria-label=数据占用统计]')");
+  await click('预览附件清理'); await evaluate("window.__dataFixture.resolveCleanup(2,'empty')"); await wait("document.querySelector('[aria-label=附件清理影响预览]')");
+  await check('empty preview disables every category and deletion', "(()=>{const p=document.querySelector('[aria-label=附件清理影响预览]');return Array.from(p.querySelectorAll('input')).every(input=>input.disabled)&&Array.from(p.querySelectorAll('button')).find(b=>b.textContent==='清理所选附件').disabled})()");
+  await click('取消清理'); await wait("!document.querySelector('[aria-label=附件清理影响预览]')");
+  await check('cancel preview releases only the owned ticket', "window.__dataFixture.cleanupDiscarded().join(',')==='00000000-0000-4000-8000-000000000102'");
+  await click('预览附件清理'); await evaluate('window.__dataFixture.hide();window.__dataFixture.resolveCleanup(3)');
+  await wait('window.__dataFixture.cleanupDiscarded().length===2');
+  await check('late cleanup preview after unmount releases metadata without deletion', "window.__dataFixture.cleanupDiscarded()[1]==='00000000-0000-4000-8000-000000000103'&&window.__dataFixture.cleanupRequests().filter(r=>r.kind==='commit').length===1");
+  await evaluate('window.__dataFixture.show()'); await wait("document.querySelector('[aria-label=数据备份与恢复]')");
+  await click('预览附件清理'); await evaluate('window.__dataFixture.rejectCleanup(4)'); await wait("document.querySelector('[role=alert]')?.textContent.includes('未能完整核验')");
+  await check('failed inspection offers no deletion and releases controls', "!document.querySelector('[aria-label=附件清理影响预览]')&&!Array.from(document.querySelectorAll('.data-management-settings button')).some(button=>button.disabled)");
+  await click('预览附件清理'); await evaluate('window.__dataFixture.resolveCleanup(5)'); await wait("document.querySelector('[aria-label=附件清理影响预览]')");
+  await evaluate("document.querySelectorAll('[aria-label=附件清理影响预览] input')[1].click()"); await click('清理所选附件'); await wait("document.querySelector('[role=alertdialog]')");
+  await click('删除所选附件'); await wait('window.__dataFixture.cleanupRequests().length===7');
+  await evaluate('window.__dataFixture.rejectCleanup(6)'); await wait("document.querySelector('[role=alert]')?.textContent.includes('未确认完成')");
+  await check('unconfirmed cleanup consumes its preview and requires a new inspection', "!document.querySelector('[aria-label=附件清理影响预览]')&&!document.querySelector('[role=status]')");
+};

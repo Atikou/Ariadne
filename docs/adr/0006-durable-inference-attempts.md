@@ -47,7 +47,7 @@ Schema、Tool Catalog 与 Policy 边界校验的 `AgentDirective` 及摘要，�
 支持幂等键或结果查询的 Provider 可以使用同一 key 对账。无法对账时，重新推理必须由
 显式 Recovery Decision 授权，并创建新的 Attempt 身份；旧 Attempt 保持不可变。
 
-公共 v3 入口 `conversation.message.accept.v3` 只持久化 Conversation
+公共 v3 入口 `conversation.message.accept` 只持久化 Conversation
 Message/Handoff 并返回 accepted。Handoff 后台 admission 再提交 Run、Turn 与
 execution intent；长时间模型调用由后台 Dispatcher 推进，结果通过权威
 Projection 发布，不占用桌面 IPC 请求生命周期。

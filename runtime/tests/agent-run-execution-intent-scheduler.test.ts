@@ -82,7 +82,32 @@ describe('AgentRunExecutionIntentScheduler', () => {
     await scheduler.shutdown('2099-01-01T00:00:00.000Z');
   });
 
-  it('aborts an active inference, durably resolves its uncertainty, then settles cancellation', async () => {
+  it('releases a cancellation waiter when exact durable completion wins the race', async () => {
+    const fixture = ledgerFixture('pending');
+    let dispatchAttemptId = '';
+    const gate = deferred<AgentRunExecutionDispatchOutcome>();
+    const dispatcher: AgentRunExecutionDispatcher = {
+      dispatchClaimedExecution: vi.fn(async request => {
+        dispatchAttemptId = request.dispatchAttemptId;
+        return gate.promise;
+      })
+    };
+    const scheduler = createScheduler(fixture.ledger, dispatcher, []);
+    await scheduler.start();
+    const drain = scheduler.drainOnce();
+    await vi.waitFor(() => expect(dispatcher.dispatchClaimedExecution).toHaveBeenCalledOnce());
+    const finalize = vi.fn(async () => ({ runVersion: 4 }));
+    const cancellation = scheduler.cancelActiveRun({ commandId: 'late-cancel', runId: INTENT.runId,
+      expectedVersion: 1, finalize });
+    gate.resolve(completedOutcome(dispatchAttemptId));
+    await expect(cancellation).resolves.toEqual({ status: 'not_active' });
+    await expect(drain).resolves.toEqual({ claimed: 1, settled: 1 });
+    expect(finalize).not.toHaveBeenCalled();
+    expect(fixture.state()).toBe('settled');
+    await scheduler.shutdown('2099-01-01T00:00:00.000Z');
+  });
+
+  it.each([1, 6])('aborts an active inference, durably resolves its uncertainty, then settles cancellation at version %s', async expectedVersion => {
     const fixture = ledgerFixture('pending');
     let observedDispatchAttemptId = '';
     const dispatcher: AgentRunExecutionDispatcher = {
@@ -109,10 +134,14 @@ describe('AgentRunExecutionIntentScheduler', () => {
       });
       return { runVersion: 4 };
     });
+    await expect(scheduler.cancelActiveRun({ commandId: 'denied-newer-version', runId: INTENT.runId,
+      expectedVersion: 6, authorizeVersion: async () => false, finalize })).resolves.toEqual({ status: 'not_active' });
+    expect(finalize).not.toHaveBeenCalled();
     await expect(scheduler.cancelActiveRun({
       commandId: 'public-cancel-1',
       runId: INTENT.runId,
-      expectedVersion: INTENT.admittedRunVersion,
+      expectedVersion,
+      authorizeVersion: async ownedVersion => ownedVersion === INTENT.admittedRunVersion,
       finalize
     })).resolves.toEqual({ status: 'cancelled', runVersion: 4 });
 

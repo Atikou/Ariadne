@@ -5,16 +5,22 @@ import { formatRunStatus } from '@renderer/core/runtime/runtime-labels';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import { StatusPill } from '@renderer/shared/ui/StatusPill';
 import { PanelEmptyState } from '@renderer/shared/ui/PanelEmptyState';
-import { selectSessionRun } from './agent-status-model';
+import { runStatusTone, selectSessionRun } from './agent-status-model';
 import type { RuntimeRun } from '@renderer/core/runtime/runtime-projection-presenter';
 import { usePanelAction } from '@renderer/shared/ui/usePanelAction';
 import './agent-status.css';
+import { AgentRunDirectory } from './AgentRunDirectory';
 
 export function AgentStatusPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
   const sessions = useFeatureSnapshot(services.sessions.view);
   const runView = useFeatureSnapshot(services.runs.view);
-  const run = selectSessionRun(runView.runs, sessions.selectedSessionId);
-  return <AgentStatusContent key={run?.runId ?? sessions.selectedSessionId ?? 'none'} moduleId={moduleId} services={services} run={run} selectedSessionId={sessions.selectedSessionId} />;
+  const [scope, setScope] = useState<'all' | 'session'>('all');
+  const run = runView.runs.find(candidate => candidate.runId === runView.openedRunId && candidate.sessionId === sessions.selectedSessionId)
+    ?? selectSessionRun(runView.runs, sessions.selectedSessionId);
+  return <div className="agent-status-workspace" data-empty-detail={run === undefined}>
+    <AgentRunDirectory key={scope} services={services} scope={scope} openedRunId={run?.runId ?? null} onScope={setScope} />
+    <AgentStatusContent key={run?.runId ?? sessions.selectedSessionId ?? 'none'} moduleId={moduleId} services={services} run={run} selectedSessionId={sessions.selectedSessionId} />
+  </div>;
 }
 
 function AgentStatusContent({ moduleId, services, run, selectedSessionId }: FeaturePanelProps & { run: RuntimeRun | undefined; selectedSessionId: string | null }): React.JSX.Element {
@@ -28,23 +34,10 @@ function AgentStatusContent({ moduleId, services, run, selectedSessionId }: Feat
   } | null>(null);
   const decisions = useFeatureSnapshot(services.decisions.view);
   const runView = useFeatureSnapshot(services.runs.view);
-  const agentRuns = runView.runs;
+  const agentRuns = runView.runSummaries;
   const progress = run?.progress === undefined ? null : Math.round(run.progress * 100);
-  const tone = run?.status === 'completed'
-    ? 'success'
-    : run?.status === 'failed'
-      ? 'danger'
-      : run?.status === 'waiting_permission'
-        || run?.status === 'waiting_decision'
-        || run?.status === 'waiting_budget'
-        || run?.status === 'waiting_children'
-        || run?.status === 'cancelling'
-        || run?.status === 'paused'
-        || run?.status === 'interrupted'
-        ? 'warning'
-        : run?.status === 'running'
-          ? 'running'
-          : 'neutral';
+  const recoveryChoices = run === undefined ? [] : services.decisions.recoveryChoices(run);
+  const tone = runStatusTone(run?.status ?? 'idle');
   const runActivities = run ? runView.activities.filter((activity) => activity.runId === run.runId) : [];
   const subagents = run
     ? agentRuns.filter((candidate) => candidate.parentRunId === run.runId)
@@ -52,7 +45,7 @@ function AgentStatusContent({ moduleId, services, run, selectedSessionId }: Feat
 
   if (!run) return <section className="agent-status-panel" aria-labelledby={`${moduleId}-title`}>
     <header className="module-content-header"><div><span>当前会话</span><h1 id={`${moduleId}-title`}>任务状态</h1></div><StatusPill tone="neutral">空闲</StatusPill></header>
-    <PanelEmptyState icon={Bot} title="暂无 Agent 任务" description={selectedSessionId ? '此会话的任务状态和执行活动会显示在这里。' : '选择一条会话，查看对应任务的状态。'} />
+    <PanelEmptyState compact icon={Bot} title={selectedSessionId ? '当前会话尚未打开任务' : '尚未选择会话'} description={selectedSessionId ? '从上方目录选择任务查看详情；全部会话的记录不会自动成为当前会话的任务。' : '上方目录可查看全部会话的任务，选择任务后会打开对应会话。'} />
   </section>;
 
   return <section className="agent-status-panel" aria-labelledby={`${moduleId}-title`}>
@@ -109,7 +102,7 @@ function AgentStatusContent({ moduleId, services, run, selectedSessionId }: Feat
         {subagentSendError?.runId === subagent.runId && <p role="alert">{subagentSendError.message}</p>}
       </form>}
     </li>)}</ol></div>}
-    <div className="status-section"><h2>执行概况</h2><div className="context-grid"><span><Wrench size={13} /> {runActivities.filter((activity) => activity.activityType === 'tool').length} 次工具调用</span><span><ShieldCheck size={13} /> {decisions.permissions.filter((request) => request.status === 'pending' && (request.runId === run.runId || subagents.some(child => child.runId === request.runId))).length} 项待确认</span><span><Clock3 size={13} /> {run.startedAt ? new Date(run.startedAt).toLocaleTimeString() : '—'}</span></div></div>
+    <div className="status-section"><h2>执行概况</h2><div className="context-grid"><span><Wrench size={13} /> {runActivities.filter((activity) => activity.activityType === 'tool').length} 次工具调用</span><span><ShieldCheck size={13} /> {decisions.decisionSummaries.filter(request => request.status === 'pending' && (request.runId === run.runId || subagents.some(child => child.runId === request.runId))).length} 项待确认（当前页）</span><span><Clock3 size={13} /> {run.startedAt ? new Date(run.startedAt).toLocaleTimeString() : '—'}</span></div></div>
     {run?.status === 'waiting_budget' && <div className="status-section">
       <h2>执行预算</h2>
       <p>
@@ -134,16 +127,14 @@ function AgentStatusContent({ moduleId, services, run, selectedSessionId }: Feat
     </div>}
     {run?.status === 'interrupted' && <div className="status-section">
       <h2>恢复处理</h2>
-      <p>{run.detail ?? (run.recoveryStatus === 'recoverable'
-        ? '运行停在安全检查点，可以从原位置继续。'
-        : '存在状态不确定的非幂等副作用，需要结束本次运行。')}</p>
+      <p>{run.cancellationPending
+        ? '已收到取消请求。工具执行结果仍不确定，需要明确处理后才能结束任务。'
+        : run.detail ?? '执行结果尚未确认，请选择恢复处理方式。'}</p>
       {run.origin === 'projection' && <div className="agent-controls">
-        {run.recoveryStatus === 'recoverable'
-          ? <button type="button" disabled={pending} onClick={() => void execute(() => services.decisions.recoverRun(run, 'resume'))}><RotateCw size={13} /> 从检查点继续</button>
-          : <>
-              <button type="button" disabled={pending} onClick={() => void execute(() => services.decisions.recoverRun(run, 'mark_failed'))}><CircleX size={13} /> 标记失败</button>
-              <button type="button" disabled={pending} onClick={() => void execute(() => services.decisions.recoverRun(run, 'cancel'))}><Square size={13} /> 取消任务</button>
-            </>}
+        {recoveryChoices.includes('retry') && <button type="button" disabled={pending} onClick={() => void execute(() => services.decisions.recoverRun(run, 'resume'))}><RotateCw size={13} /> 从检查点继续</button>}
+        {recoveryChoices.includes('mark_failed') && <button type="button" disabled={pending} onClick={() => void execute(() => services.decisions.recoverRun(run, 'mark_failed'))}><CircleX size={13} /> 标记失败</button>}
+        {recoveryChoices.includes('cancel_run') && <button type="button" disabled={pending} onClick={() => void execute(() => services.decisions.recoverRun(run, 'cancel'))}><Square size={13} /> 确认结束任务</button>}
+        {recoveryChoices.length === 0 && !run.cancellationPending && <button type="button" disabled={pending} onClick={() => void execute(() => services.runs.requestCancellation(run))}><Square size={13} /> 取消任务</button>}
       </div>}
     </div>}
     </div>

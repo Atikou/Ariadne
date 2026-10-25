@@ -26,19 +26,13 @@ function sendReady(message) {
       eventId: 'fixture-ready-1',
       cursor: 1,
       schemaVersion: '2.0',
-      aggregateType: 'trace',
-      aggregateId: 'fixture-ready-trace',
+      aggregateType: 'projection',
+      aggregateId: 'diagnostics',
       aggregateVersion: 1,
       occurredAt: new Date().toISOString(),
       event: {
-        kind: 'trace.appended',
-        entry: {
-          traceId: 'fixture-ready-trace',
-          level: 'info',
-          category: 'fixture',
-          message: 'Runtime fixture ready.',
-          occurredAt: new Date().toISOString()
-        }
+        kind: 'projection.changed',
+        feature: 'diagnostics'
       }
     }
   }));
@@ -50,6 +44,15 @@ process.on('message', (message) => {
     return;
   }
   if (message.type === 'bootstrap') {
+    if (process.env.ARIADNE_TEST_RUNTIME_BEHAVIOR === 'startup_health_failure') {
+      const observedAt = new Date().toISOString();
+      process.send({ protocol, protocolVersion, runtimeInstanceId: message.runtimeInstanceId,
+        type: 'initialization_failed', contractVersion: '1.0', phase: 'command_journal',
+        health: { contractVersion: '1.0', observedAt, coverage: 'registered_domains', domains: [{
+          domain: 'journal', source: 'journal', availability: 'unavailable', observedAt, revision: 1,
+          code: 'authority_unavailable', recovery: 'repair'
+        }] } }, () => process.exit(1)); return;
+    }
     if (process.env.ARIADNE_TEST_RUNTIME_BEHAVIOR === 'delayed_ready_abort_gate') {
       setTimeout(() => sendReady(message), 100);
       return;
@@ -153,6 +156,9 @@ process.on('message', (message) => {
     return;
   }
   if (message.type === 'shutdown') {
+    if (process.env.ARIADNE_TEST_RUNTIME_BEHAVIOR === 'shutdown_without_ack') {
+      process.disconnect(); return;
+    }
     process.send({
       protocol,
       protocolVersion,

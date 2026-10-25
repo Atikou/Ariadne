@@ -1,4 +1,5 @@
 import { AgentRunInvariantError } from './errors.js';
+import type { PlanDecisionDraft } from './decision.js';
 import {
   assertCanonicalPublicId,
   assertPositiveInteger,
@@ -24,6 +25,21 @@ export interface AgentUserQuestionAnswerInboxSource {
 export type AgentInboxInputSource =
   | AgentLiveWorkInboxSource
   | AgentUserQuestionAnswerInboxSource;
+
+export function planApprovalInputContent(decision: PlanDecisionDraft): string {
+  return `Plan ${decision.planId} version ${decision.planVersion} (${decision.planHash}) was approved. Continue with this exact plan. Tool permissions remain separately enforced.`;
+}
+
+export function isExactPlanApprovalInput(input: AgentInboxInput, decision: PlanDecisionDraft): boolean {
+  return input.source === undefined && input.inputId === decision.decisionId
+    && input.messageId === decision.decisionId && input.delivery === 'next_step'
+    && input.content === planApprovalInputContent(decision);
+}
+
+export function agentInboxInputRole(input: AgentInboxInput): 'user' | 'system' {
+  return input.source?.kind === 'live_work' ? 'system' : 'user';
+}
+
 
 interface AgentInboxInputBase {
   readonly inputId: string;

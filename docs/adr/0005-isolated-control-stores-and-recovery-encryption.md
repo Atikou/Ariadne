@@ -45,10 +45,11 @@ the process retains the fence until exit rather than admitting another writer.
 ### Schema and migration
 
 - Production startup may initialize a pristine current schema.
-- A non-empty incompatible schema fails with an offline-migration blocker.
+- A retired-format store is unsupported and remains unchanged. A current-store
+  schema upgrade must follow its documented offline maintenance procedure.
 - Startup never infers active Run state from legacy tables, performs dual
   reads/writes, or silently deletes historical authority.
-- Offline migration must establish one writer, validate receipts and protected
+- Current-store migration must establish one writer, validate receipts and protected
   artifacts, and leave a durable audit record.
 
 Current Agent Control persistence is schema v7 / ledger revision 55. Version

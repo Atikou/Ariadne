@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { type AgentPersistencePayloadCodec, type AgentRunCheckpointPayload } from '@ariadne/agent-core';
+import { assertAgentRunInboxOnlyMutation, type AgentPersistencePayloadCodec, type AgentRunCheckpointPayload } from '@ariadne/agent-core';
 import type { AgentRunExecutionIntent } from '../../control/ports/AgentRunExecutionStarter.js';
 import { AgentRunExecutionIntentStoreError } from './agent-control/execution-intent/SqliteAgentExecutionIntentStore.js';
 import {
@@ -23,7 +23,7 @@ export async function verifyExactAdmittedRunForExecution(
   const commandRunRows = database.prepare(
     `SELECT command_id, run_id, ordinal, expected_version,
             resulting_version, result_run_json
-     FROM agent_v3_command_runs
+     FROM agent_command_runs
      WHERE run_id=? AND resulting_version=?`
   ).all(intent.runId, intent.admittedRunVersion) as unknown as AgentCommandRunRow[];
   const commandRun = commandRunRows[0];
@@ -45,11 +45,11 @@ export async function verifyExactAdmittedRunForExecution(
   const run = mutation?.run;
   const currentRow = database.prepare(
     `SELECT run_id, version, state_status, aggregate_json, created_at, updated_at
-     FROM agent_v3_runs WHERE run_id=?`
+     FROM agent_runs WHERE run_id=?`
   ).get(intent.runId) as AgentRunRow | undefined;
   const current = currentRow === undefined
     ? null
-    : parseRunRow(currentRow, 'agent_v3_runs');
+    : parseRunRow(currentRow, 'agent_runs');
   const turn = run?.turns[0];
   const attempt = turn?.attempts[0];
   const expectedEventTypes = [
@@ -69,8 +69,6 @@ export async function verifyExactAdmittedRunForExecution(
     || mutation.resultingVersion !== 1
     || run.runId !== intent.runId
     || run.version !== 1
-    || current.version !== 1
-    || canonicalJson(current) !== canonicalJson(run)
     || run.createdAt !== intent.occurredAt
     || run.updatedAt !== intent.occurredAt
     || run.state.status !== 'running'
@@ -133,10 +131,16 @@ export async function verifyExactAdmittedRunForExecution(
     );
   }
 
+  try {
+    assertAgentRunInboxOnlyMutation(run, current);
+  } catch {
+    throw executionAdmissionMismatch('Current Run differs from admission outside the Inbox boundary.');
+  }
+
   const checkpointRow = database.prepare(
     `SELECT run_id, checkpoint_version, run_version, command_id,
             codec_id, payload_json, created_at
-     FROM agent_v3_checkpoints
+     FROM agent_checkpoints
      WHERE command_id=? AND run_id=? AND run_version=1`
   ).get(commandRun.command_id, intent.runId) as AgentCheckpointRow | undefined;
   if (

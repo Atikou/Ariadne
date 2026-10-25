@@ -93,6 +93,8 @@ export interface AgentEffectResultContinuationAuthorityCheck {
 
 export interface AgentRunTransaction {
   loadRun(runId: string): Promise<AgentRun | null>;
+  /** Immutable committed version; required to prove Inbox-only drift before inference dispatch. */
+  loadRunVersion?(runId: string, version: number): Promise<AgentRun | null>;
   loadCommittedCommand(
     commandId: string,
     artifacts?: readonly AgentRunReplayArtifacts[],

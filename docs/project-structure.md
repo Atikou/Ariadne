@@ -1,11 +1,11 @@
 # Ariadne 项目结构
 
-> 核对日期：2026-08-26
+> 核对日期：2026-10-05
 
 本仓库使用 npm workspaces，构建顺序为：
 
 ```text
-Protocol -> Agent Core -> Runtime -> App
+Component Contracts -> Protocol -> Agent Core -> Live Work -> Runtime -> App
 ```
 
 ## 物理结构
@@ -41,15 +41,9 @@ Ariadne/
 │  ├─ src/ingress/RuntimeCapabilityManifest.ts # Kernel/Control 共享的冻结 Manifest Port
 │  ├─ src/adapters/             # Persistence、Model、Tool、MCP adapters
 │  ├─ src/projection/           # Conversation/Agent/Model publishers
-│  ├─ src/tools/                # 通用 Tool contracts/implementations
 │  ├─ src/security/             # Content/egress/policy boundaries
 │  ├─ src/sandbox/              # Process sandbox integration
-│  ├─ src/context/              # Context/Memory/Embedding/Repo Map implementations
 │  ├─ src/adapters/model/       # v3 exact inference 与生产长上下文生命周期
-│  ├─ src/subagent/             # 旧隔离实现；不是 v3 one-shot Child 生产入口
-│  ├─ src/notifications/        # legacy Agent/Scheduler 通知 journal
-│  ├─ src/scheduler/            # 尚未形成 v3 产品闭环
-│  ├─ src/telemetry/            # 尚未形成完整 v3 lifecycle
 │  ├─ native/                   # Windows Sandbox helper
 │  └─ tests/
 ├─ scripts/                     # 架构、独立性、打包、签名与发布门禁
@@ -58,7 +52,7 @@ Ariadne/
 └─ .github/workflows/           # CI
 ```
 
-`runtime/src/agent`、`runtime/src/app`、`runtime/src/orchestrator` 等历史模块目录仍可能存在源码和测试，但它们不是当前 v3 命令入口。新增能力不得从这些目录建立第二生产路径。
+退役 Agent／会话执行闭包已删除。长期记忆在 adapters/persistence 与 composition 中，Schedule／Workflow／Goal Worker 在 composition 中。SubAgent 使用 adapters/subagent 与 Agent Core 的普通 Child Run。当前所有者与验证范围见 [整改验证记录](remediation-verification.md)。
 
 ## 依赖方向
 
@@ -94,4 +88,4 @@ Composition -> Kernel + Control + Adapters + Transport
 
 每个数据库只有一个 Writer 和 owner fence。Conversation 与 Agent Control 通过持久 Saga 协作；Projection 可重建；Trace 和 Renderer cache 不属于业务权威。
 
-当前实现细节见 [当前架构](architecture.md)，长期不变量见 [目标架构](architecture-v3.md)。
+当前实现细节见 [当前架构](architecture.md)，长期不变量见 [目标架构](architecture.md)。

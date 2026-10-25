@@ -21,7 +21,7 @@ import type {
 } from '../../control/ports/AgentModelInference.js';
 import { countRemoteRequestTokens } from './PerModelLocalTokenCounter.js';
 import { readExactAgentProviderStream } from './readExactAgentProviderStream.js';
-import { estimateMessagesTokens } from './V3LongContextLifecycle.js';
+import { estimateMessagesTokens } from './LongContextLifecycle.js';
 import {
   ProviderResilienceCoordinator,
   type ProviderResilienceCoordinatorDependencies,
@@ -87,6 +87,9 @@ implements ExactAgentModelInferenceRuntime {
   private readonly resilience: ReadonlyMap<string, ProviderResilienceCoordinator>;
   private readonly now: () => number;
   private readonly credentialResolver: CredentialResolver | undefined;
+  private readonly transportOutcomes = new Map<string, { sequence: number; failed: boolean }>();
+  private transportSequence = 0;
+  public hasExternalFailure(): boolean { return [...this.transportOutcomes.values()].some(outcome => outcome.failed); }
 
   public constructor(options: ProductionExactAgentModelInferenceGatewayOptions) {
     this.fetch = options.fetch ?? globalThis.fetch;
@@ -181,6 +184,25 @@ implements ExactAgentModelInferenceRuntime {
   }
 
   public async inferExact(
+    request: DispatchExactAgentModelInferenceRequest
+  ): Promise<ExactAgentModelInferenceResult> {
+    const key = bindingKey(request.binding.providerId, request.binding.modelId, request.binding.settingsRevision);
+    const sequence = ++this.transportSequence;
+    try {
+      const result = await this.inferObservedExact(request);
+      if (result.status === 'completed' && !request.signal.aborted) this.recordTransportOutcome(key, sequence, false);
+      return result;
+    } catch (error) {
+      if (!request.signal.aborted && error instanceof ExactAgentModelInferenceTransportError
+        && error.category !== 'cancelled' && error.category !== 'invalid_request') this.recordTransportOutcome(key, sequence, true);
+      throw error;
+    }
+  }
+  private recordTransportOutcome(key: string, sequence: number, failed: boolean): void {
+    if (!this.bindings.has(key) || sequence < (this.transportOutcomes.get(key)?.sequence ?? 0)) return;
+    this.transportOutcomes.set(key, { sequence, failed });
+  }
+  private async inferObservedExact(
     request: DispatchExactAgentModelInferenceRequest
   ): Promise<ExactAgentModelInferenceResult> {
     request.signal.throwIfAborted();

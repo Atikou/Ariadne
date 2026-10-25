@@ -106,7 +106,7 @@ describe('Ariadne desktop architecture boundary', () => {
     );
   });
 
-  it('uses the v3 Projection as the Electron smoke model oracle', async () => {
+  it('uses bounded production Projection readers as the Electron smoke model oracle', async () => {
     const projectRoot = resolve(process.cwd(), '..');
     const smoke = await readFile(
       join(process.cwd(), 'src', 'main', 'smoke', 'electron-smoke.ts'),
@@ -117,7 +117,14 @@ describe('Ariadne desktop architecture boundary', () => {
       'utf8'
     );
 
-    expect(smoke).toContain("kind: 'projection.snapshot.get'");
+    const probe = await readFile(join(projectRoot, 'scripts', 'smoke', 'projection-probe.ts'), 'utf8');
+    expect(smoke).not.toContain("kind: 'projection.snapshot.get'");
+    expect(smoke).toContain('window.__ariadneSmokeProjection.readFixtureWindow');
+    expect(probe).toContain('new ProjectionRuntimeClient(api)');
+    expect(probe).toContain('new ProjectionBodyRepository(client)');
+    expect(probe).toContain('PublicProjectionCatalogPageChain');
+    expect(probe).toContain('RunDocumentMetadataPageChain');
+    expect(probe).not.toContain('projection.snapshot.get');
     expect(smoke).toContain('configuredModelMislabelAbsent');
     expect(smoke).toContain('runtimeStatusConsistent');
     expect(smoke).toContain('conversationContextMenuVisible');

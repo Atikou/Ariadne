@@ -5,7 +5,7 @@
 
 ## 1. 当前复核
 
-最近一次复核的源码范围、通过项、失败记录和剩余边界统一维护在 [架构修复入口](architecture-review-and-remediation.md)。本页定义验证契约，不保留另一张会与当前事实冲突的历史通过表。窗口证据应同时绑定源码摘要、工具链和 Profile；单独一张截图或源码字符串断言不能证明运行行为。
+最近一次复核的源码范围、通过项、失败记录和剩余边界统一维护在 [架构修复入口](remediation-verification.md)。本页定义验证契约，不保留另一张会与当前事实冲突的历史通过表。窗口证据应同时绑定源码摘要、工具链和 Profile；单独一张截图或源码字符串断言不能证明运行行为。
 
 当前确定性 Provider 场景要求 19 次请求、17 次响应和 2 次中止，包含新增实时丢包、重复与 Renderer 重载恢复。原有五次 Runtime 强杀和完整桌面重启回执恢复继续保留。低层 API 测试、自然完成或人工等待不能代替对应窗口断言。
 
@@ -79,7 +79,7 @@ Provider 是 smoke 脚本启动的进程外、确定性 HTTPS OpenAI-compatible 
 - 不唤醒模型的独立 context injection；运行中 follow-up/steer 和可恢复 token/reasoning stream 已进入生产链路；
 - Agent 主动提问的 durable ask-user Directive、受保护问题载荷、回答 receipt、SQLite authority、Projection、scheduler continuation 与 Renderer 已有直接自动测试；确定性进程外 HTTPS Provider 驱动的真实 Electron 操作与 `waiting/user_question` 强杀恢复也已验收。真实商业 Provider、自由文本窗口场景和取消等待问题的产品语义仍未验收；
 - 若产品需要外部 Hook 包时的签名/发现；人类 Skill command catalog 已从 invocation-neutral snapshot 接入 Renderer，且不会激活 Agent。scoped complete/incomplete snapshot、last-good、取消/关闭、固定 package 资源读取、model/user invocation policy、Manifest-owned 静态可信 Hook Provider 生命周期、Diagnostics publisher 与受控 Telemetry 已接入。
-- Goal/Todo/Workflow/Schedule 的 SQLite CAS、command replay、并发/预算/deadline/cancel、结构化结果与 Schedule occurrence 重启恢复由 `productivity-v3.test.ts` 覆盖；`scheduler:migrate:v3` 只在 Runtime 停止后把旧 JSONL 显式导入指定 v3 Session。完整 Electron 窗口交互仍需发布前 smoke。
+- Goal/Todo/Workflow/Schedule 的 SQLite CAS、command replay、并发/预算/deadline/cancel、结构化结果与 Schedule occurrence 重启恢复由 `productivity-v3.test.ts` 覆盖；不支持退役调度 JSONL 导入，原文件保持不变。完整 Electron 窗口交互仍需发布前 smoke。
 - Credential seam 的 host protocol、opaque model ref、每次推理解析与热轮换由 protocol、Runtime gateway、Main settings/runtime-configuration/MCP 测试覆盖；Public 配置与 bootstrap 不含 secret。
 - `workspace.search_text/glob/apply_text_edits/move_file/delete_file/code_intelligence` 已进入 Catalog revision 18：服务与 Tool integration 覆盖稳定 version、Unicode 行列、CRLF、重叠/越界拒绝、陈旧冲突、目标不覆盖、realpath containment、symlink 排除和扫描/字节/结果上限。真实 bundled TypeScript LSP 进程验收覆盖 definition/reference/hover/document symbols。终态 Effect 仅公开 `detailAvailable`，受保护 reader 可在 Run 已结束和 Runtime 重启后按 owner 分页读取；Renderer 的 read/search/diff/terminal 专用卡已有静态渲染测试。完整 Electron 搜索→编辑→详情交互仍属于更深的产品验收。
 
@@ -121,4 +121,4 @@ npm.cmd run verify:release
 - Browser 真实 HTTPS、重定向、敏感输入和下载隔离；
 - 正式签名安装包在干净 Windows 上的安装、N-1 升级、迁移失败回滚、降级和卸载。
 
-详细差距和退出条件见 [deepseek-harness 对比审计](deepseek-harness-comparison-audit-2026-08-28.md)。
+详细差距和退出条件见 [deepseek-harness 对比审计](remediation-verification.md)。

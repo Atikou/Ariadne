@@ -17,6 +17,8 @@ interface TextPromptDialogProps {
   title: string;
   description: string;
   initialValue: string;
+  fieldLabel?: string;
+  maxLength?: number;
   confirmLabel: string;
   onConfirm(value: string): void;
   onClose(): void;
@@ -59,6 +61,8 @@ function TextPromptContent({
   title,
   description,
   initialValue,
+  fieldLabel = '会话名称',
+  maxLength = 80,
   confirmLabel,
   onConfirm,
   onClose
@@ -83,7 +87,7 @@ function TextPromptContent({
       <form className="action-dialog action-dialog--prompt" onSubmit={submit}>
         <div className="action-dialog-icon"><Pencil size={18} /></div>
         <div className="action-dialog-copy"><h2 id={titleId}>{title}</h2><p id={descriptionId}>{description}</p></div>
-        <label className="action-dialog-field"><span>会话名称</span><input ref={inputRef} value={value} maxLength={80} onChange={(event) => setValue(event.target.value)} /></label>
+        <label className="action-dialog-field"><span>{fieldLabel}</span><input ref={inputRef} value={value} maxLength={maxLength} onChange={(event) => setValue(event.target.value)} /></label>
         <footer>
           <button type="button" className="secondary-button" onClick={onClose}>取消</button>
           <button type="submit" className="primary-button" disabled={!value.trim()}>{confirmLabel}</button>

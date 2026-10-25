@@ -1,7 +1,6 @@
-import { createHash } from 'node:crypto';
-
 import {
   assertCanonicalAbsoluteDataRoot,
+  runtimeResponseSchema,
   type RuntimeBuildManifest,
   type RuntimeCancel,
   type RuntimeResponse
@@ -10,16 +9,14 @@ import type {
   AgentControlRuntimeFactory,
   AgentControlRuntimeLifecycle
 } from '../ingress/AgentControlLifecycle.js';
-import { boundedCanonicalJson } from '../ingress/BoundedCanonicalJson.js';
+import { runtimeCommandIdentity } from '../ingress/RuntimeCommandIdentity.js';
 import type {
   RuntimeApplication,
   RuntimeApplicationFactory
 } from '../ingress/RuntimeApplication.js';
-import type {
-  RuntimeCommandJournal,
-  RuntimeCommandOutcome,
-  RuntimeCommandReconciliation
-} from '../ingress/RuntimeCommandJournal.js';
+import type { RuntimeCommandJournalV2 as RuntimeCommandJournal,
+  RuntimeCommandReconciliationV2 as RuntimeCommandReconciliation } from '../control/ports/RuntimeCommandJournalV2.js';
+type RuntimeCommandOutcome = RuntimeResponse['outcome'];
 import {
   RuntimeIngressInitializationError,
   type RuntimeCommandEnvelope,
@@ -36,6 +33,12 @@ import { RuntimeLifecycleRegistry } from './RuntimeLifecycleRegistry.js';
 import { DeferredProjectionWakeEventSink } from './DeferredProjectionWakeEventSink.js';
 import type { AgentProcessSandboxFactory } from '../control/ports/AgentProcessSandbox.js';
 import type { RuntimeCapabilityManifest } from '../ingress/RuntimeCapabilityManifest.js';
+import type { RuntimeStartupTrace } from './RuntimeStartupTrace.js';
+import { RuntimeDomainHealth, RuntimeDomainUnavailableError } from '../ingress/RuntimeDomainHealth.js';
+import { commandRequiresInference } from '../ingress/RuntimeInferenceAdmission.js';
+import type { RuntimeAuthorityHealthSource } from '../ingress/RuntimeAuthorityHealthSource.js';
+import { readOwnedAuthorityFault } from '../adapters/persistence/SqliteAuthorityHealth.js';
+import type { RuntimeHealth } from '@ariadne/protocol/public';
 import {
   compileProductionRuntimeCapabilityManifest,
   resolveAgentControlRuntimeServices
@@ -55,13 +58,16 @@ interface ActiveCommand {
 
 export interface ComposedRuntimeIngressDependencies {
   readonly commandJournal: RuntimeCommandJournal;
+  readonly journalHealth?: RuntimeAuthorityHealthSource;
   readonly agentControlFactory?: AgentControlRuntimeFactory;
   readonly preflightMemoryControlShadows: (dataRoot: string) => unknown;
+  readonly preflightCommunicationContract: (dataRoot: string) => void;
   readonly runtimeApplicationFactory: RuntimeApplicationFactory;
   readonly readBuildManifest?: () => RuntimeBuildManifest;
   readonly validateBuildIdentity?: boolean;
   readonly runtimeVersion?: string;
   readonly processSandboxFactory?: AgentProcessSandboxFactory;
+  readonly startupTrace?: RuntimeStartupTrace;
 }
 
 /**
@@ -80,6 +86,7 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
   private readonly activeCommands = new Map<string, ActiveCommand>();
   private readonly inFlightExecutions = new Set<Promise<RuntimeCommandOutcome>>();
   private shutdownOperation?: Promise<void>;
+  private readonly ingressHealth = new RuntimeDomainHealth();
 
   public constructor(
     private readonly dependencies: ComposedRuntimeIngressDependencies
@@ -101,6 +108,8 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
     try {
       const { bootstrap } = input;
       assertCanonicalAbsoluteDataRoot(bootstrap.dataRoot);
+      this.dependencies.startupTrace?.bind(bootstrap.dataRoot);
+      this.dependencies.startupTrace?.point('bootstrap');
       const runtimeVersion = this.dependencies.runtimeVersion ?? ARIADNE_RUNTIME_VERSION;
       const validateBuildIdentity = this.dependencies.validateBuildIdentity ?? true;
       const buildManifest = validateBuildIdentity
@@ -121,10 +130,15 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
         throw new Error('runtime_build_identity_mismatch');
       }
 
+      phase = 'communication_contract_preflight';
+      this.dependencies.startupTrace?.point('communication_contract_preflight');
+      this.dependencies.preflightCommunicationContract(bootstrap.dataRoot);
       phase = 'legacy_control_preflight';
+      this.dependencies.startupTrace?.point('legacy_control_preflight');
       this.dependencies.preflightMemoryControlShadows(bootstrap.dataRoot);
 
       phase = 'capability_manifest';
+      this.dependencies.startupTrace?.point('capability_manifest');
       this.capabilityManifest = await compileProductionRuntimeCapabilityManifest({
         bootstrap,
         ...(input.hostCapabilities === undefined
@@ -142,13 +156,18 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
       });
 
       phase = 'command_journal';
+      this.dependencies.startupTrace?.point('command_journal');
       this.dependencies.commandJournal.open(bootstrap.dataRoot);
+      if (this.dependencies.journalHealth !== undefined) this.ingressHealth.register('journal', {
+        probe: () => this.dependencies.journalHealth!.assertHealthy(), failureCode: 'authority_unavailable', recovery: 'repair'
+      });
       registry.register({
         name: 'command_journal',
         close: () => this.dependencies.commandJournal.close()
       });
 
       phase = 'runtime_application';
+      this.dependencies.startupTrace?.point('runtime_application');
       this.application = await this.dependencies.runtimeApplicationFactory.create({
         bootstrap,
         capabilityManifest,
@@ -160,6 +179,10 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
           : { providerTelemetry: runtimeServices.telemetry })
       });
       const application = this.application;
+      if (application.inferenceHealth !== undefined) this.ingressHealth.register('inference', {
+        probe: () => application.inferenceHealth!.assertHealthy(), failureCode: 'authority_unavailable', recovery: 'repair',
+        externalRecovery: 'reconcile', hasExternalFailure: () => application.inferenceHealth!.hasExternalFailure?.() ?? false
+      });
       registry.register({
         name: 'runtime_application',
         close: (context) => application.disposeInitialization(context)
@@ -167,6 +190,7 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
 
       if (this.dependencies.agentControlFactory) {
         phase = 'agent_control';
+        this.dependencies.startupTrace?.point('agent_control');
         if (!input.hostCapabilities) {
           throw new Error('runtime_host_capability_client_required');
         }
@@ -189,6 +213,9 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
           runtimePolicy: bootstrap.runtimePolicy,
           credentialEnvironment: process.env,
           modelCatalog: application.modelCatalog,
+          ...(application.inferenceHealth === undefined ? {} : { inferenceAdmission: (command: RuntimeCommandEnvelope['command']) => {
+            if (commandRequiresInference(command)) this.ingressHealth.assertAvailable(['inference']);
+          } }),
           ...(application.modelInferenceGateway === undefined
             ? {}
             : { modelInferenceGateway: application.modelInferenceGateway }),
@@ -206,15 +233,19 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
       }
 
       phase = 'agent_control_start';
+      this.dependencies.startupTrace?.point('agent_control_start');
       await this.agentControl?.start();
       this.agentControl?.assertHealthy();
       phase = 'runtime_application_start';
+      this.dependencies.startupTrace?.point('runtime_application_start');
       await application.start();
       phase = 'projection_wake_enable';
+      this.dependencies.startupTrace?.point('projection_wake_enable');
       this.projectionWakeEventSink?.enable();
       phase = 'ready';
       this.lifecycle = 'ready';
       registry.commit();
+      this.dependencies.startupTrace?.point('ready');
       return {
         runtimeVersion,
         runtimeBuildFingerprint: buildManifest.fingerprint,
@@ -226,6 +257,7 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
         }
       };
     } catch (error) {
+      this.dependencies.startupTrace?.point('failed');
       const cleanupContext = createShutdownContext(Date.now() + 5_000);
       let cleanupFailures: readonly unknown[] = [];
       try {
@@ -248,7 +280,7 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
         phase,
         initializationErrorCode(error),
         'Runtime initialization failed.',
-        { cause }
+        { cause, health: initializationFailureHealth(error) }
       );
     }
   }
@@ -279,9 +311,25 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
         false
       );
     }
+    // This side-effect-free read uses no command journal or business storage.
+    if (envelope.command.kind === 'runtime.health.get') {
+      if (envelope.signal.aborted) return errorOutcome(envelope.correlationId,
+        'runtime_health_cancelled', 'The Runtime health request was cancelled.', true);
+      return { ok: true, result: { kind: 'runtime.health', health: {
+        contractVersion: '1.0', observedAt: new Date().toISOString(), coverage: 'registered_domains',
+        domains: [...(this.agentControl?.readDomainHealth() ?? []), ...this.ingressHealth.read()].map(domain => ({ ...domain }))
+      } } };
+    }
     try {
-      this.agentControl?.assertHealthy();
-    } catch {
+      if (this.dependencies.journalHealth !== undefined) this.ingressHealth.assertAvailable(['journal']);
+      if (this.application?.inferenceHealth !== undefined && commandRequiresInference(envelope.command))
+        this.ingressHealth.assertAvailable(['inference']);
+      this.agentControl?.assertCommandHealthy(envelope.command);
+    } catch (error) {
+      if (error instanceof RuntimeDomainUnavailableError) {
+        return errorOutcome(envelope.correlationId, `runtime_${error.health.domain}_unavailable`,
+          `Runtime ${error.health.domain} domain is unavailable; recovery requires ${error.health.recovery}.`, false);
+      }
       return errorOutcome(
         envelope.correlationId,
         'runtime_unhealthy',
@@ -290,7 +338,7 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
       );
     }
 
-    const digest = digestCommand(envelope.command);
+    const { digest, previousDigests } = runtimeCommandIdentity(envelope.command);
     const active = this.activeCommands.get(envelope.commandId);
     if (active) {
       return active.digest === digest
@@ -305,7 +353,8 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
 
     let admission = this.dependencies.commandJournal.begin(
       envelope.commandId,
-      digest
+      digest,
+      previousDigests
     );
     if (admission.kind === 'conflict') {
       return errorOutcome(
@@ -315,7 +364,7 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
         false
       );
     }
-    if (admission.kind === 'replay') return admission.outcome;
+    if (admission.kind === 'replay') return runtimeResponseSchema.shape.outcome.parse(admission.outcome);
     if (admission.kind === 'uncertain') {
       let reconciliation: RuntimeCommandReconciliation | null;
       try {
@@ -341,7 +390,7 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
           false
         );
       }
-      if (admission.kind === 'replay') return admission.outcome;
+      if (admission.kind === 'replay') return runtimeResponseSchema.shape.outcome.parse(admission.outcome);
       if (admission.kind === 'uncertain') {
         return uncertainOutcome(envelope.correlationId, 'caller_cancelled', true);
       }
@@ -444,6 +493,18 @@ export class ComposedRuntimeIngress implements RuntimeIngress {
             outcome = uncertainOutcome(envelope.correlationId, reason);
           }
         } else {
+          // Keep protected exception payloads out of logs; retain the owner and a
+          // bounded internal failure code so uncertain outcomes can be diagnosed.
+          const candidateCode = error instanceof Error ? error.message.split(':', 1)[0] : '';
+          const failureCode = candidateCode && /^(?:agent|sqlite|runtime|inference|projection)_[a-z0-9_]{1,100}$/u.test(candidateCode)
+            ? candidateCode : 'owner_failure_unclassified';
+          console.error(`[runtime] command owner failed: ${failureCode}`, {
+            commandKind: envelope.command.kind,
+            commandId: envelope.commandId,
+            errorName: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(error.name)
+              ? error.name : 'unknown',
+            code: failureCode
+          });
           settlement = 'uncertain';
           outcome = errorOutcome(
             envelope.correlationId,
@@ -698,12 +759,6 @@ function deepestInitializationErrorCode(
   return /^[a-z][a-z0-9_]{1,63}$/u.test(token) ? token.toUpperCase() : null;
 }
 
-function digestCommand(command: RuntimeCommandEnvelope['command']): string {
-  return createHash('sha256')
-    .update(boundedCanonicalJson(command), 'utf8')
-    .digest('hex');
-}
-
 function cancellationReason(reason: unknown): RuntimeCancel['reason'] {
   const value = reason instanceof Error ? reason.message : String(reason ?? '');
   if (value === 'deadline_exceeded') return 'deadline_exceeded';
@@ -729,6 +784,14 @@ function uncertainOutcome(
     message,
     false
   );
+}
+
+function initializationFailureHealth(error: unknown): RuntimeHealth {
+  const fault = readOwnedAuthorityFault(error), observedAt = new Date().toISOString();
+  return { contractVersion: '1.0', observedAt, coverage: 'registered_domains', domains: fault === null ? [] : [{
+    domain: fault.source, source: fault.source, availability: 'unavailable', observedAt, revision: 1,
+    code: 'authority_unavailable', recovery: 'repair'
+  }] };
 }
 
 function errorOutcome(

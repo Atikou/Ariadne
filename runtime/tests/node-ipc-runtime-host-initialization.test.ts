@@ -25,7 +25,7 @@ import {
 } from '../src/adapters/persistence/runtimeCommandDbMigrations.js';
 import type { AgentControlRuntimeFactory } from '../src/ingress/AgentControlLifecycle.js';
 import type { RuntimeApplicationFactory } from '../src/ingress/RuntimeApplication.js';
-import type { RuntimeCommandJournal } from '../src/ingress/RuntimeCommandJournal.js';
+import type { RuntimeCommandJournalV2 as RuntimeCommandJournal } from '../src/control/ports/RuntimeCommandJournalV2.js';
 import { preflightMemoryControlShadows } from '../src/adapters/persistence/memoryControlShadowRetirement.js';
 import { ComposedRuntimeIngress } from '../src/composition/ComposedRuntimeIngress.js';
 import { NodeIpcRuntimeHost } from '../src/transport/NodeIpcRuntimeHost.js';
@@ -135,6 +135,8 @@ describe('NodeIpcRuntimeHost initialization fencing', () => {
           storageSchemas: { agentControl: 13, publicProjection: 1 },
           start: async () => undefined,
           assertHealthy: () => undefined,
+          assertCommandHealthy: () => undefined,
+          readDomainHealth: () => [],
           executeOwnedCommand: async () => null,
           reconcileUncertainCommand: async () => null,
           prepareShutdown: async () => undefined,
@@ -213,7 +215,8 @@ function hostForInitialization(
     commandJournal: journal,
     ...(agentFactory ? { agentControlFactory: agentFactory } : {}),
     runtimeApplicationFactory: { create: createApplication },
-    preflightMemoryControlShadows: legacyPreflight ?? preflightMemoryControlShadows,
+    preflightCommunicationContract: () => undefined,
+      preflightMemoryControlShadows: legacyPreflight ?? preflightMemoryControlShadows,
     readBuildManifest: () => ({
       schemaVersion: 1,
       runtimeVersion: '0.1.0',

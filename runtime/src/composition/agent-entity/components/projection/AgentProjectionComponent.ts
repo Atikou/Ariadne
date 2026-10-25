@@ -1,5 +1,8 @@
+import { readAgentProjectionQuery } from './AgentProjectionQueries.js';
+import { assertPublishInterval, projectionHealthError } from './AgentProjectionLifecyclePolicy.js';
+export { projectionHealthError } from './AgentProjectionLifecyclePolicy.js';
+import type { RuntimeStartupTrace } from '../../../RuntimeStartupTrace.js';
 import {
-  PUBLIC_PROJECTION_CONTRACT_VERSION,
   type RuntimeResult
 } from '@ariadne/protocol/public';
 
@@ -34,6 +37,8 @@ import {
   PublicProjectionWakePublisher
 } from '../../../PublicProjectionWakeCommitSink.js';
 import { createAgentRunVersionReader } from '../../../AgentControlRuntimeCompositionSupport.js';
+import { PublicRunDocumentWakeCommitSink } from '../../../PublicRunDocumentWakeCommitSink.js';
+import { PublicProjectionRepresentationUpgradeRequired } from '../../../../projection/PublicProjectionRepresentationUpgradeRequired.js';
 import { completedPublicError } from '../../../AgentPublicCommandFailures.js';
 import type {
   AgentControlExecutionPipeline
@@ -50,6 +55,7 @@ const EMPTY_MODEL_CATALOG: ModelCatalogProjectionSource = Object.freeze({
 });
 
 export interface AgentProjectionComponentOptions {
+  readonly startupTrace?: RuntimeStartupTrace;
   readonly publishIntervalMs?: number;
   readonly publisher?: Omit<
     AgentRunPublicProjectionPublisherOptions,
@@ -95,6 +101,7 @@ class DefaultAgentProjectionComponent implements AgentProjectionComponentHandle 
   private readonly conversationPublisher: ConversationPublicProjectionPublisher;
   private readonly modelPublisher: ModelCatalogPublicProjectionPublisher;
   private readonly publicProjection: AgentPersistenceComponentHandle['publicProjection'];
+  private readonly startupTrace?: RuntimeStartupTrace;
   private readonly publishIntervalMs: number;
   private lifecycle: 'starting' | 'running' | 'failed' | 'stopping' | 'stopped' = 'starting';
   private timer?: NodeJS.Timeout;
@@ -105,6 +112,7 @@ class DefaultAgentProjectionComponent implements AgentProjectionComponentHandle 
 
   public constructor(input: AgentProjectionComponentInput) {
     const options = input.options ?? {};
+    this.startupTrace = options.startupTrace;
     const { unitOfWork, conversation, publicProjection } = input.persistence;
     this.publicProjection = publicProjection;
     this.publishIntervalMs = options.publishIntervalMs
@@ -114,6 +122,9 @@ class DefaultAgentProjectionComponent implements AgentProjectionComponentHandle 
     const projectionSink = input.wakeEventSink === undefined
       ? publicProjection
       : new PublicProjectionWakeCommitSink(publicProjection, input.wakeEventSink);
+    const agentDocumentSink = input.wakeEventSink === undefined
+      ? publicProjection
+      : new PublicRunDocumentWakeCommitSink(publicProjection, input.wakeEventSink);
     const projectionWakePublisher = input.wakeEventSink === undefined
       ? undefined
       : new PublicProjectionWakePublisher(input.wakeEventSink);
@@ -126,7 +137,7 @@ class DefaultAgentProjectionComponent implements AgentProjectionComponentHandle 
     this.agentPublisher = new AgentRunPublicProjectionPublisher(
       unitOfWork,
       createAgentRunVersionReader(unitOfWork),
-      projectionSink,
+      agentDocumentSink,
       {
         ...options.publisher,
         terminalResultSink: new AgentTerminalResultCoordinator(
@@ -163,7 +174,13 @@ class DefaultAgentProjectionComponent implements AgentProjectionComponentHandle 
   public commandOwners(): readonly AgentPublicCommandOwner[] {
     return Object.freeze([
       defineAgentPublicCommandOwner('projection.query', [
-        'projection.snapshot.get', 'projection.commits.read'
+        'projection.snapshot.get', 'projection.commits.read', 'projection.snapshot.begin', 'projection.snapshot.page',
+        'projection.scope.read', 'projection.view.begin', 'projection.view.page', 'projection.messages.window',
+        'projection.catalog.begin', 'projection.catalog.page', 'projection.catalog.detail', 'projection.catalog.read',
+        'projection.features.window', 'projection.features.receipts',
+        'projection.run_document.root', 'projection.run_document.metadata', 'projection.run_document.inbox', 'projection.run_document.chunk',
+        'projection.messages.metadata', 'projection.messages.body',
+        'projection.conversation.receipts', 'projection.conversation.inference_window'
       ], (envelope) => this.executeCommand(envelope),
       async () => ({ kind: 'not_committed' }))
     ]);
@@ -239,23 +256,7 @@ class DefaultAgentProjectionComponent implements AgentProjectionComponentHandle 
   public executeCommand(
     envelope: RuntimeCommandEnvelope
   ): Promise<RuntimeApplicationCommandResult> {
-    if (envelope.command.kind === 'projection.snapshot.get') {
-      if (envelope.command.contractVersion !== PUBLIC_PROJECTION_CONTRACT_VERSION) {
-        throw new Error('public_projection_contract_version_mismatch');
-      }
-      return this.executeQuery(envelope, async () => ({
-        kind: 'projection.snapshot' as const,
-        snapshot: await this.publicProjection.snapshot()
-      }));
-    }
-    if (envelope.command.kind === 'projection.commits.read') {
-      const request = envelope.command.request;
-      return this.executeQuery(envelope, async () => ({
-        kind: 'projection.commits' as const,
-        batch: await this.publicProjection.read(request)
-      }));
-    }
-    throw new Error('agent_command_owner_kind_mismatch:projection.query');
+    return this.executeQuery(envelope, () => readAgentProjectionQuery(this.publicProjection, envelope.command));
   }
 
   private async executeQuery(
@@ -269,6 +270,10 @@ class DefaultAgentProjectionComponent implements AgentProjectionComponentHandle 
       return { outcome: { ok: true, result }, settlement: 'completed' };
     } catch (error) {
       if (envelope.signal.aborted) throw error;
+      if (error instanceof PublicProjectionRepresentationUpgradeRequired) {
+        return completedPublicError(envelope, 'public_projection_contract_mismatch',
+          'This read contract requires the bounded Run document queries.', false);
+      }
       this.fail(error);
       return completedPublicError(
         envelope,
@@ -280,6 +285,7 @@ class DefaultAgentProjectionComponent implements AgentProjectionComponentHandle 
   }
 
   private async drainRequests(): Promise<void> {
+    if (this.lifecycle === 'starting') this.startupTrace?.point('startup_projection_drain');
     try {
       do {
         this.drainRequested = false;
@@ -287,6 +293,7 @@ class DefaultAgentProjectionComponent implements AgentProjectionComponentHandle 
       } while (this.drainRequested);
     } finally {
       this.activeDrain = null;
+      if (this.lifecycle === 'starting') this.startupTrace?.point('startup_projection_drained');
     }
   }
 
@@ -311,15 +318,5 @@ class DefaultAgentProjectionComponent implements AgentProjectionComponentHandle 
   private stopTimer(): void {
     if (this.timer !== undefined) clearInterval(this.timer);
     this.timer = undefined;
-  }
-}
-
-export function projectionHealthError(cause: unknown): Error {
-  return new Error('agent_control_public_projection_unhealthy', { cause });
-}
-
-function assertPublishInterval(value: number): void {
-  if (!Number.isSafeInteger(value) || value <= 0 || value > 60_000) {
-    throw new Error('agent_control_public_projection_interval_invalid');
   }
 }

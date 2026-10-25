@@ -7,7 +7,7 @@ import {
   type RuntimeResponse,
   type RuntimeShutdown,
   parseHostToRuntimeMessage,
-  parseRuntimeToHostMessage
+  parseRuntimeToHostMessage, runtimeInitializationFailureSchema
 } from '@ariadne/protocol/host';
 import type { RuntimeEventEnvelope } from '@ariadne/protocol/public';
 
@@ -128,9 +128,27 @@ export class NodeIpcRuntimeHost {
         ? `${error.phase}_${error.code}`
         : 'runtime_ingress_initialization_failed';
       process.stderr.write(`[runtime] initialization failed: ${diagnostic}\n`);
+      await this.publishInitializationFailure(error, bootstrap.runtimeInstanceId);
       this.hostCapabilities.close('runtime_initialization_failed');
       await this.failClosed('initialization_failed');
     }
+  }
+
+  private async publishInitializationFailure(error: unknown, runtimeInstanceId: string): Promise<void> {
+    if (typeof process.send !== 'function' || !process.connected) return;
+    const known = error instanceof RuntimeIngressInitializationError ? error : null;
+    const observedAt = new Date().toISOString();
+    const phase = runtimeInitializationFailureSchema.shape.phase.safeParse(known?.phase);
+    const message = runtimeInitializationFailureSchema.parse({ protocol: ARIADNE_RUNTIME_PROTOCOL,
+      protocolVersion: ARIADNE_RUNTIME_PROTOCOL_VERSION, runtimeInstanceId, type: 'initialization_failed', contractVersion: '1.0',
+      phase: phase.success ? phase.data : 'unknown', health: known?.health ?? {
+        contractVersion: '1.0', observedAt, coverage: 'registered_domains', domains: []
+      } });
+    await new Promise<void>(resolve => {
+      const timer = setTimeout(resolve, 1_000);
+      try { process.send!(message, () => { clearTimeout(timer); resolve(); }); }
+      catch { clearTimeout(timer); resolve(); }
+    });
   }
 
   private acceptRequest(request: RuntimeRequest): void {

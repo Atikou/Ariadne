@@ -108,9 +108,11 @@ export interface AgentRunWorkFollowUpRequest {
 export interface AgentRunWorkFollowUpResultIdentity {
   readonly run: { readonly runId: string; readonly version: number };
   readonly turn: { readonly turnId: string };
-  readonly attempt: { readonly attemptId: string; readonly state?: { readonly status: string } };
+  readonly attempt: {
+    readonly attemptId: string;
+    readonly state?: { readonly status: string; readonly recovery?: { readonly decisionId: string } };
+  };
   readonly status?: string;
-  readonly recoveryDecisionId?: string;
 }
 
 export type AgentRunWorkFollowUpReceipt =
@@ -146,6 +148,8 @@ export interface ActiveAgentTurnInterruptionRequest {
   readonly commandId: string;
   readonly runId: string;
   readonly expectedVersion: number;
+  /** Owner proves higher public versions still identify this exact in-flight inference. */
+  readonly authorizeVersion?: (ownedVersion: number) => Promise<boolean>;
   readonly finalize: (
     recovery: ActiveAgentTurnInterruptionRecovery
   ) => Promise<{ readonly runId: string; readonly runVersion: number }>;
@@ -223,6 +227,7 @@ export type AgentRunWorkAuthorityAssessment =
   | { readonly status: 'retired_tool_catalog' };
 
 export interface AgentRunWorkSchedulerOptions {
+  readonly cancellationGate?: { isSuppressed(run: AgentRun): Promise<boolean> };
   readonly intervalMs?: number;
   readonly pageSize?: number;
   readonly maxFixedPointRounds?: number;

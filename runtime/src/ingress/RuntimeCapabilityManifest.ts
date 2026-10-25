@@ -42,6 +42,8 @@ export interface RuntimeCapabilityManifest {
   readonly agentComponentCatalog: ComponentCatalog;
   readonly publicCapabilities: readonly RuntimeCapability[];
   readonly unwiredPublicCapabilities: readonly RuntimeCapability[];
+  /** Explicitly retired historical identities, never available or unwired features. */
+  readonly retiredPublicCapabilities: readonly RuntimeCapability[];
   readonly agentToolCatalogSnapshots: readonly AgentToolCatalogSnapshot[];
   /** Resolves only bootstrap-frozen services declared by started Providers. */
   service<T>(serviceId: string): T | undefined;

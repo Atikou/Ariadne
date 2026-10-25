@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { PublicInferenceStreamProjectionV3, PublicInferenceStreamEventV1 } from '@ariadne/protocol/public';
+import type { PublicInferenceStreamProjection, PublicInferenceStreamEvent } from '@ariadne/protocol/public';
 import { LiveInferenceStreamStore } from '../src/renderer/src/core/runtime/live-inference-stream-store';
 import { runtimeEnvelope } from './runtime-event-fixture';
 
@@ -15,7 +15,7 @@ function terminal(finalSequence: number, state: 'committed' | 'interrupted' = 'c
     finalSequence, state, occurredAt: at }, finalSequence + 1);
 }
 function durable(finalSequence: number, retainedFromSequence = 1,
-  status: PublicInferenceStreamProjectionV3['status'] = 'streaming'): PublicInferenceStreamProjectionV3 {
+  status: PublicInferenceStreamProjection['status'] = 'streaming'): PublicInferenceStreamProjection {
   return { ...identity, inferenceStreamId: streamId, version: 1, status, finalSequence, retainedFromSequence,
     chunks: Array.from({ length: finalSequence - retainedFromSequence + 1 }, (_, i) => ({
       sequence: i + retainedFromSequence, channel: 'token' as const,
@@ -57,7 +57,7 @@ describe('live inference and durable head reconciliation', () => {
     store.accept(chunk(3));
     expect(() => store.accept(chunk(1, 'conflict'))).toThrow('chunk_conflict');
     expect(() => store.accept(chunk(3, 'conflict'))).toThrow('chunk_conflict');
-    expect(() => store.accept({ ...chunk(2), event: { ...chunk(2).event, sessionId: 'wrong' } as PublicInferenceStreamEventV1 }))
+    expect(() => store.accept({ ...chunk(2), event: { ...chunk(2).event, sessionId: 'wrong' } as PublicInferenceStreamEvent }))
       .toThrow('identity_drift');
     expect(() => store.reconcile([{ ...durable(2), attemptId: 'wrong' }])).toThrow('identity_drift');
     expect(content(store)).toBe('1');

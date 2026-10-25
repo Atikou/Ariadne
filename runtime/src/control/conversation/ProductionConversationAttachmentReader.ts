@@ -1,4 +1,4 @@
-import { imageAttachmentRefV3Schema } from '@ariadne/protocol/public';
+import { imageAttachmentRefSchema } from '@ariadne/protocol/public';
 
 import type {
   ConversationAttachmentReader,
@@ -38,8 +38,8 @@ implements ConversationAttachmentReader {
 }
 
 function sameRef(left: unknown, right: unknown): boolean {
-  const parsedLeft = imageAttachmentRefV3Schema.safeParse(left);
-  const parsedRight = imageAttachmentRefV3Schema.safeParse(right);
+  const parsedLeft = imageAttachmentRefSchema.safeParse(left);
+  const parsedRight = imageAttachmentRefSchema.safeParse(right);
   return parsedLeft.success
     && parsedRight.success
     && JSON.stringify(parsedLeft.data) === JSON.stringify(parsedRight.data);

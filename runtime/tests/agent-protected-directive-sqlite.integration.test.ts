@@ -26,6 +26,7 @@ import { createShutdownContext } from '../src/ingress/ShutdownContext.js';
 import {
   ProtectedAgentTerminalAssistantContentResolver
 } from '../src/composition/ProtectedAgentTerminalAssistantContentResolver.js';
+import { auditOfflineAgentRecoveryPayloads } from '../src/adapters/persistence/OfflineAgentRecoveryPayloadAudit.js';
 
 const roots: string[] = [];
 const units = new Set<SqliteAgentRunUnitOfWork>();
@@ -90,7 +91,7 @@ describe('protected committed Directive payloads', () => {
 
     const database = databaseOf(unit);
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
-    expect(count(database, 'agent_v3_directive_payloads')).toBe(1);
+    expect(count(database, 'agent_directive_payloads')).toBe(1);
     expect(readAllDatabaseText(database)).not.toContain(rawResponse);
     const receipt = await unit.loadCommittedCommandReceipt(command.commandId);
     expect(JSON.stringify(receipt)).not.toContain(rawResponse);
@@ -108,9 +109,19 @@ describe('protected committed Directive payloads', () => {
       directiveDigest,
       contentDigest
     })).rejects.toThrow(/lookup_mismatch/);
+    expect(() => unit.assertHealthy()).not.toThrow();
+
+    const beforeAudit = readAllDatabaseText(database), readonly = new DatabaseSync(resolveAgentControlDatabasePath(root), { readOnly: true });
+    const wrongCodec = new AesGcmAgentPersistencePayloadCodec('test-key', [{ keyId: 'test-key', key: new Uint8Array(32).fill(99) }]);
+    try {
+      readonly.exec('PRAGMA query_only=ON');
+      await expect(auditOfflineAgentRecoveryPayloads(readonly, codec)).resolves.toBeGreaterThan(0);
+      await expect(auditOfflineAgentRecoveryPayloads(readonly, wrongCodec)).rejects.toThrow(/payload_decode_failed/);
+      expect(readAllDatabaseText(database)).toBe(beforeAudit);
+    } finally { wrongCodec.destroy(); readonly.close(); }
 
     database.prepare(
-      'DELETE FROM agent_v3_directive_payloads WHERE artifact_id=?'
+      'DELETE FROM agent_directive_payloads WHERE artifact_id=?'
     ).run(directive.contentRef);
     await expect(unit.loadCommittedCommandReceipt(command.commandId))
       .rejects.toThrow(/directive_payloads.*missing/);
@@ -157,11 +168,11 @@ describe('protected committed Directive payloads', () => {
     const database = databaseOf(unit);
     expect(countWhere(
       database,
-      'agent_v3_commands',
+      'agent_commands',
       'command_id',
       'command-secret-result-rejected'
     )).toBe(0);
-    expect(count(database, 'agent_v3_directive_payloads')).toBe(0);
+    expect(count(database, 'agent_directive_payloads')).toBe(0);
     expect(readAllDatabaseText(database)).not.toContain(rawSecret);
     expect(await unit.transaction((transaction) => transaction.loadRun('run-secret')))
       .toMatchObject({ version: 2, state: { status: 'running' } });
@@ -220,10 +231,10 @@ describe('protected committed Directive payloads', () => {
     expect(result.run.effects).toHaveLength(2);
     expect(await commands.execute(command, artifacts)).toMatchObject({ replayed: true });
     const database = databaseOf(unit);
-    expect(count(database, 'agent_v3_effect_payloads')).toBe(2);
+    expect(count(database, 'agent_effect_payloads')).toBe(2);
     expect(countWhere(
       database,
-      'agent_v3_effect_payloads',
+      'agent_effect_payloads',
       'input_command_id',
       command.commandId
     )).toBe(2);

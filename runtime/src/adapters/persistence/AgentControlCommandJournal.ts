@@ -22,7 +22,7 @@ export function loadCommittedCommandRecord(
 ): CommittedAgentRunCommand | null {
   const command = database.prepare(
     `SELECT command_id, command_digest, mutation_count, fact_count, committed_at
-     FROM agent_v3_commands WHERE command_id=?`
+     FROM agent_commands WHERE command_id=?`
   ).get(commandId) as AgentCommandRow | undefined;
   if (command === undefined) return null;
   if (
@@ -38,7 +38,7 @@ export function loadCommittedCommandRecord(
   const rows = database.prepare(
     `SELECT command_id, run_id, ordinal, expected_version,
             resulting_version, result_run_json
-     FROM agent_v3_command_runs
+     FROM agent_command_runs
      WHERE command_id=? ORDER BY ordinal`
   ).all(commandId) as unknown as AgentCommandRunRow[];
   if (rows.length !== command.mutation_count) {
@@ -72,8 +72,8 @@ export function loadCommittedCommandRecord(
     `SELECT event.event_id, event.command_id, event.run_id,
             event.run_version, event.sequence, event.occurred_at,
             event.event_json
-     FROM agent_v3_events AS event
-     INNER JOIN agent_v3_command_runs AS command_run
+     FROM agent_events AS event
+     INNER JOIN agent_command_runs AS command_run
        ON command_run.command_id=event.command_id
       AND command_run.run_id=event.run_id
       AND command_run.resulting_version=event.run_version
@@ -85,7 +85,7 @@ export function loadCommittedCommandRecord(
       row.result_run_json,
       row.run_id,
       row.resulting_version,
-      `agent_v3_command_runs:${commandId}:${row.run_id}`
+      `agent_command_runs:${commandId}:${row.run_id}`
     );
     const events = eventRows
       .filter((event) => event.run_id === row.run_id)
@@ -120,7 +120,7 @@ export function loadCommandRunRow(
   return database.prepare(
     `SELECT command_id, run_id, ordinal, expected_version,
             resulting_version, result_run_json
-     FROM agent_v3_command_runs WHERE command_id=? AND run_id=?`
+     FROM agent_command_runs WHERE command_id=? AND run_id=?`
   ).get(commandId, runId) as AgentCommandRunRow | undefined;
 }
 

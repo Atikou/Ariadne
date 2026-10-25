@@ -35,9 +35,9 @@ import { createWorkspaceLspAgentToolRegistration } from './WorkspaceLspAgentTool
 export function createWorkspaceAgentToolRegistrations(
   roots: ReadonlyMap<string, WorkspaceBinding>,
   processSandboxFactory?: FirstPartyProcessSandboxFactory,
-  lsp?: WorkspaceLspService
+  lsp?: WorkspaceLspService,
+  workspaceFiles = new LocalWorkspaceFileService()
 ): readonly TrustedAgentToolRegistrationV1[] {
-  const workspaceFiles = new LocalWorkspaceFileService();
   return [
     listFilesRegistration(roots),
     ...createWorkspaceFileAgentToolRegistrations(roots, workspaceFiles),

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SqlitePublicProjectionStore } from '../src/adapters/persistence/SqlitePublicProjectionStore.js';
 import { PublicAgentObservability } from '../src/adapters/observability/PublicAgentObservability.js';
@@ -36,6 +36,14 @@ describe('PublicAgentObservability', () => {
       message: 'Agent lifecycle Hook tool.dispatch.post observed.'
     });
     expect(JSON.stringify(snapshot.diagnostics)).not.toContain('audit');
+    const scalar = vi.spyOn(store, 'snapshot').mockRejectedValue(new Error('full_history_reads_forbidden'));
+    const restored = new PublicAgentObservability(store, store);
+    await restored.start();
+    restored.record(delivery);
+    await restored.drain();
+    expect(scalar).not.toHaveBeenCalled();
+    expect(await store.readPublicAgentObservationHeads()).toEqual(snapshot.diagnostics);
+    expect(await store.readPublicProjectionSourceCheckpoint('agent-observability')).toBe(1);
     await store.close();
   });
 });

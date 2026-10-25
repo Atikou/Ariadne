@@ -7,6 +7,7 @@ import {
   type RecoverableAgentRun
 } from '@ariadne/agent-core';
 import type { ShutdownContext } from '../ingress/ShutdownContext.js';
+import { AgentInferenceCancellationConflictError } from '../control/ports/AgentInferenceCancellationConflict.js';
 import type { AgentRunWorkClassifier } from '../control/execution/AgentRunWorkClassifier.js';
 import type { AgentRunRetiredToolCatalogTerminalizationOwner } from '../control/ports/AgentRunAuthorityRetirement.js';
 import {
@@ -112,6 +113,7 @@ export class AgentRunWorkScheduler {
     | AgentRunWorkChildResultsContinuationOwner
     | undefined;
   private readonly abortController = new AbortController();
+  private readonly cancellationGate: AgentRunWorkSchedulerOptions['cancellationGate'];
   private readonly activeInferenceByRun = new Map<string, ActiveInferenceDispatch>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private activeDrain: Promise<AgentRunWorkDrainResult> | null = null;
@@ -147,6 +149,7 @@ export class AgentRunWorkScheduler {
     this.delegatedInference = options.delegatedInference;
     this.delegatedFollowUps = options.delegatedFollowUps;
     this.childResultsContinuation = options.childResultsContinuation;
+    this.cancellationGate = options.cancellationGate;
   }
 
   /** Full pagination and abandoned-start recovery complete before readiness. */
@@ -195,6 +198,13 @@ export class AgentRunWorkScheduler {
     request: ActiveAgentTurnInterruptionRequest
   ): Promise<ActiveAgentTurnInterruptionResult> {
     const active = this.activeInferenceByRun.get(request.runId);
+    if (active !== undefined && request.expectedVersion > active.expectedVersion + 1
+      && request.authorizeVersion !== undefined) {
+      return request.authorizeVersion(active.expectedVersion).then(authorized => {
+        if (!authorized || this.activeInferenceByRun.get(request.runId) !== active) return { status: 'not_active' as const };
+        return this.interruptActiveTurn({ ...request, expectedVersion: active.expectedVersion });
+      });
+    }
     if (
       active === undefined
       || (
@@ -204,9 +214,7 @@ export class AgentRunWorkScheduler {
     ) return Promise.resolve({ status: 'not_active' });
     if (active.interruption !== null) {
       if (active.interruption.request.commandId !== request.commandId) {
-        return Promise.reject(new Error(
-          'A different interruption already owns this active Agent inference.'
-        ));
+        return Promise.reject(new AgentInferenceCancellationConflictError(request.runId, 'interruption'));
       }
       return active.interruption.result;
     }
@@ -218,7 +226,7 @@ export class AgentRunWorkScheduler {
     });
     active.interruption = { request, result, resolve, reject };
     if (!active.controller.signal.aborted) {
-      active.controller.abort(new Error('agent_subagent_turn_interruption_requested'));
+      active.controller.abort(new Error('agent_active_turn_interruption_requested'));
     }
     return result;
   }
@@ -358,6 +366,7 @@ export class AgentRunWorkScheduler {
         const work = item.work;
         if (work === null || !isActionable(work)) continue;
         this.abortController.signal.throwIfAborted();
+        if (await this.cancellationGate?.isSuppressed(item.recovery.run)) continue;
         try {
           await this.perform(item.recovery, work, result);
           progressed = true;

@@ -1,0 +1,12 @@
+{
+  "contractVersion": 1,
+  "contracts": [
+    {
+      "owner": "productivityTaskRecoveryQueryV1",
+      "file": "runtime/src/control/ports/ProductivityTaskRecoveryQueryV1.ts",
+      "export": "ProductivityTaskRecoveryQueryV1",
+      "digest": "sha256:b4c8d5b7804ee42587011892e2b41f96de42807feb3797d170545e41f90843a2",
+      "graphNodes": 6
+    }
+  ]
+}

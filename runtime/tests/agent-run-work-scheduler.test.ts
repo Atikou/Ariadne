@@ -438,12 +438,11 @@ describe('AgentRunWorkScheduler', () => {
         reason: 'inference_outcome_uncertain',
         result: {
           status: 'uncertain',
-          recoveryDecisionId: 'recovery-interrupted-follow-up',
           run: { runId: RUN_ID, version: 7 },
           turn: { turnId: FOLLOW_UP_TURN_ID },
           attempt: {
             attemptId: FOLLOW_UP_ATTEMPT_ID,
-            state: { status: 'uncertain' }
+            state: { status: 'uncertain', recovery: { decisionId: 'recovery-interrupted-follow-up' } }
           }
         }
       };
@@ -484,6 +483,57 @@ describe('AgentRunWorkScheduler', () => {
       recoveryDecisionId: 'recovery-interrupted-follow-up'
     });
     await expect(drain).resolves.toMatchObject({ dispatchedFollowUps: 1 });
+    expect(scheduler.getFault()).toBeNull();
+    await scheduler.shutdown(FUTURE);
+  });
+
+  it.each([7, 11])('joins Provider abort cleanup before applying an active follow-up cancellation at version %s', async expectedVersion => {
+    let current: AgentRunWorkClassification = terminal(RUN_ID, 5);
+    const started = deferred<void>();
+    const aborted = deferred<void>();
+    const cleanup = deferred<void>();
+    const ports = rejectingPorts();
+    ports.followUps.dispatchOwned = vi.fn(async (_request, signal) => {
+      started.resolve();
+      await new Promise<void>(resolve => signal.addEventListener('abort', () => {
+        aborted.resolve();
+        resolve();
+      }, { once: true }));
+      await cleanup.promise;
+      return { status: 'waiting_recovery', reason: 'inference_outcome_uncertain', result: {
+        status: 'uncertain',
+        run: { runId: RUN_ID, version: 8 }, turn: { turnId: FOLLOW_UP_TURN_ID },
+        attempt: { attemptId: FOLLOW_UP_ATTEMPT_ID,
+          state: { status: 'uncertain', recovery: { decisionId: 'recovery-cancel-follow-up' } } }
+      } };
+    });
+    const scheduler = createScheduler(mutableQuery(() => [resumable(current)]),
+      classifierForDynamic(() => current), ports);
+    await scheduler.start();
+    current = followUp(RUN_ID, 6);
+    const drain = scheduler.drainOnce();
+    await started.promise;
+    const finalize = vi.fn(async () => {
+      current = { ...terminal(RUN_ID, 9), status: 'cancelled' } as AgentRunWorkClassification;
+      return { runId: RUN_ID, runVersion: 9 };
+    });
+    const authorizeVersion = vi.fn(async ownedVersion => ownedVersion === 6);
+    const request = { commandId: 'cancel-follow-up', runId: RUN_ID, expectedVersion, finalize, authorizeVersion };
+    await expect(scheduler.interruptActiveTurn({ ...request, expectedVersion: 5 }))
+      .resolves.toEqual({ status: 'not_active' });
+    await expect(scheduler.interruptActiveTurn({ ...request, expectedVersion: 11, authorizeVersion: async () => false }))
+      .resolves.toEqual({ status: 'not_active' });
+    expect(finalize).not.toHaveBeenCalled();
+    const cancellation = scheduler.interruptActiveTurn(request);
+    if (expectedVersion === 7) expect(scheduler.interruptActiveTurn(request)).toBe(cancellation);
+    await aborted.promise;
+    expect(finalize).not.toHaveBeenCalled();
+    await expect(scheduler.interruptActiveTurn({ ...request, commandId: 'another-cancel' }))
+      .rejects.toThrow(/different interruption/u);
+    cleanup.resolve();
+    await expect(cancellation).resolves.toMatchObject({ status: 'interrupted', runVersion: 9 });
+    expect(finalize).toHaveBeenCalledOnce();
+    await drain;
     expect(scheduler.getFault()).toBeNull();
     await scheduler.shutdown(FUTURE);
   });

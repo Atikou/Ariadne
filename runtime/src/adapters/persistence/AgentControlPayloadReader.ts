@@ -2,9 +2,11 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   AgentRunInvariantError,
   AgentRunRecoveryConflictError,
+  sha256AgentControlData,
   assertAgentTurnInputSnapshotMatchesTerminalEffectEvidence,
   assertAgentTurnInputSnapshotMatchesTurn,
   isAgentRunInboxOnlyMutation,
+  isAgentRunCancellationRequestMutation,
   type AgentEffectInputDigester,
   type AgentEffectPayload,
   type AgentJsonValue,
@@ -17,10 +19,12 @@ import {
   type AgentRunCommitArtifacts,
   type AgentRunCheckpoint,
   type AgentRunCheckpointReference,
-  type AgentEffectPayloadReference
+  type AgentEffectPayloadReference,
+  type AgentDirectivePayloadLookup
 } from '@ariadne/agent-core';
 import {
   assertCheckpointReference,
+  assertDirectivePayloadLookup,
   canonicalJson,
   isCheckpointPayload,
   parseStoredRun,
@@ -38,8 +42,24 @@ import {
   type AgentCheckpointRow,
   type AgentCommandRunRow,
   type AgentEffectPayloadRow,
-  type AgentTurnInputPayloadRow
+  type AgentTurnInputPayloadRow,
+  type AgentDirectivePayloadRow
 } from './AgentControlStorageTypes.js';
+
+export async function loadDirectivePayload(database: DatabaseSync, codec: AgentPersistencePayloadCodec,
+  reference: AgentDirectivePayloadLookup): Promise<AgentJsonValue> {
+  assertDirectivePayloadLookup(reference);
+  const row = database.prepare('SELECT * FROM agent_directive_payloads WHERE artifact_id=?').get(reference.artifactId) as AgentDirectivePayloadRow | undefined;
+  if (!row) throw storageCorruption(`agent_directive_payloads:${reference.artifactId}:missing`);
+  const payload = decodePayload(codec, row.codec_id, row.payload_json, { kind: 'directive_response', runId: row.run_id,
+    commandId: row.command_id, runVersion: row.run_version, directiveDigest: row.directive_digest, contentHash: row.content_digest },
+  `agent_directive_payloads:${row.artifact_id}`);
+  if (row.run_id !== reference.runId || row.artifact_id !== reference.artifactId || row.payload_kind !== reference.kind
+    || row.directive_digest !== reference.directiveDigest || row.content_digest !== reference.contentDigest)
+    throw new AgentRunInvariantError(`agent_directive_payloads:${reference.artifactId}:lookup_mismatch`);
+  if (await sha256AgentControlData(payload) !== row.content_digest) throw storageCorruption(`agent_directive_payloads:${row.artifact_id}:content_digest_mismatch`);
+  return payload;
+}
 
 export async function assertDurableEffectResultContinuationArtifacts(
   database: DatabaseSync,
@@ -83,7 +103,7 @@ export async function assertTurnInputSnapshotMatchesDurableEffectResults(
   const cause = turn.intention.cause;
   if (turn.intention.expectedRunVersion !== introductionVersion - 1) {
     throw storageCorruption(
-      `agent_v3_turn_inputs:${run.runId}:${turnId}:continuation_version_mismatch`
+      `agent_turn_inputs:${run.runId}:${turnId}:continuation_version_mismatch`
     );
   }
   const sourceTurn = run.turns.find(
@@ -91,7 +111,7 @@ export async function assertTurnInputSnapshotMatchesDurableEffectResults(
   );
   if (sourceTurn === undefined) {
     throw storageCorruption(
-      `agent_v3_turn_inputs:${run.runId}:${turnId}:continuation_source_missing`
+      `agent_turn_inputs:${run.runId}:${turnId}:continuation_source_missing`
     );
   }
   const sourceSnapshot = await loadTurnInputPayload(database, codec, {
@@ -148,14 +168,14 @@ function loadTerminalEffectResultEvidence(
     const expectedVersion = turn.intention.expectedRunVersion;
     if (expectedVersion === null) {
       throw storageCorruption(
-        `agent_v3_turn_inputs:${run.runId}:${turn.turnId}:continuation_predecessor_missing`
+        `agent_turn_inputs:${run.runId}:${turn.turnId}:continuation_predecessor_missing`
       );
     }
     const predecessor = loadHistoricalAgentRunVersion(
       database,
       run.runId,
       expectedVersion,
-      `agent_v3_turn_inputs:${run.runId}:${turn.turnId}:continuation_predecessor`
+      `agent_turn_inputs:${run.runId}:${turn.turnId}:continuation_predecessor`
     );
     for (const effectId of turn.intention.cause.effectIds) {
       const effect = predecessor.effects.find(
@@ -174,7 +194,7 @@ function loadTerminalEffectResultEvidence(
         || row.input_digest !== effect.inputDigest
       ) {
         throw storageCorruption(
-          `agent_v3_effect_payloads:${run.runId}:${effectId}:continuation_authority_missing`
+          `agent_effect_payloads:${run.runId}:${effectId}:continuation_authority_missing`
         );
       }
       if (effect.state.status === 'cancelled') {
@@ -185,7 +205,7 @@ function loadTerminalEffectResultEvidence(
           || row.result_payload_json !== null
         ) {
           throw storageCorruption(
-            `agent_v3_effect_payloads:${run.runId}:${effectId}:cancelled_result_present`
+            `agent_effect_payloads:${run.runId}:${effectId}:cancelled_result_present`
           );
         }
         evidence.push({
@@ -201,7 +221,7 @@ function loadTerminalEffectResultEvidence(
       }
       if (effect.state.status !== 'succeeded' && effect.state.status !== 'failed') {
         throw storageCorruption(
-          `agent_v3_effect_payloads:${run.runId}:${effectId}:continuation_result_nonterminal`
+          `agent_effect_payloads:${run.runId}:${effectId}:continuation_result_nonterminal`
         );
       }
       if (
@@ -212,13 +232,13 @@ function loadTerminalEffectResultEvidence(
         || row.result_run_version > expectedVersion
       ) {
         throw storageCorruption(
-          `agent_v3_effect_payloads:${run.runId}:${effectId}:continuation_result_missing`
+          `agent_effect_payloads:${run.runId}:${effectId}:continuation_result_missing`
         );
       }
       const owner = database.prepare(
         `SELECT command_id, run_id, ordinal, expected_version,
                 resulting_version, result_run_json
-         FROM agent_v3_command_runs
+         FROM agent_command_runs
          WHERE command_id=? AND run_id=? AND resulting_version=?`
       ).get(
         row.result_command_id,
@@ -227,14 +247,14 @@ function loadTerminalEffectResultEvidence(
       ) as AgentCommandRunRow | undefined;
       if (owner === undefined) {
         throw storageCorruption(
-          `agent_v3_effect_payloads:${run.runId}:${effectId}:result_owner_missing`
+          `agent_effect_payloads:${run.runId}:${effectId}:result_owner_missing`
         );
       }
       const ownerRun = parseStoredRun(
         owner.result_run_json,
         run.runId,
         row.result_run_version,
-        `agent_v3_command_runs:${row.result_command_id}:${run.runId}`
+        `agent_command_runs:${row.result_command_id}:${run.runId}`
       );
       const ownerEffect = ownerRun.effects.find(
         (candidate) => candidate.effectId === effectId
@@ -244,7 +264,7 @@ function loadTerminalEffectResultEvidence(
         || canonicalJson(ownerEffect) !== canonicalJson(effect)
       ) {
         throw storageCorruption(
-          `agent_v3_effect_payloads:${run.runId}:${effectId}:result_owner_mismatch`
+          `agent_effect_payloads:${run.runId}:${effectId}:result_owner_mismatch`
         );
       }
       evidence.push({
@@ -270,7 +290,7 @@ function loadHistoricalAgentRunVersion(
   const rows = database.prepare(
     `SELECT command_id, run_id, ordinal, expected_version,
             resulting_version, result_run_json
-     FROM agent_v3_command_runs
+     FROM agent_command_runs
      WHERE run_id=? AND resulting_version=?`
   ).all(runId, version) as unknown as AgentCommandRunRow[];
   const row = rows[0];
@@ -280,7 +300,7 @@ function loadHistoricalAgentRunVersion(
   return parseStoredRun(row.result_run_json, runId, version, source);
 }
 
-export function checkpointCoversInboxOnlyAdvance(
+export function checkpointCoversControlSideChannelAdvance(
   database: DatabaseSync,
   current: AgentRun,
   checkpointRunVersion: number
@@ -290,7 +310,7 @@ export function checkpointCoversInboxOnlyAdvance(
     database,
     current.runId,
     checkpointRunVersion,
-    `agent_v3_checkpoints:${current.runId}:${String(current.state.checkpointVersion)}`
+    `agent_checkpoints:${current.runId}:${String(current.state.checkpointVersion)}`
   );
   for (let version = checkpointRunVersion + 1; version <= current.version; version += 1) {
     const next = version === current.version
@@ -299,9 +319,9 @@ export function checkpointCoversInboxOnlyAdvance(
           database,
           current.runId,
           version,
-          `agent_v3_command_runs:${current.runId}:${String(version)}`
+          `agent_command_runs:${current.runId}:${String(version)}`
         );
-    if (!isAgentRunInboxOnlyMutation(previous, next)) return false;
+    if (!isAgentRunInboxOnlyMutation(previous, next) && !isAgentRunCancellationRequestMutation(previous, next)) return false;
     previous = next;
   }
   return true;
@@ -316,12 +336,12 @@ export async function loadCheckpointPayload(
   const row = database.prepare(
     `SELECT run_id, checkpoint_version, run_version, command_id,
             codec_id, payload_json, created_at
-     FROM agent_v3_checkpoints
+     FROM agent_checkpoints
      WHERE run_id=? AND checkpoint_version=?`
   ).get(reference.runId, reference.checkpointVersion) as AgentCheckpointRow | undefined;
   if (row === undefined || canonicalJson(checkpointReference(row)) !== canonicalJson(reference)) {
     throw storageCorruption(
-      `agent_v3_checkpoints:${reference.runId}:${String(reference.checkpointVersion)}:reference_mismatch`
+      `agent_checkpoints:${reference.runId}:${String(reference.checkpointVersion)}:reference_mismatch`
     );
   }
   const decoded = decodePayload(codec, row.codec_id, row.payload_json, {
@@ -330,10 +350,10 @@ export async function loadCheckpointPayload(
     commandId: row.command_id,
     runVersion: row.run_version,
     checkpointVersion: row.checkpoint_version
-  }, `agent_v3_checkpoints:${row.run_id}:${String(row.checkpoint_version)}`);
+  }, `agent_checkpoints:${row.run_id}:${String(row.checkpoint_version)}`);
   if (!isCheckpointPayload(decoded)) {
     throw storageCorruption(
-      `agent_v3_checkpoints:${row.run_id}:${String(row.checkpoint_version)}:invalid_payload`
+      `agent_checkpoints:${row.run_id}:${String(row.checkpoint_version)}:invalid_payload`
     );
   }
   return {
@@ -373,25 +393,25 @@ export async function loadTurnInputPayload(
     )
   ) {
     throw storageCorruption(
-      `agent_v3_turn_inputs:${reference.runId}:${reference.turnId}:reference_mismatch`
+      `agent_turn_inputs:${reference.runId}:${reference.turnId}:reference_mismatch`
     );
   }
   const commandRun = database.prepare(
     `SELECT command_id, run_id, ordinal, expected_version,
             resulting_version, result_run_json
-     FROM agent_v3_command_runs
+     FROM agent_command_runs
      WHERE command_id=? AND run_id=? AND resulting_version=?`
   ).get(row.command_id, row.run_id, row.run_version) as AgentCommandRunRow | undefined;
   if (commandRun === undefined) {
     throw storageCorruption(
-      `agent_v3_turn_inputs:${row.run_id}:${row.turn_id}:historical_run_missing`
+      `agent_turn_inputs:${row.run_id}:${row.turn_id}:historical_run_missing`
     );
   }
   const historicalRun = parseStoredRun(
     commandRun.result_run_json,
     row.run_id,
     row.run_version,
-    `agent_v3_command_runs:${row.command_id}:${row.run_id}`
+    `agent_command_runs:${row.command_id}:${row.run_id}`
   );
   assertTurnInputIntroductionVersion(historicalRun, row);
   const decoded = decodeTurnInputColumn(codec, row);
@@ -412,7 +432,7 @@ export async function loadTurnInputPayload(
     );
   } catch (error) {
     throw storageCorruption(
-      `agent_v3_turn_inputs:${row.run_id}:${row.turn_id}:snapshot_mismatch`,
+      `agent_turn_inputs:${row.run_id}:${row.turn_id}:snapshot_mismatch`,
       error
     );
   }
@@ -430,7 +450,7 @@ export function assertTurnInputIntroductionVersion(
     (turn?.intention.expectedRunVersion ?? 0) + 1;
   if (turn === undefined || row.run_version !== expectedIntroductionVersion) {
     throw storageCorruption(
-      `agent_v3_turn_inputs:${row.run_id}:${row.turn_id}:introduction_version_mismatch`
+      `agent_turn_inputs:${row.run_id}:${row.turn_id}:introduction_version_mismatch`
     );
   }
 }
@@ -449,7 +469,7 @@ export async function loadEffectInputPayload(
   });
   if (digest !== row.input_digest) {
     throw storageCorruption(
-      `agent_v3_effect_payloads:${row.run_id}:${row.effect_id}:digest_mismatch`
+      `agent_effect_payloads:${row.run_id}:${row.effect_id}:digest_mismatch`
     );
   }
   return {
@@ -478,7 +498,7 @@ function assertEffectReference(
   const row = loadEffectPayloadRow(database, reference.runId, reference.effectId);
   if (row === undefined || canonicalJson(effectPayloadReference(row)) !== canonicalJson(reference)) {
     throw storageCorruption(
-      `agent_v3_effect_payloads:${reference.runId}:${reference.effectId}:reference_mismatch`
+      `agent_effect_payloads:${reference.runId}:${reference.effectId}:reference_mismatch`
     );
   }
   return row;

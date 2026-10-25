@@ -1,7 +1,7 @@
 import type {
   CompanionMessageReasoning,
-  ConversationMessageReferenceV3,
-  ImageAttachmentRefV3
+  ConversationMessageReference,
+  ImageAttachmentRef
 } from '@ariadne/protocol/public';
 
 export type ConversationNodeKind =
@@ -24,8 +24,11 @@ export interface ConversationNode {
   time: string;
   summary: string;
   content?: string;
-  reference?: ConversationMessageReferenceV3;
-  attachments?: readonly ImageAttachmentRefV3[];
+  bodyState?: 'unloaded' | 'loaded';
+  bodyReadToken?: string;
+  sessionId?: string;
+  reference?: ConversationMessageReference;
+  attachments?: readonly ImageAttachmentRef[];
   runId?: string;
   processingDurationMs?: number;
   deliveryState?: 'pending' | 'failed';
@@ -39,8 +42,9 @@ export interface ConversationNode {
 }
 
 export function conversationTextForDisplay(
-  node: Pick<ConversationNode, 'kind' | 'content' | 'summary'>
+  node: Pick<ConversationNode, 'kind' | 'content' | 'summary' | 'bodyState'>
 ): string {
+  if (node.bodyState === 'unloaded') return '';
   if (node.kind === 'user') return node.content ?? node.summary;
   return node.content ?? '';
 }

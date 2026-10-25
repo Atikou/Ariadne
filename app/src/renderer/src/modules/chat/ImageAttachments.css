@@ -2,6 +2,18 @@
   display: none;
 }
 
+.composer-draft-recovery {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm, 12px);
+  font-size: 12px;
+}
+.composer-draft-recovery > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.composer-draft-recovery > button { flex-shrink: 0; }
+
 .composer-image-drafts {
   display: flex;
   gap: 8px;

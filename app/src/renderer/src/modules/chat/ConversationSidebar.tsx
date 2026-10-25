@@ -1,14 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { Archive, Clock3, Folder, FolderOpen, MessageSquarePlus, Pin, Search, Sparkles } from 'lucide-react';
-import { PERSONAL_ASSISTANT_WORKSPACE_ID, type ConversationSession } from '@ariadne/protocol/public';
+import { PERSONAL_ASSISTANT_WORKSPACE_ID, type ConversationSession, type PublicRunCatalogSummary } from '@ariadne/protocol/public';
 import type { ModuleServices } from '@renderer/core/modules/module-contract';
 import type { ConversationWorkspace } from '@renderer/core/conversations/conversation-navigation-service';
 import { useConversationPresentationRevision } from '@renderer/core/conversations/use-conversation-presentation';
 import { formatRunStatus } from '@renderer/core/runtime/runtime-labels';
-import {
-  type RuntimeRun
-} from '@renderer/core/runtime/runtime-store';
 import {
   useFeatureSnapshot
 } from '@renderer/core/runtime/features/feature-snapshot-store';
@@ -17,6 +14,9 @@ import type { DiagnosticsFeatureSnapshot } from '@renderer/core/runtime/features
 import type { RunFeatureSnapshot } from '@renderer/core/runtime/features/run-feature-store';
 import type { SessionFeatureSnapshot } from '@renderer/core/runtime/features/session-feature-store';
 import { ConfirmDialog, TextPromptDialog } from '@renderer/shared/ui/ActionDialog';
+import { ProjectionCatalogPager } from '@renderer/shared/ui/ProjectionCatalogPager';
+import { ConversationSearchResults } from './ConversationSearchResults';
+import { searchConversations, type ConversationSearchResults as SearchResults } from './conversation-search';
 
 interface ConversationSidebarProps {
   services: ModuleServices;
@@ -46,12 +46,15 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
   const sessions = useFeatureSnapshot(services.sessions.view);
   const runtime = { ...decisions, ...diagnostics, ...runs, ...sessions };
   const [query, setQuery] = useState('');
-  const [querySessionIds, setQuerySessionIds] = useState<ReadonlySet<string> | null>(null);
+  const [queryResults, setQueryResults] = useState<SearchResults | null>(null);
   const [workspaces, setWorkspaces] = useState<readonly ConversationWorkspace[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
   const [archiveWorkspaceTarget, setArchiveWorkspaceTarget] = useState<ConversationWorkspace | null>(null);
   const [renameSessionTarget, setRenameSessionTarget] = useState<ConversationSession | null>(null);
   const [archiveSessionTarget, setArchiveSessionTarget] = useState<ConversationSession | null>(null);
+  const [exportSessionTarget, setExportSessionTarget] = useState<ConversationSession | null>(null);
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const exporting = useRef(false);
   const [contextMenu, setContextMenu] = useState<ConversationContextMenuState | null>(null);
   const [hovered, setHovered] = useState<HoveredConversation | null>(null);
   const [collapsedWorkspaceIds, setCollapsedWorkspaceIds] = useState<ReadonlySet<string>>(() => new Set());
@@ -82,10 +85,11 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
   const normalizedQuery = query.trim().toLocaleLowerCase();
   useEffect(() => {
     if (!normalizedQuery) {
-      setQuerySessionIds(null);
+      setQueryResults(null);
       return;
     }
     let active = true;
+    setQueryResults(null);
     const timer = window.setTimeout(() => {
       const workspaceIds = new Set<string>([PERSONAL_ASSISTANT_WORKSPACE_ID]);
       for (const workspace of workspaces) {
@@ -93,15 +97,13 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
           workspaceIds.add(workspace.workspaceId);
         }
       }
-      void Promise.all([...workspaceIds].map((workspaceId) => (
-        services.sessions.query(workspaceId, normalizedQuery, 'active', 50)
-      ))).then((groups) => {
+      void searchConversations(services.sessions, [...workspaceIds], normalizedQuery, () => active).then((results) => {
         if (!active) return;
-        setQuerySessionIds(new Set(groups.flat().map((item) => item.sessionId)));
+        setQueryResults(results);
       }).catch((error) => {
         if (!active) return;
         setActionError(errorMessage(error));
-        setQuerySessionIds(new Set());
+        setQueryResults({ items: [], limited: false });
       });
     }, 150);
     return () => {
@@ -114,11 +116,6 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
       .filter((session) => session.status === 'active')
       .filter((session) => session.workspaceId === PERSONAL_ASSISTANT_WORKSPACE_ID
         || services.conversationNavigation.isWorkspaceActive(session.workspaceId))
-      .filter((session) => !normalizedQuery
-        || querySessionIds?.has(session.sessionId)
-        || (querySessionIds === null && session.title
-          .toLocaleLowerCase()
-          .includes(normalizedQuery)))
       .sort((left, right) => {
         const pinDifference = Number(
           services.conversationNavigation.isSessionPinned(right.sessionId, right.pinned)
@@ -127,7 +124,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
         );
         return pinDifference || right.updatedAt.localeCompare(left.updatedAt);
       }),
-    [normalizedQuery, presentationRevision, querySessionIds, runtime.sessions, services, workspaces]
+    [presentationRevision, runtime.sessions, services, workspaces]
   );
   const visibleWorkspaces = useMemo(
     () => workspaces.filter((workspace) => !normalizedQuery
@@ -142,7 +139,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
   );
   const pendingSessionIds = useMemo(
     () => pendingApprovalSessionIds(runtime),
-    [runtime.permissions, runtime.planHandoffs, runtime.userQuestions, runtime.runs]
+    [runtime.decisionSummaries]
   );
 
   const hoveredSession = hovered
@@ -151,7 +148,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
   const hoveredWorkspace = hoveredSession
     ? workspaces.find((workspace) => workspace.workspaceId === hoveredSession.workspaceId) ?? null
     : null;
-  const hoveredRun = hoveredSession ? latestSessionRun(runtime.runs, hoveredSession.sessionId) : null;
+  const hoveredRun = hoveredSession ? latestSessionRun(runtime.runSummaries, hoveredSession.sessionId) : null;
 
   const selectWorkspace = async (workspaceId: string): Promise<boolean> => {
     setActionError(null);
@@ -354,13 +351,15 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
           ><MessageSquarePlus size={14} /><span>新建会话</span></button>
         </div>
         {actionError && <p className="conversation-action-error" role="alert">{actionError}</p>}
+        <ProjectionCatalogPager window={sessions.sessionDirectory} navigate={direction => services.sessions.navigate(direction)} label="会话" />
+        {decisions.decisionDirectory?.page.hasMore && <small>待确认标记仅覆盖当前待确认列表页。</small>}
         <label className="conversation-search">
           <Search size={14} />
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索会话" aria-label="搜索会话" />
         </label>
       </div>
 
-      <div className="conversation-groups">
+      {normalizedQuery ? <ConversationSearchResults services={services} results={queryResults} /> : <div className="conversation-groups">
         <section className="conversation-workspace-group">
           <div
             className={`conversation-workspace-row${selectedWorkspaceId === null ? ' is-selected' : ''}`}
@@ -454,7 +453,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
           );
         })}
 
-      </div>
+      </div>}
 
       {contextMenu && (() => {
         const session = runtime.sessions.find((candidate) => candidate.sessionId === contextMenu.sessionId);
@@ -471,6 +470,7 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
             onTogglePinned={() => services.conversationNavigation.setSessionPinned(session.sessionId, !pinned)}
             onRename={() => setRenameSessionTarget(session)}
             onArchive={() => setArchiveSessionTarget(session)}
+            onExport={() => { if (!exporting.current) setExportSessionTarget(session); }}
             onToggleUnread={() => services.conversationNavigation.setSessionUnread(session.sessionId, !unread)}
           />,
           document.body
@@ -503,6 +503,18 @@ export function ConversationSidebar({ services }: ConversationSidebarProps): Rea
         }}
       />
 
+      {exportNotice && <p role="status">{exportNotice}</p>}
+      <ConfirmDialog open={exportSessionTarget !== null} title="导出会话正文" confirmLabel="选择新文件"
+        description="导出此会话当前可访问的消息正文和图像附件引用，按从新到旧保存为 JSON Lines。图像文件、工具详情、推理过程、私有执行载荷和系统凭据不包含在内。请选择新文件；现有文件不会被覆盖。这份正文导出不能用于恢复应用数据。"
+        onClose={() => setExportSessionTarget(null)} onConfirm={() => {
+          const selected = exportSessionTarget; setExportSessionTarget(null); if (!selected || exporting.current) return;
+          exporting.current = true; setActionError(null); setExportNotice('正在导出会话正文…');
+          void services.dataManagement.exportSession({ sessionId: selected.sessionId, workspaceId: selected.workspaceId,
+            scope: 'public-message-text', format: 'jsonl' }).then(result => {
+              setExportNotice(result ? `已导出 ${result.messages} 条消息正文；图像只保留引用，未导出图像文件。` : null);
+            }).catch(() => { setExportNotice(null); setActionError('会话正文未能导出，请确认选择了新文件，并重新尝试。'); })
+            .finally(() => { exporting.current = false; });
+        }} />
       <TextPromptDialog
         open={renameSessionTarget !== null}
         title="重命名聊天"
@@ -545,6 +557,7 @@ function ConversationContextMenu({
   onTogglePinned,
   onRename,
   onArchive,
+  onExport,
   onToggleUnread
 }: {
   top: number;
@@ -555,6 +568,7 @@ function ConversationContextMenu({
   onTogglePinned(): void;
   onRename(): void;
   onArchive(): void;
+  onExport(): void;
   onToggleUnread(): void;
 }): React.JSX.Element {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -605,6 +619,7 @@ function ConversationContextMenu({
     <button type="button" role="menuitem" onClick={() => run(onTogglePinned)}>{pinned ? '取消置顶聊天' : '置顶聊天'}</button>
     <button type="button" role="menuitem" onClick={() => run(onRename)}>重命名聊天</button>
     <button type="button" role="menuitem" onClick={() => run(onArchive)}>归档聊天</button>
+    <button type="button" role="menuitem" onClick={() => run(onExport)}>导出会话正文</button>
     <button type="button" role="menuitem" onClick={() => run(onToggleUnread)}>{unread ? '标记为已读' : '标记为未读'}</button>
   </div>;
 }
@@ -612,7 +627,7 @@ function ConversationContextMenu({
 function ConversationDetailsPopover({ session, workspace, run, pinned, top, left }: {
   session: ConversationSession;
   workspace: ConversationWorkspace | null;
-  run: RuntimeRun | null;
+  run: PublicRunCatalogSummary | null;
   pinned: boolean;
   top: number;
   left: number;
@@ -622,7 +637,7 @@ function ConversationDetailsPopover({ session, workspace, run, pinned, top, left
     {workspace && <div><Folder size={13} /><span>{workspace.name}</span></div>}
     <div><Clock3 size={13} /><span>更新于 {formatFullTime(session.updatedAt)}</span></div>
     <div><Pin size={13} /><span>{pinned ? '已置顶' : '普通会话'}</span></div>
-    {run && <footer><span className={`conversation-run-dot is-${run.status}`} />{run.userFacingLabel} · {formatRunStatus(run.status)}</footer>}
+    {run && <footer><span className={`conversation-run-dot is-${run.status}`} />{run.label} · {formatRunStatus(run.status)}</footer>}
   </aside>;
 }
 
@@ -633,7 +648,7 @@ function selectSessionFromKeyboard(event: KeyboardEvent<HTMLDivElement>, select:
   select();
 }
 
-function latestSessionRun(runs: readonly RuntimeRun[], sessionId: string): RuntimeRun | null {
+function latestSessionRun(runs: readonly PublicRunCatalogSummary[], sessionId: string): PublicRunCatalogSummary | null {
   return runs
     .filter((run) => run.sessionId === sessionId)
     .sort((left, right) => (right.startedAt ?? right.completedAt ?? '').localeCompare(left.startedAt ?? left.completedAt ?? ''))[0]
@@ -646,21 +661,7 @@ type SidebarSnapshot = DecisionFeatureSnapshot
   & SessionFeatureSnapshot;
 
 function pendingApprovalSessionIds(snapshot: SidebarSnapshot): Set<string> {
-  const runSessions = new Map(snapshot.runs.flatMap((run) => (
-    run.sessionId === undefined ? [] : [[run.runId, run.sessionId] as const]
-  )));
-  const ids = new Set<string>();
-  for (const decision of [
-    ...snapshot.permissions,
-    ...snapshot.planHandoffs,
-    ...snapshot.userQuestions
-  ]) {
-    if (decision.status !== 'pending') continue;
-    const sessionId = decision.sessionId
-      ?? (decision.runId === undefined ? undefined : runSessions.get(decision.runId));
-    if (sessionId !== undefined) ids.add(sessionId);
-  }
-  return ids;
+  return new Set(snapshot.decisionSummaries.filter(decision => decision.status === 'pending').map(decision => decision.sessionId));
 }
 
 function formatRelativeTime(value: string): string {

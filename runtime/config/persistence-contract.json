@@ -1,0 +1,69 @@
+{
+  "contractVersion": 2,
+  "policy": "Existing business signatures and DTO shapes are immutable; physical schema changes use validated offline migrations.",
+  "contracts": [
+    {
+      "owner": "agentControl",
+      "file": "packages/agent-core/src/application/unit-of-work.ts",
+      "export": "AgentRunUnitOfWork",
+      "digest": "sha256:1ce218d824484b671e228d5459b8bcb1b5b1da2066d2f027732d4bee5758cb21",
+      "graphNodes": 295
+    },
+    {
+      "owner": "conversation",
+      "file": "runtime/src/control/ports/ConversationAuthorityPersistence.ts",
+      "export": "ConversationAuthorityUnitOfWork",
+      "digest": "sha256:aee8d9fa31be9846b890dd3ff54b33f99142d824f0fe0b483a3a495a492e4cdd",
+      "graphNodes": 92
+    },
+    {
+      "owner": "conversationHandoff",
+      "file": "runtime/src/control/ports/ConversationRunHandoffPersistence.ts",
+      "export": "ConversationRunHandoffUnitOfWork",
+      "digest": "sha256:b04112c24d2b9d971f2e2c67889f0b6efa25586e1dcec5001d35149c4604aa59",
+      "graphNodes": 34
+    },
+    {
+      "owner": "runtimeCommand",
+      "file": "runtime/src/control/ports/RuntimeCommandJournal.ts",
+      "export": "RuntimeCommandJournal",
+      "digest": "sha256:7bed8e937eb9f5ace4719403c6f820183d8f9c3ca93bd6f7a7dfb6d77f0a074f",
+      "graphNodes": 357
+    },
+    {
+      "owner": "publicProjectionWrite",
+      "file": "runtime/src/projection/PublicProjectionPorts.ts",
+      "export": "PublicProjectionCommitSink",
+      "digest": "sha256:d04b8d13ccc54885b81ce06b176cf50d1b5eb07e9c0a26fa48890abf5541dbcd",
+      "graphNodes": 97
+    },
+    {
+      "owner": "publicProjectionRead",
+      "file": "runtime/src/projection/PublicProjectionPorts.ts",
+      "export": "PublicProjectionQueryStore",
+      "digest": "sha256:4ac2a855f54c4dc3ab50b8039d93224cbb16fe45848865b3c258f1f224b95465",
+      "graphNodes": 165
+    },
+    {
+      "owner": "productivity",
+      "file": "runtime/src/control/ports/ProductivityAuthority.ts",
+      "export": "ProductivityAuthority",
+      "digest": "sha256:e16bca5a33ca22471f1af73f89662a41ffec07f86cfeed9df5b19c45fa261f80",
+      "graphNodes": 123
+    },
+    {
+      "owner": "modelCapability",
+      "file": "runtime/src/model/capability/ModelCapabilityAuthority.ts",
+      "export": "ModelCapabilityAuthority",
+      "digest": "sha256:27c95870c9df93fc4ea536e70923aca20c85584476854521c02cdc3667059f7f",
+      "graphNodes": 17
+    },
+    {
+      "owner": "longMemory",
+      "file": "runtime/src/control/ports/LongMemoryAuthority.ts",
+      "export": "LongMemoryAuthority",
+      "digest": "sha256:0fd91dbc6d0e6c40dc1b98d76b5de17b2d8a58c41ecb4f1118a301678466477d",
+      "graphNodes": 69
+    }
+  ]
+}

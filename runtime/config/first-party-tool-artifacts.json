@@ -45,6 +45,27 @@
       "artifactDigest": "sha256:2df702fdf8cddf477f1bf137aa69f724650488734077a1791001a2143885d1dc"
     },
     {
+      "module": "dist/composition/first-party-tools/GoalPlanningAgentTools.js",
+      "files": [
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyAgentToolSupport.js",
+          "byteLength": 8537,
+          "sha256": "sha256:55d49e44c653b376f9eaec03f2d6ad0f2c72d97794218209a2efe3995ca2a351"
+        },
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyToolArtifactAuthority.js",
+          "byteLength": 8521,
+          "sha256": "sha256:ab6f63a72bfbddc338048c153fa257e3f47533253e3ab625d9e7af37480b22c3"
+        },
+        {
+          "path": "dist/composition/first-party-tools/GoalPlanningAgentTools.js",
+          "byteLength": 3093,
+          "sha256": "sha256:a7e305c91588549a1c45c75d484e33f4aa730b85bfebd701232b59354465e8e0"
+        }
+      ],
+      "artifactDigest": "sha256:ed8397d1acd24e7f424c73acb33886aea89175a92a19a9592860fc07f874ea5d"
+    },
+    {
       "module": "dist/composition/first-party-tools/LiveWorkControlAgentTools.js",
       "files": [
         {
@@ -118,6 +139,27 @@
       "artifactDigest": "sha256:aa14864e402284c1b5f23de48deee4b83f571a7a821e52b74e52730ed3f93f34"
     },
     {
+      "module": "dist/composition/first-party-tools/MemoryAgentTools.js",
+      "files": [
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyAgentToolSupport.js",
+          "byteLength": 8537,
+          "sha256": "sha256:55d49e44c653b376f9eaec03f2d6ad0f2c72d97794218209a2efe3995ca2a351"
+        },
+        {
+          "path": "dist/composition/first-party-tools/FirstPartyToolArtifactAuthority.js",
+          "byteLength": 8521,
+          "sha256": "sha256:ab6f63a72bfbddc338048c153fa257e3f47533253e3ab625d9e7af37480b22c3"
+        },
+        {
+          "path": "dist/composition/first-party-tools/MemoryAgentTools.js",
+          "byteLength": 3781,
+          "sha256": "sha256:07e4f6ddd01f6243ab9e4deb3ea71ea6f0ec02888bdd90660dff62fe2892ad69"
+        }
+      ],
+      "artifactDigest": "sha256:8b917d94b96d71e933012281c70398cce3f429513117fb92c9111ec56143c350"
+    },
+    {
       "module": "dist/composition/first-party-tools/ProtectedResultAgentTools.js",
       "files": [
         {
@@ -163,8 +205,8 @@
         },
         {
           "path": "dist/composition/first-party-tools/WorkspaceAgentTools.js",
-          "byteLength": 7140,
-          "sha256": "sha256:1574883eece0742d9d32d69e92abdc09170e70b9b027e95f4631b41e96597579"
+          "byteLength": 7130,
+          "sha256": "sha256:9b4beb10fa3e6f33fe8685f3b2fcda0360a48c5dfd0bcf883df7996a77bc505c"
         },
         {
           "path": "dist/composition/first-party-tools/WorkspaceFileAgentTools.js",
@@ -182,7 +224,7 @@
           "sha256": "sha256:e4bcce2c74e135d12c6ed249e9fc7f7092716198748889674e2dc199735d5a87"
         }
       ],
-      "artifactDigest": "sha256:4412fb3db9ad806900d77a6459e4d50e092ab78ffb0dc56c372e0521ac1f628c"
+      "artifactDigest": "sha256:d7fc69bdd86054641cdc8170d2401b8af79ca3b39e2bb14db025a320c6783ee1"
     },
     {
       "module": "dist/composition/first-party-tools/WorkspaceFileAgentTools.js",

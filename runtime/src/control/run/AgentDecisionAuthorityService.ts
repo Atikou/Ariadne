@@ -27,16 +27,16 @@ import type {
   RuntimeResult
 } from '@ariadne/protocol/public';
 import {
-  derivePublicDecisionActionDescriptorV1
+  derivePublicDecisionActionDescriptor
 } from '@ariadne/protocol/public';
 
 export type ResolvePublicAgentDecisionCommand = Extract<
   RuntimeCommand,
-  { readonly kind: 'agent.decision.resolve.v3' }
+  { readonly kind: 'agent.decision.resolve' }
 >;
 export type ResolvePublicAgentDecisionResult = Extract<
   RuntimeResult,
-  { readonly kind: 'agent.decision.resolved.v3' }
+  { readonly kind: 'agent.decision.resolved' }
 >;
 
 export interface AgentDecisionAuthorityStore
@@ -348,6 +348,7 @@ function isTerminalResolution(
   choice: ResolvePublicAgentDecisionCommand['action']['choice']
 ): boolean {
   return (decision.kind === 'permission' && choice === 'deny')
+    || (decision.kind === 'plan' && choice === 'reject')
     || (decision.kind === 'recovery' && choice === 'cancel_run');
 }
 
@@ -393,7 +394,7 @@ async function requireAuthorizedActiveDecision(
       'The requested Decision is not the authoritative active Decision.'
     );
   }
-  const descriptor = await derivePublicDecisionActionDescriptorV1(
+  const descriptor = await derivePublicDecisionActionDescriptor(
     decision,
     run.binding.sessionId
   );
@@ -588,7 +589,7 @@ function publicResult(
   run: AgentRun
 ): ResolvePublicAgentDecisionResult {
   return {
-    kind: 'agent.decision.resolved.v3',
+    kind: 'agent.decision.resolved',
     runId: run.runId,
     decisionId: decision.decisionId,
     runVersion: run.version

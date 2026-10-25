@@ -1,4 +1,5 @@
 import {
+  AgentRunAncestorCancellationError,
   AgentRunVersionConflictError,
   type AgentRun,
   type ReadyResumableAgentRunRecovery,
@@ -47,6 +48,7 @@ export function assertChildResultsContinuationReceipt(
 }
 
 export function isConcurrentSnapshotConflict(error: unknown): boolean {
+  if (error instanceof AgentRunAncestorCancellationError) return true;
   return error instanceof AgentRunVersionConflictError;
 }
 
@@ -125,18 +127,20 @@ export function exactUncertainInferenceRecovery(
   if (
     receipt.status !== 'waiting_recovery'
     || receipt.reason !== 'inference_outcome_uncertain'
-    || receipt.result === undefined
+  ) return null;
+  if (
+    receipt.result === undefined
     || receipt.result.status !== 'uncertain'
     || receipt.result.attempt.state?.status !== 'uncertain'
-    || !nonEmpty(receipt.result.recoveryDecisionId ?? '')
-  ) return null;
+    || !nonEmpty(receipt.result.attempt.state.recovery?.decisionId ?? '')
+  ) throw new Error('Active inference interruption has no exact durable Attempt recovery evidence.');
   assertFollowUpResultIdentity(receipt.result, work);
   return {
     runId: receipt.result.run.runId,
     runVersion: receipt.result.run.version,
     turnId: receipt.result.turn.turnId,
     attemptId: receipt.result.attempt.attemptId,
-    recoveryDecisionId: receipt.result.recoveryDecisionId!
+    recoveryDecisionId: receipt.result.attempt.state!.recovery!.decisionId
   };
 }
 

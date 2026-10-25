@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { ModelQualitySummary } from '@ariadne/protocol/public';
 
 import { cloneCanonicalAgentToolInput } from '@ariadne/agent-core';
 import type {
@@ -15,7 +16,7 @@ import { ModelExecutionQualificationError } from '../control/ports/AgentModelInf
 import type { RuntimeBootstrap } from '@ariadne/protocol/host';
 import type { LocalModelService } from '../model/local/LocalModelService.js';
 import type { ChatMessage } from '../model/types.js';
-import type { ModelCapabilityRegistry } from '../model/capability/ModelCapabilityRegistry.js';
+import type { ModelCapabilityAuthority } from '../model/capability/ModelCapabilityAuthority.js';
 import { deriveModelCapabilities } from '../model/capability/ModelCapabilityQualification.js';
 
 export const LOCAL_AGENT_MODEL_PROVIDER_ID = 'ariadne.local' as const;
@@ -32,15 +33,18 @@ implements ExactAgentModelInferenceRuntime {
     private readonly localModels: LocalModelService,
     private readonly modelProviders: RuntimeBootstrap['modelProviders'],
     private readonly defaultRoutingStrategy: NonNullable<RuntimeBootstrap['routingStrategy']>,
-    private readonly modelCapabilities: ModelCapabilityRegistry | undefined,
+    private readonly modelCapabilities: ModelCapabilityAuthority | undefined,
     private readonly isRemoteAvailable: (providerId: string, modelId: string) => boolean,
-    private readonly disabledLocalModelIds: ReadonlySet<string> = new Set()
+    private readonly disabledLocalModelIds: ReadonlySet<string> = new Set(),
+    private readonly qualityForModel: (providerId:string,modelId:string)=>ModelQualitySummary|null = ()=>null,
+    private readonly assertInferenceHealthy: () => void = () => undefined
   ) {}
 
   public resolveBinding(
     settingsRevision: number,
     preference: AgentModelSelectionPreference = {}
   ): DispatchExactAgentModelInferenceRequest['binding'] | null {
+    this.assertInferenceHealthy();
     const executionMode = preference.executionMode ?? 'agent';
     const local = this.localModels.clients().filter((client) => !this.disabledLocalModelIds.has(client.name)).map((client) => ({
       providerId: LOCAL_AGENT_MODEL_PROVIDER_ID,
@@ -71,6 +75,14 @@ implements ExactAgentModelInferenceRuntime {
       : strategy === 'local-first'
         ? [...local, ...remote]
         : [...remote, ...local];
+    if (strategy === 'quality-first') {
+      const qualified = available.filter(candidate => this.isQualified(candidate,executionMode,preference.requiresVision===true));
+      const ranked = qualified.map((binding,index)=>({binding,index,quality:this.qualityForModel(binding.providerId,binding.modelId)}))
+        .filter(candidate=>candidate.quality?.state==='current')
+        .sort((left,right)=>right.quality!.score-left.quality!.score || left.index-right.index);
+      if (ranked.length>0) return ranked[0]!.binding;
+      if (qualified.length>0) throw new ModelExecutionQualificationError('model_quality_evaluation_required');
+    }
     const selected = available.find((candidate) => this.isQualified(
       candidate,
       executionMode,
@@ -111,6 +123,7 @@ implements ExactAgentModelInferenceRuntime {
   public hasExactBinding(
     binding: DispatchExactAgentModelInferenceRequest['binding']
   ): boolean {
+    this.assertInferenceHealthy();
     if (binding.providerId !== LOCAL_AGENT_MODEL_PROVIDER_ID) {
       return this.remote.hasExactBinding(binding);
     }
@@ -122,6 +135,7 @@ implements ExactAgentModelInferenceRuntime {
   public describeContextCapacity(
     binding: DispatchExactAgentModelInferenceRequest['binding']
   ): ExactAgentModelContextCapacity | null {
+    this.assertInferenceHealthy();
     if (binding.providerId !== LOCAL_AGENT_MODEL_PROVIDER_ID) {
       return this.remote.describeContextCapacity(binding);
     }
@@ -143,6 +157,7 @@ implements ExactAgentModelInferenceRuntime {
   public describeExecutionQualification(
     binding: DispatchExactAgentModelInferenceRequest['binding']
   ): ExactAgentModelExecutionQualification | null {
+    this.assertInferenceHealthy();
     if (this.modelCapabilities !== undefined) {
       const report = this.modelCapabilities.current(binding.providerId, binding.modelId);
       if (report === null) return null;
@@ -173,6 +188,7 @@ implements ExactAgentModelInferenceRuntime {
   public async inferExact(
     request: DispatchExactAgentModelInferenceRequest
   ): Promise<ExactAgentModelInferenceResult> {
+    this.assertInferenceHealthy();
     if (request.binding.providerId !== LOCAL_AGENT_MODEL_PROVIDER_ID) {
       return this.remote.inferExact(request);
     }
@@ -267,6 +283,7 @@ implements ExactAgentModelInferenceRuntime {
   public async countRequestTokens(
     request: Parameters<ExactAgentModelInferenceRuntime['countRequestTokens']>[0]
   ): ReturnType<ExactAgentModelInferenceRuntime['countRequestTokens']> {
+    this.assertInferenceHealthy();
     if (request.binding.providerId !== LOCAL_AGENT_MODEL_PROVIDER_ID) {
       return this.remote.countRequestTokens(request);
     }

@@ -6,7 +6,7 @@ import type { RuntimeFeatureCommandGateway } from './runtime-feature-command-gat
 
 export type ProtectedToolResultDetail = Extract<
   RuntimeResult,
-  { readonly kind: 'agent.tool_result.detail.v3' }
+  { readonly kind: 'agent.tool_result.detail' }
 >;
 
 export class ToolResultFeatureStore {
@@ -20,7 +20,7 @@ export class ToolResultFeatureStore {
     maxBytes = 32 * 1024
   ): Promise<ProtectedToolResultDetail> {
     const result = await this.gateway.execute({
-      kind: 'agent.tool_result.detail.get.v3',
+      kind: 'agent.tool_result.detail.get',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       runId,
       workspaceId,
@@ -29,7 +29,7 @@ export class ToolResultFeatureStore {
       maxBytes
     });
     if (
-      result.kind !== 'agent.tool_result.detail.v3'
+      result.kind !== 'agent.tool_result.detail'
       || result.runId !== runId
       || result.workspaceId !== workspaceId
       || result.effectId !== effectId

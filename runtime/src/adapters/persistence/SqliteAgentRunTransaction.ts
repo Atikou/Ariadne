@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { loadHistoricalAgentRun } from './AgentRunHistoricalReader.js';
 import {
   AgentRunCommandConflictError,
   AgentRunInvariantError,
@@ -147,10 +148,15 @@ export class SqliteAgentRunTransaction implements AgentRunTransaction {
     const row = this.database.prepare(
       `SELECT run_id, version, state_status, aggregate_json,
               created_at, updated_at
-       FROM agent_v3_runs
+       FROM agent_runs
        WHERE run_id=?`
     ).get(runId) as AgentRunRow | undefined;
-    return row === undefined ? null : parseRunRow(row, 'agent_v3_runs');
+    return row === undefined ? null : parseRunRow(row, 'agent_runs');
+  }
+
+  public async loadRunVersion(runId: string, version: number): Promise<AgentRun | null> {
+    this.assertOpen();
+    return loadHistoricalAgentRun(this.database, runId, version);
   }
 
   public async assertEffectResultContinuationAuthority(
@@ -161,10 +167,10 @@ export class SqliteAgentRunTransaction implements AgentRunTransaction {
     const row = this.database.prepare(
       `SELECT run_id, version, state_status, aggregate_json,
               created_at, updated_at
-       FROM agent_v3_runs
+       FROM agent_runs
        WHERE run_id=?`
     ).get(check.runId) as AgentRunRow | undefined;
-    const current = row === undefined ? null : parseRunRow(row, 'agent_v3_runs');
+    const current = row === undefined ? null : parseRunRow(row, 'agent_runs');
     if (current === null || current.version !== check.expectedVersion) {
       throw new AgentRunVersionConflictError(
         check.runId,
@@ -191,13 +197,13 @@ export class SqliteAgentRunTransaction implements AgentRunTransaction {
   ): Promise<AgentPlanVersionCommit | null> {
     this.assertOpen();
     const row = this.database.prepare(
-      `SELECT * FROM agent_v3_plan_versions
+      `SELECT * FROM agent_plan_versions
        WHERE plan_id=? AND plan_version=?`
     ).get(reference.planId, reference.version) as AgentPlanVersionRow | undefined;
     if (row === undefined) return null;
     if (row.content_hash !== reference.contentHash) {
       throw storageCorruption(
-        `agent_v3_plan_versions:${reference.planId}:${String(reference.version)}:hash_mismatch`
+        `agent_plan_versions:${reference.planId}:${String(reference.version)}:hash_mismatch`
       );
     }
     const payload = decodePayload(this.payloadCodec, row.codec_id, row.payload_json, {
@@ -208,10 +214,10 @@ export class SqliteAgentRunTransaction implements AgentRunTransaction {
       planId: row.plan_id,
       planVersion: row.plan_version,
       contentHash: row.content_hash
-    }, `agent_v3_plan_versions:${row.plan_id}:${String(row.plan_version)}`);
+    }, `agent_plan_versions:${row.plan_id}:${String(row.plan_version)}`);
     if (await sha256AgentControlData(payload) !== row.content_hash) {
       throw storageCorruption(
-        `agent_v3_plan_versions:${row.plan_id}:${String(row.plan_version)}:payload_hash_mismatch`
+        `agent_plan_versions:${row.plan_id}:${String(row.plan_version)}:payload_hash_mismatch`
       );
     }
     return {
@@ -236,7 +242,7 @@ export class SqliteAgentRunTransaction implements AgentRunTransaction {
   ): Promise<AgentDelegationRecord | null> {
     this.assertOpen();
     const row = this.database.prepare(
-      'SELECT * FROM agent_v3_delegations WHERE child_run_id=?'
+      'SELECT * FROM agent_delegations WHERE child_run_id=?'
     ).get(childRunId) as AgentDelegationRow | undefined;
     return row === undefined
       ? null
@@ -248,7 +254,7 @@ export class SqliteAgentRunTransaction implements AgentRunTransaction {
   ): Promise<readonly AgentDelegationRecord[]> {
     this.assertOpen();
     const rows = this.database.prepare(
-      `SELECT * FROM agent_v3_delegations
+      `SELECT * FROM agent_delegations
        WHERE parent_run_id=? ORDER BY child_run_id`
     ).all(parentRunId) as unknown as AgentDelegationRow[];
     return Promise.all(rows.map((row) =>
@@ -261,7 +267,7 @@ export class SqliteAgentRunTransaction implements AgentRunTransaction {
   ): Promise<AgentChildTerminalCommit | null> {
     this.assertOpen();
     const row = this.database.prepare(
-      'SELECT * FROM agent_v3_child_terminals WHERE delegation_id=?'
+      'SELECT * FROM agent_child_terminals WHERE delegation_id=?'
     ).get(delegationId) as AgentChildTerminalRow | undefined;
     return row === undefined ? null : parseChildTerminalRow(row);
   }
@@ -363,7 +369,7 @@ export class SqliteAgentRunTransaction implements AgentRunTransaction {
         continue;
       }
       const update = this.database.prepare(
-        `UPDATE agent_v3_runs
+        `UPDATE agent_runs
          SET version=?, state_status=?, aggregate_json=?, updated_at=?
          WHERE run_id=? AND version=?`
       ).run(
@@ -376,7 +382,7 @@ export class SqliteAgentRunTransaction implements AgentRunTransaction {
       );
       if (Number(update.changes) !== 1) {
         const actual = this.database.prepare(
-          'SELECT version FROM agent_v3_runs WHERE run_id=?'
+          'SELECT version FROM agent_runs WHERE run_id=?'
         ).get(mutation.runId) as { version: number } | undefined;
         throw new AgentRunVersionConflictError(
           mutation.runId,
@@ -387,7 +393,7 @@ export class SqliteAgentRunTransaction implements AgentRunTransaction {
     }
 
     this.database.prepare(
-      `INSERT INTO agent_v3_commands (
+      `INSERT INTO agent_commands (
          command_id, command_digest, mutation_count, fact_count, committed_at
        ) VALUES (?, ?, ?, ?, ?)`
     ).run(
@@ -399,7 +405,7 @@ export class SqliteAgentRunTransaction implements AgentRunTransaction {
     );
 
     const insertCommandRun = this.database.prepare(
-      `INSERT INTO agent_v3_command_runs (
+      `INSERT INTO agent_command_runs (
          command_id, run_id, ordinal, expected_version,
          resulting_version, result_run_json
        ) VALUES (?, ?, ?, ?, ?, ?)`
@@ -421,13 +427,13 @@ export class SqliteAgentRunTransaction implements AgentRunTransaction {
     persistPreparedCommandFacts(this.database, preparedFacts);
 
     const insertEvent = this.database.prepare(
-      `INSERT INTO agent_v3_events (
+      `INSERT INTO agent_events (
          event_id, command_id, run_id, run_version, sequence,
          occurred_at, event_json
        ) VALUES (?, ?, ?, ?, ?, ?, ?)`
     );
     const insertOutbox = this.database.prepare(
-      `INSERT INTO agent_v3_outbox (
+      `INSERT INTO agent_outbox (
          event_id, command_id, aggregate_type, aggregate_id,
          aggregate_version, sequence, event_json, created_at, published_at
        ) VALUES (?, ?, 'agent_run', ?, ?, ?, ?, ?, NULL)`
@@ -459,7 +465,7 @@ export class SqliteAgentRunTransaction implements AgentRunTransaction {
 
   private insertRun(run: AgentRun): void {
     this.database.prepare(
-      `INSERT INTO agent_v3_runs (
+      `INSERT INTO agent_runs (
          run_id, version, state_status, aggregate_json, created_at, updated_at
        ) VALUES (?, ?, ?, ?, ?, ?)`
     ).run(
@@ -473,6 +479,6 @@ export class SqliteAgentRunTransaction implements AgentRunTransaction {
   }
 
   private assertOpen(): void {
-    if (!this.open) throw new Error('agent_v3_transaction_closed');
+    if (!this.open) throw new Error('agent_transaction_closed');
   }
 }

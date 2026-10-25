@@ -134,6 +134,10 @@ function createManifest(input: {
     || toolName === 'workspace.search_text'
     || toolName === 'workspace.glob'
     || toolName === 'workspace.code_intelligence'
+    || toolName === 'memory.read'
+    || toolName === 'memory.recall'
+    || (toolName === 'memory.stage_candidate' && capabilitySet.has('workspace.write'))
+    || toolName === 'productivity.record_goal_decision'
     || (toolName === 'skill.load' && capabilitySet.has('skills.read'))
     || (
       (

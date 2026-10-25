@@ -232,6 +232,11 @@ export interface CancelAgentRunCommand extends AgentRunMutationCommandBase {
   readonly recoveryDecisionId?: string;
 }
 
+export interface RequestAgentRunCancellationCommand extends AgentRunMutationCommandBase {
+  readonly kind: 'run.request_cancellation';
+  readonly reason: string;
+}
+
 export interface InterruptContinuableAgentTurnCommand extends AgentRunMutationCommandBase {
   readonly kind: 'run.interrupt_continuable_turn';
   readonly reason: string;
@@ -258,4 +263,5 @@ export type AgentRunCommand =
   | CompleteAgentRunCommand
   | FailAgentRunCommand
   | InterruptContinuableAgentTurnCommand
+  | RequestAgentRunCancellationCommand
   | CancelAgentRunCommand;

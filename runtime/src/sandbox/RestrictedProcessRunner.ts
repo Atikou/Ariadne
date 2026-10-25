@@ -53,7 +53,15 @@ export class RestrictedProcessRunner {
     return this.run({ ...input, args: input.args ?? [] });
   }
 
-  private run(input: RestrictedFileRequest): Promise<RestrictedProcessResult> {
+  private async run(input: RestrictedFileRequest): Promise<RestrictedProcessResult> {
+    // Cancellation and bounds are admission conditions, before a child can produce effects.
+    input.signal?.throwIfAborted();
+    if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1 || input.timeoutMs > 2_147_483_647) {
+      throw new Error('restricted_process_timeout_invalid');
+    }
+    if (!Number.isSafeInteger(input.maxOutputBytes) || input.maxOutputBytes < 1) {
+      throw new Error('restricted_process_output_limit_invalid');
+    }
     return new Promise((resolve) => {
       let settled = false;
       let timedOut = false;
@@ -139,9 +147,15 @@ export function buildRestrictedEnvironment(
 function terminateProcessTree(pid: number | undefined): void {
   if (!pid) return;
   if (process.platform === "win32") {
-    const killer = spawn("taskkill", ["/pid", String(pid), "/t", "/f"], {
+      const killer = spawn("taskkill", ["/pid", String(pid), "/t", "/f"], {
       windowsHide: true,
       stdio: "ignore",
+    });
+    // Failure to launch the cleanup helper must not become an uncaught process event.
+    killer.on('error', () => {
+      try { process.kill(pid, 'SIGKILL'); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') process.emitWarning('restricted_process_tree_termination_failed');
+      }
     });
     killer.unref();
     return;

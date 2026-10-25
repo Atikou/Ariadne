@@ -1,0 +1,3 @@
+.revision-draft-conflict { display: grid; gap: 8px; padding: 10px; border-left: 3px solid var(--text-2); background: var(--bg-3); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.revision-draft-conflict ul { margin: 0; padding-left: 18px; }
+.revision-draft-actions { display: flex; flex-wrap: wrap; gap: 6px; }

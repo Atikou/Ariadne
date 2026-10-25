@@ -35,9 +35,6 @@ import {
   openAgentControlDatabase,
   resolveAgentControlDatabasePath
 } from '../src/adapters/persistence/agentControlDbSchema.js';
-import { DatabaseManager } from '../src/context/DatabaseManager.js';
-import { MEMORY_DB_MIGRATIONS } from '../src/context/memoryDbMigrations.js';
-import { applySqliteMigrations } from '../src/storage/sqliteMigration.js';
 import { createShutdownContext } from '../src/ingress/ShutdownContext.js';
 
 interface TestDatabaseConnection {
@@ -87,9 +84,9 @@ describe('SqliteAgentRunUnitOfWork', () => {
     try {
       unitOfWork.prepareShutdown(context);
       await expect(unitOfWork.transaction(async () => undefined)).rejects.toThrow(
-        'agent_v3_unit_of_work_closed'
+        'agent_unit_of_work_closed'
       );
-      await expect(pending).rejects.toThrow('agent_v3_shutdown_requested');
+      await expect(pending).rejects.toThrow('agent_shutdown_requested');
       await unitOfWork.close(context);
     } finally {
       context.dispose();
@@ -234,30 +231,30 @@ describe('SqliteAgentRunUnitOfWork', () => {
 
     expect(database.schemaVersion).toBe(AGENT_CONTROL_DB_SCHEMA_VERSION);
     expect(AGENT_CONTROL_LEDGER_REVISION).toBe(55);
-    expect(countRows(database, 'agent_v3_runs')).toBe(1);
-    expect(countRows(database, 'agent_v3_commands')).toBe(8);
-    expect(countRows(database, 'agent_v3_events')).toBe(16);
-    expect(countRows(database, 'agent_v3_outbox')).toBe(16);
-    expect(countRows(database, 'agent_v3_checkpoints')).toBe(6);
-    expect(countRows(database, 'agent_v3_effect_payloads')).toBe(1);
+    expect(countRows(database, 'agent_runs')).toBe(1);
+    expect(countRows(database, 'agent_commands')).toBe(8);
+    expect(countRows(database, 'agent_events')).toBe(16);
+    expect(countRows(database, 'agent_outbox')).toBe(16);
+    expect(countRows(database, 'agent_checkpoints')).toBe(6);
+    expect(countRows(database, 'agent_effect_payloads')).toBe(1);
     expect(listUserTables(database)).toEqual([
+      'agent_budget_entries',
+      'agent_budget_grants',
+      'agent_checkpoints',
+      'agent_child_terminals',
+      'agent_command_runs',
+      'agent_commands',
       'agent_control_metadata',
-      'agent_v3_budget_entries',
-      'agent_v3_budget_grants',
-      'agent_v3_checkpoints',
-      'agent_v3_child_terminals',
-      'agent_v3_command_runs',
-      'agent_v3_commands',
-      'agent_v3_delegations',
-      'agent_v3_directive_payloads',
-      'agent_v3_effect_payloads',
-      'agent_v3_events',
-      'agent_v3_execution_intents',
-      'agent_v3_outbox',
-      'agent_v3_plan_approvals',
-      'agent_v3_plan_versions',
-      'agent_v3_runs',
-      'agent_v3_turn_inputs',
+      'agent_delegations',
+      'agent_directive_payloads',
+      'agent_effect_payloads',
+      'agent_events',
+      'agent_execution_intents',
+      'agent_outbox',
+      'agent_plan_approvals',
+      'agent_plan_versions',
+      'agent_runs',
+      'agent_turn_inputs',
       'schema_migrations'
     ]);
     expect(orphanedOutboxRows(database)).toBe(0);
@@ -271,9 +268,9 @@ describe('SqliteAgentRunUnitOfWork', () => {
       expect(listUserTables(database), legacyTable).not.toContain(legacyTable);
     }
     expect(() => database.connection.prepare(
-      'DELETE FROM agent_v3_runs WHERE run_id=?'
+      'DELETE FROM agent_runs WHERE run_id=?'
     ).run('run-persisted')).toThrow(/FOREIGN KEY constraint failed/);
-    expect(countRows(database, 'agent_v3_commands')).toBe(8);
+    expect(countRows(database, 'agent_commands')).toBe(8);
 
     await closeUnitOfWork(unitOfWork);
     closeDatabase(database);
@@ -300,9 +297,9 @@ describe('SqliteAgentRunUnitOfWork', () => {
       run: { version: 8, state: { status: 'completed' } }
     });
     expect(replay.events).toEqual(completed.events);
-    expect(countRows(reopened, 'agent_v3_commands')).toBe(8);
-    expect(countRows(reopened, 'agent_v3_events')).toBe(16);
-    expect(countRows(reopened, 'agent_v3_outbox')).toBe(16);
+    expect(countRows(reopened, 'agent_commands')).toBe(8);
+    expect(countRows(reopened, 'agent_events')).toBe(16);
+    expect(countRows(reopened, 'agent_outbox')).toBe(16);
   });
 
   it('recovers a queued run after reopening without inventing checkpoint zero', async () => {
@@ -312,7 +309,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
       startCommand('run-queued-recovery', 'command-start-queued-recovery'),
       { turnInputPayloads: [], effectPayloads: [] }
     );
-    expect(countRows(database, 'agent_v3_checkpoints')).toBe(0);
+    expect(countRows(database, 'agent_checkpoints')).toBe(0);
 
     await closeUnitOfWork(unitOfWork);
     closeDatabase(database);
@@ -459,7 +456,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
         scope: ['src/result.ts']
       }
     });
-    expect(countRows(database, 'agent_v3_checkpoints')).toBe(3);
+    expect(countRows(database, 'agent_checkpoints')).toBe(3);
 
     await closeUnitOfWork(unitOfWork);
     closeDatabase(database);
@@ -710,7 +707,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
     expect(persistedCounts(database)).toEqual(before);
     const leaked = database.connection.prepare(
       `SELECT COUNT(*) AS count
-       FROM agent_v3_checkpoints WHERE payload_json LIKE ?`
+       FROM agent_checkpoints WHERE payload_json LIKE ?`
     ).get(`%${tokenFixture}%`) as { count: number };
     expect(leaked.count).toBe(0);
   });
@@ -761,10 +758,10 @@ describe('SqliteAgentRunUnitOfWork', () => {
     });
 
     expect(database.connection.isTransaction).toBe(false);
-    expect(countRows(database, 'agent_v3_runs')).toBe(1);
-    expect(countRows(database, 'agent_v3_commands')).toBe(2);
-    expect(countRows(database, 'agent_v3_events')).toBe(3);
-    expect(countRows(database, 'agent_v3_outbox')).toBe(3);
+    expect(countRows(database, 'agent_runs')).toBe(1);
+    expect(countRows(database, 'agent_commands')).toBe(2);
+    expect(countRows(database, 'agent_events')).toBe(3);
+    expect(countRows(database, 'agent_outbox')).toBe(3);
     expect(commandCount(database, 'command-direct-stale')).toBe(0);
 
     await expect(service.execute({
@@ -793,10 +790,10 @@ describe('SqliteAgentRunUnitOfWork', () => {
       checkpoints: 0,
       effectPayloads: 0
     });
-    expect(countRows(database, 'agent_v3_command_runs')).toBe(3);
+    expect(countRows(database, 'agent_command_runs')).toBe(3);
     expect(database.connection.prepare(
       `SELECT run_id, ordinal, expected_version, resulting_version
-       FROM agent_v3_command_runs ORDER BY ordinal`
+       FROM agent_command_runs ORDER BY ordinal`
     ).all()).toEqual(commit.mutations.map((mutation, ordinal) => ({
       run_id: mutation.runId,
       ordinal,
@@ -823,13 +820,13 @@ describe('SqliteAgentRunUnitOfWork', () => {
     await unitOfWork.transaction((transaction) => transaction.commitCommand(begin));
     expect(database.connection.prepare(
       `SELECT command_id, run_id, run_version
-       FROM agent_v3_checkpoints ORDER BY run_id`
+       FROM agent_checkpoints ORDER BY run_id`
     ).all()).toEqual(begin.mutations.map((mutation) => ({
       command_id: begin.commandId,
       run_id: mutation.runId,
       run_version: 2
     })));
-    expect(countRows(database, 'agent_v3_command_runs')).toBe(6);
+    expect(countRows(database, 'agent_command_runs')).toBe(6);
     expect(database.connection.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 
@@ -850,7 +847,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
       actualVersion: 1
     });
     expect(persistedCounts(database)).toEqual(before);
-    expect(countRows(database, 'agent_v3_command_runs')).toBe(1);
+    expect(countRows(database, 'agent_command_runs')).toBe(1);
     expect(await unitOfWork.loadRunVersion('run-00-parent', 1)).toBeNull();
     expect(await unitOfWork.loadRunVersion('run-10-child-a', 1)).toBeNull();
 
@@ -915,8 +912,8 @@ describe('SqliteAgentRunUnitOfWork', () => {
     const { database } = createDatabase();
     const unitOfWork = createUnitOfWork(database);
     database.connection.exec(`
-      CREATE TRIGGER reject_agent_v3_child_outbox
-      BEFORE INSERT ON agent_v3_outbox
+      CREATE TRIGGER reject_agent_child_outbox
+      BEFORE INSERT ON agent_outbox
       WHEN NEW.aggregate_id = 'run-20-child-b'
       BEGIN
         SELECT RAISE(ABORT, 'kill_during_child_outbox');
@@ -934,7 +931,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
       checkpoints: 0,
       effectPayloads: 0
     });
-    expect(countRows(database, 'agent_v3_command_runs')).toBe(0);
+    expect(countRows(database, 'agent_command_runs')).toBe(0);
   });
 
   it('replays a stable commandId without a second aggregate, event, or outbox write', async () => {
@@ -999,8 +996,8 @@ describe('SqliteAgentRunUnitOfWork', () => {
     const initialCounts = persistedCounts(database);
 
     database.connection.exec(`
-      CREATE TRIGGER reject_agent_v3_outbox
-      BEFORE INSERT ON agent_v3_outbox
+      CREATE TRIGGER reject_agent_outbox
+      BEFORE INSERT ON agent_outbox
       WHEN NEW.aggregate_version = 2
       BEGIN
         SELECT RAISE(ABORT, 'forced_outbox_failure');
@@ -1025,7 +1022,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
     );
     expect(rolledBackRun?.version).toBe(1);
 
-    database.connection.exec('DROP TRIGGER reject_agent_v3_outbox');
+    database.connection.exec('DROP TRIGGER reject_agent_outbox');
     const begun = await service.execute(beginCommand);
     expect(begun.run).toMatchObject({
       version: 2,
@@ -1056,7 +1053,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
     const service = new SqliteTestAgentRunCommandService(first);
     await service.execute(startCommand('run-outbox-a', 'command-start-outbox-a'));
     await service.execute(startCommand('run-outbox-b', 'command-start-outbox-b'));
-    expect(countRows(database, 'agent_v3_outbox')).toBe(4);
+    expect(countRows(database, 'agent_outbox')).toBe(4);
 
     const claimA = await first.claimPending({
       claimId: 'claim-a',
@@ -1176,7 +1173,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
     expect(publishedOutboxCount(database)).toBe(0);
   });
 
-  it('fails closed when outbox JSON diverges from or corrupts its canonical event', async () => {
+  it.each(['divergent', 'canonical'] as const)('fails closed when outbox JSON is %s and fences subsequent operations', async corruption => {
     const { database } = createDatabase();
     const unitOfWork = createUnitOfWork(database);
     await new SqliteTestAgentRunCommandService(unitOfWork).execute(
@@ -1184,7 +1181,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
     );
     const row = database.connection.prepare(
       `SELECT cursor, event_id, event_json
-       FROM agent_v3_outbox ORDER BY cursor LIMIT 1`
+       FROM agent_outbox ORDER BY cursor LIMIT 1`
     ).get() as { cursor: number; event_id: string; event_json: string };
     const forged = JSON.parse(row.event_json) as Record<string, unknown>;
     forged.commandId = 'forged-command';
@@ -1194,25 +1191,20 @@ describe('SqliteAgentRunUnitOfWork', () => {
     const forgedJson = JSON.stringify(forged);
 
     database.connection.prepare(
-      'UPDATE agent_v3_outbox SET event_json=? WHERE cursor=?'
+      'UPDATE agent_outbox SET event_json=? WHERE cursor=?'
     ).run(forgedJson, row.cursor);
-    await expect(unitOfWork.claimPending({
-      claimId: 'claim-divergent-event',
-      leaseMs: 60_000,
-      limit: 1
-    })).rejects.toThrow(/event_diverged/);
-
-    database.connection.prepare(
-      'UPDATE agent_v3_events SET event_json=? WHERE event_id=?'
+    if (corruption === 'canonical') database.connection.prepare(
+      'UPDATE agent_events SET event_json=? WHERE event_id=?'
     ).run(forgedJson, row.event_id);
     await expect(unitOfWork.claimPending({
       claimId: 'claim-corrupt-canonical-event',
       leaseMs: 60_000,
       limit: 1
-    })).rejects.toThrow(/metadata_mismatch/);
+    })).rejects.toThrow(corruption === 'canonical' ? /metadata_mismatch/ : /event_diverged/);
+    await expect(unitOfWork.countUnpublishedOutbox()).rejects.toThrow('execution_authority_integrity');
   });
 
-  it('fails closed when active recovery index metadata diverges from the aggregate', async () => {
+  it.each(['completed', 'created_at'] as const)('fails closed when active recovery index %s metadata diverges', async corruption => {
     const { database } = createDatabase();
     const unitOfWork = createUnitOfWork(database);
     await new AgentRunCommandService(unitOfWork).execute(
@@ -1220,24 +1212,23 @@ describe('SqliteAgentRunUnitOfWork', () => {
       { turnInputPayloads: [], effectPayloads: [] }
     );
 
-    database.connection.prepare(
-      `UPDATE agent_v3_runs SET state_status='completed' WHERE run_id=?`
+    if (corruption === 'completed') database.connection.prepare(
+      `UPDATE agent_runs SET state_status='completed' WHERE run_id=?`
     ).run('run-recovery-metadata');
-    await expect(unitOfWork.listActiveRuns())
-      .rejects.toThrow(/recovery_metadata_mismatch/);
-
-    database.connection.prepare(
-      `UPDATE agent_v3_runs SET state_status='queued', created_at=? WHERE run_id=?`
+    else database.connection.prepare(
+      `UPDATE agent_runs SET state_status='queued', created_at=? WHERE run_id=?`
     ).run(at(99), 'run-recovery-metadata');
     await expect(unitOfWork.listActiveRuns())
       .rejects.toThrow(/recovery_metadata_mismatch/);
+    await expect(unitOfWork.listActiveRuns()).rejects.toThrow('execution_authority_integrity');
   });
 
   it('owns a physically isolated database containing only Agent Control schema', async () => {
     const root = createTemporaryRoot();
     const memoryPath = path.join(root, 'data', 'agent_data', 'memory.db');
-    const memory = new DatabaseManager(path.join(root, 'data'));
-    memory.connection.exec(`
+    mkdirSync(path.join(root, 'data', 'agent_data'), { recursive: true });
+    const memory = new DatabaseSync(path.join(root, 'data', 'agent_data', 'memory.db'));
+    memory.exec(`
       CREATE TABLE owner_fencing_sentinel (
         id TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -1272,26 +1263,26 @@ describe('SqliteAgentRunUnitOfWork', () => {
       synchronous: number;
     }).synchronous).toBe(2);
     expect(listUserTables(control)).toEqual([
+      'agent_budget_entries',
+      'agent_budget_grants',
+      'agent_checkpoints',
+      'agent_child_terminals',
+      'agent_command_runs',
+      'agent_commands',
       'agent_control_metadata',
-      'agent_v3_budget_entries',
-      'agent_v3_budget_grants',
-      'agent_v3_checkpoints',
-      'agent_v3_child_terminals',
-      'agent_v3_command_runs',
-      'agent_v3_commands',
-      'agent_v3_delegations',
-      'agent_v3_directive_payloads',
-      'agent_v3_effect_payloads',
-      'agent_v3_events',
-      'agent_v3_execution_intents',
-      'agent_v3_outbox',
-      'agent_v3_plan_approvals',
-      'agent_v3_plan_versions',
-      'agent_v3_runs',
-      'agent_v3_turn_inputs',
+      'agent_delegations',
+      'agent_directive_payloads',
+      'agent_effect_payloads',
+      'agent_events',
+      'agent_execution_intents',
+      'agent_outbox',
+      'agent_plan_approvals',
+      'agent_plan_versions',
+      'agent_runs',
+      'agent_turn_inputs',
       'schema_migrations'
     ]);
-    expect(countRows(control, 'agent_v3_runs')).toBe(1);
+    expect(countRows(control, 'agent_runs')).toBe(1);
     for (const forbidden of [
       'runtime_commands', 'sessions', 'messages', 'conversation_summaries'
     ]) {
@@ -1301,11 +1292,11 @@ describe('SqliteAgentRunUnitOfWork', () => {
     expect(readDatabaseSnapshot(memoryPath)).toEqual(memoryBefore);
   });
 
-  it('creates the authoritative schema-v7/ledger-v55 format on a pristine file and reopens it', () => {
+  it('creates fixed database names with independent schema and ledger metadata and reopens it', () => {
     const root = createTemporaryRoot();
     const first = openAgentControlDatabase(root);
     try {
-      expect(readUserVersion(first.database)).toBe(7);
+      expect(readUserVersion(first.database)).toBe(AGENT_CONTROL_DB_SCHEMA_VERSION);
       expect(first.database.prepare(
         'SELECT version, name FROM schema_migrations ORDER BY version'
       ).all()).toEqual([{
@@ -1320,6 +1311,9 @@ describe('SqliteAgentRunUnitOfWork', () => {
       }, {
         version: 7,
         name: 'agent_control_v3_durable_user_question'
+      }, {
+        version: 8,
+        name: 'agent_control_fixed_database_names'
       }]);
     } finally {
       closeOwnedSqliteDatabase(first.database, first.ownerLease);
@@ -1349,7 +1343,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
     const legacy = new DatabaseSync(databasePath);
     legacy.exec(`
       BEGIN IMMEDIATE;
-      DROP INDEX idx_agent_v3_runs_waiting_input;
+      DROP INDEX idx_agent_runs_waiting_input;
       DELETE FROM schema_migrations WHERE version>=6;
       PRAGMA user_version = 5;
       COMMIT;
@@ -1358,7 +1352,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
     const before = readAgentControlSchemaSnapshot(databasePath);
 
     expect(() => new SqliteAgentRunUnitOfWork(root)).toThrow(
-      'agent_control_offline_migration_required:agent_control_schema:5:7'
+      'agent_control_offline_migration_required:agent_control_schema:5:8'
     );
     expect(readAgentControlSchemaSnapshot(databasePath)).toEqual(before);
   });
@@ -1372,10 +1366,10 @@ describe('SqliteAgentRunUnitOfWork', () => {
     legacy.exec('BEGIN IMMEDIATE;');
     try {
       legacy.exec(`
-        DROP INDEX idx_agent_v3_runs_waiting_input;
-        DROP INDEX idx_agent_v3_turn_inputs_command;
-        DROP TABLE agent_v3_turn_inputs;
-        DELETE FROM schema_migrations WHERE version IN (5, 6, 7);
+        DROP INDEX idx_agent_runs_waiting_input;
+        DROP INDEX idx_agent_turn_inputs_command;
+        DROP TABLE agent_turn_inputs;
+        DELETE FROM schema_migrations WHERE version >= 5;
         PRAGMA user_version = 4;
         COMMIT;
       `);
@@ -1391,7 +1385,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
     expect(Object.values(before.rows).every((rows) => rows.length === 0)).toBe(true);
 
     expect(() => new SqliteAgentRunUnitOfWork(root)).toThrow(
-      'agent_control_offline_migration_required:agent_control_schema:4:7'
+      'agent_control_offline_migration_required:agent_control_schema:4:8'
     );
     expect(readAgentControlSchemaSnapshot(databasePath)).toEqual(before);
   });
@@ -1399,7 +1393,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
   it('rejects legacy aggregate JSON at the SQL boundary without partial rows', () => {
     const { database } = createDatabase();
     const insertRun = database.connection.prepare(
-      `INSERT INTO agent_v3_runs (
+      `INSERT INTO agent_runs (
          run_id, version, state_status, aggregate_json, created_at, updated_at
        ) VALUES (?, 1, 'queued', ?, ?, ?)`
     );
@@ -1413,7 +1407,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
       at(0),
       at(0)
     )).toThrow(/constraint failed/i);
-    expect(countRows(database, 'agent_v3_runs')).toBe(0);
+    expect(countRows(database, 'agent_runs')).toBe(0);
 
     const v2RunJson = JSON.stringify({
       binding: {
@@ -1427,7 +1421,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
     });
     insertRun.run('v2-shape', v2RunJson, at(0), at(0));
     database.connection.prepare(
-      `INSERT INTO agent_v3_commands (
+      `INSERT INTO agent_commands (
          command_id, command_digest, mutation_count, committed_at
        ) VALUES (?, ?, 1, ?)`
     ).run(
@@ -1436,7 +1430,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
       at(0)
     );
     expect(() => database.connection.prepare(
-      `INSERT INTO agent_v3_command_runs (
+      `INSERT INTO agent_command_runs (
          command_id, run_id, ordinal, expected_version,
          resulting_version, result_run_json
        ) VALUES (?, ?, 0, NULL, 1, ?)`
@@ -1445,7 +1439,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
       'v2-shape',
       legacyRunJson
     )).toThrow(/constraint failed/i);
-    expect(countRows(database, 'agent_v3_command_runs')).toBe(0);
+    expect(countRows(database, 'agent_command_runs')).toBe(0);
   });
 
   it('blocks a populated v1 aggregate before reads and leaves the old store unchanged', () => {
@@ -1462,7 +1456,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
          WHERE version=?`
       ).run(AGENT_CONTROL_DB_SCHEMA_VERSION);
       legacy.prepare(
-        `INSERT INTO agent_v3_runs (
+        `INSERT INTO agent_runs (
            run_id, version, state_status, aggregate_json, created_at, updated_at
          ) VALUES (?, 1, 'queued', ?, ?, ?)`
       ).run(
@@ -1508,7 +1502,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
     const before = readAgentControlSchemaSnapshot(databasePath);
 
     expect(() => new SqliteAgentRunUnitOfWork(root)).toThrow(
-      'agent_control_offline_migration_required:agent_control_schema:1:7'
+      'agent_control_offline_migration_required:agent_control_schema:1:8'
     );
 
     expect(readAgentControlSchemaSnapshot(databasePath)).toEqual(before);
@@ -1534,7 +1528,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
     legacy.close();
 
     expect(() => new SqliteAgentRunUnitOfWork(root)).toThrow(
-      'agent_control_offline_migration_required:agent_control_schema:2:7'
+      'agent_control_offline_migration_required:agent_control_schema:2:8'
     );
 
     const unchanged = new DatabaseSync(databasePath, { readOnly: true });
@@ -1655,8 +1649,8 @@ describe('SqliteAgentRunUnitOfWork', () => {
     closeDatabase(indexDatabase);
     const alteredIndex = new DatabaseSync(resolveAgentControlDatabasePath(indexRoot));
     alteredIndex.exec(`
-      DROP INDEX idx_agent_v3_runs_status;
-      CREATE INDEX idx_agent_v3_runs_status ON agent_v3_runs(updated_at);
+      DROP INDEX idx_agent_runs_status;
+      CREATE INDEX idx_agent_runs_status ON agent_runs(updated_at);
     `);
     alteredIndex.close();
     expect(() => new SqliteAgentRunUnitOfWork(indexRoot))
@@ -1671,9 +1665,9 @@ describe('SqliteAgentRunUnitOfWork', () => {
     alteredConstraint.exec(`
       PRAGMA foreign_keys = OFF;
       PRAGMA legacy_alter_table = ON;
-      ALTER TABLE agent_v3_runs RENAME TO agent_v3_runs_original;
-      DROP TABLE agent_v3_runs_original;
-      CREATE TABLE agent_v3_runs (
+      ALTER TABLE agent_runs RENAME TO agent_runs_original;
+      DROP TABLE agent_runs_original;
+      CREATE TABLE agent_runs (
         run_id TEXT PRIMARY KEY,
         version INTEGER NOT NULL CHECK(version >= 0),
         state_status TEXT NOT NULL CHECK(state_status IN (
@@ -1684,10 +1678,10 @@ describe('SqliteAgentRunUnitOfWork', () => {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
-      CREATE INDEX idx_agent_v3_runs_status
-        ON agent_v3_runs(state_status, updated_at DESC);
-      CREATE INDEX idx_agent_v3_runs_recovery
-        ON agent_v3_runs(created_at, run_id)
+      CREATE INDEX idx_agent_runs_status
+        ON agent_runs(state_status, updated_at DESC);
+      CREATE INDEX idx_agent_runs_recovery
+        ON agent_runs(created_at, run_id)
         WHERE state_status IN ('queued', 'running', 'waiting', 'recovering');
     `);
     alteredConstraint.close();
@@ -1701,7 +1695,7 @@ describe('SqliteAgentRunUnitOfWork', () => {
       resolveAgentControlDatabasePath(foreignObjectRoot)
     );
     foreignObjects.exec(`
-      CREATE VIEW agent_run_ids AS SELECT run_id FROM agent_v3_runs;
+      CREATE VIEW agent_run_ids AS SELECT run_id FROM agent_runs;
       CREATE TRIGGER unexpected_agent_trigger
       AFTER INSERT ON agent_control_metadata
       BEGIN
@@ -1820,140 +1814,6 @@ describe('SqliteAgentRunUnitOfWork', () => {
         fixture.label
       ).rejects.toThrow(fixture.expected);
     }
-  });
-
-  it('blocks a populated v43 database without partially applying later migrations', () => {
-    const root = createTemporaryRoot();
-    const agentData = path.join(root, 'agent_data');
-    mkdirSync(agentData, { recursive: true });
-    const dbPath = path.join(agentData, 'memory.db');
-    const version43 = new DatabaseSync(dbPath);
-    version43.exec('PRAGMA foreign_keys = ON;');
-    const migrated = applySqliteMigrations(
-      version43,
-      MEMORY_DB_MIGRATIONS.filter((migration) => migration.version <= 43)
-    );
-    expect(migrated.version).toBe(43);
-    version43.prepare(
-      `INSERT INTO agent_state(key, value, updated_at)
-       VALUES ('upgrade-sentinel', 'preserved', ?)`
-    ).run(at(0));
-    const v43Command = startCommand('run-v43-migration', 'command-v43-migration');
-    const v43Run = {
-      runId: v43Command.runId,
-      version: 1,
-      binding: v43Command.binding,
-      state: {
-        status: 'queued' as const,
-        checkpointVersion: 0 as const,
-        queuedAt: v43Command.occurredAt
-      },
-      effects: [],
-      createdAt: v43Command.occurredAt,
-      updatedAt: v43Command.occurredAt
-    };
-    const v43Events = [
-      {
-        eventId: 'command-v43-migration:1',
-        commandId: v43Command.commandId,
-        runId: v43Command.runId,
-        runVersion: 1,
-        sequence: 1,
-        occurredAt: v43Command.occurredAt,
-        payload: { type: 'run.started', binding: v43Command.binding }
-      },
-      {
-        eventId: 'command-v43-migration:2',
-        commandId: v43Command.commandId,
-        runId: v43Command.runId,
-        runVersion: 1,
-        sequence: 2,
-        occurredAt: v43Command.occurredAt,
-        payload: {
-          type: 'run.state_changed',
-          from: 'absent',
-          to: v43Run.state
-        }
-      }
-    ];
-    version43.prepare(
-      `INSERT INTO agent_v2_runs (
-         run_id, version, state_status, aggregate_json, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(
-      v43Run.runId,
-      v43Run.version,
-      v43Run.state.status,
-      JSON.stringify(v43Run),
-      v43Run.createdAt,
-      v43Run.updatedAt
-    );
-    version43.prepare(
-      `INSERT INTO agent_v2_commands (
-         command_id, command_digest, run_id, resulting_version,
-         result_run_json, committed_at
-       ) VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(
-      v43Command.commandId,
-      `sha256:${'1'.repeat(64)}`,
-      v43Run.runId,
-      v43Run.version,
-      JSON.stringify(v43Run),
-      v43Run.createdAt
-    );
-    const insertV43Event = version43.prepare(
-      `INSERT INTO agent_v2_events (
-         event_id, command_id, run_id, run_version, sequence,
-         occurred_at, event_json
-       ) VALUES (?, ?, ?, ?, ?, ?, ?)`
-    );
-    const insertV43Outbox = version43.prepare(
-      `INSERT INTO agent_v2_outbox (
-         event_id, aggregate_type, aggregate_id, aggregate_version,
-         event_json, created_at, published_at
-       ) VALUES (?, 'agent_run', ?, ?, ?, ?, ?)`
-    );
-    for (const [index, event] of v43Events.entries()) {
-      const eventJson = JSON.stringify(event);
-      insertV43Event.run(
-        event.eventId,
-        event.commandId,
-        event.runId,
-        event.runVersion,
-        event.sequence,
-        event.occurredAt,
-        eventJson
-      );
-      insertV43Outbox.run(
-        event.eventId,
-        event.runId,
-        event.runVersion,
-        eventJson,
-        event.occurredAt,
-        index === 0 ? at(1) : null
-      );
-    }
-    version43.close();
-
-    expect(() => openMemoryDatabase(root)).toThrow(
-      'memory_control_shadow_offline_migration_required:'
-        + 'agent_v2_commands,agent_v2_events,agent_v2_outbox,agent_v2_runs'
-    );
-
-    const unchanged = new DatabaseSync(dbPath, { readOnly: true });
-    expect(unchanged.prepare('PRAGMA user_version').get()).toEqual({ user_version: 43 });
-    expect(unchanged.prepare(
-      `SELECT value FROM agent_state WHERE key='upgrade-sentinel'`
-    ).get()).toEqual({ value: 'preserved' });
-    expect(unchanged.prepare('SELECT COUNT(*) AS count FROM agent_v2_runs').get())
-      .toEqual({ count: 1 });
-    expect(unchanged.prepare('SELECT COUNT(*) AS count FROM agent_v2_events').get())
-      .toEqual({ count: 2 });
-    expect(unchanged.prepare(
-      'SELECT version FROM schema_migrations WHERE version > 43 ORDER BY version'
-    ).all()).toEqual([]);
-    expect(unchanged.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
-    unchanged.close();
   });
 });
 
@@ -2289,11 +2149,7 @@ function openDatabase(root: string): AgentControlTestDatabase {
   return database;
 }
 
-function openMemoryDatabase(root: string): DatabaseManager {
-  const database = new DatabaseManager(root);
-  openDatabases.add(database);
-  return database;
-}
+
 
 function closeDatabase(database: TestDatabaseConnection): void {
   if (!openDatabases.delete(database)) return;
@@ -2413,20 +2269,20 @@ function readAgentControlSchemaSnapshot(databaseFile: string): {
   try {
     const tableNames = [
       'agent_control_metadata',
-      'agent_v3_budget_entries',
-      'agent_v3_budget_grants',
-      'agent_v3_checkpoints',
-      'agent_v3_child_terminals',
-      'agent_v3_command_runs',
-      'agent_v3_commands',
-      'agent_v3_delegations',
-      'agent_v3_directive_payloads',
-      'agent_v3_effect_payloads',
-      'agent_v3_events',
-      'agent_v3_outbox',
-      'agent_v3_plan_approvals',
-      'agent_v3_plan_versions',
-      'agent_v3_runs'
+      'agent_budget_entries',
+      'agent_budget_grants',
+      'agent_checkpoints',
+      'agent_child_terminals',
+      'agent_command_runs',
+      'agent_commands',
+      'agent_delegations',
+      'agent_directive_payloads',
+      'agent_effect_payloads',
+      'agent_events',
+      'agent_outbox',
+      'agent_plan_approvals',
+      'agent_plan_versions',
+      'agent_runs'
     ] as const;
     return {
       userVersion: readUserVersion(database),
@@ -2454,7 +2310,7 @@ function readAgentControlSchemaSnapshot(databaseFile: string): {
 
 function commandCount(database: TestDatabaseConnection, commandId: string): number {
   const row = database.connection.prepare(
-    'SELECT COUNT(*) AS count FROM agent_v3_commands WHERE command_id=?'
+    'SELECT COUNT(*) AS count FROM agent_commands WHERE command_id=?'
   ).get(commandId) as { count: number };
   return row.count;
 }
@@ -2464,7 +2320,7 @@ function persistedCommandDigest(
   commandId: string
 ): string | null {
   const row = database.connection.prepare(
-    'SELECT command_digest FROM agent_v3_commands WHERE command_id=?'
+    'SELECT command_digest FROM agent_commands WHERE command_id=?'
   ).get(commandId) as { command_digest: string } | undefined;
   return row?.command_digest ?? null;
 }
@@ -2472,8 +2328,8 @@ function persistedCommandDigest(
 function orphanedOutboxRows(database: TestDatabaseConnection): number {
   const row = database.connection.prepare(
     `SELECT COUNT(*) AS count
-     FROM agent_v3_outbox outbox
-     LEFT JOIN agent_v3_events event ON event.event_id=outbox.event_id
+     FROM agent_outbox outbox
+     LEFT JOIN agent_events event ON event.event_id=outbox.event_id
      WHERE event.event_id IS NULL`
   ).get() as { count: number };
   return row.count;
@@ -2482,8 +2338,8 @@ function orphanedOutboxRows(database: TestDatabaseConnection): number {
 function divergentOutboxRows(database: TestDatabaseConnection): number {
   const row = database.connection.prepare(
     `SELECT COUNT(*) AS count
-     FROM agent_v3_outbox outbox
-     INNER JOIN agent_v3_events event ON event.event_id=outbox.event_id
+     FROM agent_outbox outbox
+     INNER JOIN agent_events event ON event.event_id=outbox.event_id
      WHERE event.event_json <> outbox.event_json`
   ).get() as { count: number };
   return row.count;
@@ -2491,19 +2347,19 @@ function divergentOutboxRows(database: TestDatabaseConnection): number {
 
 function publishedOutboxCount(database: TestDatabaseConnection): number {
   const row = database.connection.prepare(
-    'SELECT COUNT(*) AS count FROM agent_v3_outbox WHERE published_at IS NOT NULL'
+    'SELECT COUNT(*) AS count FROM agent_outbox WHERE published_at IS NOT NULL'
   ).get() as { count: number };
   return row.count;
 }
 
 function persistedCounts(database: TestDatabaseConnection): Record<string, number> {
   return {
-    runs: countRows(database, 'agent_v3_runs'),
-    commands: countRows(database, 'agent_v3_commands'),
-    events: countRows(database, 'agent_v3_events'),
-    outbox: countRows(database, 'agent_v3_outbox'),
-    checkpoints: countRows(database, 'agent_v3_checkpoints'),
-    effectPayloads: countRows(database, 'agent_v3_effect_payloads')
+    runs: countRows(database, 'agent_runs'),
+    commands: countRows(database, 'agent_commands'),
+    events: countRows(database, 'agent_events'),
+    outbox: countRows(database, 'agent_outbox'),
+    checkpoints: countRows(database, 'agent_checkpoints'),
+    effectPayloads: countRows(database, 'agent_effect_payloads')
   };
 }
 
@@ -2554,12 +2410,12 @@ function insertProtectedRecoveryFixture(
   database.connection.exec('BEGIN IMMEDIATE');
   try {
     database.connection.prepare(
-      `INSERT INTO agent_v3_runs (
+      `INSERT INTO agent_runs (
          run_id, version, state_status, aggregate_json, created_at, updated_at
        ) VALUES ('run-anchor-payload', 2, 'waiting', ?, ?, ?)`
     ).run(aggregateJson, at(0), at(0));
     const insertCommand = database.connection.prepare(
-      `INSERT INTO agent_v3_commands (
+      `INSERT INTO agent_commands (
          command_id, command_digest, mutation_count, committed_at
        ) VALUES (?, ?, 1, ?)`
     );
@@ -2574,7 +2430,7 @@ function insertProtectedRecoveryFixture(
       at(0)
     );
     const insertCommandRun = database.connection.prepare(
-      `INSERT INTO agent_v3_command_runs (
+      `INSERT INTO agent_command_runs (
          command_id, run_id, ordinal, expected_version,
          resulting_version, result_run_json
        ) VALUES (?, 'run-anchor-payload', 0, ?, ?, ?)`
@@ -2582,7 +2438,7 @@ function insertProtectedRecoveryFixture(
     insertCommandRun.run('command-anchor-input', null, 1, aggregateJson);
     insertCommandRun.run('command-anchor-result', 1, 2, aggregateJson);
     database.connection.prepare(
-      `INSERT INTO agent_v3_checkpoints (
+      `INSERT INTO agent_checkpoints (
          run_id, checkpoint_version, run_version, command_id,
          codec_id, payload_json, created_at
        ) VALUES (
@@ -2590,7 +2446,7 @@ function insertProtectedRecoveryFixture(
        )`
     ).run(checkpoint.codecId, checkpoint.payloadJson, at(0));
     database.connection.prepare(
-      `INSERT INTO agent_v3_effect_payloads (
+      `INSERT INTO agent_effect_payloads (
          run_id, effect_id, input_digest, input_command_id, input_run_version,
          input_codec_id, input_payload_json, result_command_id,
          result_run_version, result_codec_id, result_payload_json,

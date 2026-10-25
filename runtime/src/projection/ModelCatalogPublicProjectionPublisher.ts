@@ -2,11 +2,11 @@ import { createHash } from 'node:crypto';
 
 import {
   PUBLIC_PROJECTION_CONTRACT_VERSION,
-  publicModelProjectionV3Schema,
+  publicModelProjectionSchema,
   publicProjectionCanonicalIdSchema,
-  type ProjectionCommitV3,
-  type PublicModelProjectionV3,
-  type PublicProjectionChangeV3
+  type ProjectionCommit,
+  type PublicModelProjection,
+  type PublicProjectionChange
 } from '@ariadne/protocol/public';
 
 import type {
@@ -15,7 +15,7 @@ import type {
   ModelCatalogProjectionSource,
   ModelCatalogPublicProjectionStore
 } from './ModelCatalogProjectionPorts.js';
-import { assertValidProjectionCommitV3 } from './PublicProjectionContractV3.js';
+import { assertValidProjectionCommit } from './PublicProjectionContract.js';
 
 const DEFAULT_SOURCE_ID = 'model-catalog';
 const DEFAULT_MAX_CHANGES_PER_COMMIT = 256;
@@ -34,11 +34,11 @@ export interface ModelCatalogPublicProjectionPublishResult {
 }
 
 export type ModelCatalogProjectionPublished = (
-  commit: ProjectionCommitV3
+  commit: ProjectionCommit
 ) => void | Promise<void>;
 
 interface PendingCommit {
-  readonly commit: ProjectionCommitV3;
+  readonly commit: ProjectionCommit;
   readonly observedModels: number;
   readonly publishedChanges: number;
   readonly sourceCursor: number;
@@ -120,7 +120,7 @@ export class ModelCatalogPublicProjectionPublisher {
       throw new Error('model_catalog_projection_source_cursor_exhausted');
     }
     const changes = planned.map((change) => projectChange(change, occurredAt));
-    const commit = assertValidProjectionCommitV3({
+    const commit = assertValidProjectionCommit({
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       eventId: modelCatalogProjectionEventId(this.sourceId, nextSourceCursor),
       sourceId: this.sourceId,
@@ -178,7 +178,7 @@ function normalizeEntries(
   }
   const entries = new Map<string, ModelCatalogProjectionEntry>();
   for (const value of values) {
-    const dto = publicModelProjectionV3Schema.parse({
+    const dto = publicModelProjectionSchema.parse({
       modelId: value?.id,
       version: 1,
       label: value?.label,
@@ -190,6 +190,7 @@ function normalizeEntries(
       supportsPlan: value?.supportsPlan,
       supportsVision: value?.supportsVision,
       qualificationState: value?.qualificationState,
+      ...(value?.quality===undefined?{}:{quality:value.quality}),
       updatedAt: ENTRY_VALIDATION_TIME
     });
     if (entries.has(dto.modelId)) {
@@ -205,7 +206,8 @@ function normalizeEntries(
       supportsAgent: dto.supportsAgent,
       supportsPlan: dto.supportsPlan,
       supportsVision: dto.supportsVision,
-      qualificationState: dto.qualificationState
+      qualificationState: dto.qualificationState,
+      ...(dto.quality===undefined?{}:{quality:dto.quality})
     }));
   }
   return entries;
@@ -225,7 +227,7 @@ function normalizeHeads(
     ) {
       throw new Error(`model_catalog_projection_head_invalid:${aggregateId}`);
     }
-    const dto = value.dto === null ? null : publicModelProjectionV3Schema.parse(value.dto);
+    const dto = value.dto === null ? null : publicModelProjectionSchema.parse(value.dto);
     if (
       dto !== null
       && (dto.modelId !== aggregateId || dto.version !== value.aggregateVersion)
@@ -283,7 +285,7 @@ function planChanges(
 function projectChange(
   change: PlannedChange,
   projectedAt: string
-): PublicProjectionChangeV3 {
+): PublicProjectionChange {
   if (!Number.isSafeInteger(change.aggregateVersion)) {
     throw new Error(`model_catalog_projection_version_exhausted:${change.aggregateId}`);
   }
@@ -297,7 +299,7 @@ function projectChange(
       dto: null
     };
   }
-  const dto: PublicModelProjectionV3 = publicModelProjectionV3Schema.parse({
+  const dto: PublicModelProjection = publicModelProjectionSchema.parse({
     modelId: change.entry.id,
     version: change.aggregateVersion,
     label: change.entry.label,
@@ -309,6 +311,7 @@ function projectChange(
     supportsPlan: change.entry.supportsPlan,
     supportsVision: change.entry.supportsVision,
     qualificationState: change.entry.qualificationState,
+    ...(change.entry.quality===undefined?{}:{quality:change.entry.quality}),
     updatedAt: projectedAt
   });
   return {
@@ -323,7 +326,7 @@ function projectChange(
 
 function samePublicState(
   entry: ModelCatalogProjectionEntry,
-  current: PublicModelProjectionV3
+  current: PublicModelProjection
 ): boolean {
   return entry.id === current.modelId
     && entry.label === current.label
@@ -334,7 +337,13 @@ function samePublicState(
     && entry.supportsAgent === current.supportsAgent
     && entry.supportsPlan === current.supportsPlan
     && entry.supportsVision === current.supportsVision
-    && entry.qualificationState === current.qualificationState;
+    && entry.qualificationState === current.qualificationState
+    && sameQuality(entry.quality,current.quality);
+}
+function sameQuality(left:ModelCatalogProjectionEntry['quality'],right:PublicModelProjection['quality']):boolean {
+  if(!left||!right)return left===right;
+  return (['benchmarkId','benchmarkDigest','score','passed','total','evaluatedAt','validUntil','state'] as const)
+    .every(key=>left[key]===right[key]);
 }
 
 function canonicalNow(now: () => Date): string {

@@ -1,11 +1,11 @@
 import type {
-  PublicRunProjectionV3,
+  PublicAgentInboxInput,
   RuntimeCommand
 } from '@ariadne/protocol/public';
 
 type AgentInboxEnqueueCommand = Extract<
   RuntimeCommand,
-  { readonly kind: 'agent.inbox.enqueue.v3' }
+  { readonly kind: 'agent.inbox.enqueue' }
 >;
 
 export type AgentInputDeliveryState =
@@ -15,6 +15,7 @@ export type AgentInputDeliveryState =
   | 'failed';
 
 export interface AgentInputDeliveryReceipt {
+  readonly draftSubmissionId?: string;
   readonly commandId: string;
   readonly inputId: string;
   readonly runId: string;
@@ -31,6 +32,15 @@ export interface AgentInputDeliveryReceipt {
 interface TrackedAgentInputDelivery {
   readonly command: AgentInboxEnqueueCommand;
   readonly receipt: AgentInputDeliveryReceipt;
+}
+
+/** Metadata received only after the exact Inbox proof has been verified by the
+ * Projection client at one leased Run version. An omitted page is no evidence. */
+export interface VerifiedAgentInboxIdentity {
+  readonly runId: string;
+  readonly sessionId: string;
+  readonly runVersion: number;
+  readonly input: Omit<PublicAgentInboxInput, 'content'> | null;
 }
 
 const MAX_TRACKED_AGENT_INPUT_DELIVERIES = 100;
@@ -180,14 +190,16 @@ export class AgentInputDeliveryTracker {
     this.records.delete(commandId);
   }
 
-  observeProjection(runs: readonly PublicRunProjectionV3[]): string[] {
-    const authoritativeInputIds = new Set(runs.flatMap((run) => (
-      run.inbox.map((input) => input.inputId)
-    )));
+  observeInboxIdentities(identities: readonly VerifiedAgentInboxIdentity[]): string[] {
     const acceptedCommandIds: string[] = [];
     for (const [commandId, record] of this.records) {
+      const input = identities.find(identity => identity.runId === record.receipt.runId && identity.sessionId === record.receipt.sessionId
+        && Number.isSafeInteger(identity.runVersion) && identity.runVersion > 0 && identity.input !== null
+        && Number.isSafeInteger(identity.input.version) && identity.input.version > 0
+        && identity.input.inputId === record.receipt.inputId && identity.input.delivery === record.receipt.delivery
+        && identity.input.source === undefined)?.input;
       if (
-        !authoritativeInputIds.has(record.receipt.inputId)
+        input === undefined || input === null
         || record.receipt.state === 'accepted'
       ) continue;
       const { error: _error, ...receipt } = record.receipt;

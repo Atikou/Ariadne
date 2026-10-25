@@ -20,6 +20,7 @@ import type {
 } from './recovery-persistence.js';
 import type { AgentRunUnitOfWork } from './unit-of-work.js';
 import { deriveStableAgentId } from './stable-id.js';
+import { assertAgentEffectResultAuthority } from './agent-run-effect-result-authority.js';
 import {
   observeAgentDispatchLifecycle,
   type AgentDispatchLifecycleObserver
@@ -128,6 +129,7 @@ interface InFlightDispatch {
   readonly commandId: string;
   readonly expectedVersion: number;
   readonly promise: Promise<AgentEffectDispatchResult>;
+  readonly controller: AbortController;
 }
 
 const SYSTEM_CLOCK: AgentEffectDispatchClock = {
@@ -175,15 +177,33 @@ export class AgentEffectDispatchService {
       return existing.promise;
     }
 
-    const operation = this.dispatchOnce(request, signal).finally(() => {
+    const controller = new AbortController();
+    const operation = this.dispatchOnce(request, AbortSignal.any([signal, controller.signal])).finally(() => {
       if (this.inFlight.get(key)?.promise === operation) this.inFlight.delete(key);
     });
     this.inFlight.set(key, {
       commandId: request.commandId,
       expectedVersion: request.expectedVersion,
-      promise: operation
+      promise: operation,
+      controller
     });
     return operation;
+  }
+
+  /** Stops and joins the physical owner only after its exact Run has a durable stop intent. */
+  public async cancelActiveEffect(runId: string, effectId: string): Promise<'not_active' | 'joined'> {
+    const key = `${runId}\u0000${effectId}`;
+    const active = this.inFlight.get(key);
+    if (active === undefined) return 'not_active';
+    const current = await this.loadRun(runId);
+    if (current.cancellationRequest === undefined) {
+      throw new AgentRunTransitionError('Effect interruption requires a durable cancellation request.');
+    }
+    if (requireEffect(current, effectId).state.status !== 'started' || this.inFlight.get(key) !== active) return 'not_active';
+    active.controller.abort(new Error('agent_effect_cancellation_requested'));
+    // No Promise.race: an abort signal alone is not evidence that external work stopped.
+    await active.promise;
+    return 'joined';
   }
 
   private async dispatchOnce(
@@ -286,29 +306,24 @@ export class AgentEffectDispatchService {
       );
     }
     const result = await toAgentEffectResult(outcome, request);
-    const artifacts = resultArtifacts(
-      this.checkpoints,
-      started.run,
-      startedEffect,
-      payload.inputDigest,
-      outcome,
-      finishedAt
-    );
     const resultCommandId = await deriveStableAgentId(
       'effect-result',
       request.commandId,
       request.runId,
       request.effectId
     );
-    const recorded = await this.commands.execute({
-      kind: 'run.record_effect_result',
-      commandId: resultCommandId,
-      runId: started.run.runId,
-      expectedVersion: started.run.version,
-      occurredAt: finishedAt,
-      effectId: startedEffect.effectId,
-      result
-    }, artifacts);
+    const recorded = await this.unitOfWork.transaction(async transaction => {
+      const latest = await transaction.loadRun(started.run.runId);
+      if (latest === null) throw new AgentRunNotFoundError(started.run.runId);
+      assertAgentEffectResultAuthority(started.run, latest);
+      const occurredAt = new Date(Math.max(Date.parse(finishedAt), Date.parse(latest.updatedAt))).toISOString();
+      const artifacts = resultArtifacts(this.checkpoints, latest, requireEffect(latest, request.effectId),
+        payload.inputDigest, outcome, occurredAt);
+      return this.commands.executeInTransaction(transaction, {
+        kind: 'run.record_effect_result', commandId: resultCommandId, runId: latest.runId,
+        expectedVersion: latest.version, occurredAt, effectId: startedEffect.effectId, result
+      }, artifacts);
+    });
     const recordedEffect = requireEffect(recorded.run, request.effectId);
     observeAgentDispatchLifecycle(this.lifecycleObserver, {
       event: 'tool.dispatch.post',

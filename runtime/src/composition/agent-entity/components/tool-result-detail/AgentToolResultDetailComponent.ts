@@ -8,7 +8,7 @@ import {
 } from '../../command-owners/AgentPublicCommandOwnerTable.js';
 
 type ToolResultDetailCommand = Extract<RuntimeCommandEnvelope['command'], {
-  readonly kind: 'agent.tool_result.detail.get.v3';
+  readonly kind: 'agent.tool_result.detail.get';
 }>;
 
 export interface AgentToolResultDetailComponentInput {
@@ -31,7 +31,7 @@ export function createAgentToolResultDetailComponent(
   const handle: AgentToolResultDetailComponentHandle = {
     commandOwners: () => Object.freeze([
       defineAgentPublicCommandOwner('agent.tool-detail', [
-        'agent.tool_result.detail.get.v3'
+        'agent.tool_result.detail.get'
       ], (envelope, command) => handle.execute(envelope, command),
       async () => ({ kind: 'not_committed' }))
     ]),
@@ -61,7 +61,7 @@ export function createAgentToolResultDetailComponent(
         }
         return {
           outcome: { ok: true, result: {
-            kind: 'agent.tool_result.detail.v3',
+            kind: 'agent.tool_result.detail',
             runId: command.runId,
             workspaceId: detail.workspaceId,
             effectId: detail.effectId,

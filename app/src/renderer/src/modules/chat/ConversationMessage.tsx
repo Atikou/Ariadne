@@ -16,6 +16,7 @@ import { conversationTextForDisplay, type ConversationNode } from './conversatio
 import { MarkdownMessage } from './MarkdownMessage';
 import { RunProcessingDisclosure } from './RunProcessingDisclosure';
 import { formatBytes } from './ChatImageAttachments';
+import { ConversationBodyPlaceholder } from './ConversationBodyPlaceholder';
 
 export function ConversationMessage({
   node,
@@ -25,6 +26,7 @@ export function ConversationMessage({
   toolResults,
   onOpenActivity,
   onCopy,
+  onLoadBody,
   onFork
 }: {
   node: ConversationNode;
@@ -34,11 +36,13 @@ export function ConversationMessage({
   toolResults?: ToolResultFeatureStore | undefined;
   onOpenActivity?: (() => void) | undefined;
   onCopy(text: string): Promise<void>;
+  onLoadBody?: (() => Promise<void>) | undefined;
   onFork?: (() => Promise<void>) | undefined;
 }): React.JSX.Element {
   const isUser = node.kind === 'user';
   const visibleText = conversationTextForDisplay(node);
   return <div className={isUser ? 'user-message-block' : 'assistant-message-block'}>
+    {node.bodyState === 'unloaded' && <ConversationBodyPlaceholder onLoad={onLoadBody} />}
     <div className={isUser ? 'user-message' : 'assistant-message'}>
       {isUser
         ? <>

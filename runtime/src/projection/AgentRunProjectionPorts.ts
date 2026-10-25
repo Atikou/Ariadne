@@ -6,7 +6,7 @@ import type {
   AgentRunCommandReceiptReader,
   AgentPinnedToolIdentity
 } from '@ariadne/agent-core';
-import type { PublicToolActivityProjectionV3 } from '@ariadne/protocol/public';
+import type { PublicToolActivityProjection } from '@ariadne/protocol/public';
 
 /**
  * Immutable inputs required to project one exact AgentRun version.
@@ -41,7 +41,7 @@ export interface AgentRunInteractionProjectionResolver {
 /** Resolves only static, contract-pinned public metadata for one exact Tool. */
 export interface AgentPublicToolPresentationMetadata {
   readonly kind: NonNullable<
-    PublicToolActivityProjectionV3['presentation']
+    PublicToolActivityProjection['presentation']
   >['kind'];
   readonly label: string;
 }

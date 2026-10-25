@@ -37,7 +37,7 @@ import {
   type AgentRunAdmissionSnapshotReader,
   type AgentRunRequestedHandoffMessage
 } from '../control/run/AgentRunAdmissionController.js';
-import type { ConversationMessageExecutionV3 } from '@ariadne/protocol/public';
+import type { ConversationMessageExecution } from '@ariadne/protocol/public';
 import { renderAgentInstructionSnapshot } from './instructions/ProductionAgentInstructionAssembly.js';
 
 interface ExactConversationObjective {
@@ -47,7 +47,7 @@ interface ExactConversationObjective {
   readonly messageVersion: number;
   readonly objectiveDigest: string;
   readonly content: string;
-  readonly execution: ConversationMessageExecutionV3;
+  readonly execution: ConversationMessageExecution;
   readonly history: readonly ConversationMessageVersion[];
 }
 
@@ -333,8 +333,9 @@ implements AgentRunAdmissionSnapshotReader {
           } catch {
             return true;
           }
-          return entry.sessionId !== session.sessionId
-            || entry.workspaceId !== session.workspaceId;
+          // Conversation owns the exact lineage cutoff. Inherited messages keep their original
+          // Session identity; only the objective must belong to this child Session.
+          return entry.workspaceId !== session.workspaceId;
         })
         || history.at(-1)?.messageId !== message.messageId
         || history.at(-1)?.version !== message.version

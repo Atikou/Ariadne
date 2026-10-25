@@ -5,12 +5,10 @@
 
 ## Context
 
-At decision time, the transition architecture had two incompatible public truths.
-Agent Run versions published `run.changed` events, while `runtime.snapshot.get`
-still reads legacy Facade stores. Renderer code then synthesizes Runs from
-Messages, joins timestamps, fetches missing Decisions, and writes terminal Run
-state into Activity views. A refresh can consequently remove a Run that a
-valid event just added.
+Public entity state must come from one ordered projection stream. Run, Message
+and Decision references must retain exact authority versions across refresh,
+replay and restart. Renderer cannot infer Run state from message timestamps or
+finalize domain state from command responses.
 
 IPC delivery is also not an end-to-end acknowledgement. Runtime acknowledges
 its event journal after invoking a synchronous sink, Main advances an in-memory
@@ -59,7 +57,7 @@ The public projection contract is reset atomically to epoch `4.0`. Existing
 
 ```ts
 interface PublicProjectionSnapshot {
-  contractVersion: '4.0';
+  contractVersion: '5.0';
   streamId: string;
   cursor: number;
   cursorDigest: `sha256:${string}`;
@@ -109,11 +107,13 @@ resource references after the authoritative secret-egress policy.
 
 ### Renderer ownership
 
-`ProjectionCache` validates every change in a commit and applies the entire
-commit through one immutable state replacement. It is the sole writer of
-public DTOs. Session, Message, Run, Decision, Model, and Diagnostics feature
-stores expose selectors, subscriptions, and command methods only; they do not
-write one another.
+`RendererProjectionRepository` composes verified bounded catalogs, selected
+Session windows and explicit details. Each range has its own fixed manifest,
+staging, scan watermark and capacity budget. A complete range replaces its
+visible state atomically; no whole-history DTO cache or global snapshot replay
+is used by the production Renderer. Session, Message, Run, Decision, Model and
+Diagnostics features expose selectors and command/read-navigation methods;
+they do not write one another. ADR 0035 defines the current read contracts.
 
 ### Live inference display and incremental views (2026-09-05)
 
@@ -145,28 +145,27 @@ replay.
 
 ### Atomic activation
 
-Contract v3, Runtime projection queries, Main/Preload transport, and Renderer
-ProjectionCache activate together. The activation required:
+The current public contract, Runtime query owners, Main/Preload transport and
+Renderer scoped repositories operate together. The production boundary requires:
 
-- Run and Decision commands have left the legacy Facade;
+- Run and Decision commands have their current authority owners;
 - Session and Message authority is in Conversation Store;
 - Handoff provides stable Session/Message/Run references;
-- every v3 projector and Snapshot row is available.
+- all current projectors and fixed-boundary read ranges are available.
 
-The activation commit deletes legacy public writers and Renderer repair code.
-There is no production mode that merges v2 Snapshot entities with v3 commits.
+There is one public writer boundary and no Renderer global-snapshot fallback.
+The former whole-history cache and its feature head stores have been removed.
 
 ## Consequences
 
-- The 8 MiB atomic Snapshot remains a hard capacity boundary. The store now
-  rejects the first Commit that would cross it, but production still needs an
-  explicit retention/compaction or a future paged-bootstrap contract before
-  unbounded conversation history can be projected.
-- the removed `RuntimeFacade.snapshot()`, message-derived Runs, missing-Decision repair,
-  command-result entity writes, and UI Activity finalization are removed rather
-  than redistributed.
-- Old and new Run projectors converge to the Agent Core projector before v3
-  activation.
+- The 8 MiB scalar Snapshot limit protects that explicit query. It no longer
+  limits durable append or production Renderer startup. Fixed-C catalogs,
+  bounded Message/Feature windows and explicit details replace whole-history
+  reads; [ADR 0035](0035-scoped-projection-reads-and-journal-settlement.md) defines
+  cache budgets and reset semantics. Oversized individual detail splitting,
+  safe compaction and large-data desktop acceptance remain pending.
+- Agent Core and Conversation projectors write the same current Projection
+  contract. Renderer only applies validated projection records.
 - Main no longer owns a replay cursor or gap-repair algorithm.
 - The production entry now uses `RuntimeKernelApplication` and
   `DefaultAgentControlRuntimeFactory`; no legacy projection writer is allowed.

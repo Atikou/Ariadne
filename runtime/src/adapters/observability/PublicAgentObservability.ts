@@ -2,9 +2,8 @@ import { createHash } from 'node:crypto';
 
 import {
   PUBLIC_PROJECTION_CONTRACT_VERSION,
-  type ProjectionCommitV3,
-  type PublicDiagnosticProjectionV3,
-  type PublicProjectionSnapshotV3
+  type ProjectionCommit,
+  type PublicDiagnosticProjection
 } from '@ariadne/protocol/public';
 
 import type {
@@ -19,13 +18,13 @@ const MAX_DIAGNOSTICS = 512;
 
 export interface PublicAgentObservabilityReader {
   readPublicProjectionSourceCheckpoint(sourceId: string): Promise<number>;
-  snapshot(): Promise<PublicProjectionSnapshotV3>;
+  readPublicAgentObservationHeads(): Promise<readonly PublicDiagnosticProjection[]>;
 }
 
 /** Durable, redacted observer adapter with no Agent recovery or execution authority. */
 export class PublicAgentObservability implements AgentLifecycleHookDeliverySink {
   private sourceCursor = 0;
-  private readonly heads = new Map<string, PublicDiagnosticProjectionV3>();
+  private readonly heads = new Map<string, PublicDiagnosticProjection>();
   private tail: Promise<void> = Promise.resolve();
 
   public constructor(
@@ -35,16 +34,13 @@ export class PublicAgentObservability implements AgentLifecycleHookDeliverySink 
   ) {}
 
   public async start(): Promise<void> {
-    const [sourceCursor, snapshot] = await Promise.all([
+    const [sourceCursor, diagnostics] = await Promise.all([
       this.reader.readPublicProjectionSourceCheckpoint(SOURCE_ID),
-      this.reader.snapshot()
+      this.reader.readPublicAgentObservationHeads()
     ]);
     this.sourceCursor = sourceCursor;
-    for (const diagnostic of snapshot.diagnostics) {
-      if (diagnostic.diagnosticId.startsWith('agent-observation:')) {
-        this.heads.set(diagnostic.diagnosticId, diagnostic);
-      }
-    }
+    this.heads.clear();
+    for (const diagnostic of diagnostics) this.heads.set(diagnostic.diagnosticId, diagnostic);
   }
 
   public record(delivery: AgentLifecycleHookDelivery): void {
@@ -58,7 +54,7 @@ export class PublicAgentObservability implements AgentLifecycleHookDeliverySink 
     const diagnosticId = `agent-observation:${hash(delivery.deliveryId)}`;
     if (this.heads.has(diagnosticId)) return;
     this.telemetry?.recordLifecycle({ operation: delivery.event, outcome: delivery.outcome });
-    const dto: PublicDiagnosticProjectionV3 = {
+    const dto: PublicDiagnosticProjection = {
       diagnosticId,
       version: 1,
       severity: delivery.outcome === 'rejected' ? 'warning' : 'info',
@@ -73,7 +69,7 @@ export class PublicAgentObservability implements AgentLifecycleHookDeliverySink 
         ))[0]
       : undefined;
     const sourceCursor = this.sourceCursor + 1;
-    const commit: ProjectionCommitV3 = {
+    const commit: ProjectionCommit = {
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       eventId: `observation-event:${hash(delivery.deliveryId)}`,
       sourceId: SOURCE_ID,

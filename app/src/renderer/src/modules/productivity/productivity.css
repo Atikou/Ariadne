@@ -1,0 +1,30 @@
+.productivity-panel { overflow-wrap: anywhere; }
+.productivity-panel > * { flex-shrink: 0; }
+.productivity-goal-title { font-size: 16px; line-height: 1.5; }
+.productivity-panel p { margin: 0; line-height: 1.6; }
+.productivity-configuration { display: block; min-width: 0; }
+.productivity-configuration > summary, .productivity-schedules > summary, .productivity-autonomy > summary, .productivity-empty-faults > summary { padding: 7px 0; cursor: pointer; font-size: 12px; color: var(--text-2); }
+.productivity-configuration[open] { display: grid; gap: 8px; }
+.productivity-configuration label { display: grid; gap: 5px; min-width: 0; }
+.productivity-configuration input { box-sizing: border-box; width: 100%; }
+.productivity-section-heading, .productivity-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.productivity-section-heading { justify-content: space-between; }
+.productivity-section-heading > span, .productivity-action-reason { color: var(--text-2); font-size: 12px; }
+.productivity-todo-list { display: grid; gap: 14px; margin: 0; padding: 0; list-style: none; }
+.productivity-todo-list li { display: grid; gap: 6px; min-width: 0; margin: 0; }
+.productivity-todo-copy { display: grid; gap: 4px; min-width: 0; }
+.productivity-todo-copy > span { color: var(--text-2); font-size: 12px; }
+.productivity-todo-list li small { margin-left: 0; }
+.productivity-todos .productivity-inline { flex-wrap: wrap; }
+.productivity-todos .productivity-inline > input { flex-basis: 180px; }
+.productivity-panel button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.productivity-workflows { display: grid; gap: 10px; min-width: 0; }
+.productivity-todo-dialog { display: grid; gap: 12px; box-sizing: border-box; width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); overflow: auto; overflow-wrap: anywhere; }
+.productivity-todo-dialog h2, .productivity-todo-dialog p { margin: 0; }
+.productivity-todo-dialog label { display: grid; gap: 6px; min-width: 0; }
+.productivity-todo-dialog input:not([type=checkbox]) { box-sizing: border-box; width: 100%; padding: 8px; color: var(--text-1); background: var(--bg-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }
+.productivity-todo-dialog input[type=checkbox] { width: 14px; }
+.productivity-todo-dialog .productivity-dependencies label { display: flex; }
+.productivity-todo-dialog footer { display: flex; flex-wrap: wrap; gap: 8px; }
+.productivity-todo-dialog button { max-width: 100%; white-space: normal; }
+.productivity-todo-dialog [role=alert] { color: var(--text-1); }

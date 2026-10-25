@@ -37,6 +37,25 @@ const PROVIDER_KEY = 'provider-atomic-result';
 const DEFAULT_TOOLS = [testAvailableTool('workspace.write')];
 
 describe('atomic inference result application', () => {
+  it('proves Inbox-only drift against the immutable requested version before starting inference', async () => {
+    const setup = await admittedSetup({ runId: 'run-inbox-before-dispatch', permissionMode: 'trusted' });
+    const commands = new AgentRunCommandService(setup.unit);
+    for (let index = 0; index < 2; index += 1) {
+      await commands.execute({ kind: 'run.enqueue_inbox_input', commandId: `early-inbox-${index}`,
+        runId: setup.runId, expectedVersion: index + 1, occurredAt: at(index + 1),
+        input: { inputId: `early-input-${index}`, messageId: `early-message-${index}`,
+          content: `Next turn ${index}`, contentDigest: `sha256:${String(index + 3).repeat(64)}`, delivery: 'next_step' }
+      }, { turnInputPayloads: [], effectPayloads: [] });
+    }
+    const engine = { prepare: vi.fn(async () => undefined), decide: vi.fn(async (_input: AgentTurnInput) => ({ kind: 'respond' as const, content: 'Original input only.' })) };
+    const result = await createDispatcher(setup, engine).dispatch(dispatchRequest('dispatch-early-inbox', setup.runId));
+    expect(result.status).toBe('succeeded');
+    expect(engine.prepare).toHaveBeenCalledOnce();
+    expect(engine.decide).toHaveBeenCalledOnce();
+    expect(result.run.inbox.map(input => input.inputId)).toEqual(['early-input-0', 'early-input-1']);
+    expect(engine.decide.mock.calls[0]?.[0].messages).toEqual(setup.input.messages);
+  });
+
   it('settles presentation streaming only after the inference result is durable', async () => {
     const setup = await admittedSetup({
       runId: 'run-inference-stream-settlement',
@@ -250,6 +269,45 @@ describe('atomic inference result application', () => {
       turns: [{ attempts: [{ state: { status: 'succeeded' } }] }]
     });
     expect(engine.decide).toHaveBeenCalledOnce();
+  });
+
+  it('atomically checkpoints the start when an inbox writer queues immediately after its authority read', async () => {
+    const setup = await admittedSetup({ runId: 'run-start-checkpoint-inbox-race', permissionMode: 'trusted' });
+    let prepared = false;
+    let queued: Promise<unknown> | undefined;
+    const commands = new AgentRunCommandService(setup.unit);
+    const wrapped: AgentRunUnitOfWork = {
+      transaction: (operation) => setup.unit.transaction((transaction) => operation({
+        ...transaction,
+        loadRun: async (runId) => {
+          const run = await transaction.loadRun(runId);
+          if (prepared && queued === undefined) {
+            // A separate authority writer is queued before the start command hashes and commits.
+            queued = setup.unit.transaction(async (inboxTransaction) => {
+              const latest = await inboxTransaction.loadRun(runId);
+              if (latest === null) throw new Error('inbox race Run missing');
+              return commands.executeInTransaction(inboxTransaction, {
+                kind: 'run.enqueue_inbox_input', commandId: 'enqueue-at-start-checkpoint',
+                runId, expectedVersion: latest.version, occurredAt: at(1),
+                input: { inputId: 'input-at-start-checkpoint', messageId: 'message-at-start-checkpoint',
+                  delivery: 'next_step', content: 'Next turn instruction', contentDigest: `sha256:${'8'.repeat(64)}` }
+              }, { turnInputPayloads: [], effectPayloads: [] });
+            });
+          }
+          return run;
+        }
+      }))
+    };
+    const engine = {
+      prepare: vi.fn(async () => { prepared = true; }),
+      decide: vi.fn(async () => ({ kind: 'respond' as const, content: 'Current turn response' }))
+    };
+    const result = await createDispatcher(setup, engine, wrapped).dispatch(dispatchRequest('dispatch-start-race', setup.runId));
+    await queued;
+    expect(engine.prepare).toHaveBeenCalledOnce();
+    expect(engine.decide).toHaveBeenCalledOnce();
+    expect(result.run).toMatchObject({ version: 4, inbox: [{ inputId: 'input-at-start-checkpoint', state: 'queued' }],
+      turns: [{ attempts: [{ state: { status: 'succeeded' } }] }] });
   });
 
   it('commits a trusted tool Directive, authorized Effect, payload, checkpoint, receipt, and outbox in one result version', async () => {

@@ -1,3 +1,7 @@
+import type { AgentPersistenceComponentHandle } from './AgentPersistenceComponentContract.js';
+export type { AgentPersistenceComponentHandle } from './AgentPersistenceComponentContract.js';
+import { DefaultAgentPersistenceComponentHandle, rollbackPartial } from './AgentPersistenceOwnedResources.js';
+import { SqliteTaskQuerySnapshotStore } from '../../../../adapters/persistence/SqliteTaskQuerySnapshotStore.js';
 import { assertCanonicalAbsoluteDataRoot } from '@ariadne/protocol/host';
 import type { AgentPersistencePayloadCodec } from '@ariadne/agent-core';
 
@@ -16,6 +20,7 @@ import {
   SqlitePublicProjectionStore
 } from '../../../../adapters/persistence/SqlitePublicProjectionStore.js';
 import { SqliteProductivityStore } from '../../../../adapters/persistence/SqliteProductivityStore.js';
+import { openOptionalProductivityAuthority } from '../../../../adapters/persistence/OpenOptionalProductivityAuthority.js';
 import {
   LocalConversationAttachmentStore
 } from '../../../../adapters/attachment/LocalConversationAttachmentStore.js';
@@ -28,18 +33,7 @@ import {
   type ShutdownContext
 } from '../../../../ingress/ShutdownContext.js';
 import { loadAgentPersistenceKeyRing } from '../../../loadAgentPersistenceKeyRing.js';
-
-export interface AgentPersistenceComponentHandle {
-  readonly unitOfWork: SqliteAgentRunUnitOfWork;
-  readonly conversation: SqliteConversationRunHandoffUnitOfWork;
-  readonly publicProjection: SqlitePublicProjectionStore;
-  readonly productivity?: SqliteProductivityStore;
-  readonly attachmentStore: LocalConversationAttachmentStore;
-  readonly subagentSessionStore: FileAgentSubagentSessionStore;
-  prepareShutdown(context: ShutdownContext): void;
-  close(context: ShutdownContext): Promise<void>;
-  rollback(context: ShutdownContext): Promise<readonly unknown[]>;
-}
+import type { RuntimeStartupTrace } from '../../../RuntimeStartupTrace.js';
 
 export interface AgentPersistenceComponentResources {
   readonly dataRoot: string;
@@ -69,7 +63,8 @@ export function composeAgentPersistenceComponentHandle(
       resources.dataRoot,
       persistenceCodec
     ),
-    resources.encryptedCodec
+    resources.encryptedCodec,
+    new SqliteTaskQuerySnapshotStore(resources.dataRoot)
   );
 }
 
@@ -78,7 +73,8 @@ export async function startAgentPersistenceComponent(
   input: Pick<
     AgentControlRuntimeFactoryInput,
     'dataRoot' | 'hostCapabilities' | 'production' | 'runtimeInstanceId'
-  >
+  >,
+  startupTrace?: RuntimeStartupTrace
 ): Promise<AgentPersistenceComponentHandle> {
   assertCanonicalAbsoluteDataRoot(input.dataRoot);
   const temporaryKeys: Array<{ readonly keyId: string; readonly key: Buffer }> = [];
@@ -88,12 +84,14 @@ export async function startAgentPersistenceComponent(
   let publicProjection: SqlitePublicProjectionStore | undefined;
   let productivity: SqliteProductivityStore | undefined;
   try {
+    startupTrace?.point('persistence_keyring');
     const productionPersistence = input.production
       ? await createProductionCodec(input, temporaryKeys)
       : undefined;
     const persistenceCodec = productionPersistence?.codec
       ?? new StrictJsonAgentPersistencePayloadCodec();
     encryptedCodec = productionPersistence?.codec;
+    startupTrace?.point('agent_store_open');
     unitOfWork = new SqliteAgentRunUnitOfWork(input.dataRoot, persistenceCodec);
     if (productionPersistence !== undefined) {
       const { keyRing } = productionPersistence;
@@ -104,9 +102,14 @@ export async function startAgentPersistenceComponent(
         requiredCodecId: AES_GCM_AGENT_PERSISTENCE_CODEC_ID
       });
     }
+    startupTrace?.point('conversation_store_open');
     conversation = new SqliteConversationRunHandoffUnitOfWork(input.dataRoot);
-    productivity = new SqliteProductivityStore(input.dataRoot);
-    publicProjection = new SqlitePublicProjectionStore(input.dataRoot);
+    startupTrace?.point('productivity_store_open');
+    productivity = openOptionalProductivityAuthority(input.dataRoot);
+    startupTrace?.point('public_projection_store_open');
+    publicProjection = new SqlitePublicProjectionStore(input.dataRoot, undefined, undefined,
+      startupTrace === undefined ? undefined : stage => startupTrace.point(`projection_${stage}`));
+    startupTrace?.point('persistence_ready');
     return composeAgentPersistenceComponentHandle({
       dataRoot: input.dataRoot,
       unitOfWork,
@@ -141,66 +144,6 @@ export async function startAgentPersistenceComponent(
   }
 }
 
-class DefaultAgentPersistenceComponentHandle implements AgentPersistenceComponentHandle {
-  private closed = false;
-
-  public constructor(
-    public readonly unitOfWork: SqliteAgentRunUnitOfWork,
-    public readonly conversation: SqliteConversationRunHandoffUnitOfWork,
-    public readonly publicProjection: SqlitePublicProjectionStore,
-    public readonly productivity: SqliteProductivityStore | undefined,
-    public readonly attachmentStore: LocalConversationAttachmentStore,
-    public readonly subagentSessionStore: FileAgentSubagentSessionStore,
-    private readonly encryptedCodec?: AesGcmAgentPersistencePayloadCodec
-  ) {}
-
-  public prepareShutdown(context: ShutdownContext): void {
-    const failures: unknown[] = [];
-    for (const prepare of [
-      () => this.unitOfWork.prepareShutdown(context),
-      () => this.conversation.prepareShutdown(context),
-      () => this.productivity?.prepareShutdown(context)
-    ]) {
-      try {
-        prepare();
-      } catch (error) {
-        failures.push(error);
-      }
-    }
-    if (failures.length > 0) {
-      throw failures.length === 1
-        ? failures[0]
-        : new AggregateError(failures, 'agent_persistence_prepare_shutdown_failed');
-    }
-  }
-
-  public async close(context: ShutdownContext): Promise<void> {
-    if (this.closed) {
-      context.throwIfExpired();
-      return;
-    }
-    await this.publicProjection.close(context);
-    await this.productivity?.close(context);
-    await this.conversation.close(context);
-    await this.unitOfWork.close(context);
-    this.encryptedCodec?.destroy();
-    this.closed = true;
-  }
-
-  public async rollback(context: ShutdownContext): Promise<readonly unknown[]> {
-    if (this.closed) return Object.freeze([]);
-    const failures = await rollbackPartial({
-      unitOfWork: this.unitOfWork,
-      conversation: this.conversation,
-      publicProjection: this.publicProjection,
-      productivity: this.productivity,
-      encryptedCodec: this.encryptedCodec
-    }, context);
-    this.closed = true;
-    return failures;
-  }
-}
-
 async function createProductionCodec(
   input: Pick<AgentControlRuntimeFactoryInput, 'hostCapabilities' | 'runtimeInstanceId'>,
   temporaryKeys: Array<{ readonly keyId: string; readonly key: Buffer }>
@@ -220,35 +163,4 @@ async function createProductionCodec(
     codec: new AesGcmAgentPersistencePayloadCodec(keyRing.activeKeyId, temporaryKeys),
     keyRing
   };
-}
-
-async function rollbackPartial(
-  resources: {
-    readonly unitOfWork?: SqliteAgentRunUnitOfWork;
-    readonly conversation?: SqliteConversationRunHandoffUnitOfWork;
-    readonly publicProjection?: SqlitePublicProjectionStore;
-    readonly productivity?: SqliteProductivityStore;
-    readonly encryptedCodec?: AesGcmAgentPersistencePayloadCodec;
-  },
-  context: ShutdownContext
-): Promise<readonly unknown[]> {
-  const failures: unknown[] = [];
-  for (const close of [
-    () => resources.publicProjection?.close(context),
-    () => resources.productivity?.close(context),
-    () => resources.conversation?.close(context),
-    () => resources.unitOfWork?.close(context)
-  ]) {
-    try {
-      await close();
-    } catch (error) {
-      failures.push(error);
-    }
-  }
-  try {
-    resources.encryptedCodec?.destroy();
-  } catch (error) {
-    failures.push(error);
-  }
-  return Object.freeze(failures);
 }

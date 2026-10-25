@@ -1,4 +1,6 @@
 import type { LiveWorkOutputChunk, LiveWorkSnapshot } from '@ariadne/live-work';
+import type { ChatDraftApi } from './chat-drafts';
+import type { FileDraftApi } from './file-drafts';
 import type {
   SubagentProviderConfiguration,
   AssistantChatProfile
@@ -69,6 +71,7 @@ export interface UserPreferences {
   suppressAutomaticWakeDuringGames: boolean;
   gameDetectionRules: GameDetectionRule[];
   speech: SpeechPreferences;
+  taskNotifications?: { completed: boolean; failed: boolean };
 }
 
 export type ForegroundSttMode = 'compose' | 'auto-send';
@@ -414,23 +417,25 @@ export interface RuntimeDesktopRequestOptions {
   commandId?: string | undefined;
 }
 
-export type AgentInputDeliveryCommand = Extract<
+export type InputDeliveryCommand = Extract<
   RuntimeCommand,
-  { readonly kind: 'agent.inbox.enqueue.v3' }
+  { readonly kind: 'agent.inbox.enqueue' | 'conversation.session.create' | 'conversation.message.accept' }
 >;
 
-export interface AgentInputDeliveryOutboxRecord {
+export interface InputDeliveryOutboxRecord {
   commandId: string;
-  command: AgentInputDeliveryCommand;
+  command: InputDeliveryCommand;
   createdAt: string;
+  draftSubmissionId?: string;
 }
 
-export interface AgentInputDeliveryOutboxStageRequest {
+export interface InputDeliveryOutboxStageRequest {
   commandId: string;
-  command: AgentInputDeliveryCommand;
+  command: InputDeliveryCommand;
+  draftSubmissionId?: string;
 }
 
-export interface AgentInputDeliveryOutboxSettleRequest {
+export interface InputDeliveryOutboxSettleRequest {
   commandId: string;
 }
 
@@ -547,9 +552,24 @@ export interface ApprovalNotificationTestResult {
 
 export interface ApprovalNavigationRequest {
   sessionId: string;
+  decisionId?: string;
+  taskNavigation?: import('@ariadne/protocol/public').TaskCenterNavigationResult;
 }
 
 export interface AriadneApi {
+  dataManagement: {
+    inspectCleanup(): Promise<import('./data-management').DataCleanupPreview>;
+    commitCleanup(request: import('./data-management').DataCleanupCommit): Promise<import('./data-management').DataCleanupResult>;
+    discardCleanup(request: { ticket: string }): Promise<void>;
+    exportSession(request: import('./data-management').SessionTextExportRequest): Promise<import('./data-management').SessionTextExportResult | null>;
+    measureUsage(): Promise<import('./data-management').DataUsageView>;
+    createBackup(): Promise<import('./data-management').BackupCreatedView | null>;
+    inspectRestore(): Promise<import('./data-management').DataRestorePreview | null>;
+    commitRestore(request: { ticket: string }): Promise<void>;
+    discardRestore(request: { ticket: string }): Promise<void>;
+  };
+  chatDrafts: ChatDraftApi;
+  fileDrafts: FileDraftApi;
   agentSettings: {
     load(): Promise<AgentSettingsView>;
     apply(mutation: AgentSettingsMutation): Promise<AgentSettingsMutationResult>;
@@ -578,10 +598,11 @@ export interface AriadneApi {
     ): Promise<Result<RuntimeResult>>;
     onEvent(listener: (event: RuntimeEventEnvelope) => void): () => void;
   };
-  agentInputDeliveryOutbox?: {
-    list(): Promise<AgentInputDeliveryOutboxRecord[]>;
-    stage(request: AgentInputDeliveryOutboxStageRequest): Promise<AgentInputDeliveryOutboxRecord>;
-    settle(request: AgentInputDeliveryOutboxSettleRequest): Promise<void>;
+  inputDeliveryOutbox: {
+    list(): Promise<InputDeliveryOutboxRecord[]>;
+    stage(request: InputDeliveryOutboxStageRequest): Promise<InputDeliveryOutboxRecord>;
+    stageBatch(requests: readonly InputDeliveryOutboxStageRequest[]): Promise<InputDeliveryOutboxRecord[]>;
+    settle(request: InputDeliveryOutboxSettleRequest): Promise<void>;
   };
   speech: {
     getStatus(): Promise<SpeechStatus>;

@@ -2,25 +2,28 @@ import { createHash } from 'node:crypto';
 import {
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync
 } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { assertRetiredRuntimeAbsent } from './verify-retired-runtime-absence.mjs';
 
-const NODE_VERSION = '22.23.1';
+const NODE_VERSION = '24.16.0';
 const WINDOWS_NODE_ARTIFACTS = {
   x64: {
     filename: `node-v${NODE_VERSION}-win-x64.zip`,
-    sha256: '7df0bc9375723f4a86b3aa1b7cc73342423d9677a8df4538aca31a049e309c29'
+    sha256: 'edaca9bd58ec8e92037dac4e877d52f6b8f430b81c18b57e264b4e2fb111cd56'
   },
   arm64: {
     filename: `node-v${NODE_VERSION}-win-arm64.zip`,
-    sha256: 'b470fdfe3502c05151656e06d495e3f47544f2ee8b1d9c8705090f2dd5996bd0'
+    sha256: '14834611d4c6b3c06054e7007732b90474c16e0b32f395e05b55a571ef71c6d2'
   }
 };
 
@@ -98,6 +101,20 @@ function readTargetArchitecture(arguments_) {
 function installRuntimeDependencies() {
   const node = path.join(runnerRoot, 'node.exe');
   const npmCli = path.join(runnerRoot, 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  // Local file packages retain their version while dependencies change. npm
+  // ci cannot detect stale transitive metadata from that unchanged version.
+  const locked = JSON.parse(readFileSync(path.join(distributionRoot, 'package-lock.json'), 'utf8'));
+  const distribution = JSON.parse(readFileSync(path.join(distributionRoot, 'package.json'), 'utf8'));
+  for (const [name, reference] of Object.entries(distribution.dependencies)) {
+    if (!reference.startsWith('file:')) throw new Error('Runtime distribution local owner reference required.');
+    const source = JSON.parse(readFileSync(path.resolve(distributionRoot, reference.slice(5), 'package.json'), 'utf8'));
+    const recorded = locked.packages?.['node_modules/' + name];
+    for (const field of ['version', 'dependencies', 'engines']) {
+      const canonical = value => JSON.stringify(value && typeof value === 'object'
+        ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right))) : value ?? null);
+      if (canonical(source[field]) !== canonical(recorded?.[field])) throw new Error('Runtime distribution lock is stale for ' + name + ': ' + field);
+    }
+  }
   run(node, [npmCli, 'ci', '--omit=dev', '--workspaces=false', '--install-links'], distributionRoot, {
     PATH: `${runnerRoot}${path.delimiter}${process.env.PATH ?? ''}`
   });
@@ -111,6 +128,9 @@ function installRuntimeDependencies() {
     'runtime-process.js'
   );
   if (!existsSync(entry)) throw new Error(`Packaged Runtime entry is missing: ${entry}`);
+  assertRetiredRuntimeAbsent(path.dirname(path.dirname(path.dirname(entry))));
+  for (const dependency of ['@lancedb/lancedb', 'web-tree-sitter', 'tree-sitter-wasms'])
+    if (existsSync(path.join(distributionRoot, 'node_modules', dependency))) throw new Error('Retired Runtime distribution dependency: ' + dependency);
 }
 
 function publishTrustedNativeSandbox() {
@@ -147,6 +167,9 @@ function removeGeneratedDirectory(target) {
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new Error(`Refusing to remove a path outside package work root: ${target}`);
   }
+  if (realpathSync.native(packageWorkRoot) !== packageWorkRoot || (existsSync(target)
+    && (lstatSync(target).isSymbolicLink() || realpathSync.native(target) !== target)))
+    throw new Error(`Refusing an aliased package work directory: ${target}`);
   rmSync(target, { recursive: true, force: true });
 }
 

@@ -45,14 +45,7 @@ export function createDesktopRuntimeConfiguration(
       : resolve(input.appPath, '..', 'runtime', 'dist', 'entry', 'runtime-process.js');
   const installRoot = resolve(dirname(runtimeEntry), '..', '..');
   const runtimeBuildManifestPath = join(installRoot, 'dist', 'runtime-build.json');
-  const configuredExecutable = allowDevelopmentOverrides
-    ? environment.ARIADNE_RUNTIME_NODE_EXECUTABLE?.trim()
-    : undefined;
-  const executablePath = configuredExecutable
-    ? requireAbsoluteEnvironmentPath('ARIADNE_RUNTIME_NODE_EXECUTABLE', configuredExecutable)
-    : input.packaged
-      ? join(input.resourcesPath, 'runtime-runner', process.platform === 'win32' ? 'node.exe' : 'node')
-      : resolveDevelopmentNodeExecutable(environment, input.executablePath);
+  const executablePath = resolveDesktopNodeExecutable(input);
   delete environment.ELECTRON_RUN_AS_NODE;
   const environmentModelRoots = allowDevelopmentOverrides
     ? parseModelRoots(environment.ARIADNE_MODEL_ROOTS)
@@ -171,6 +164,14 @@ function parseModelRoots(value: string | undefined): string[] {
 function requireAbsoluteEnvironmentPath(name: string, value: string): string {
   if (!isAbsolute(value)) throw new Error(`${name} must contain absolute paths.`);
   return resolve(value);
+}
+
+export function resolveDesktopNodeExecutable(input: Pick<DesktopRuntimeConfigurationInput, 'packaged' | 'resourcesPath' | 'executablePath' | 'environment'>): string {
+  const environment = input.environment ?? process.env;
+  const configured = !input.packaged ? environment.ARIADNE_RUNTIME_NODE_EXECUTABLE?.trim() : undefined;
+  return configured ? requireAbsoluteEnvironmentPath('ARIADNE_RUNTIME_NODE_EXECUTABLE', configured)
+    : input.packaged ? join(input.resourcesPath, 'runtime-runner', process.platform === 'win32' ? 'node.exe' : 'node')
+    : resolveDevelopmentNodeExecutable(environment, input.executablePath);
 }
 
 function resolveDevelopmentNodeExecutable(

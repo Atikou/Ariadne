@@ -116,15 +116,10 @@ while a child or external I/O remains non-terminal or uncertain.
 - The multi-Run UoW, schema v7 foundation, Plan/Budget/child Run authority,
   and durable execution-intent ledger are complete. Production
   wiring must use this path and must not introduce another transaction path.
-- Non-empty schema v1-v3 databases fail closed with
-  `agent_control_offline_migration_required`; production startup never mutates
-  them in place.
-- Legacy Plan stores, process-local budget managers, paused-run snapshots, and
-  SubAgent workflow maps are removed slice by slice after their writer routes
-  are closed. They are never retained as a production fallback.
-- Active legacy Runs cannot be safely inferred into the new model. Offline
-  migration may import terminal history as a diagnostic projection, but old
-  approvals and live execution state require explicit recovery or reapproval.
+- Retired control data is unsupported and remains unchanged. Startup reports
+  `retired_control_data_unsupported`; there is no retired-format importer,
+  converter or execution fallback. Current Agent Control schema upgrades remain
+  explicit maintenance operations under their own owner lease.
 
 ## Verification
 
@@ -150,6 +145,6 @@ exact command/version foreign-key binding.
 
 Default Composition owns initial Inference, delegated initial Inference,
 Effect/Child-result continuation and durable recovery scheduling. The one-shot
-ordinary Child provider has production-pipeline integration coverage. Offline
-migration, external providers, running-Turn interrupt and a real process/window SubAgent
+ordinary Child provider has production-pipeline integration coverage. Real
+external providers, running-Turn interrupt and a real process/window SubAgent
 smoke remain outside the accepted scope.

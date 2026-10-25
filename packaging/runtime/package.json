@@ -4,7 +4,10 @@
   "private": true,
   "description": "Production dependency tree for the standalone Ariadne Runtime process",
   "dependencies": {
+    "@ariadne/agent-core": "file:../../packages/agent-core",
+    "@ariadne/component-contracts": "file:../../packages/component-contracts",
     "@ariadne/live-work": "file:../../packages/live-work",
+    "@ariadne/protocol": "file:../../packages/protocol",
     "@ariadne/runtime": "file:../../runtime"
   }
 }

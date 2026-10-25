@@ -1,0 +1,20 @@
+{
+  "layoutContractVersion": 1,
+  "owner": "productivity",
+  "relativePath": "data/productivity/productivity.db",
+  "schemaMetadataVersion": 3,
+  "schemaDigest": "sha256:975154911054ab45cb575773ceaeb87d30a40973469c23cf05b2b28a270eb783",
+  "sourceSchemaMetadataVersion": 2,
+  "sourceLayout": "database-layout.json",
+  "upgrade": "audited-additive-with-verified-backup-under-existing-owner-lease",
+  "tables": [
+    "productivity_commands",
+    "productivity_events",
+    "productivity_goals",
+    "productivity_schedule_occurrences",
+    "productivity_schedules",
+    "productivity_task_faults",
+    "productivity_todo_snapshots",
+    "productivity_workflows"
+  ]
+}

@@ -1,0 +1,14 @@
+.data-management-settings { min-width: 0; }
+.data-management-settings .setting-block { flex-wrap: wrap; gap: 14px; }
+.data-management-settings .setting-block > div { flex: 1 1 240px; }
+.data-management-scope, .data-restore-preview { padding: 16px; border: 1px solid var(--border-subtle); border-radius: 12px; background: var(--bg-1); }
+.data-management-scope p, .data-restore-preview p { color: var(--text-2); line-height: 1.6; overflow-wrap: anywhere; }
+.data-restore-preview { display: grid; gap: 12px; }
+.data-restore-preview-title, .data-management-actions { display: flex; align-items: center; gap: 8px; }
+.data-management-actions { flex-wrap: wrap; justify-content: flex-end; }
+.data-restore-preview dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 12px; margin: 0; }
+.data-restore-preview dt { color: var(--text-2); font-size: 12px; }
+.data-restore-preview dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.data-cleanup-options { display: grid; gap: 10px; margin: 14px 0; }
+.data-cleanup-options label { display: flex; align-items: flex-start; gap: 8px; overflow-wrap: anywhere; }
+.data-cleanup-options input { margin-top: 3px; flex: 0 0 auto; }

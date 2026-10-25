@@ -1,9 +1,10 @@
 import type {
-  PublicDecisionProjectionV3,
-  PublicInferenceStreamProjectionV3,
-  PublicRunProjectionV3
+  PublicDecisionProjection,
+  PublicInferenceStreamProjection,
+  PublicRunProjection
 } from '@ariadne/protocol/public';
 import { describe, expect, it } from 'vitest';
+import { presentationRun } from './projection-v3-fixture';
 
 import {
   mergeInferenceStreamReasoning,
@@ -11,19 +12,26 @@ import {
   presentPermissionDecision,
   presentPlanDecision,
   presentRunActivities,
+  presentRun,
   presentUserQuestionDecision
 } from '../src/renderer/src/core/runtime/runtime-projection-presenter';
 
 const REQUESTED_AT = '2032-01-01T00:00:00.000Z';
-const ACTION: NonNullable<PublicDecisionProjectionV3['action']> = {
+const ACTION: NonNullable<PublicDecisionProjection['action']> = {
   contractVersion: '1.0' as const,
   actionToken: `decision-action.v1:${'a'.repeat(64)}`,
   choices: ['allow_once', 'allow_run', 'deny']
 };
 
 describe('runtime projection Decision presenter', () => {
+  it('preserves pending cancellation independently of interrupted recovery status without exposing its private intent', () => {
+    const run: PublicRunProjection = { runId: 'run-pending-cancellation', version: 10, title: 'Agent run', status: 'interrupted',
+      label: 'Recovery required before cancellation', cancellationPending: true, toolActivities: [], inbox: [], interactionMessages: [], updatedAt: REQUESTED_AT };
+    expect(presentRun(presentationRun(run))).toMatchObject({ cancellationPending: true, status: 'interrupted' });
+    expect(presentRun(presentationRun(run))).not.toHaveProperty('cancellationRequest');
+  });
   it('uses contract-pinned Tool labels and exposes only a protected-detail availability bit', () => {
-    const run: PublicRunProjectionV3 = {
+    const run: PublicRunProjection = {
       runId: 'run-tool-presentation',
       sessionId: 'session-tool-presentation',
       sourceMessageId: 'message-tool-presentation',
@@ -50,7 +58,7 @@ describe('runtime projection Decision presenter', () => {
       startedAt: REQUESTED_AT
     };
 
-    expect(presentRunActivities(run)).toEqual([expect.objectContaining({
+    expect(presentRunActivities(presentationRun(run))).toEqual([expect.objectContaining({
       toolName: 'workspace.write_file',
       title: '写入工作区文件',
       presentationKind: 'file_change',
@@ -60,7 +68,7 @@ describe('runtime projection Decision presenter', () => {
   });
 
   it('presents only an open exact-attempt stream and keeps reasoning separate', () => {
-    const stream: PublicInferenceStreamProjectionV3 = {
+    const stream: PublicInferenceStreamProjection = {
       inferenceStreamId: 'stream-run-a-turn-a-attempt-a',
       sessionId: 'session-a',
       runId: 'run-a',
@@ -96,7 +104,7 @@ describe('runtime projection Decision presenter', () => {
   });
 
   it('presents the exact public Tool, capabilities, and resource scopes without the action token', () => {
-    const decision: PublicDecisionProjectionV3 = {
+    const decision: PublicDecisionProjection = {
       decisionId: 'decision-permission',
       runId: 'run-permission',
       sessionId: 'session-permission',
@@ -141,7 +149,7 @@ describe('runtime projection Decision presenter', () => {
       status: 'completed' as const,
       createdAt: REQUESTED_AT,
     };
-    const stream: PublicInferenceStreamProjectionV3 = {
+    const stream: PublicInferenceStreamProjection = {
       inferenceStreamId: 'stream-run-a-turn-a-attempt-a',
       sessionId: 'session-a',
       runId: 'run-a',
@@ -169,7 +177,7 @@ describe('runtime projection Decision presenter', () => {
   });
 
   it('presents every bounded Plan step and impact and enables only the exact Plan action', () => {
-    const decision: PublicDecisionProjectionV3 = {
+    const decision: PublicDecisionProjection = {
       decisionId: 'decision-plan',
       runId: 'run-plan',
       sessionId: 'session-plan',
@@ -221,7 +229,7 @@ describe('runtime projection Decision presenter', () => {
   });
 
   it('fails closed for terminal decisions and kind-mismatched action choices', () => {
-    const terminal: PublicDecisionProjectionV3 = {
+    const terminal: PublicDecisionProjection = {
       decisionId: 'decision-terminal',
       runId: 'run-terminal',
       sessionId: 'session-terminal',
@@ -241,7 +249,7 @@ describe('runtime projection Decision presenter', () => {
       requestedAt: REQUESTED_AT,
       resolvedAt: '2032-01-01T00:00:01.000Z'
     };
-    const wrongChoices: PublicDecisionProjectionV3 = {
+    const wrongChoices: PublicDecisionProjection = {
       decisionId: 'decision-wrong-choices',
       runId: terminal.runId,
       sessionId: terminal.sessionId,
@@ -262,7 +270,7 @@ describe('runtime projection Decision presenter', () => {
   });
 
   it('presents a bounded user question and enables only the exact answer action', () => {
-    const decision: PublicDecisionProjectionV3 = {
+    const decision: PublicDecisionProjection = {
       decisionId: 'decision-user-question',
       runId: 'run-user-question',
       sessionId: 'session-user-question',

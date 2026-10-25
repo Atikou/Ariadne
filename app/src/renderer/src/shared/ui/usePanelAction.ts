@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 
 /** A single user action stays pending until the authoritative service settles it. */
-export function usePanelAction() {
+export function usePanelAction(errorText?: (error: unknown) => string) {
   const inFlight = useRef(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -13,7 +13,7 @@ export function usePanelAction() {
     try {
       await action();
     } catch (error) {
-      setError(error instanceof Error ? error.message : '操作未完成，请检查任务状态后重试。');
+      setError(errorText ? errorText(error) : error instanceof Error ? error.message : '操作未完成，请检查任务状态后重试。');
     } finally {
       inFlight.current = false;
       setPending(false);

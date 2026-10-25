@@ -69,7 +69,7 @@ Renderer
 
 ### 3.3 旧资格缓存不是当前 v3 权威
 
-`model-router/agent-protocol-qualification.ts` 已有 `probation / qualified / quarantined` 逻辑，但它属于旧 App Model Router 路径，并未控制当前 v3 的 `RuntimeKernelModelInferenceGateway.resolveBinding()` 与 Agent Run Admission。
+当前资格由 ModelCapabilityRegistry 和 RuntimeKernelModelInferenceGateway 执行；Agent Run Admission 绑定资格后的具体模型，显式选择同样必须满足资格。
 
 不能把这套旧逻辑再接一层作为补丁。它应由 Runtime 模型域内新的权威资格注册表替换，旧资格记录不迁移。
 
@@ -244,7 +244,7 @@ Availability 与 Qualification 必须独立：
 资格数据统一保存在应用数据目录下的 Runtime 受保护存储中，例如：
 
 ```text
-%APPDATA%/Ariadne/runtime/data/model-capability/model-capability-v1.db
+%APPDATA%/Ariadne/runtime/data/model-capability/model-capability.db
 ```
 
 工作区内不创建 `.agent` 或任何能力缓存目录。

@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Portless Agent runtime for the Ariadne desktop application",
   "engines": {
-    "node": ">=22.13"
+    "node": ">=24.16.0"
   },
   "main": "dist/entry/runtime-process.js",
   "files": [
@@ -14,13 +14,14 @@
     "scripts/model-runtime/"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/write-build-manifest.mjs",
+    "migrate:productivity:v1-v2": "node dist/cli/migrate-productivity-v1-v2.js",
+    "build": "node ../scripts/clean-typescript-output.mjs runtime && tsc -p tsconfig.json && node scripts/write-build-manifest.mjs",
     "verify:tool-artifacts": "node dist/cli/verify-first-party-tool-artifacts.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --maxWorkers=4",
     "start": "node dist/entry/runtime-process.js",
     "headless": "node dist/entry/headless.js",
-    "dev": "tsx src/cli/main.ts",
+    "dev": "tsx src/entry/headless.ts",
     "models:check": "tsx src/cli/check-models.ts",
     "accept:model-restart:local": "tsx src/cli/accept-model-restart.ts --target local",
     "accept:model-restart:remote": "tsx src/cli/accept-model-restart.ts --target remote",
@@ -31,9 +32,9 @@
     "sandbox:setup": "tsx src/cli/sandbox.ts setup",
     "agent-control:migrate:v5-v6": "tsx src/cli/migrate-agent-control-v5-v6.ts",
     "agent-control:migrate:v6-v7": "tsx src/cli/migrate-agent-control-v6-v7.ts",
-    "scheduler:migrate:v3": "tsx src/cli/migrate-scheduler-v3.ts",
-    "storage:status": "tsx src/cli/storage.ts status",
-    "storage:cleanup": "tsx src/cli/storage.ts cleanup"
+    "storage:normalize:agent": "tsx src/cli/normalize-agent-database.ts",
+    "storage:normalize:model": "tsx src/cli/normalize-model-database.ts",
+    "storage:normalize:protocol": "tsx src/cli/normalize-communication-contract.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",
@@ -41,7 +42,6 @@
     "@ariadne/component-contracts": "file:../packages/component-contracts",
     "@ariadne/live-work": "file:../packages/live-work",
     "@ariadne/protocol": "file:../packages/protocol",
-    "@lancedb/lancedb": "^0.30.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/exporter-metrics-otlp-http": "^0.221.0",
@@ -57,10 +57,8 @@
     "node-llama-cpp": "^3.19.0",
     "node-pty": "^1.1.0",
     "sharp": "0.35.3",
-    "tree-sitter-wasms": "^0.1.13",
     "typescript": "5.9.3",
     "typescript-language-server": "6.0.0",
-    "web-tree-sitter": "^0.20.8",
     "zod": "^4.4.3"
   },
   "devDependencies": {

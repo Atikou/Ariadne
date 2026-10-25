@@ -257,12 +257,12 @@ function agentControlCounts(root: string): {
       `SELECT COUNT(*) AS count FROM ${table}`
     ).get() as { count: number }).count);
     return {
-      runs: count('agent_v3_runs'),
-      commands: count('agent_v3_commands'),
-      events: count('agent_v3_events'),
-      outbox: count('agent_v3_outbox'),
-      checkpoints: count('agent_v3_checkpoints'),
-      effectPayloads: count('agent_v3_effect_payloads')
+      runs: count('agent_runs'),
+      commands: count('agent_commands'),
+      events: count('agent_events'),
+      outbox: count('agent_outbox'),
+      checkpoints: count('agent_checkpoints'),
+      effectPayloads: count('agent_effect_payloads')
     };
   } finally {
     database.close();

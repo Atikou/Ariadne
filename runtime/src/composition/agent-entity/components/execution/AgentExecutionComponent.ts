@@ -49,6 +49,7 @@ class DefaultAgentExecutionComponent implements AgentExecutionComponentHandle {
     }
     await this.liveWorkCompletion?.reconcileStartup();
     await this.pipeline.executionScheduler.preflightStartupRecovery();
+    await this.pipeline.cancellations?.start(this.input.wakeProjectionDrain);
     await drainProjection();
     await this.pipeline.runWorkScheduler.start();
     this.pipeline.runWorkScheduler.assertHealthy();
@@ -63,6 +64,7 @@ class DefaultAgentExecutionComponent implements AgentExecutionComponentHandle {
     this.pipeline?.runWorkScheduler.assertHealthy();
     this.pipeline?.executionScheduler.assertHealthy();
     this.pipeline?.handoffProducer.assertHealthy();
+    this.pipeline?.cancellations?.assertHealthy();
   }
 
   public async prepareShutdown(context: ShutdownContext): Promise<readonly unknown[]> {
@@ -70,17 +72,14 @@ class DefaultAgentExecutionComponent implements AgentExecutionComponentHandle {
     if (this.pipeline !== undefined) {
       this.pipeline.observeRuntimeStop?.(new Date().toISOString());
       const schedulerStops: Promise<void>[] = [];
-      try {
-        context.throwIfExpired();
-        schedulerStops.push(this.pipeline.runWorkScheduler.prepareShutdown(context));
-      } catch (error) {
-        failures.push(error);
-      }
-      try {
-        context.throwIfExpired();
-        schedulerStops.push(this.pipeline.executionScheduler.prepareShutdown(context));
-      } catch (error) {
-        failures.push(error);
+      for (const owner of [this.pipeline.cancellations, this.pipeline.runWorkScheduler, this.pipeline.executionScheduler]) {
+        if (owner === undefined) continue;
+        try {
+          context.throwIfExpired();
+          schedulerStops.push(owner.prepareShutdown(context));
+        } catch (error) {
+          failures.push(error);
+        }
       }
       for (const result of await Promise.allSettled(schedulerStops)) {
         if (result.status === 'rejected') failures.push(result.reason);

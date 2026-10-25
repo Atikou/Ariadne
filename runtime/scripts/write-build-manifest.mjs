@@ -7,9 +7,11 @@ const TOOL_ARTIFACT_ALGORITHM = 'ariadne-tool-module-closure-v1';
 const TOOL_IMPLEMENTATION_MODULES = Object.freeze([
   'dist/composition/first-party-tools/BrowserAgentTools.js',
   'dist/composition/first-party-tools/ComputerReadAgentTools.js',
+  'dist/composition/first-party-tools/GoalPlanningAgentTools.js',
   'dist/composition/first-party-tools/LiveWorkControlAgentTools.js',
   'dist/composition/first-party-tools/LiveWorkStartAgentTools.js',
   'dist/composition/first-party-tools/McpAgentTools.js',
+  'dist/composition/first-party-tools/MemoryAgentTools.js',
   'dist/composition/first-party-tools/ProtectedResultAgentTools.js',
   'dist/composition/first-party-tools/WorkspaceAgentTools.js',
   'dist/composition/first-party-tools/WorkspaceFileAgentTools.js',

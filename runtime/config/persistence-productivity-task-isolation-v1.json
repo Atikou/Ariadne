@@ -1,0 +1,20 @@
+{
+  "contractVersion": 1,
+  "policy": "Same Productivity owner and Schema 3; task metadata and staged recovery receipts are separate extensions. Existing nine access contracts, six extensions and original task/command records remain unchanged.",
+  "contracts": [
+    {
+      "owner": "productivityTaskIsolationV1",
+      "file": "runtime/src/control/ports/ProductivityTaskIsolationV1.ts",
+      "export": "ProductivityTaskIsolationV1",
+      "digest": "sha256:76d0aec2d2dc399c0f04b78ab18de5646ae675ff68fa3bb835574ef26d70b581",
+      "graphNodes": 14
+    },
+    {
+      "owner": "productivityTaskRecoveryAuthorityV1",
+      "file": "runtime/src/control/ports/ProductivityTaskRecoveryAuthorityV1.ts",
+      "export": "ProductivityTaskRecoveryAuthorityV1",
+      "digest": "sha256:49dc1e3c3b515c18a1d7592da1f799cccb2ef9edd3f6007742b234f5aa91b491",
+      "graphNodes": 39
+    }
+  ]
+}

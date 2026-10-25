@@ -11,17 +11,17 @@ import {
   type AgentRunBinding,
   type AgentTurnInput
 } from '@ariadne/agent-core';
-import { redactPublicProjectionTextV3 } from '@ariadne/protocol/public';
+import { redactPublicProjectionText } from '@ariadne/protocol/public';
 import type {
   ExactAgentModelInferenceContentBlock,
   ExactAgentModelInferenceRuntime,
   ExactAgentModelInferenceToolContract
 } from '../../control/ports/AgentModelInference.js';
 import {
-  admitV3TokenizedProjections,
-  planV3LongContext,
-  type V3LongContextPlan
-} from './V3LongContextLifecycle.js';
+  admitTokenizedProjections,
+  planLongContext,
+  type LongContextPlan
+} from './LongContextLifecycle.js';
 import type { AgentInferenceToolContractReader } from '../../control/ports/AgentInferenceToolContracts.js';
 import type { BoundInferenceStreamProjection } from '../../projection/InferenceStreamProjectionPorts.js';
 import type { InferenceStreamPublicProjectionPublisher } from '../../projection/InferenceStreamPublicProjectionPublisher.js';
@@ -171,7 +171,7 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
         }
       };
     }
-    let context: V3LongContextPlan;
+    let context: LongContextPlan;
     try {
       const grouped = groupModelHistory(modelHistory);
       const pinnedMessages = [
@@ -191,7 +191,7 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
         tools: providerTools,
         signal
       });
-      const planned = planV3LongContext({
+      const planned = planLongContext({
         pinnedMessages,
         groups: grouped.groups,
         capacity,
@@ -214,7 +214,7 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
             tools: providerTools,
             signal
           });
-      context = admitV3TokenizedProjections({
+      context = admitTokenizedProjections({
         plan: planned,
         capacity,
         primary: primaryTokenCount,
@@ -280,7 +280,7 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
 
   private async decidePrepared(
     binding: AgentRunBinding['model'],
-    context: V3LongContextPlan,
+    context: LongContextPlan,
     tools: readonly PreparedToolContract[],
     providerTools: readonly ExactAgentModelInferenceToolContract[],
     executionMode: 'chat' | 'agent' | 'plan',
@@ -299,7 +299,7 @@ export class ProductionAgentEngineAdapter implements AgentEngine {
       text: string
     ): void => {
       if (stream === undefined) return;
-      for (const part of splitPublicUtf8Text(redactPublicProjectionTextV3(text))) {
+      for (const part of splitPublicUtf8Text(redactPublicProjectionText(text))) {
         publicSequence += 1;
         stream.chunkObserver.observe({ sequence: publicSequence, channel, text: part });
       }

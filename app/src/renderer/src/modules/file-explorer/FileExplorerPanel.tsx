@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
 import { ChevronDown, ChevronRight, File, FileCode2, FileJson2, Folder, FolderOpen, RefreshCw } from 'lucide-react';
 import type { WorkspaceEntry } from '@shared/contract';
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import { getNearestScrollDelta } from '@shared/scroll-geometry';
 import { PanelEmptyState } from '@renderer/shared/ui/PanelEmptyState';
+import { TextPromptDialog } from '@renderer/shared/ui/ActionDialog';
+import { workspaceDocumentPathSchema } from '@ariadne/protocol/public';
+import { WorkspaceDocumentEditor } from './WorkspaceDocumentEditor';
 import './file-explorer.css';
 
 interface TreeNode extends WorkspaceEntry {
@@ -13,6 +16,10 @@ interface TreeNode extends WorkspaceEntry {
 }
 
 export function FileExplorerPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
+  const [documentSelection,setDocumentSelection]=useState<{workspaceId:string;path:string;create:boolean;recovery?:boolean}|null>(null);
+  useSyncExternalStore(services.documents.subscribe,services.documents.getSnapshot,services.documents.getSnapshot);
+  const fileDrafts=services.documents.unsavedDrafts();
+  const [creating,setCreating]=useState<string|null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(
     () => services.conversationNavigation.getSelectedWorkspaceId()
   );
@@ -26,6 +33,16 @@ export function FileExplorerPanel({ moduleId, services }: FeaturePanelProps): Re
   const workspaceIdRef = useRef(workspaceId);
   const treeRevisionRef = useRef(0);
   workspaceIdRef.current = workspaceId;
+  const selectionGeneration=useRef(0);
+  const selectDocument=async(path:string,create:boolean):Promise<void>=>{
+    if(!workspaceId)return;
+    const selectedWorkspace=workspaceId,generation=++selectionGeneration.current;
+    try{
+      const canonical=await services.documents.resolvePath(selectedWorkspace,path);
+      if(workspaceIdRef.current!==selectedWorkspace||selectionGeneration.current!==generation)return;
+      setDocumentSelection({workspaceId:selectedWorkspace,path:canonical,create});setError(null);
+    }catch(error){if(workspaceIdRef.current===selectedWorkspace&&selectionGeneration.current===generation)setError(error instanceof Error?error.message:'无法核对文件身份。');}
+  };
 
   const loadRoot = useCallback(async (): Promise<void> => {
     if (!workspaceId) return;
@@ -113,14 +130,17 @@ export function FileExplorerPanel({ moduleId, services }: FeaturePanelProps): Re
       else focus(parentPath);
     } else if (event.key === 'Enter' || event.key === ' ') {
       if (node.type === 'directory') void toggle(node.relativePath);
+      else void selectDocument(node.relativePath,false);
     } else return;
     event.preventDefault();
   };
 
-  return <section className="file-explorer" aria-labelledby={`${moduleId}-title`}>
-    <header className="module-content-header"><div><span>目录浏览</span><h1 id={`${moduleId}-title`} title={rootLabel}>{rootLabel}</h1></div><button type="button" className="bare-icon-button" aria-label="刷新文件列表" disabled={!workspaceId || loading} onClick={() => void loadRoot()}><RefreshCw size={15} /></button></header>
+  const visibleDocument=documentSelection&&(documentSelection.workspaceId===workspaceId||documentSelection.recovery);
+  return <section className={`file-explorer${visibleDocument?' has-document':''}`} aria-labelledby={`${moduleId}-title`}>
+    <header className="module-content-header"><div><span>目录与文本编辑</span><h1 id={`${moduleId}-title`} title={rootLabel}>{rootLabel}</h1></div><button type="button" disabled={!workspaceId} onClick={()=>setCreating(workspaceId)}>新建文件</button><button type="button" className="bare-icon-button" aria-label="刷新文件列表" disabled={!workspaceId || loading} onClick={() => void loadRoot()}><RefreshCw size={15} /></button></header>
     <div ref={scrollRef} className="file-explorer-body" aria-busy={loading}>
       {error && <p className="file-explorer-error" role="alert">{error}</p>}
+      {fileDrafts.length>0&&<section className="file-draft-list" aria-label="未保存文件草稿"><strong>未保存文件 · {fileDrafts.length}</strong>{fileDrafts.map(row=><button key={row.draftId} type="button" onClick={()=>setDocumentSelection({workspaceId:row.workspaceId,path:row.path,create:!row.exists,recovery:true})}><span>{row.path}</span><small>{services.conversationNavigation.isWorkspaceActive(row.workspaceId)?'工作区草稿':'工作区当前不可用'} · {row.pendingMutation?'原操作待核对':services.documents.isRecovered(row.workspaceId,row.path)?'已恢复':'正在编辑'}</small></button>)}</section>}
       {!workspaceId ? <PanelEmptyState icon={FolderOpen} title="尚未选择工作区" description="从会话侧栏打开或选择工作区，即可浏览目录。" />
         : loading && nodes.length === 0 ? <p className="file-explorer-loading" role="status">正在读取目录…</p>
         : nodes.length === 0 && !error ? <PanelEmptyState icon={Folder} title="文件夹为空" description="工作区中的文件和文件夹会显示在这里。" />
@@ -147,7 +167,7 @@ export function FileExplorerPanel({ moduleId, services }: FeaturePanelProps): Re
               viewport.scrollTop += getNearestScrollDelta(bounds.top, bounds.bottom, item.top, item.bottom, 8);
             }}
             onKeyDown={event => navigate(event, index)}
-            onClick={event => { event.currentTarget.focus(); if (directory) void toggle(node.relativePath); }}
+            onClick={event => { event.currentTarget.focus(); if (directory) void toggle(node.relativePath); else void selectDocument(node.relativePath,false); }}
           >
             {directory ? node.expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} /> : <span className="file-tree-spacer" />}
             <Icon size={15} /><span className="file-tree-name">{node.name}</span>
@@ -156,6 +176,14 @@ export function FileExplorerPanel({ moduleId, services }: FeaturePanelProps): Re
           </li>;
         })}</ul>}
     </div>
+    {documentSelection&&visibleDocument&&<WorkspaceDocumentEditor workspaceId={documentSelection.workspaceId} path={documentSelection.path} create={documentSelection.create} services={services}
+      onClose={()=>setDocumentSelection(null)} onMoved={path=>setDocumentSelection({...documentSelection,path,create:false})} onChanged={()=>void loadRoot()}/>}
+    <TextPromptDialog open={creating!==null&&creating===workspaceId} title="新建工作区文件" description="输入工作区内的相对路径。已有文件不会被覆盖；保存需要工作区写权限。" initialValue="" fieldLabel="文件路径" maxLength={1024} confirmLabel="开始编辑"
+      onClose={()=>setCreating(null)} onConfirm={path=>{
+        setCreating(null);
+        if(!workspaceId||creating!==workspaceId||!workspaceDocumentPathSchema.safeParse(path).success){setError('请输入有效的工作区相对文件路径。');return;}
+        void selectDocument(path,true);
+      }}/>
   </section>;
 }
 

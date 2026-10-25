@@ -1,13 +1,15 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { SavedLayout, UserPreferences } from '@shared/contract';
+import { userPreferencesSchema } from '@shared/schemas';
 import { persistedStateSchema, createDefaultState, parsePersistedState, type PersistedState } from './state-schema';
+import { unrestrictedMainWrites, type MainWriteAdmission } from '../data-management/main-maintenance-gate';
 
 export class StateRepository {
   private state: PersistedState = createDefaultState();
   private writeQueue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly filePath: string) {}
+  constructor(private readonly filePath: string, private readonly writes: MainWriteAdmission = unrestrictedMainWrites) {}
 
   async initialize(): Promise<void> {
     let raw: string;
@@ -30,6 +32,8 @@ export class StateRepository {
     return structuredClone(this.state);
   }
 
+  validateBackup(raw: string): void { persistedStateSchema.parse(JSON.parse(raw)); }
+
   getLayout(): SavedLayout | null {
     return structuredClone(this.state.layout);
   }
@@ -43,11 +47,11 @@ export class StateRepository {
   }
 
   async savePreferences(preferences: UserPreferences): Promise<void> {
-    await this.update((state) => ({ ...state, preferences }));
+    await this.update((state) => ({ ...state, preferences: userPreferencesSchema.parse(preferences) }));
   }
 
   async saveWindowState(window: PersistedState['window']): Promise<void> {
-    await this.update((state) => ({ ...state, window }));
+    await this.writes.writeDeferred(() => this.update((state) => ({ ...state, window })));
   }
 
   async flush(): Promise<void> {
@@ -55,6 +59,7 @@ export class StateRepository {
   }
 
   private async update(mutator: (state: PersistedState) => PersistedState): Promise<void> {
+    return this.writes.write(async () => {
     const operation = this.writeQueue
       .catch(() => undefined)
       .then(async () => {
@@ -64,6 +69,7 @@ export class StateRepository {
       });
     this.writeQueue = operation;
     await operation;
+    });
   }
 
   private async writeSnapshot(state: PersistedState): Promise<void> {

@@ -117,6 +117,7 @@ export class ModelExecutionQualificationError extends Error {
       | 'model_text_qualification_required'
       | 'model_agent_qualification_required'
       | 'model_plan_qualification_required'
+      | 'model_quality_evaluation_required'
       | 'model_vision_qualification_required',
     public readonly modelId?: string
   ) {

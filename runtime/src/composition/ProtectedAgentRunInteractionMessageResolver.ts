@@ -2,6 +2,8 @@ import {
   AgentRunInvariantError,
   assertValidAgentRun,
   deriveStableAgentId,
+  agentInboxInputRole,
+  isExactPlanApprovalInput,
   type AgentDirectivePayloadLookup,
   type AgentDirectivePayloadReader,
   type AgentInferenceAttempt,
@@ -48,9 +50,13 @@ implements AgentRunInteractionProjectionResolver {
           run,
           cause.sourceTurnId,
           cause.sourceAttemptId,
-          cause.sourceDirectiveDigest
+          cause.sourceDirectiveDigest,
+          cause.inputIds,
+          turn.turnId
         );
-        messages.push({
+        // Plan presentation belongs to its Decision card. Its protected payload
+        // feeds model continuation but is never copied into the public transcript.
+        if (sourceAttempt.state.directive.kind !== 'request_decision') messages.push({
           messageId: await deriveStableAgentId(
             'agent-interaction-assistant',
             run.runId,
@@ -83,7 +89,7 @@ implements AgentRunInteractionProjectionResolver {
         messages.push({
           messageId: input.messageId,
           turnId: turn.turnId,
-          role: input.source?.kind === 'live_work' ? 'system' : 'user',
+          role: agentInboxInputRole(input),
           content: input.content,
           occurredAt: input.claimedAt
         });
@@ -97,12 +103,18 @@ function requireSourceAttempt(
   run: AgentRun,
   turnId: string,
   attemptId: string,
-  directiveDigest: string
+  directiveDigest: string,
+  inputIds: readonly string[],
+  continuationTurnId: string
 ): AgentInferenceAttempt & {
   readonly state: Extract<AgentInferenceAttempt['state'], { readonly status: 'succeeded' }>;
 } {
   const turn = run.turns.find((candidate) => candidate.turnId === turnId);
   const attempt = turn?.attempts.find((candidate) => candidate.attemptId === attemptId);
+  const directive = attempt?.state.status === 'succeeded' ? attempt.state.directive : null;
+  const approvedPlan = directive?.kind === 'request_decision' && run.inbox.some(input =>
+    inputIds.includes(input.inputId) && input.state === 'claimed' && input.claimedTurnId === continuationTurnId
+    && isExactPlanApprovalInput(input, directive.decision));
   if (
     attempt === undefined
     || attempt.state.status !== 'succeeded'
@@ -111,6 +123,7 @@ function requireSourceAttempt(
       attempt.state.directive.kind !== 'respond'
       && attempt.state.directive.kind !== 'complete'
       && attempt.state.directive.kind !== 'ask_user'
+      && !approvedPlan
     )
   ) {
     throw new AgentRunInvariantError(

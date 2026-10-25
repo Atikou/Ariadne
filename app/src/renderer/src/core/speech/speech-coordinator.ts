@@ -98,6 +98,7 @@ export class SpeechCoordinator {
     }
     const requestId = crypto.randomUUID();
     this.foregroundRequestId = requestId;
+    this.events.emit('speech:composer-started', { requestId });
     this.lastError = null;
     this.publish();
     try {

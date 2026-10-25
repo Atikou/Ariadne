@@ -1,7 +1,7 @@
 // Production workspace with in-memory layout only; never connects to Preload.
-import type { DockviewApi } from 'dockview-react';
-import { useLayoutEffect } from 'react';
-import { Workspace } from '../src/renderer/src/app/Workspace';
+import type { DockviewApi, SerializedDockview } from 'dockview-react';
+import { useLayoutEffect, useState } from 'react';
+import { Workspace, openModule } from '../src/renderer/src/app/Workspace';
 import { applyThemeToDocument, type EffectiveTheme } from '../src/renderer/src/app/theme-sync';
 import { ModuleRegistry } from '../src/renderer/src/core/modules/module-registry';
 import { moduleId, type FeatureModuleDefinition, type ModuleServices } from '../src/renderer/src/core/modules/module-contract';
@@ -15,8 +15,12 @@ const definitions: FeatureModuleDefinition[] = ['会话', '文件浏览', '任�
 }));
 const registry = new ModuleRegistry(definitions);
 const services = {} as ModuleServices;
+let savedLayout: SerializedDockview | null = null;
+let remount: (() => void) | null = null;
 const fixture = {
   api: null as DockviewApi | null,
+  openModule: (id: string) => { if (fixture.api) openModule(fixture.api, registry, moduleId(id)); },
+  restoreLayout: (layout: SerializedDockview) => { savedLayout = layout; fixture.api = null; remount?.(); },
   setTheme: (theme: EffectiveTheme) => applyThemeToDocument(document, theme)
 };
 Object.assign(window, { __workspaceFixture: fixture });
@@ -24,7 +28,9 @@ const noop = () => {};
 const ready = (api: DockviewApi) => { fixture.api = api; };
 
 export function WorkspaceFixture() {
+  const [generation, setGeneration] = useState(0);
+  remount = () => setGeneration(value => value + 1);
   useLayoutEffect(() => { fixture.setTheme('dark'); }, []);
-  window.ariadne = { layout: { load: async () => null, save: async () => {} } } as unknown as typeof window.ariadne;
-  return <Workspace registry={registry} services={services} effectiveTheme="dark" onApiReady={ready} onOpenModulesChanged={noop} onSaveStatusChanged={noop} />;
+  window.ariadne = { layout: { load: async () => savedLayout ? { layout: { ...savedLayout, __ariadneLayoutRevision: 3 } } : null, save: async () => {} } } as unknown as typeof window.ariadne;
+  return <Workspace key={generation} registry={registry} services={services} effectiveTheme="dark" onApiReady={ready} onOpenModulesChanged={noop} onSaveStatusChanged={noop} />;
 }

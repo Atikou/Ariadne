@@ -1,30 +1,30 @@
-import type { EncodedImageAttachmentV3 } from '@ariadne/protocol/public';
+import type { EncodedImageAttachment } from '@ariadne/protocol/public';
 import {
-  IMAGE_ATTACHMENT_MEDIA_TYPES_V3,
-  MAX_IMAGE_ATTACHMENTS_PER_MESSAGE_V3,
-  MAX_IMAGE_ATTACHMENT_SOURCE_BYTES_V3
+  IMAGE_ATTACHMENT_MEDIA_TYPES,
+  MAX_IMAGE_ATTACHMENTS_PER_MESSAGE,
+  MAX_IMAGE_ATTACHMENT_SOURCE_BYTES
 } from '@ariadne/protocol/public';
 
-export interface DraftImageAttachment extends EncodedImageAttachmentV3 {
+export interface DraftImageAttachment extends EncodedImageAttachment {
   readonly clientId: string;
   readonly bytes: number;
 }
 
 export async function encodeDraftImages(files: FileList): Promise<readonly DraftImageAttachment[]> {
   const selected = Array.from(files);
-  if (selected.length > MAX_IMAGE_ATTACHMENTS_PER_MESSAGE_V3) {
-    throw new Error(`每条消息最多添加 ${MAX_IMAGE_ATTACHMENTS_PER_MESSAGE_V3} 张图片。`);
+  if (selected.length > MAX_IMAGE_ATTACHMENTS_PER_MESSAGE) {
+    throw new Error(`每条消息最多添加 ${MAX_IMAGE_ATTACHMENTS_PER_MESSAGE} 张图片。`);
   }
   return Promise.all(selected.map(async (file) => {
-    if (!IMAGE_ATTACHMENT_MEDIA_TYPES_V3.includes(
-      file.type as (typeof IMAGE_ATTACHMENT_MEDIA_TYPES_V3)[number]
+    if (!IMAGE_ATTACHMENT_MEDIA_TYPES.includes(
+      file.type as (typeof IMAGE_ATTACHMENT_MEDIA_TYPES)[number]
     )) {
       throw new Error(`不支持 ${file.name || '所选文件'} 的图片格式。`);
     }
-    if (file.size < 1 || file.size > MAX_IMAGE_ATTACHMENT_SOURCE_BYTES_V3) {
+    if (file.size < 1 || file.size > MAX_IMAGE_ATTACHMENT_SOURCE_BYTES) {
       throw new Error(`${file.name || '图片'} 必须小于 2 MB。`);
     }
-    const mediaType = file.type as EncodedImageAttachmentV3['mediaType'];
+    const mediaType = file.type as EncodedImageAttachment['mediaType'];
     const data = bytesToBase64(new Uint8Array(await file.arrayBuffer()));
     const normalizedName = file.name.trim().slice(0, 256);
     return {

@@ -21,7 +21,7 @@ export class AgentInboxPublicCommandHandler {
     const result = await this.unitOfWork.transaction(transaction =>
       new AgentInboxMutationScope(transaction, this.now).execute(envelope, command));
     if (result.outcome.ok) {
-      if (command.kind === 'agent.inbox.enqueue.v3' || command.kind === 'agent.subagent.send.v3') {
+      if (command.kind === 'agent.inbox.enqueue' || command.kind === 'agent.subagent.send') {
         this.callbacks.wakeWorkScheduler();
       }
       this.callbacks.wakeProjectionDrain();
@@ -32,8 +32,8 @@ export class AgentInboxPublicCommandHandler {
   public commandOwners(): readonly AgentPublicCommandOwner[] {
     return Object.freeze([
       defineAgentPublicCommandOwner('agent.inbox', [
-        'agent.inbox.enqueue.v3', 'agent.inbox.replace.v3',
-        'agent.inbox.remove.v3', 'agent.subagent.send.v3'
+        'agent.inbox.enqueue', 'agent.inbox.replace',
+        'agent.inbox.remove', 'agent.subagent.send'
       ], (envelope, command) => this.execute(envelope, command),
       async (envelope, command) => {
         const result = await this.execute(envelope, command);

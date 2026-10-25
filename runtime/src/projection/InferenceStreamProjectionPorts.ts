@@ -1,13 +1,13 @@
 import type {
-  PublicInferenceStreamEventV1,
-  PublicInferenceStreamProjectionV3,
-  PublicProjectionChangeV3
+  PublicInferenceStreamEvent,
+  PublicInferenceStreamProjection,
+  PublicProjectionChange
 } from '@ariadne/protocol/public';
 
 import type { PublicProjectionCommitSink } from './PublicProjectionPorts.js';
 
 export type InferenceStreamProjectionHead = Pick<
-  Extract<PublicProjectionChangeV3, { feature: 'inference_streams' }>,
+  Extract<PublicProjectionChange, { feature: 'inference_streams' }>,
   'aggregateId' | 'aggregateVersion' | 'operation' | 'dto'
 >;
 
@@ -27,7 +27,7 @@ export interface InferenceStreamLiveEventAppend {
   readonly aggregateVersion: number;
   readonly correlationId: string;
   readonly occurredAt: string;
-  readonly event: PublicInferenceStreamEventV1;
+  readonly event: PublicInferenceStreamEvent;
 }
 
 export interface InferenceStreamLiveEventSink {
@@ -43,5 +43,5 @@ export interface BoundInferenceStreamProjection {
       readonly text: string;
     }): void;
   };
-  terminate(state: PublicInferenceStreamProjectionV3['status']): Promise<void>;
+  terminate(state: PublicInferenceStreamProjection['status']): Promise<void>;
 }

@@ -12,7 +12,7 @@ import {
 
 type InterruptCommand = Extract<
   RuntimeCommandEnvelope['command'],
-  { readonly kind: 'agent.subagent.interrupt.v3' }
+  { readonly kind: 'agent.subagent.interrupt' }
 >;
 
 /** Owns direct-parent authorization and exact active-Turn interruption recovery. */
@@ -152,7 +152,7 @@ export class AgentSubagentInterruptPublicCommandHandler {
   public commandOwners(): readonly AgentPublicCommandOwner[] {
     return Object.freeze([
       defineAgentPublicCommandOwner('agent.subagent-interrupt', [
-        'agent.subagent.interrupt.v3'
+        'agent.subagent.interrupt'
       ], (envelope, command) => this.execute(envelope, command),
       async (envelope, command) => {
         const result = await this.execute(envelope, command);
@@ -199,7 +199,7 @@ function completed(
     outcome: {
       ok: true,
       result: {
-        kind: 'agent.subagent.interrupted.v3',
+        kind: 'agent.subagent.interrupted',
         parentRunId,
         childRunId: child.runId,
         childRunVersion: child.runVersion,

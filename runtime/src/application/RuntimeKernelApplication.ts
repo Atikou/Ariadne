@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import {
   ARIADNE_RUNTIME_PROTOCOL_VERSION,
   runtimeEventEnvelopeSchema,
-  type ConversationMessageExecutionV3,
+  type ConversationMessageExecution,
   type RuntimeStatus
 } from '@ariadne/protocol/public';
 
@@ -16,6 +16,8 @@ import type {
 } from '../ingress/RuntimeApplication.js';
 import type { RuntimeCommandEnvelope } from '../ingress/RuntimeIngress.js';
 import type { RuntimeModelCatalogSource } from '../ingress/RuntimeModelCatalog.js';
+import type { DispatchExactAgentModelInferenceRequest } from '../control/ports/AgentModelInference.js';
+import type { RuntimeAuthorityHealthSource } from '../ingress/RuntimeAuthorityHealthSource.js';
 import type {
   RuntimePublicEventAppend,
   RuntimePublicEventSink
@@ -39,10 +41,12 @@ import {
   unknownQualification,
   type ModelCapabilityQualification
 } from '../model/capability/ModelCapabilityQualification.js';
-import {
-  ModelCapabilityRegistry,
-  qualificationDatabasePath
-} from '../model/capability/ModelCapabilityRegistry.js';
+import type { ModelCapabilityRegistry } from '../model/capability/ModelCapabilityRegistry.js';
+import { composeProductionModelCapabilitySource, type ProductionModelCapabilitySource } from './ProductionModelCapabilitySource.js';
+import { readOwnedAuthorityFault } from '../adapters/persistence/SqliteAuthorityHealth.js';
+import { MODEL_CAPABILITY_DB_SCHEMA_VERSION } from '../model/capability/ModelCapabilityDbSchema.js';
+import { ModelQualityBenchmark } from '../model/capability/ModelQualityBenchmark.js';
+import { modelQualitySummary } from '../model/capability/ModelQualityContracts.js';
 import { fingerprintLocalModel } from '../model/capability/LocalModelFingerprint.js';
 import { LocalTextCapabilityProbe } from '../model/capability/LocalTextCapabilityProbe.js';
 import { ModelCapabilityProbeHarness } from '../model/capability/ModelCapabilityProbeHarness.js';
@@ -72,10 +76,11 @@ interface RemoteModelCatalogBase {
  * delivery. Conversation and Agent commands are exclusively owned by Control.
  */
 class RuntimeKernelApplication implements RuntimeApplication {
-  public readonly storageSchemas = Object.freeze({ modelCapability: 1 });
+  public readonly storageSchemas: Readonly<Record<string, number>>;
   public readonly publicEventSink: RuntimePublicEventSink;
   public readonly modelCatalog: RuntimeModelCatalogSource;
   public readonly modelInferenceGateway: RuntimeKernelModelInferenceGateway;
+  public readonly inferenceHealth: RuntimeAuthorityHealthSource;
   private lifecycle: 'created' | 'running' | 'stopped' = 'created';
   private eventCursor = 0;
   private readonly remoteModels: readonly RemoteModelCatalogBase[];
@@ -86,9 +91,12 @@ class RuntimeKernelApplication implements RuntimeApplication {
   >();
   private readonly credentialResolver?: CredentialResolver;
   private readonly localModels: LocalModelService;
-  private readonly modelCapabilities: ModelCapabilityRegistry;
-  private readonly localTextProbe: LocalTextCapabilityProbe;
-  private readonly fullCapabilityProbe: ModelCapabilityProbeHarness;
+  private readonly modelCapabilitySource: ProductionModelCapabilitySource;
+  private readonly capabilityTools?: {
+    readonly text: LocalTextCapabilityProbe;
+    readonly full: ModelCapabilityProbeHarness;
+    readonly quality: ModelQualityBenchmark;
+  };
   private readonly localQualificationRuns = new Map<string, Promise<void>>();
   private readonly localQualificationAbort = new AbortController();
   private modelActivityStop?: Promise<void>;
@@ -104,13 +112,14 @@ class RuntimeKernelApplication implements RuntimeApplication {
     this.credentialResolver = input.hostCapabilities === undefined
       ? undefined
       : new HostCredentialResolver(input.hostCapabilities);
-    this.modelCapabilities = new ModelCapabilityRegistry(
-      qualificationDatabasePath(input.bootstrap.dataRoot)
-    );
-    this.localTextProbe = new LocalTextCapabilityProbe(this.modelCapabilities);
+    this.modelCapabilitySource = composeProductionModelCapabilitySource(input.bootstrap.dataRoot);
+    const registry = this.modelCapabilitySource.registry;
+    const schemas: Record<string, number> = {};
+    if (registry !== undefined) schemas.modelCapability = MODEL_CAPABILITY_DB_SCHEMA_VERSION;
+    this.storageSchemas = Object.freeze(schemas);
     this.remoteModels = Object.freeze((input.bootstrap.modelProviders ?? []).map((provider) => {
       const fingerprint = fingerprintRemoteProvider(provider);
-      this.modelCapabilities.registerFingerprint(provider.providerId, provider.model, fingerprint);
+      registry?.registerFingerprint(provider.providerId, provider.model, fingerprint);
       this.remoteCredentialAvailability.set(
         remoteModelKey(provider.providerId, provider.model),
         initialRemoteAvailability(provider, this.credentialResolver)
@@ -147,8 +156,7 @@ class RuntimeKernelApplication implements RuntimeApplication {
     this.localSnapshot = this.localModels.snapshot();
     this.markLocalRuntimesChecking(this.localSnapshot);
     this.modelCatalog = Object.freeze({ snapshot: () => this.modelSnapshot() });
-    this.modelInferenceGateway = new RuntimeKernelModelInferenceGateway(
-      new ProductionExactAgentModelInferenceGateway({
+    const remoteInference = new ProductionExactAgentModelInferenceGateway({
         modelProviders: input.bootstrap.modelProviders,
         agentAdmissionAuthoritySource: input.bootstrap.agentAdmissionAuthoritySource,
         credentialEnvironment: process.env,
@@ -159,20 +167,33 @@ class RuntimeKernelApplication implements RuntimeApplication {
         ...(input.providerTelemetry === undefined
           ? {}
           : { providerTelemetry: input.providerTelemetry })
-      }),
+      });
+    this.inferenceHealth = Object.freeze({
+      assertHealthy: () => { this.modelCapabilitySource.health.assertHealthy();
+        if (this.lifecycle === 'stopped') throw new Error('runtime_inference_owner_stopped'); },
+      hasExternalFailure: () => remoteInference.hasExternalFailure() || this.hasLocalInferenceFailure()
+    });
+    this.modelInferenceGateway = new RuntimeKernelModelInferenceGateway(
+      remoteInference,
       this.localModels,
       input.bootstrap.modelProviders,
       input.bootstrap.routingStrategy ?? 'cloud-first',
-      this.modelCapabilities,
+      registry,
       (providerId, modelId) => this.remoteCredentialAvailability.get(
         remoteModelKey(providerId, modelId)
       ) === 'ready',
-      this.disabledLocalModelIds
+      this.disabledLocalModelIds,
+      (providerId,modelId) => {
+        const quality = this.modelCapabilities.current(providerId,modelId)?.quality;
+        return quality ? modelQualitySummary(quality) : null;
+      },
+      () => this.inferenceHealth.assertHealthy()
     );
-    this.fullCapabilityProbe = new ModelCapabilityProbeHarness(
-      this.modelInferenceGateway,
-      this.modelCapabilities
-    );
+    if (registry !== undefined) this.capabilityTools = {
+      text: new LocalTextCapabilityProbe(registry),
+      full: new ModelCapabilityProbeHarness(this.modelInferenceGateway, registry),
+      quality: new ModelQualityBenchmark(this.modelInferenceGateway, registry)
+    };
     this.publicEventSink = Object.freeze({
       append: async (event: RuntimePublicEventAppend): Promise<void> => {
         if (this.lifecycle !== 'running') throw new Error('runtime_kernel_not_running');
@@ -199,20 +220,35 @@ class RuntimeKernelApplication implements RuntimeApplication {
   public async execute(
     envelope: RuntimeCommandEnvelope
   ): Promise<RuntimeApplicationCommandResult> {
+    if (['model.quality.evaluate', 'model.qualification.run', 'model.availability.check', 'conversation.session.title.generate']
+      .includes(envelope.command.kind)) this.inferenceHealth.assertHealthy();
+    if (envelope.command.kind === 'model.quality.evaluate') {
+      try {
+        const binding=this.qualityBinding(envelope.command.modelId);
+        const fingerprint=this.modelCapabilities.currentFingerprint(binding.providerId,binding.modelId);
+        if(fingerprint===null)throw new Error('model_capability_fingerprint_missing');
+        const quality=modelQualitySummary(await this.qualityBenchmark.run({binding,fingerprint,signal:envelope.signal}));
+        return {outcome:{ok:true,result:{kind:'model.quality.completed',modelId:envelope.command.modelId,quality}},settlement:'completed'};
+      } catch(error) {
+        if(envelope.signal.aborted)throw error;
+        if (readOwnedAuthorityFault(error) !== null) throw error;
+        return {outcome:{ok:false,error:{code:'model_quality_evaluation_failed',message:'模型质量测评未完成，请先确认模型可用并通过文本能力检测。',retryable:true,correlationId:envelope.correlationId}},settlement:'completed'};
+      }
+    }
     if (envelope.command.kind === 'runtime.status.get') {
       return {
         outcome: { ok: true, result: { kind: 'runtime.status', status: this.status() } },
         settlement: 'completed'
       };
     }
-    if (envelope.command.kind === 'model.qualification.run.v3') {
+    if (envelope.command.kind === 'model.qualification.run') {
       try {
         const report = await this.qualifyModel(envelope.command.modelId, envelope.signal);
         return {
           outcome: {
             ok: true,
             result: {
-              kind: 'model.qualification.completed.v3',
+              kind: 'model.qualification.completed',
               modelId: report.modelId,
               ...deriveModelCapabilities(report)
             }
@@ -221,6 +257,7 @@ class RuntimeKernelApplication implements RuntimeApplication {
         };
       } catch (error) {
         if (envelope.signal.aborted) throw error;
+        if (readOwnedAuthorityFault(error) !== null) throw error;
         return {
           outcome: {
             ok: false,
@@ -235,7 +272,7 @@ class RuntimeKernelApplication implements RuntimeApplication {
         };
       }
     }
-    if (envelope.command.kind === 'model.availability.check.v3') {
+    if (envelope.command.kind === 'model.availability.check') {
       try {
         const available = await this.checkRemoteModelAvailability(
           envelope.command.modelId,
@@ -245,7 +282,7 @@ class RuntimeKernelApplication implements RuntimeApplication {
           outcome: {
             ok: true,
             result: {
-              kind: 'model.availability.completed.v3',
+              kind: 'model.availability.completed',
               modelId: envelope.command.modelId,
               available
             }
@@ -254,6 +291,7 @@ class RuntimeKernelApplication implements RuntimeApplication {
         };
       } catch (error) {
         if (envelope.signal.aborted) throw error;
+        if (readOwnedAuthorityFault(error) !== null) throw error;
         return {
           outcome: {
             ok: false,
@@ -268,7 +306,7 @@ class RuntimeKernelApplication implements RuntimeApplication {
         };
       }
     }
-    if (envelope.command.kind === 'conversation.session.title.generate.v3') {
+    if (envelope.command.kind === 'conversation.session.title.generate') {
       try {
         const title = await this.generateSessionTitle(
           envelope.command.content,
@@ -279,7 +317,7 @@ class RuntimeKernelApplication implements RuntimeApplication {
           outcome: {
             ok: true,
             result: {
-              kind: 'conversation.session.title.generated.v3',
+              kind: 'conversation.session.title.generated',
               sessionId: envelope.command.sessionId,
               sessionVersion: envelope.command.expectedSessionVersion,
               title
@@ -289,6 +327,7 @@ class RuntimeKernelApplication implements RuntimeApplication {
         };
       } catch (error) {
         if (envelope.signal.aborted) throw error;
+        if (readOwnedAuthorityFault(error) !== null) throw error;
         return {
           outcome: {
             ok: false,
@@ -319,7 +358,7 @@ class RuntimeKernelApplication implements RuntimeApplication {
 
   private async generateSessionTitle(
     content: string,
-    execution: ConversationMessageExecutionV3 | undefined,
+    execution: ConversationMessageExecution | undefined,
     signal: AbortSignal
   ): Promise<string> {
     const binding = this.resolveTitleBinding(execution);
@@ -352,7 +391,7 @@ class RuntimeKernelApplication implements RuntimeApplication {
   }
 
   private resolveTitleBinding(
-    execution: ConversationMessageExecutionV3 | undefined
+    execution: ConversationMessageExecution | undefined
   ): import('@ariadne/agent-core').AgentRunBinding['model'] | null {
     const modelId = execution?.modelId;
     const routingStrategy = execution?.routingStrategy
@@ -434,8 +473,9 @@ class RuntimeKernelApplication implements RuntimeApplication {
   }
 
   private modelSnapshot(): ReturnType<RuntimeModelCatalogSource['snapshot']> {
+    const reports = this.capabilityReports();
     const remoteModels = this.remoteModels.map((model) => {
-      const report = this.modelCapabilities.current(model.providerId, model.id)
+      const report = reports?.get(remoteModelKey(model.providerId, model.id))
         ?? unknownQualification({
           providerId: model.providerId,
           modelId: model.id,
@@ -446,14 +486,15 @@ class RuntimeKernelApplication implements RuntimeApplication {
         label: model.label,
         location: 'remote' as const,
         enabled: true,
-        availability: this.remoteCredentialAvailability.get(
+        availability: reports === null ? 'unavailable' as const : this.remoteCredentialAvailability.get(
           remoteModelKey(model.providerId, model.id)
         ) ?? 'error',
-        ...deriveModelCapabilities(report)
+        ...deriveModelCapabilities(report),
+        ...(report.quality===undefined?{}:{quality:modelQualitySummary(report.quality)})
       });
     });
     const localModels = this.localSnapshot.models.map((model) => {
-      const report = this.modelCapabilities.current('ariadne.local', model.id)
+      const report = reports?.get(remoteModelKey('ariadne.local', model.id))
         ?? unknownQualification({
           providerId: 'ariadne.local',
           modelId: model.id,
@@ -464,12 +505,13 @@ class RuntimeKernelApplication implements RuntimeApplication {
         label: model.displayName,
         location: 'local' as const,
         enabled: !this.disabledLocalModelIds.has(model.id),
-        availability: model.status === 'ready'
+        availability: reports === null ? 'unavailable' as const : model.status === 'ready'
           ? this.localRuntimeAvailability.get(model.runtime) ?? 'checking'
           : model.status === 'invalid'
             ? 'error' as const
             : 'unavailable' as const,
-        ...deriveModelCapabilities(report)
+        ...deriveModelCapabilities(report),
+        ...(report.quality===undefined?{}:{quality:modelQualitySummary(report.quality)})
       });
     });
     return Object.freeze([...remoteModels, ...localModels]);
@@ -486,6 +528,7 @@ class RuntimeKernelApplication implements RuntimeApplication {
   private async refreshLocalRuntimeAvailability(
     snapshot: LocalModelCatalogSnapshot
   ): Promise<void> {
+    if (this.capabilityReports() === null) return;
     this.markLocalRuntimesChecking(snapshot);
     const runtimes = [...new Set(
       snapshot.models
@@ -504,9 +547,11 @@ class RuntimeKernelApplication implements RuntimeApplication {
   }
 
   private scheduleLocalQualification(snapshot: LocalModelCatalogSnapshot): void {
+    if (this.capabilityReports() === null) return;
     for (const model of snapshot.models) {
       if (
         model.status !== 'ready'
+        || this.disabledLocalModelIds.has(model.id)
         || this.localRuntimeAvailability.get(model.runtime) !== 'ready'
         || this.localQualificationRuns.has(model.id)
       ) continue;
@@ -517,6 +562,17 @@ class RuntimeKernelApplication implements RuntimeApplication {
       });
       this.localQualificationRuns.set(model.id, run);
     }
+  }
+
+  private qualityBinding(modelId:string):DispatchExactAgentModelInferenceRequest['binding'] {
+    const local=this.localSnapshot.models.find(model=>model.id===modelId);
+    const remote=this.remoteModels.find(model=>model.id===modelId);
+    if(local && (local.status!=='ready'||this.localRuntimeAvailability.get(local.runtime)!=='ready'))
+      throw new Error('model_runtime_unavailable');
+    const revision=local ? 1 : remote ? remoteSettingsRevision(this.input.bootstrap,remote.providerId,remote.id) : null;
+    if(revision===null)throw new Error('model_quality_target_unknown');
+    const binding=this.modelInferenceGateway.resolveBinding(revision,{modelId,executionMode:'chat'});
+    if(binding===null)throw new Error('model_quality_binding_unavailable');return binding;
   }
 
   private async qualifyModel(
@@ -684,8 +740,45 @@ class RuntimeKernelApplication implements RuntimeApplication {
 
   private closeModelCapabilityRegistry(): void {
     if (this.modelCapabilityRegistryClosed) return;
+    this.modelCapabilitySource.registry?.close();
     this.modelCapabilityRegistryClosed = true;
-    this.modelCapabilities.close();
+  }
+
+  private hasLocalInferenceFailure(): boolean {
+    const models = this.localSnapshot.models.filter(model => model.status === 'ready' && !this.disabledLocalModelIds.has(model.id));
+    return this.localModels.runtimes.hasExternalFailure(new Set(models.map(model => model.id)))
+      || models.some(model => ['unavailable', 'error'].includes(this.localRuntimeAvailability.get(model.runtime) ?? 'checking'));
+  }
+
+  private get modelCapabilities(): ModelCapabilityRegistry {
+    this.modelCapabilitySource.health.assertHealthy();
+    const registry = this.modelCapabilitySource.registry;
+    if (registry === undefined) throw new Error('model_capability_source_composition_invalid');
+    return registry;
+  }
+  private requireCapabilityTools(): NonNullable<RuntimeKernelApplication['capabilityTools']> {
+    this.inferenceHealth.assertHealthy();
+    if (this.capabilityTools === undefined) throw new Error('model_capability_tools_composition_invalid');
+    return this.capabilityTools;
+  }
+  private get localTextProbe(): LocalTextCapabilityProbe { return this.requireCapabilityTools().text; }
+  private get fullCapabilityProbe(): ModelCapabilityProbeHarness { return this.requireCapabilityTools().full; }
+  private get qualityBenchmark(): ModelQualityBenchmark { return this.requireCapabilityTools().quality; }
+
+  /** A catalog can still describe discovered/configured models when their
+   * qualification authority is unavailable. It never uses old evidence or
+   * starts qualification in that state. An unclassified error still escapes. */
+  private capabilityReports(): Map<string, ModelCapabilityQualification | null> | null {
+    try {
+      const registry = this.modelCapabilities;
+      const reports = new Map<string, ModelCapabilityQualification | null>();
+      for (const model of this.remoteModels) reports.set(remoteModelKey(model.providerId, model.id), registry.current(model.providerId, model.id));
+      for (const model of this.localSnapshot.models) reports.set(remoteModelKey('ariadne.local', model.id), registry.current('ariadne.local', model.id));
+      registry.assertHealthy(); return reports;
+    } catch (error) {
+      if (readOwnedAuthorityFault(error)?.source !== 'inference') throw error;
+      return null;
+    }
   }
 }
 

@@ -131,6 +131,17 @@ export class MainWindowController {
     return [...this.popoutWindows].filter((candidate) => !candidate.isDestroyed());
   }
 
+  /** Called only after saved window state has been flushed for app shutdown.
+   * End every Renderer producer before Main unregisters their IPC handlers. */
+  destroyWindows(): void {
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = null;
+    for (const child of this.getPopoutWindows()) child.destroy();
+    this.popoutWindows.clear();
+    const window = this.window;
+    if (window && !window.isDestroyed()) window.destroy();
+  }
+
   async waitUntilRendererLoaded(): Promise<void> {
     if (!this.rendererLoadPromise) throw new Error('Renderer load has not started.');
     await this.rendererLoadPromise;

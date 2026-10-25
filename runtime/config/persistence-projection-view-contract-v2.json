@@ -1,0 +1,12 @@
+{
+  "contractVersion": 2,
+  "contracts": [
+    {
+      "owner": "publicProjectionViewReadV2",
+      "file": "runtime/src/projection/PublicProjectionViewQueryPortsV2.ts",
+      "export": "PublicProjectionViewQueryStoreV2",
+      "digest": "sha256:94f72ab1d957566e3298040f7772a57fac26972e5d071bfd323c27ef5d826ca9",
+      "graphNodes": 219
+    }
+  ]
+}

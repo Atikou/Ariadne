@@ -7,7 +7,7 @@ import type {
   ExactAgentModelInferenceToolContract
 } from '../../control/ports/AgentModelInference.js';
 import type { AgentToolJsonValue } from '@ariadne/agent-core';
-import type { ModelCapabilityRegistry } from './ModelCapabilityRegistry.js';
+import type { ModelCapabilityAuthority } from './ModelCapabilityAuthority.js';
 import type { ModelCapabilityQualification } from './ModelCapabilityQualification.js';
 
 const REPEATS = 3;
@@ -65,7 +65,7 @@ const PROBE_TOOLS = Object.freeze([ECHO_TOOL, CALCULATE_TOOL, LOOKUP_TOOL]);
 export class ModelCapabilityProbeHarness {
   public constructor(
     private readonly models: ExactAgentModelInferenceRuntime,
-    private readonly registry: ModelCapabilityRegistry
+    private readonly registry: ModelCapabilityAuthority
   ) {}
 
   public async run(input: {

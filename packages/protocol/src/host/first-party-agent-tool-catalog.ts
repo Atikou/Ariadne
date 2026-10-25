@@ -1,8 +1,8 @@
 /** Stable public authority identity for the production Runtime Tool Catalog. */
 export const FIRST_PARTY_AGENT_TOOL_CATALOG_ID = 'ariadne.workspace-tools' as const;
-export const FIRST_PARTY_AGENT_TOOL_CATALOG_REVISION = 18 as const;
+export const FIRST_PARTY_AGENT_TOOL_CATALOG_REVISION = 22 as const;
 export const FIRST_PARTY_AGENT_TOOL_CATALOG_DIGEST =
-  'sha256:5df0cfb03b0f2c0abb73a8b5b2242478833f7dd77bccca28c6d3af18645df5c9' as const;
+  'sha256:b1b4f6f65ba0f577537cddebd6a71fb387d179021554e1ad9a8eae2cd4caf9c8' as const;
 export const FIRST_PARTY_AGENT_TOOL_NAMES = Object.freeze([
   'browser.accessibility_snapshot',
   'browser.click',
@@ -18,6 +18,10 @@ export const FIRST_PARTY_AGENT_TOOL_NAMES = Object.freeze([
   'mcp.call_tool',
   'mcp.list_servers',
   'mcp.list_tools',
+  'memory.read',
+  'memory.recall',
+  'memory.stage_candidate',
+  'productivity.record_goal_decision',
   'skill.load',
   'skill.resource.read',
   'workspace.apply_text_edits',

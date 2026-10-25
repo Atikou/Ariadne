@@ -1,6 +1,9 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { attributeSqliteOpeningFault, markAuthorityIntegrityError, markAuthorityUnavailableError } from './SqliteAuthorityHealth.js';
+import { normalizeAgentControlDatabaseNames } from './AgentControlFixedNames.js';
+import { DATABASE_PATHS } from './DatabasePaths.js';
 
 import {
   acquireSqliteOwnerLease,
@@ -11,15 +14,15 @@ import {
 /**
  * Independent schema and serialized-ledger format for agent-control.db.
  *
- * Schema version 7 materializes Agent v3 ledger revision 55. It persists the
+ * Schema metadata version 8 materializes ledger revision 55 with fixed table names. It persists the
  * continuable SubAgent lifecycle, durable user questions, and immutable execution-provider identity alongside the protected
  * per-Turn execution snapshot. Every older store requires an explicit offline
  * migration; Runtime never mutates, dual-writes, or reinterprets it during
  * startup.
  */
-export const AGENT_CONTROL_DB_SCHEMA_VERSION = 7;
+export const AGENT_CONTROL_DB_SCHEMA_VERSION = 8;
 
-/** Domain ledger revision materialized by schema version 7. */
+/** Domain ledger revision; independent of physical database naming. */
 export const AGENT_CONTROL_LEDGER_REVISION = 55;
 
 export const AGENT_CONTROL_METADATA_KEYS = {
@@ -27,11 +30,7 @@ export const AGENT_CONTROL_METADATA_KEYS = {
   keyringGeneration: 'keyring_generation'
 } as const;
 
-export const AGENT_CONTROL_DB_RELATIVE_PATH = path.join(
-  'data',
-  'agent-control',
-  'agent-control.db'
-);
+export const AGENT_CONTROL_DB_RELATIVE_PATH = DATABASE_PATHS.agentControl;
 
 export interface AgentControlDbMigration {
   readonly version: number;
@@ -59,6 +58,11 @@ export const AGENT_CONTROL_DB_MIGRATIONS: readonly AgentControlDbMigration[] = [
     version: 7,
     name: 'agent_control_v3_durable_user_question',
     up: addAgentControlSchemaV7
+  },
+  {
+    version: 8,
+    name: 'agent_control_fixed_database_names',
+    up: normalizeAgentControlDatabaseNames
   }
 ];
 interface SchemaObject {
@@ -98,12 +102,12 @@ export function openAgentControlDatabase(dataRoot: string): {
     assertAgentControlDatabasePragmas(database);
     return { database, databasePath, ownerLease };
   } catch (error) {
+    attributeSqliteOpeningFault('execution', error);
     if (database !== null) {
       try {
         closeOwnedSqliteDatabase(database, ownerLease);
-      } catch {
-        // Preserve the schema/open error. An uncertain business close keeps
-        // the owner fence alive until process exit.
+      } catch (closeError) {
+        throw new AggregateError([error, closeError], 'agent_control_open_cleanup_failed');
       }
     } else {
       ownerLease.close();
@@ -131,58 +135,62 @@ function assertAgentControlDatabasePragmas(database: DatabaseSync): void {
     || journalMode.journal_mode.toLowerCase() !== 'wal'
     || Number(synchronous.synchronous) !== 2
   ) {
-    throw new Error('agent_control_pragma_verification_failed');
+    throw markAuthorityUnavailableError('execution', new Error('agent_control_pragma_verification_failed'));
   }
 }
 
 function initializeOrValidateSchema(database: DatabaseSync): void {
   const version = readUserVersion(database);
   if (version > AGENT_CONTROL_DB_SCHEMA_VERSION) {
-    throw new Error(
+    throw markAuthorityUnavailableError('execution', new Error(
       `agent_control_schema_newer_than_runtime:${String(version)}:`
       + String(AGENT_CONTROL_DB_SCHEMA_VERSION)
-    );
+    ));
   }
   if (version > 0 && version < AGENT_CONTROL_DB_SCHEMA_VERSION) {
-    throw new Error(
+    throw markAuthorityUnavailableError('execution', new Error(
       `agent_control_offline_migration_required:agent_control_schema:`
       + `${String(version)}:`
       + String(AGENT_CONTROL_DB_SCHEMA_VERSION)
-    );
+    ));
   }
   if (version === 0) {
     const objects = listSchemaObjects(database);
     if (objects.length > 0) {
-      throw new Error(
+      throw markAuthorityUnavailableError('execution', new Error(
         `agent_control_unversioned_schema_not_empty:`
         + objects.map(schemaObjectIdentity).join(',')
-      );
+      ));
     }
-    createSchema(database);
+    createAgentControlDatabaseSchema(database);
   }
   assertAgentControlSchema(database);
 }
 
-function createSchema(database: DatabaseSync): void {
+export function createAgentControlDatabaseSchema(database: DatabaseSync, version = AGENT_CONTROL_DB_SCHEMA_VERSION): void {
+  if ((version !== 7 && version !== 8) || readUserVersion(database) !== 0 || listSchemaObjects(database).length !== 0) {
+    throw new Error('agent_control_schema_creation_requires_pristine_database');
+  }
   database.exec('BEGIN IMMEDIATE');
   try {
     if (
-      AGENT_CONTROL_DB_MIGRATIONS.length !== 4
+      AGENT_CONTROL_DB_MIGRATIONS.length !== 5
       || AGENT_CONTROL_DB_MIGRATIONS[0]?.version !== 4
       || AGENT_CONTROL_DB_MIGRATIONS[1]?.version !== 5
       || AGENT_CONTROL_DB_MIGRATIONS[2]?.version !== 6
-      || AGENT_CONTROL_DB_MIGRATIONS[3]?.version !== AGENT_CONTROL_DB_SCHEMA_VERSION
+      || AGENT_CONTROL_DB_MIGRATIONS[3]?.version !== 7
+      || AGENT_CONTROL_DB_MIGRATIONS[4]?.version !== AGENT_CONTROL_DB_SCHEMA_VERSION
     ) {
       throw new Error('agent_control_migration_definition_invalid');
     }
-    for (const migration of AGENT_CONTROL_DB_MIGRATIONS) {
+    for (const migration of AGENT_CONTROL_DB_MIGRATIONS.filter(item => item.version <= version)) {
       migration.up(database);
       database.prepare(
         `INSERT INTO schema_migrations(version, name, applied_at)
          VALUES (?, ?, ?)`
       ).run(migration.version, migration.name, new Date().toISOString());
     }
-    database.exec(`PRAGMA user_version = ${AGENT_CONTROL_DB_SCHEMA_VERSION};`);
+    database.exec(`PRAGMA user_version = ${version};`);
     database.exec('COMMIT');
   } catch (error) {
     if (database.isTransaction) database.exec('ROLLBACK');
@@ -878,22 +886,23 @@ export function addAgentControlSchemaV7(database: DatabaseSync): void {
     `);
 }
 
-function assertAgentControlSchema(database: DatabaseSync): void {
+export function assertAgentControlSchema(database: DatabaseSync, expectedVersion = AGENT_CONTROL_DB_SCHEMA_VERSION): void {
+  if (expectedVersion !== 6 && expectedVersion !== 7 && expectedVersion !== 8) throw new Error('agent_control_schema_validation_version_unsupported');
   const version = readUserVersion(database);
-  if (version !== AGENT_CONTROL_DB_SCHEMA_VERSION) {
-    throw new Error(
+  if (version !== expectedVersion) {
+    throw markAuthorityIntegrityError('execution', new Error(
       `agent_control_schema_version_mismatch:${String(version)}:`
-      + String(AGENT_CONTROL_DB_SCHEMA_VERSION)
-    );
+      + String(expectedVersion)
+    ));
   }
 
   const actualSchema = listSchemaObjects(database);
-  const expectedSchema = createCanonicalSchemaObjects();
+  const expectedSchema = createCanonicalSchemaObjects(expectedVersion);
   if (JSON.stringify(actualSchema) !== JSON.stringify(expectedSchema)) {
-    throw new Error(
+    throw markAuthorityIntegrityError('execution', new Error(
       `agent_control_schema_definition_mismatch:`
       + `${actualSchema.map(schemaObjectIdentity).join(',')}`
-    );
+    ));
   }
 
   const migrations = database.prepare(
@@ -904,7 +913,7 @@ function assertAgentControlSchema(database: DatabaseSync): void {
     applied_at: string;
   }>;
   if (
-    migrations.length !== AGENT_CONTROL_DB_MIGRATIONS.length
+    migrations.length !== AGENT_CONTROL_DB_MIGRATIONS.filter(item => item.version <= expectedVersion).length
     || migrations.some((row, index) => {
       const expected = AGENT_CONTROL_DB_MIGRATIONS[index];
       return expected === undefined
@@ -913,18 +922,18 @@ function assertAgentControlSchema(database: DatabaseSync): void {
         || !isIsoTimestamp(row.applied_at);
     })
   ) {
-    throw new Error('agent_control_schema_migration_history_mismatch');
+    throw markAuthorityIntegrityError('execution', new Error('agent_control_schema_migration_history_mismatch'));
   }
 
   const foreignKeyFailures = database.prepare('PRAGMA foreign_key_check').all();
   if (foreignKeyFailures.length > 0) {
-    throw new Error('agent_control_schema_foreign_key_check_failed');
+    throw markAuthorityIntegrityError('execution', new Error('agent_control_schema_foreign_key_check_failed'));
   }
   const integrity = database.prepare('PRAGMA quick_check').get() as {
     quick_check: string;
   };
   if (integrity.quick_check !== 'ok') {
-    throw new Error(`agent_control_schema_integrity_check_failed:${integrity.quick_check}`);
+    throw markAuthorityIntegrityError('execution', new Error(`agent_control_schema_integrity_check_failed:${integrity.quick_check}`));
   }
 }
 
@@ -935,13 +944,14 @@ function readUserVersion(database: DatabaseSync): number {
   return row.user_version;
 }
 
-function createCanonicalSchemaObjects(): readonly SchemaObject[] {
+function createCanonicalSchemaObjects(expectedVersion: number): readonly SchemaObject[] {
   const canonical = new DatabaseSync(':memory:');
   try {
     createAgentControlSchemaV4(canonical);
     addAgentControlSchemaV5(canonical);
     addAgentControlSchemaV6(canonical);
-    addAgentControlSchemaV7(canonical);
+    if (expectedVersion >= 7) addAgentControlSchemaV7(canonical);
+    if (expectedVersion >= 8) normalizeAgentControlDatabaseNames(canonical);
     return listSchemaObjects(canonical);
   } finally {
     canonical.close();

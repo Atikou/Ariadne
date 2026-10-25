@@ -9,6 +9,7 @@ import {
 import path from 'node:path';
 
 import type { SecretCipher } from './secret-cipher';
+import { unrestrictedMainWrites, type MainWriteAdmission } from '../data-management/main-maintenance-gate';
 
 const KEY_BYTES = 32;
 const MAX_KEYS = 32;
@@ -65,7 +66,8 @@ export class AgentPersistenceKeyRingStore {
     private readonly cipher: SecretCipher,
     private readonly clock: () => Date = () => new Date(),
     private readonly createKey: () => Buffer = () => randomBytes(KEY_BYTES),
-    private readonly createKeyId: () => string = () => `agent-key-${randomUUID()}`
+    private readonly createKeyId: () => string = () => `agent-key-${randomUUID()}`,
+    private readonly writes: MainWriteAdmission = unrestrictedMainWrites
   ) {
     const resolvedPath = path.resolve(filePath);
     this.queueKey = process.platform === 'win32'
@@ -104,7 +106,7 @@ export class AgentPersistenceKeyRingStore {
       } finally {
         key.fill(0);
       }
-    });
+    }, true);
   }
 
   public loadForRuntime(): Promise<RuntimeAgentPersistenceKeyRing> {
@@ -150,7 +152,7 @@ export class AgentPersistenceKeyRingStore {
       } finally {
         nextKey.fill(0);
       }
-    });
+    }, true);
   }
 
   private async readPersisted(): Promise<AgentPersistenceKeyManifest> {
@@ -259,7 +261,8 @@ export class AgentPersistenceKeyRingStore {
     return keyId;
   }
 
-  private runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+  private runExclusive<T>(operation: () => Promise<T>, mutation = false): Promise<T> {
+    if (mutation) return this.writes.write(() => this.runExclusive(operation));
     const previous = pathOperationQueues.get(this.queueKey) ?? Promise.resolve();
     const result = previous.then(operation, operation);
     const tail = result.then(

@@ -31,7 +31,8 @@ describe('Chat module composition', () => {
     expect(chat).toContain('className="composer-context-bar"');
     expect(chat).toContain('className="composer-workspace-menu"');
     expect(chat).toContain('services.conversationNavigation.listSelectableWorkspaces()');
-    expect(chat).toContain('workspaceId: composerWorkspaceId');
+    expect(chat).toContain('services.drafts.ownerFor(composerWorkspaceId, runtime.selectedSessionId)');
+    expect(chat).toContain('services.draftDelivery.send(draftOwner');
     expect(chat).toContain("services.events.subscribe('chat:new-draft-requested'");
     expect(registry).not.toContain('conversationsModule');
     expect(chat).not.toContain('conversations.list');

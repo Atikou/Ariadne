@@ -4,6 +4,8 @@ import type { MessageFeatureStore } from '../runtime/features/message-feature-st
 import type { RunFeatureStore } from '../runtime/features/run-feature-store';
 import type { SessionFeatureStore } from '../runtime/features/session-feature-store';
 import type { RuntimeRun } from '../runtime/runtime-projection-presenter';
+import { splitSpeakableSegments } from './speakable-segments';
+export { splitSpeakableSegments } from './speakable-segments';
 
 const BACKGROUND_SESSION_KEY = 'ariadne.speech.background-session.v1';
 const ACTIVE_RUN_STATUSES = new Set([
@@ -19,6 +21,7 @@ interface VoiceTurn {
   pending: string;
   sequence: number;
   finalQueued: boolean;
+  bodyReadToken?: string;
   idleTimer: number | null;
 }
 
@@ -187,18 +190,29 @@ export class SpeechAgentBridge implements SpeechAgentBridgePort {
       .filter((message) => message.runId === turn.runId && message.role === 'assistant')
       .sort((left, right) => Number(left.status === 'streaming') - Number(right.status === 'streaming'))
       .at(-1);
-    if (assistant) this.acceptAssistantContent(turn, assistant.content);
+    if (assistant?.bodyState === 'unloaded' && assistant.bodyReadToken !== undefined) {
+      const token = `${assistant.messageId}\0${assistant.bodyReadToken}`;
+      if (turn.bodyReadToken !== token) {
+        turn.bodyReadToken = token;
+        void this.messages.loadBody(assistant.messageId, assistant.sessionId, assistant.bodyReadToken).catch(error => {
+          if (this.voiceTurn !== turn) return;
+          this.publishError(error); if (!turn.finalQueued) this.flushTurn(turn, true);
+        });
+      }
+      return;
+    }
+    if (assistant?.content !== undefined) this.acceptAssistantContent(turn, assistant.content, run !== undefined && !ACTIVE_RUN_STATUSES.has(run.status));
     if (run && !ACTIVE_RUN_STATUSES.has(run.status) && !turn.finalQueued) this.flushTurn(turn, true);
   }
 
-  private acceptAssistantContent(turn: VoiceTurn, content: string): void {
+  private acceptAssistantContent(turn: VoiceTurn, content: string, final: boolean): void {
     if (content === turn.observed) return;
     const delta = content.startsWith(turn.observed) ? content.slice(turn.observed.length) : content;
     turn.observed = content;
     turn.pending += delta;
-    this.flushTurn(turn, false);
+    this.flushTurn(turn, final);
     if (turn.idleTimer !== null) window.clearTimeout(turn.idleTimer);
-    if (turn.pending.length >= 32) {
+    if (!final && turn.pending.length >= 32) {
       turn.idleTimer = window.setTimeout(() => this.flushTurn(turn, false, true), 350);
     }
   }
@@ -238,35 +252,4 @@ export class SpeechAgentBridge implements SpeechAgentBridgePort {
     const normalized = error instanceof Error ? error : new Error(String(error));
     for (const listener of this.errorListeners) listener(normalized);
   }
-}
-
-export function splitSpeakableSegments(
-  input: string,
-  final: boolean,
-  idle = false
-): { ready: string[]; remainder: string } {
-  const ready: string[] = [];
-  let remainder = input;
-  const boundary = /[。！？!?；;\n]/u;
-  while (remainder.length > 0) {
-    const match = boundary.exec(remainder);
-    if (match?.index !== undefined) {
-      const end = match.index + match[0].length;
-      const segment = remainder.slice(0, end).trim();
-      remainder = remainder.slice(end);
-      if (segment) ready.push(segment);
-      continue;
-    }
-    if (remainder.length >= 80) {
-      ready.push(remainder.slice(0, 80).trim());
-      remainder = remainder.slice(80);
-      continue;
-    }
-    if ((final || idle) && remainder.trim()) {
-      ready.push(remainder.trim());
-      remainder = '';
-    }
-    break;
-  }
-  return { ready, remainder };
 }

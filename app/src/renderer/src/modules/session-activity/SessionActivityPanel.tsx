@@ -2,6 +2,7 @@ import { CheckCircle2, CircleDot, Clock3, LoaderCircle, Wrench, XCircle } from '
 import type { FeaturePanelProps } from '@renderer/core/modules/module-contract';
 import { useFeatureSnapshot } from '@renderer/core/runtime/features/feature-snapshot-store';
 import { formatRunStatus } from '@renderer/core/runtime/runtime-labels';
+import { RunCollectionControls } from '@renderer/shared/ui/RunCollectionControls';
 
 /** Projection-native view: tool activity is read from the authoritative Run projection. */
 export function SessionActivityPanel({ moduleId, services }: FeaturePanelProps): React.JSX.Element {
@@ -16,13 +17,15 @@ export function SessionActivityPanel({ moduleId, services }: FeaturePanelProps):
   return <section className="session-activity-panel" aria-labelledby={`${moduleId}-title`}>
     <header className="session-activity-header">
       <div><span>SESSION ACTIVITY</span><h1 id={`${moduleId}-title`}>会话活动</h1></div>
-      <div className="session-activity-runs" aria-label="本会话运行">
+      <div className="session-activity-runs" aria-label="已打开的运行">
         {runs.map((run, index) => <div key={run.runId} className="is-active">
           <span>#{index + 1}</span><strong>{formatRunStatus(run.status)}</strong>
         </div>)}
       </div>
     </header>
     <div className="session-activity-workspace"><div className="session-activity-canvas">
+      {runs.map(run => <RunCollectionControls key={run.runId} label={`${run.title}工具记录`} coverage={run.collections.toolActivities}
+        owner={`${run.runId}:${run.documentToken}`} onRead={direction => services.runs.readCollection(run, 'toolActivities', direction)} />)}
       {activities.map((activity) => <article className="activity-detail-card" key={activity.activityId}>
         {activity.status === 'failed'
           ? <XCircle size={15} />
@@ -34,7 +37,10 @@ export function SessionActivityPanel({ moduleId, services }: FeaturePanelProps):
           <small><Clock3 size={11} /> {new Date(activity.occurredAt).toLocaleTimeString()}</small>
         </div>
       </article>)}
-      {activities.length === 0 && <div className="activity-empty"><CircleDot /> 本轮还没有工具调用。</div>}
+      {activities.length === 0 && <div className="activity-empty"><CircleDot />
+        {runs.length === 0 ? '尚未打开运行详情。' : runs.every(run => run.collections.toolActivities.total === 0)
+          ? '已打开的运行没有工具调用。' : '工具记录尚未加载。'}
+      </div>}
     </div></div>
   </section>;
 }

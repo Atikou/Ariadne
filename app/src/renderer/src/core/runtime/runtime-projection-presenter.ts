@@ -1,41 +1,46 @@
 import type {
   AgentPlan,
   CompanionMessage,
-  ConversationMessageReferenceV3,
-  ImageAttachmentRefV3,
+  ConversationMessageReference,
+  ImageAttachmentRef,
   ConversationSession,
   ModelSummary,
   PermissionRequest,
   PlanHandoff,
-  PublicDecisionProjectionV3,
-  PublicDiagnosticProjectionV3,
-  PublicInferenceStreamProjectionV3,
-  PublicMessageProjectionV3,
-  PublicModelProjectionV3,
-  PublicRunProjectionV3,
-  PublicAgentInboxInputV3,
-  PublicSessionProjectionV3,
+  PublicDecisionProjection,
+  PublicDiagnosticProjection,
+  PublicInferenceStreamProjection,
+  PublicMessageProjection,
+  PublicModelProjection,
+  PublicRunProjection,
+  PublicSessionProjection,
   RunSummary,
   RunActivity,
   TraceEntry
 } from '@ariadne/protocol/public';
+import type { ProjectionMessage, ProjectionRun, ProjectionInboxInput } from './projection/projection-presentation';
 
-export type RuntimeMessage = CompanionMessage & {
+export type RuntimeMessage = Omit<CompanionMessage, 'content'> & {
+  content?: string;
+  bodyState?: 'unloaded' | 'loaded';
+  bodyReadToken?: string;
   deliveryState?: 'pending' | 'failed';
-  attachments?: readonly ImageAttachmentRefV3[];
-  reference?: ConversationMessageReferenceV3;
+  attachments?: readonly ImageAttachmentRef[];
+  reference?: ConversationMessageReference;
 };
 
 export type RuntimeRun = Omit<RunSummary, 'origin' | 'status'> & {
   /** v3 intentionally does not guess which mutation route owns this run. */
   origin: RunSummary['origin'] | 'projection';
-  status: PublicRunProjectionV3['status'];
-  inbox: PublicAgentInboxInputV3[];
-  interactionMessages: RuntimeMessage[];
+  status: PublicRunProjection['status'];
+  inbox: ProjectionInboxInput[];
+  collections: ProjectionRun['collections'];
+  documentToken: string;
   parentRunId?: string;
   delegationId?: string;
   subagentMode?: 'one_shot' | 'continuable';
   subagentProviderId?: string;
+  cancellationPending?: boolean;
 };
 
 export type RuntimePermissionDecision = Omit<
@@ -45,7 +50,7 @@ export type RuntimePermissionDecision = Omit<
   runId?: string;
   projectionVersion: number;
   permissionItems: ReadonlyArray<PermissionRequest['permissionItems'][number]>;
-  status: PublicDecisionProjectionV3['status'];
+  status: PublicDecisionProjection['status'];
   toolName: string;
   scopeIds: readonly string[];
   resourceSummary: string;
@@ -60,7 +65,7 @@ export type RuntimePlanDecision = Omit<
   projectionVersion: number;
   plan: AgentPlan | null;
   steps: ReadonlyArray<PlanHandoff['steps'][number]>;
-  status: PublicDecisionProjectionV3['status'];
+  status: PublicDecisionProjection['status'];
   impactSummary: string;
   approvalScope: 'continue_run_with_presented_plan';
   actionAvailable: boolean;
@@ -71,7 +76,7 @@ export interface RuntimeUserQuestionDecision {
   readonly runId: string;
   readonly sessionId: string;
   readonly projectionVersion: number;
-  readonly status: PublicDecisionProjectionV3['status'];
+  readonly status: PublicDecisionProjection['status'];
   readonly headline: string;
   readonly prompt: string;
   readonly options?: readonly {
@@ -84,7 +89,7 @@ export interface RuntimeUserQuestionDecision {
 }
 
 export function presentSession(
-  session: PublicSessionProjectionV3
+  session: PublicSessionProjection
 ): ConversationSession {
   return {
     sessionId: session.sessionId,
@@ -98,14 +103,16 @@ export function presentSession(
 }
 
 export function presentMessage(
-  message: PublicMessageProjectionV3
+  message: ProjectionMessage
 ): RuntimeMessage {
   return {
     messageId: message.messageId,
     sessionId: message.sessionId,
     ...(message.runId === undefined ? {} : { runId: message.runId }),
     role: message.role,
-    content: message.content,
+    ...(message.content === undefined ? {} : { content: message.content }),
+    ...(message.bodyState === undefined ? {} : { bodyState: message.bodyState }),
+    ...(message.bodyReadToken === undefined ? {} : { bodyReadToken: message.bodyReadToken }),
     ...(message.reference === undefined ? {} : { reference: { ...message.reference } }),
     ...(message.attachments === undefined
       ? {}
@@ -116,7 +123,7 @@ export function presentMessage(
 }
 
 export function presentInferenceStreamMessage(
-  stream: PublicInferenceStreamProjectionV3
+  stream: PublicInferenceStreamProjection
 ): RuntimeMessage | null {
   if (stream.status !== 'streaming') return null;
   const content = stream.chunks
@@ -152,7 +159,7 @@ export function presentInferenceStreamMessage(
 /** Keeps provider reasoning visible after the live inference attempt commits. */
 export function mergeInferenceStreamReasoning(
   messages: readonly RuntimeMessage[],
-  streams: readonly PublicInferenceStreamProjectionV3[],
+  streams: readonly PublicInferenceStreamProjection[],
 ): RuntimeMessage[] {
   const reasoningByRun = new Map<string, {
     readonly content: string;
@@ -200,7 +207,7 @@ export function mergeInferenceStreamReasoning(
   });
 }
 
-export function presentRun(run: PublicRunProjectionV3): RuntimeRun {
+export function presentRun(run: ProjectionRun): RuntimeRun {
   const activeEnd = run.completedAt ?? run.updatedAt;
   const activeDurationMs = run.startedAt === undefined
     ? 0
@@ -228,13 +235,15 @@ export function presentRun(run: PublicRunProjectionV3): RuntimeRun {
     origin: 'projection',
     title: run.title,
     status: run.status,
+    ...(run.cancellationPending === undefined ? {} : { cancellationPending: run.cancellationPending }),
     ...(run.progress === undefined ? {} : { progress: run.progress }),
     userFacingLabel: run.label,
     aggregateVersion: run.version,
     checkpointStage: run.status,
     recoveryStatus: run.status === 'interrupted' ? 'recoverable' : 'none',
     inbox: run.inbox.map((input) => ({ ...input })),
-    interactionMessages: run.interactionMessages.map(presentMessage),
+    collections: run.collections,
+    documentToken: run.documentToken,
     timing: {
       activeDurationMs,
       ...(active && run.startedAt !== undefined ? { activeSince: run.updatedAt } : {})
@@ -244,7 +253,7 @@ export function presentRun(run: PublicRunProjectionV3): RuntimeRun {
   };
 }
 
-export function presentRunActivities(run: PublicRunProjectionV3): RunActivity[] {
+export function presentRunActivities(run: ProjectionRun): RunActivity[] {
   return run.toolActivities.map((activity, index) => ({
     activityType: 'tool',
     activityId: activity.activityId,
@@ -269,7 +278,7 @@ export function presentRunActivities(run: PublicRunProjectionV3): RunActivity[] 
     ...(activity.startedAt === undefined || activity.completedAt === undefined
       ? {}
       : { durationMs: Math.max(0, Date.parse(activity.completedAt) - Date.parse(activity.startedAt)) }),
-    iteration: index,
+    iteration: run.collections.toolActivities.startOrdinal + index,
     batchId: `${run.runId}:effects`,
     laneId: 'agent-tools',
     dependsOnActivityIds: [],
@@ -279,7 +288,7 @@ export function presentRunActivities(run: PublicRunProjectionV3): RunActivity[] 
 }
 
 export function presentPermissionDecision(
-  decision: PublicDecisionProjectionV3
+  decision: PublicDecisionProjection
 ): RuntimePermissionDecision | null {
   if (
     decision.kind !== 'permission'
@@ -311,7 +320,7 @@ export function presentPermissionDecision(
 }
 
 export function presentPlanDecision(
-  decision: PublicDecisionProjectionV3
+  decision: PublicDecisionProjection
 ): RuntimePlanDecision | null {
   if (
     decision.kind !== 'plan'
@@ -340,7 +349,7 @@ export function presentPlanDecision(
 }
 
 export function presentUserQuestionDecision(
-  decision: PublicDecisionProjectionV3
+  decision: PublicDecisionProjection
 ): RuntimeUserQuestionDecision | null {
   if (
     decision.kind !== 'user_question'
@@ -371,7 +380,7 @@ export function presentUserQuestionDecision(
 }
 
 function isActionablePermissionDecision(
-  decision: PublicDecisionProjectionV3
+  decision: PublicDecisionProjection
 ): boolean {
   return hasExactDecisionAction(
     decision,
@@ -381,13 +390,13 @@ function isActionablePermissionDecision(
 }
 
 function isActionablePlanDecision(
-  decision: PublicDecisionProjectionV3
+  decision: PublicDecisionProjection
 ): boolean {
   return hasExactDecisionAction(decision, 'plan', ['approve', 'reject']);
 }
 
 function hasExactDecisionAction(
-  decision: PublicDecisionProjectionV3,
+  decision: PublicDecisionProjection,
   kind: 'permission' | 'plan' | 'user_question',
   expectedChoices: readonly string[]
 ): boolean {
@@ -404,7 +413,7 @@ function hasExactDecisionAction(
     && action.choices.every((choice, index) => choice === expectedChoices[index]);
 }
 
-export function presentModel(model: PublicModelProjectionV3): ModelSummary {
+export function presentModel(model: PublicModelProjection): ModelSummary {
   return {
     id: model.modelId,
     label: model.label,
@@ -415,12 +424,13 @@ export function presentModel(model: PublicModelProjectionV3): ModelSummary {
     supportsAgent: model.supportsAgent,
     supportsPlan: model.supportsPlan,
     supportsVision: model.supportsVision,
-    qualificationState: model.qualificationState
+    qualificationState: model.qualificationState,
+    ...(model.quality===undefined?{}:{quality:model.quality})
   };
 }
 
 export function presentDiagnostic(
-  diagnostic: PublicDiagnosticProjectionV3
+  diagnostic: PublicDiagnosticProjection
 ): TraceEntry {
   return {
     traceId: diagnostic.diagnosticId,

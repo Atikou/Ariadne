@@ -58,6 +58,9 @@ export class InMemoryAgentRunUnitOfWork implements AgentRunUnitOfWork {
     try {
       return await operation({
       loadRun: async (runId) => cloneJson(this.runs.get(runId) ?? null),
+      loadRunVersion: async (runId, version) => cloneJson([...this.commands.values()]
+        .flatMap(command => command.mutations).find(mutation => mutation.runId === runId
+          && mutation.resultingVersion === version)?.run ?? null),
       loadCommittedCommand: async (commandId, artifacts = [], facts) => {
         const committed = this.commands.get(commandId) ?? null;
         if (

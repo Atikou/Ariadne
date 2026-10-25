@@ -40,7 +40,7 @@ interface RegistrationDefinition {
   readonly implementationModuleUrl: string;
   readonly capabilityIds: readonly string[];
   readonly requiredWorkspaceAccess: 'read' | 'write';
-  readonly sideEffect: 'read' | 'write' | 'external';
+  readonly sideEffect: 'none' | 'read' | 'write' | 'external';
   readonly approval: 'never' | 'required';
   readonly timeoutMs?: number;
   readonly resourceSemantics?: AgentToolContractDocumentV2['resourceSemantics'];

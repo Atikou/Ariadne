@@ -48,13 +48,13 @@ Recovery presentation remains generic and never includes uncertainty evidence.
 The public boundary continues to reject absolute paths and credential-shaped
 text after schema validation.
 
-Renderer `ProjectionCache` retains the exact opaque action descriptor as
+Renderer's explicitly loaded Decision detail retains the exact opaque action descriptor as
 transport authority, but presenters and React-facing view models never copy
 its token into displayed state, logs, labels, or text. Permission and Plan
 actions set `actionAvailable=true` only for an active, kind-matched descriptor
 with the exact allowed choices and displayed authorization semantics. At click
 time `RuntimeStore` rereads the exact cached Decision and sends
-`agent.decision.resolve.v3`; any missing or mismatched descriptor fails closed
+`agent.decision.resolve`; any missing or mismatched descriptor fails closed
 and leaves the action disabled.
 
 ## Consequences

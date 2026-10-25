@@ -14,6 +14,12 @@ export class AgentRunInvariantError extends AgentCoreError {
   }
 }
 
+export class AgentRunAncestorCancellationError extends AgentCoreError {
+  public constructor(public readonly runId: string, public readonly ancestorRunId: string) {
+    super('AGENT_RUN_ANCESTOR_CANCELLATION', 'A required ancestor Run has a durable pending cancellation.');
+  }
+}
+
 export class AgentRunTransitionError extends AgentCoreError {
   public constructor(message: string) {
     super('AGENT_RUN_TRANSITION', message);

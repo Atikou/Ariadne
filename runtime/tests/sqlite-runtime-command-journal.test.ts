@@ -16,7 +16,6 @@ import {
   RUNTIME_COMMAND_DB_SCHEMA_VERSION,
   resolveRuntimeCommandDatabasePath
 } from '../src/adapters/persistence/runtimeCommandDbMigrations.js';
-import { DatabaseManager } from '../src/context/DatabaseManager.js';
 
 const DIGEST_A = 'a'.repeat(64);
 const DIGEST_B = 'b'.repeat(64);
@@ -30,6 +29,30 @@ interface PersistedCommandRow {
 }
 
 describe('SqliteRuntimeCommandJournal', () => {
+  it.each([
+    {kind:'workspace.document.saved',workspaceId:'workspace-a',path:'notes.txt',byteLength:3,operation:'replaced',version:`workspace-file-v1:${'a'.repeat(64)}`},
+    {kind:'workspace.document.moved',workspaceId:'workspace-a',path:'notes.txt',destination:'moved.txt',byteLength:3,version:`workspace-file-v1:${'a'.repeat(64)}`},
+    {kind:'workspace.document.deleted',workspaceId:'workspace-a',path:'notes.txt',byteLength:3}
+  ] as const)('replays completed file metadata $kind after reopening without rerunning a filesystem command',result=>{
+    const root=createDataRoot();try{
+      const first=createJournal();first.open(root);first.begin('file-original',DIGEST_A);first.complete('file-original',DIGEST_A,{ok:true,result});first.close();
+      const reopened=createJournal();reopened.open(root);expect(reopened.begin('file-original',DIGEST_A)).toEqual({kind:'replay',outcome:{ok:true,result}});
+      expect(reopened.begin('file-original',DIGEST_B)).toEqual({kind:'conflict'});reopened.close();
+    }finally{cleanupRoot(root);}
+  });
+  it('retains only the exact definitive public file failure and keeps protected reads and arbitrary errors out of replay storage',()=>{
+    const root=createDataRoot();try{
+      const first=createJournal();first.open(root);
+      const rejection={ok:false,error:{code:'workspace_file_stale_version',message:'文件已被其他操作更新，请重新读取后再保存。',retryable:false,correlationId:'fixture-correlation'}};
+      const privateBody='PRIVATE_FILE_BODY_MUST_NOT_BE_IN_THE_JOURNAL';
+      first.begin('rejected-file',DIGEST_A);first.complete('rejected-file',DIGEST_A,rejection);
+      first.begin('private-read',DIGEST_A);first.complete('private-read',DIGEST_A,{ok:true,result:{kind:'workspace.document.read_result',workspaceId:'workspace-a',path:'notes.txt',byteLength:privateBody.length,content:privateBody,version:`workspace-file-v1:${'a'.repeat(64)}`,writable:true}});
+      first.begin('modified-error',DIGEST_A);first.complete('modified-error',DIGEST_A,{ok:false,error:{...rejection.error,message:privateBody}});first.close();
+      expect(readFileSync(databasePath(root)).includes(Buffer.from(privateBody))).toBe(false);
+      const reopened=createJournal();reopened.open(root);expect(reopened.begin('rejected-file',DIGEST_A)).toEqual({kind:'replay',outcome:rejection});
+      expect(reopened.begin('private-read',DIGEST_A)).toEqual({kind:'uncertain'});expect(reopened.begin('modified-error',DIGEST_A)).toEqual({kind:'uncertain'});reopened.close();
+    }finally{cleanupRoot(root);}
+  });
   it('rejects non-canonical command identities before writing a tombstone', () => {
     const root = createDataRoot();
     try {
@@ -49,8 +72,9 @@ describe('SqliteRuntimeCommandJournal', () => {
   it('owns a physically isolated database containing only its schema and migration audit', () => {
     const root = createDataRoot();
     try {
-      const memory = new DatabaseManager(path.join(root, 'data'));
-      memory.connection.exec(`
+      mkdirSync(path.join(root, 'data', 'agent_data'), { recursive: true });
+    const memory = new DatabaseSync(path.join(root, 'data', 'agent_data', 'memory.db'));
+      memory.exec(`
         CREATE TABLE owner_fencing_sentinel (
           id TEXT PRIMARY KEY,
           value TEXT NOT NULL
@@ -92,9 +116,9 @@ describe('SqliteRuntimeCommandJournal', () => {
           expect.arrayContaining([
             'sessions',
             'messages',
-            'agent_v3_runs',
-            'agent_v3_events',
-            'agent_v3_outbox'
+            'agent_runs',
+            'agent_events',
+            'agent_outbox'
           ])
         );
         expect(readMigrationAudit(database)).toEqual([
@@ -402,7 +426,7 @@ describe('SqliteRuntimeCommandJournal', () => {
     }
   });
 
-  it('keeps an uncertain tombstone when receipt reconstruction is not replay-safe', () => {
+  it('delivers a reconstructed receipt while retaining only its uncertain tombstone', () => {
     const root = createDataRoot();
     const privateOutcome: RuntimeResponse['outcome'] = {
       ok: true,
@@ -426,16 +450,25 @@ describe('SqliteRuntimeCommandJournal', () => {
         DIGEST_A,
         uncertainOutcome('command-private-reconcile')
       );
-      expect(() => journal.reconcileUncertain(
+      expect(journal.reconcileUncertain(
         'command-private-reconcile',
         DIGEST_A,
         { kind: 'committed', outcome: privateOutcome }
-      )).toThrow('runtime_command_reconciliation_outcome_not_replay_safe');
+      )).toEqual({ kind: 'replay', outcome: privateOutcome });
       expect(journal.getStatus('command-private-reconcile')).toBe('uncertain');
       expect(readPersistedOutcomes(root)).not.toContain(
         'must not enter the Runtime command journal'
       );
       journal.close();
+      const recovered = createJournal();
+      recovered.open(root);
+      expect(recovered.begin('command-private-reconcile', DIGEST_A)).toEqual({ kind: 'uncertain' });
+      expect(recovered.reconcileUncertain('command-private-reconcile', DIGEST_B,
+        { kind: 'committed', outcome: privateOutcome })).toEqual({ kind: 'conflict' });
+      expect(recovered.reconcileUncertain('command-private-reconcile', DIGEST_A,
+        { kind: 'committed', outcome: privateOutcome })).toEqual({ kind: 'replay', outcome: privateOutcome });
+      expect(readPersistedOutcomes(root)).not.toContain('must not enter the Runtime command journal');
+      recovered.close();
     } finally {
       cleanupRoot(root);
     }

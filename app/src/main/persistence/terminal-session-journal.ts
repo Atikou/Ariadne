@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 import { z } from 'zod';
 
 import type { TerminalRecoveryRecord, TerminalShell } from '@shared/contract';
+import { unrestrictedMainWrites, type MainWriteAdmission } from '../data-management/main-maintenance-gate';
 
 const terminalRecordSchema = z.object({
   sessionId: z.string().uuid(),
@@ -36,7 +37,8 @@ export class TerminalSessionJournal {
 
   public constructor(
     private readonly filePath: string,
-    private readonly now: () => Date = () => new Date()
+    private readonly now: () => Date = () => new Date(),
+    private readonly writes: MainWriteAdmission = unrestrictedMainWrites
   ) {}
 
   public async initialize(): Promise<void> {
@@ -98,7 +100,7 @@ export class TerminalSessionJournal {
     outcome: Pick<TerminalRecord, 'status'> & Pick<TerminalRecord, 'exitCode' | 'detail'>
   ): Promise<void> {
     if (outcome.status === 'running') throw new Error('terminal_session_terminal_status_required');
-    await this.mutate((current) => current.records.map((record) => record.sessionId === sessionId
+    await this.writes.writeDeferred(() => this.mutate((current) => current.records.map((record) => record.sessionId === sessionId
       ? terminalRecordSchema.parse({
           ...record,
           status: outcome.status,
@@ -106,14 +108,17 @@ export class TerminalSessionJournal {
           ...(outcome.exitCode === undefined ? {} : { exitCode: outcome.exitCode }),
           ...(outcome.detail === undefined ? {} : { detail: outcome.detail })
         })
-      : record));
+      : record)));
   }
 
   public async flush(): Promise<void> {
     await this.writeQueue;
   }
 
+  public validateBackup(raw: string): void { terminalJournalSchema.parse(JSON.parse(raw)); }
+
   private async mutate(operation: (current: TerminalJournal) => TerminalRecord[]): Promise<void> {
+    return this.writes.write(async () => {
     this.assertInitialized();
     const queued = this.writeQueue.then(async () => {
       const next = terminalJournalSchema.parse({
@@ -125,6 +130,7 @@ export class TerminalSessionJournal {
     });
     this.writeQueue = queued;
     await queued;
+    });
   }
 
   private async persist(journal: TerminalJournal): Promise<void> {

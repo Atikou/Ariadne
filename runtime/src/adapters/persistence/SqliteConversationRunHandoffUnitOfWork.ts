@@ -1,7 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
 export { ConversationOutboxClaimError } from './ConversationHandoffStorageTypes.js';
 export type { ConversationPersistenceClock, ConversationShutdownContext, ConversationPersistenceFaultInjector } from './ConversationHandoffStorageTypes.js';
-import type { ConversationMessageReferenceV3 } from '@ariadne/protocol/public';
+import { conversationMessageReferenceSchema, publicProjectionCanonicalIdSchema,
+  type ConversationMessageReference } from '@ariadne/protocol/public';
+import type { ConversationMessageIdentityReadV1 } from '../../control/ports/ConversationMessageIdentityReadV1.js';
 import { type ConversationMessageVersion, type ConversationSession } from '../../conversation/ConversationAuthority.js';
 import { type ConversationRunHandoffSaga } from '../../conversation/ConversationRunHandoffSaga.js';
 import type {
@@ -27,6 +29,7 @@ import { readConversationProjectionRecords } from './conversation/projection/Sql
 import {
   SqliteConversationNavigationStore,
   type ConversationSessionQueryItem,
+  type FrozenConversationContext,
   type ForkConversationSessionRequest,
   type ForkConversationSessionResult,
   type QueryConversationSessionsRequest,
@@ -49,6 +52,7 @@ import {
 import { SqliteConversationTransaction } from './SqliteConversationTransaction.js';
 import {
   assertCanonicalId,
+  authorityStorageCorruption,
   canonicalNow,
   storageInvariant
 } from './ConversationHandoffStorageValidation.js';
@@ -72,10 +76,12 @@ implements ConversationAuthorityUnitOfWork,
 ConversationRunHandoffUnitOfWork,
 ConversationRunHandoffOutboxPort,
 ConversationRunHandoffLookup,
-ConversationProjectionReader {
+ConversationProjectionReader, ConversationMessageIdentityReadV1 {
   private readonly database: DatabaseSync;
   private readonly navigation: SqliteConversationNavigationStore;
   private readonly transactionOwner: SqliteTransactionOwner;
+
+  public assertHealthy(): void { this.transactionOwner.assertHealthy(); }
 
   public constructor(
     dataRoot: string,
@@ -100,6 +106,7 @@ ConversationProjectionReader {
       opened.databasePath,
       opened.ownerLease,
       {
+        source: 'conversation',
         shutdownRequestedCode: 'conversation_unit_of_work_shutdown_requested',
         closedCode: 'conversation_unit_of_work_closed',
         shutdownConflictCode: 'conversation_shutdown_context_conflict',
@@ -210,6 +217,26 @@ ConversationProjectionReader {
     ));
   }
 
+  public readMessageIdentity(messageId: string, version: number): ReturnType<ConversationMessageIdentityReadV1['readMessageIdentity']> {
+    assertCanonicalId(messageId, 'message identity lookup');
+    if (!Number.isSafeInteger(version) || version < 1) throw storageInvariant('message_identity_version_invalid');
+    return this.scheduleOperation(signal => this.executeDatabaseTransaction('read', () => {
+      const row = this.database.prepare(`SELECT message_id,version,session_id,workspace_id,content_digest,role,
+        json_extract(payload_json,'$.execution.mode') execution_mode FROM conversation_message_versions WHERE message_id=? AND version=?`)
+        .get(messageId, version);
+      if (!row) return null;
+      try {
+        if (!['user', 'assistant'].includes(String(row.role))
+          || (row.execution_mode !== null && row.execution_mode !== 'chat' && row.execution_mode !== 'agent'))
+          throw new Error('message_identity_metadata_invalid');
+        return { reference: conversationMessageReferenceSchema.parse({ messageId: row.message_id,
+          messageVersion: row.version, sessionId: row.session_id, contentDigest: row.content_digest }),
+          workspaceId: publicProjectionCanonicalIdSchema.parse(row.workspace_id), role: row.role as 'user' | 'assistant',
+          executionMode: row.execution_mode as 'chat' | 'agent' | null };
+      } catch (error) { throw authorityStorageCorruption('message_identity_metadata_invalid', error); }
+    }, signal));
+  }
+
   public readSagaByMessage(
     messageId: string,
     messageVersion: number
@@ -262,6 +289,13 @@ ConversationProjectionReader {
     ));
   }
 
+  public captureFrozenContext(sessionId: string, expectedVersion: number): Promise<FrozenConversationContext> {
+    assertCanonicalId(sessionId, 'context snapshot lookup');
+    if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) throw storageInvariant('context_snapshot_version_invalid');
+    return this.scheduleOperation(signal => this.executeDatabaseTransaction('read',
+      () => this.navigation.captureContext(sessionId, expectedVersion), signal));
+  }
+
   public querySessions(
     request: QueryConversationSessionsRequest
   ): Promise<readonly ConversationSessionQueryItem[]> {
@@ -273,7 +307,7 @@ ConversationProjectionReader {
   }
 
   public resolveMessageReference(
-    reference: ConversationMessageReferenceV3
+    reference: ConversationMessageReference
   ): Promise<ResolvedConversationMessageReference> {
     return this.scheduleOperation((signal) => this.executeDatabaseTransaction(
       'read',

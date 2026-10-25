@@ -12,8 +12,7 @@ export const MEMORY_CONTROL_SHADOW_TABLES = [
   "agent_v2_runs",
 ] as const;
 
-export const MEMORY_CONTROL_SHADOW_OFFLINE_MIGRATION_REQUIRED =
-  "memory_control_shadow_offline_migration_required";
+export const RETIRED_CONTROL_DATA_UNSUPPORTED = "retired_control_data_unsupported";
 
 export interface MemoryControlShadowPreflightResult {
   readonly databasePath: string;
@@ -62,21 +61,6 @@ export function preflightMemoryControlShadowsAtDatabasePath(
   }
 }
 
-/** Retires only empty pre-isolation scaffolding inside the caller's transaction. */
-export function retireEmptyMemoryControlShadows(database: DatabaseSync): void {
-  const inspection = inspectMemoryControlShadows(database);
-  assertMemoryControlShadowsEmpty(inspection);
-  database.exec(`
-    DROP TABLE IF EXISTS agent_v2_outbox;
-    DROP TABLE IF EXISTS agent_v2_effect_payloads;
-    DROP TABLE IF EXISTS agent_v2_checkpoints;
-    DROP TABLE IF EXISTS agent_v2_events;
-    DROP TABLE IF EXISTS agent_v2_commands;
-    DROP TABLE IF EXISTS agent_v2_runs;
-    DROP TABLE IF EXISTS runtime_commands;
-  `);
-}
-
 interface MemoryControlShadowInspection {
   readonly presentTables: readonly string[];
   readonly populatedTables: readonly string[];
@@ -117,7 +101,7 @@ function assertMemoryControlShadowsEmpty(
 ): void {
   if (inspection.populatedTables.length === 0) return;
   throw new Error(
-    `${MEMORY_CONTROL_SHADOW_OFFLINE_MIGRATION_REQUIRED}:`
+    `${RETIRED_CONTROL_DATA_UNSUPPORTED}:`
       + inspection.populatedTables.join(","),
   );
 }

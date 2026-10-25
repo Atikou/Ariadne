@@ -1,8 +1,12 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import './verify-persistence-contract.mjs';
+import './verify-persistence-extension-contracts.mjs';
+import { assertRetiredRuntimeAbsent } from './verify-retired-runtime-absence.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+assertRetiredRuntimeAbsent(path.join(projectRoot, 'runtime'));
 const appPackage = readJson('app/package.json');
 const schemaManifest = readJson('runtime/config/schema-compatibility.json');
 const embeddingManifest = readJson('runtime/config/embedding-models.json');
@@ -41,6 +45,40 @@ assert(
   schemaManifest.policy?.newerDatabaseWrite === 'rejected',
   'Newer database write rejection policy is missing.'
 );
+// Verify the owner's source constants, so a stale manifest cannot pass merely
+// because it still describes the expected upgrade policy.
+const schemaOwners = {
+  modelCapability: ['runtime/src/model/capability/ModelCapabilityDbSchema.ts', 'MODEL_CAPABILITY_DB_SCHEMA_VERSION'],
+  agentControl: ['runtime/src/adapters/persistence/agentControlDbSchema.ts', 'AGENT_CONTROL_DB_SCHEMA_VERSION'],
+  conversation: ['runtime/src/adapters/persistence/ConversationDbSchema.ts', 'CONVERSATION_DB_SCHEMA_VERSION'],
+  publicProjection: ['runtime/src/adapters/persistence/PublicProjectionDbSchema.ts', 'PUBLIC_PROJECTION_CURRENT_DB_SCHEMA_VERSION'],
+  runtimeCommand: ['runtime/src/adapters/persistence/runtimeCommandDbMigrations.ts', 'RUNTIME_COMMAND_DB_SCHEMA_VERSION'],
+  longMemory: ['runtime/src/adapters/persistence/LongMemoryDbSchema.ts', 'LONG_MEMORY_DB_SCHEMA_VERSION'],
+  productivity: ['runtime/src/adapters/persistence/ProductivityDbSchema.ts', 'PRODUCTIVITY_DB_SCHEMA_VERSION'],
+  traceIndex: ['runtime/src/trace/traceIndexMigrations.ts', 'TRACE_INDEX_SCHEMA_VERSION']
+};
+assert(
+  JSON.stringify(Object.keys(schemaManifest.databases ?? {}).sort()) === JSON.stringify(Object.keys(schemaOwners).sort()),
+  'Schema manifest must name every declared database owner exactly once.'
+);
+for (const [database, [ownerPath, constant]] of Object.entries(schemaOwners)) {
+  const source = readFileSync(path.join(projectRoot, ownerPath), 'utf8');
+  const matches = [...source.matchAll(new RegExp(`export const ${constant} = (\\d+);`, 'gu'))];
+  assert(matches.length === 1, `Database ${database} must declare one numeric schema version in its owner.`);
+  const version = Number(matches[0][1]);
+  assert(schemaManifest.databases[database].currentSchema === version,
+    `Database ${database} manifest schema does not match owner version ${version}.`);
+  assert(schemaManifest.databases[database].minimumForwardSource === Math.max(0, version - 1),
+    `Database ${database} minimum forward source must match the N-1 policy.`);
+}
+const runtimePackage = readJson('runtime/package.json');
+for (const retiredEntry of ['LegacyLongMemoryImport', 'import-legacy-long-memory', 'migrate-scheduler-v3', 'storage', 'main']) {
+  assert(!existsSync(path.join(projectRoot, `runtime/src/cli/${retiredEntry}.ts`)),
+    `Retired CLI must not exist: ${retiredEntry}`);
+}
+assert(!Object.keys(runtimePackage.scripts).some(script => /import:.*legacy|scheduler:migrate|storage:(status|cleanup)/u.test(script)),
+  'Retired import and storage commands must not be registered.');
+assert(!('offlineLegacyImport' in schemaManifest.databases.longMemory), 'Retired data import is unsupported.');
 assert(embeddingManifest.schemaVersion === 1, 'Embedding asset manifest version is invalid.');
 assert(
   toolArtifactManifest.schemaVersion === 1

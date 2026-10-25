@@ -1,35 +1,83 @@
 import { createHash } from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
+import { attributeSqliteOpeningFault, classifySqliteAuthorityFault, markAuthorityIntegrityError,
+  markAuthorityUnavailableError } from './SqliteAuthorityHealth.js';
+import { SqliteRunDocumentQueryReader } from './SqliteRunDocumentQueryReader.js';
+import { SqliteMessageMetadataQueryReader } from './SqliteMessageMetadataQueryReader.js';
+import type { PublicProjectionMessageMetadataQueryStoreV1 } from '../../projection/PublicProjectionMessageMetadataQueryPortsV1.js';
+import { readProjectionCatalogCommits } from './SqliteProjectionCatalogCommitReader.js';
+import { readProjectionFeatureReceipts } from './SqliteProjectionFeatureReceipts.js';
+import { publicProjectionFeatureReceiptRequestSchema, assertProjectionCatalogResult,
+  publicProjectionFeatureReceiptResultSchema } from '@ariadne/protocol/public';
+import type { PublicProjectionFeatureReceiptQueryStoreV1 } from '../../projection/PublicProjectionFeatureReceiptQueryPortsV1.js';
+import type { PublicConversationQueryStoreV1 } from '../../projection/PublicConversationQueryPortsV1.js';
+import { publicConversationReceiptRequestSchema, publicConversationReceiptResultSchema,
+  publicConversationInferenceRequestSchema, publicConversationInferenceResultSchema } from '@ariadne/protocol/public';
+import { readConversationReceipts } from './SqliteConversationReceipts.js';
+import { readConversationInferenceWindow } from './SqliteConversationInferenceWindow.js';
+import type { PublicProjectionRunDocumentQueryStoreV1 } from '../../projection/PublicProjectionRunDocumentQueryPortsV1.js';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
+import { assertStoredProjectionCommit, assertStoredCommitRowBinding, parseStoredCommitRow, storedVersionRowAsChange,
+  assertStoredVersionMatchesChange, assertStoredCommitHistoryLink, storedCommitsEquivalent, type StoredProjectionCommit,
+  type StoredProjectionChange } from './StoredProjectionRecords.js';
+import { verifyStoredRunDocument } from './RunDocumentSqliteVerifier.js';
+import { isRunDocumentChange } from '@ariadne/protocol/public';
+import { assertPublicRunDocumentCommit, type PublicRunDocumentCommit } from '@ariadne/protocol/public';
+import type { RunDocumentPlan } from '../../projection/RunDocumentPlan.js';
+import type { PublicProjectionRunDocumentCommitSinkV1 } from '../../projection/PublicProjectionRunDocumentWritePortsV1.js';
+import { SqliteRunDocumentPublication } from './SqliteRunDocumentPublication.js';
+import type { PublicProjectionAppendResult, PublicProjectionPersistenceFaultInjector } from './ProjectionLedgerWritePorts.js';
+export type { PublicProjectionAppendResult, PublicProjectionPersistenceFaultInjector } from './ProjectionLedgerWritePorts.js';
 
 import {
   MAX_PUBLIC_PROJECTION_READ_BATCH_BYTES,
+  MAX_PUBLIC_PROJECTION_SNAPSHOT_BYTES,
   PUBLIC_PROJECTION_CONTRACT_VERSION,
   PUBLIC_PROJECTION_GENESIS_DIGEST,
   PUBLIC_PROJECTION_HISTORY_DOMAIN,
   publicProjectionCanonicalIdSchema,
-  type ProjectionCommitV3,
-  type PublicProjectionChangeV3,
-  type PublicProjectionFeatureV3,
-  type PublicProjectionReadBatchV3,
-  type PublicProjectionReadRequestV3,
-  type PublicProjectionSnapshotV3,
-  type PublicProjectionTombstoneV3
+  type ProjectionCommit,
+  type PublicProjectionChange,
+  type PublicProjectionFeature,
+  type PublicProjectionReadBatch,
+  type PublicProjectionReadRequest,
+  type PublicProjectionSnapshot,
+  type PublicProjectionTombstone
 } from '@ariadne/protocol/public';
+import { PUBLIC_PROJECTION_SCOPED_READ_VERSION, publicProjectionScopedReadRequestSchema,
+  type PublicProjectionScopedReadRequest, type PublicProjectionScopedReadBatch } from '@ariadne/protocol/public';
 
 import {
-  assertValidProjectionCommitV3 as assertPublicProjectionCommitV3,
-  assertValidPublicProjectionReadBatchV3 as assertPublicProjectionReadBatchV3,
-  assertValidPublicProjectionReadRequestV3 as assertPublicProjectionReadRequestV3,
-  assertValidPublicProjectionSnapshotV3 as assertPublicProjectionSnapshotV3,
-  canonicalPublicProjectionJson as canonicalPublicProjectionJsonV3
-} from '../../projection/PublicProjectionContractV3.js';
+  assertValidProjectionCommit as assertPublicProjectionCommit,
+  assertValidPublicProjectionReadBatch as assertPublicProjectionReadBatch,
+  assertValidPublicProjectionReadRequest as assertPublicProjectionReadRequest,
+  assertValidPublicProjectionSnapshot as assertPublicProjectionSnapshot,
+  canonicalPublicProjectionJson as canonicalPublicProjectionJson
+} from '../../projection/PublicProjectionContract.js';
 import type {
   ModelCatalogProjectionHead
 } from '../../projection/ModelCatalogProjectionPorts.js';
 import type {
   InferenceStreamProjectionHead
 } from '../../projection/InferenceStreamProjectionPorts.js';
-import { openPublicProjectionDatabase } from './PublicProjectionDbSchema.js';
+import { openPublicProjectionDatabase, type PublicProjectionDatabaseOpenStage } from './PublicProjectionDbSchema.js';
+import { upgradeRunDocumentSchema } from './RunDocumentDbSchema.js';
+import { reclaimRunDocumentPreparationAtStartup } from './RunDocumentStartupReclamation.js';
+import { PublicProjectionRepresentationUpgradeRequired } from '../../projection/PublicProjectionRepresentationUpgradeRequired.js';
+import { SqliteProjectionSnapshotReader } from './SqliteProjectionSnapshotReader.js';
+import type { PublicProjectionPagedQueryStoreV1 } from '../../projection/PublicProjectionPagedQueryPortsV1.js';
+import type { PublicProjectionScopedQueryStoreV1 } from '../../projection/PublicProjectionScopedQueryPortsV1.js';
+import { filterScopedProjectionRead } from './SqliteProjectionScopedRead.js';
+import { publicProjectionMessageWindowRequestSchema } from '@ariadne/protocol/public';
+import { readProjectionMessageWindow } from './SqliteProjectionMessageWindow.js';
+import { publicProjectionCatalogPageRequestSchema, publicProjectionCatalogDetailRequestSchema,
+  publicProjectionCatalogReadRequestSchema } from '@ariadne/protocol/public';
+import { readProjectionCatalogPage, readProjectionCatalogDetail } from './SqliteProjectionCatalogRead.js';
+import { SqliteProjectionCatalogMetadataCache } from './SqliteProjectionCatalogMetadataCache.js';
+import type { PublicProjectionViewQueryStoreV2 } from '../../projection/PublicProjectionViewQueryPortsV2.js';
+import type { PublicProjectionCatalogQueryStoreV3 } from '../../projection/PublicProjectionCatalogQueryPortsV3.js';
+import type { PublicProjectionFeatureWindowQueryStoreV1 } from '../../projection/PublicProjectionFeatureWindowQueryPortsV1.js';
+import { publicProjectionFeatureWindowRequestSchema } from '@ariadne/protocol/public';
+import { readProjectionFeatureWindow } from './SqliteProjectionFeatureWindow.js';
 import {
   closeOwnedSqliteDatabase,
   type SqliteOwnerLease
@@ -38,23 +86,14 @@ import {
 export interface PublicProjectionPersistenceClock {
   now(): Date;
 }
-
-export interface PublicProjectionPersistenceFaultInjector {
-  beforeCommit?(): void;
-  afterCommit?(): void;
-}
+export type PublicProjectionStartupStage = 'schema_open' | 'schema_validated'
+  | 'history_audit' | 'history_audited' | 'preparation_reclaim' | 'preparation_reclaimed' | 'owner_ready' | PublicProjectionDatabaseOpenStage;
 
 export interface PublicProjectionShutdownContext {
   readonly deadlineAt: number;
   readonly signal: AbortSignal;
   remainingMs(reserveMs?: number): number;
   throwIfExpired(code?: string): void;
-}
-
-export interface PublicProjectionAppendResult {
-  readonly cursor: number;
-  readonly streamId: string;
-  readonly replayed: boolean;
 }
 
 interface CommitRow {
@@ -70,7 +109,7 @@ interface CommitRow {
 }
 
 interface VersionRow {
-  readonly feature: PublicProjectionFeatureV3;
+  readonly feature: PublicProjectionFeature;
   readonly aggregate_id: string;
   readonly aggregate_version: number;
   readonly operation: 'upsert' | 'delete';
@@ -92,12 +131,19 @@ interface CheckpointRow {
 
 const systemClock: PublicProjectionPersistenceClock = { now: () => new Date() };
 
-export class SqlitePublicProjectionStore {
+export class SqlitePublicProjectionStore implements PublicProjectionPagedQueryStoreV1,
+  PublicProjectionScopedQueryStoreV1, PublicProjectionViewQueryStoreV2, PublicProjectionCatalogQueryStoreV3,
+  PublicProjectionFeatureWindowQueryStoreV1, PublicProjectionRunDocumentQueryStoreV1, PublicProjectionMessageMetadataQueryStoreV1,
+  PublicProjectionFeatureReceiptQueryStoreV1, PublicConversationQueryStoreV1, PublicProjectionRunDocumentCommitSinkV1 {
   public readonly streamId: string;
 
   private readonly database: DatabaseSync;
   private readonly databasePath: string;
   private readonly ownerLease: SqliteOwnerLease;
+  private readonly snapshotReader: SqliteProjectionSnapshotReader;
+  private readonly catalogMetadata: SqliteProjectionCatalogMetadataCache;
+  private readonly runDocumentReader: SqliteRunDocumentQueryReader;
+  private readonly messageMetadataReader: SqliteMessageMetadataQueryReader;
   private accepting = true;
   private closed = false;
   private unhealthyCause: Error | null = null;
@@ -107,20 +153,47 @@ export class SqlitePublicProjectionStore {
   public constructor(
     dataRoot: string,
     private readonly clock: PublicProjectionPersistenceClock = systemClock,
-    private readonly faultInjector: PublicProjectionPersistenceFaultInjector = {}
+    private readonly faultInjector: PublicProjectionPersistenceFaultInjector = {},
+    onStartupStage?: (stage: PublicProjectionStartupStage) => void
   ) {
-    const opened = openPublicProjectionDatabase(dataRoot);
+    onStartupStage?.('schema_open');
+    const opened = openPublicProjectionDatabase(dataRoot, onStartupStage);
     this.database = opened.database;
     this.databasePath = opened.databasePath;
     this.ownerLease = opened.ownerLease;
     this.streamId = opened.streamId;
+    this.catalogMetadata = new SqliteProjectionCatalogMetadataCache(this.database, storedVersionRowAsChange);
+    this.snapshotReader = new SqliteProjectionSnapshotReader(this.database, this.streamId,
+      () => this.clock.now(), () => readCurrentCursorState(this.database),
+      cursor => readCursorDigest(this.database, cursor), versionRowAsChange);
+    this.runDocumentReader = new SqliteRunDocumentQueryReader(this.database, this.snapshotReader, this.catalogMetadata, this.streamId);
+    this.messageMetadataReader = new SqliteMessageMetadataQueryReader(this.database, this.snapshotReader, this.catalogMetadata, this.runDocumentReader, this.streamId);
     try {
-      auditStoredProjectionState(this.database);
+      onStartupStage?.('schema_validated');
+      const audit = (database: DatabaseSync): void => {
+        onStartupStage?.('history_audit');
+        auditStoredProjectionState(database, (header, change) => {
+          this.catalogMetadata.rememberVerified(change, header);
+        }, ['sessions', 'runs', 'decisions']);
+        onStartupStage?.('history_audited');
+      };
+      if (this.database.prepare('PRAGMA user_version').get()?.user_version === 3) {
+        upgradeRunDocumentSchema(this.database, audit);
+      } else {
+        audit(this.database);
+      }
+      onStartupStage?.('preparation_reclaim');
+      this.catalogMetadata.assertStorageUnchanged();
+      reclaimRunDocumentPreparationAtStartup(this.database);
+      this.catalogMetadata.assertStorageUnchanged();
+      onStartupStage?.('preparation_reclaimed');
+      onStartupStage?.('owner_ready');
     } catch (error) {
+      attributeSqliteOpeningFault('projection', error);
       try {
         closeOwnedSqliteDatabase(this.database, this.ownerLease);
-      } catch {
-        // Preserve the corruption evidence and keep uncertain close state fenced.
+      } catch (closeError) {
+        throw new AggregateError([error, closeError], 'public_projection_open_cleanup_failed');
       }
       this.closed = true;
       this.accepting = false;
@@ -131,16 +204,202 @@ export class SqlitePublicProjectionStore {
   public append(commitValue: unknown): Promise<PublicProjectionAppendResult> {
     if (this.unhealthyCause !== null) return Promise.reject(this.unhealthyError());
     try {
-      const commit = assertPublicProjectionCommitV3(commitValue);
+      const commit = assertPublicProjectionCommit(commitValue);
       return this.schedule(() => this.appendNow(commit));
     } catch (error) {
       return Promise.reject(error);
     }
   }
 
-  public snapshot(): Promise<PublicProjectionSnapshotV3> {
+  public appendRunDocument(commitValue: PublicRunDocumentCommit, plan: RunDocumentPlan): Promise<PublicProjectionAppendResult> {
+    if (this.unhealthyCause !== null) return Promise.reject(this.unhealthyError());
+    try {
+      const commit = assertPublicRunDocumentCommit(commitValue);
+      return this.schedule(async () => {
+        this.catalogMetadata.assertStorageUnchanged();
+        if (Number(this.database.prepare('PRAGMA user_version').get()!.user_version) !== 4) {
+          throw new Error('run_document_schema_activation_required');
+        }
+        const result = await new SqliteRunDocumentPublication(this.database, this.streamId, appendProjectionLedgerCommit, this.faultInjector).publish(commit, plan);
+        if (!result.replayed) commit.changes.forEach((change, changeIndex) => {
+          this.catalogMetadata.rememberVerified(change, {
+            feature: change.feature, aggregate_id: change.aggregateId, aggregate_version: change.aggregateVersion,
+            operation: change.operation, projected_at: change.projectedAt,
+            payload_digest: digest(canonicalPublicProjectionJson(change)), commit_cursor: result.cursor, change_index: changeIndex
+          });
+        });
+        return result;
+      });
+    } catch (error) { return Promise.reject(error); }
+  }
+
+  public snapshot(): Promise<PublicProjectionSnapshot> {
     if (this.unhealthyCause !== null) return Promise.reject(this.unhealthyError());
     return this.schedule(() => this.snapshotNow());
+  }
+
+  /** Observer recovery reads only its bounded durable heads, never conversation bodies. */
+  public readPublicAgentObservationHeads(): Promise<readonly import('@ariadne/protocol/public').PublicDiagnosticProjection[]> {
+    return this.schedule(() => {
+      const result: import('@ariadne/protocol/public').PublicDiagnosticProjection[] = [];
+      const rows = this.database.prepare(`SELECT * FROM projection_heads
+        WHERE feature='diagnostics' AND operation='upsert'
+          AND aggregate_id GLOB 'agent-observation:*'
+        ORDER BY aggregate_id LIMIT 513`).iterate();
+      for (const value of rows) {
+        const change = versionRowAsChange(value as unknown as VersionRow);
+        if (change.feature !== 'diagnostics' || change.dto === null || change.aggregateVersion !== 1
+          || !change.aggregateId.startsWith('agent-observation:')) throw storageCorruption('observer:head_identity_invalid');
+        if (result.length >= 512) throw storageCorruption('observer:head_count_exceeded');
+        result.push(change.dto);
+      }
+      return result;
+    });
+  }
+
+  public beginSnapshot(value: unknown) {
+    return this.schedule(() => this.snapshotReader.begin(value));
+  }
+
+  public readSnapshotPage(value: unknown) {
+    return this.schedule(() => this.snapshotReader.page(value));
+  }
+
+  public beginViewSnapshot(value: unknown) {
+    return this.schedule(() => this.snapshotReader.beginView(value));
+  }
+
+  public readViewSnapshotPage(value: unknown) {
+    return this.schedule(() => this.snapshotReader.pageView(value));
+  }
+
+  public beginCatalogSnapshot(value: unknown) {
+    return this.schedule(() => this.snapshotReader.beginCatalog(value));
+  }
+
+  public readRunDocument(value: unknown) { return this.schedule(() => this.runDocumentReader.root(value)); }
+  public readRunDocumentMetadataPage(value: unknown) { return this.schedule(() => this.runDocumentReader.metadataPage(value)); }
+  public readRunDocumentInboxInput(value: unknown) { return this.schedule(() => this.runDocumentReader.inbox(value)); }
+  public readRunDocumentChunk(value: unknown) { return this.schedule(() => this.runDocumentReader.chunk(value)); }
+  public readMessageMetadataWindow(value: unknown) { return this.schedule(() => this.messageMetadataReader.window(value)); }
+  public readMessageBody(value: unknown) { return this.schedule(() => this.messageMetadataReader.body(value)); }
+
+  public readCatalogPage(value: unknown) {
+    return this.schedule(() => {
+      const request = publicProjectionCatalogPageRequestSchema.parse(value);
+      const manifest = this.snapshotReader.resolveCatalog(request.manifest);
+      if ('status' in manifest) return manifest;
+      return readProjectionCatalogPage(this.database, this.snapshotReader, manifest, request, this.catalogMetadata);
+    });
+  }
+
+  public readCatalogDetail(value: unknown) {
+    return this.schedule(() => {
+      const request = publicProjectionCatalogDetailRequestSchema.parse(value);
+      const manifest = this.snapshotReader.resolveCatalog(request.manifest);
+      if ('status' in manifest) return manifest;
+      return readProjectionCatalogDetail(this.database, this.snapshotReader, manifest, request, versionRowAsChange);
+    });
+  }
+
+  public readCatalogCommits(value: unknown) {
+    return this.schedule(() => {
+      const request = publicProjectionCatalogReadRequestSchema.parse(value);
+      const manifest = this.snapshotReader.resolveCatalog(request.manifest);
+      if ('status' in manifest) return manifest;
+      return readProjectionCatalogCommits(this.database, this.catalogMetadata, manifest, request,
+        () => readCurrentCursorState(this.database).cursor, cursor => readCursorDigest(this.database, cursor));
+    });
+  }
+
+  public readFeatureWindow(value: unknown) {
+    return this.schedule(() => {
+      const request = publicProjectionFeatureWindowRequestSchema.parse(value);
+      this.catalogMetadata.assertStorageUnchanged();
+      const manifest = this.snapshotReader.resolveView(request.manifest);
+      const result = 'status' in manifest ? manifest
+        : readProjectionFeatureWindow(this.database, this.snapshotReader, request, versionRowAsChange);
+      this.catalogMetadata.assertStorageUnchanged(); return result;
+    });
+  }
+
+  public readFeatureReceipts(value: unknown) {
+    return this.schedule(() => {
+      const request = publicProjectionFeatureReceiptRequestSchema.parse(value);
+      this.catalogMetadata.assertStorageUnchanged();
+      const manifest = this.snapshotReader.resolveView(request.manifest);
+      if ('status' in manifest) {
+        this.catalogMetadata.assertStorageUnchanged();
+        return assertProjectionCatalogResult(publicProjectionFeatureReceiptResultSchema, { status: 'reset_required',
+          reason: manifest.reason, queryVersion: '1.0', manifest: request.manifest,
+          afterCursor: request.afterCursor, afterDigest: request.afterDigest });
+      }
+      return readProjectionFeatureReceipts(this.database, this.catalogMetadata, request,
+        () => readCurrentCursorState(this.database).cursor, cursor => readCursorDigest(this.database, cursor));
+    });
+  }
+
+  public readConversationReceipts(value: unknown) {
+    return this.schedule(() => {
+      const request = publicConversationReceiptRequestSchema.parse(value);
+      this.catalogMetadata.assertStorageUnchanged();
+      const manifest = this.snapshotReader.resolveCatalog(request.manifest);
+      if ('status' in manifest) {
+        this.catalogMetadata.assertStorageUnchanged();
+        return assertProjectionCatalogResult(publicConversationReceiptResultSchema, { status: 'reset_required', reason: manifest.reason,
+          queryVersion: '1.0', manifest: request.manifest, afterCursor: request.afterCursor, afterDigest: request.afterDigest });
+      }
+      return readConversationReceipts(this.database, this.catalogMetadata, request,
+        () => readCurrentCursorState(this.database).cursor, cursor => readCursorDigest(this.database, cursor));
+    });
+  }
+  public readConversationInferenceWindow(value: unknown) {
+    return this.schedule(() => {
+      const request = publicConversationInferenceRequestSchema.parse(value);
+      this.catalogMetadata.assertStorageUnchanged();
+      const manifest = this.snapshotReader.resolveCatalog(request.manifest);
+      const result = 'status' in manifest
+        ? assertProjectionCatalogResult(publicConversationInferenceResultSchema, { status: 'reset_required', reason: manifest.reason,
+          queryVersion: '1.0', manifest: request.manifest, window: request.window })
+        : readConversationInferenceWindow(this.database, this.snapshotReader, request, versionRowAsChange);
+      this.catalogMetadata.assertStorageUnchanged(); return result;
+    });
+  }
+
+  public readMessageWindow(value: unknown) {
+    return this.schedule(() => {
+      const request = publicProjectionMessageWindowRequestSchema.parse(value);
+      const manifest = this.snapshotReader.resolveView(request.manifest);
+      if ('status' in manifest) return manifest;
+      this.catalogMetadata.assertStorageUnchanged();
+      if (manifest.scope.kind === 'session' && this.database.prepare(`SELECT 1 FROM projection_versions v
+        WHERE v.feature='runs' AND v.operation='upsert' AND json_extract(v.dto_json,'$.documentContractVersion')='1.0'
+          AND json_extract(v.dto_json,'$.summary.sessionId')=? AND json_extract(v.dto_json,'$.collections.interactionMessages.itemCount')>0
+          AND v.commit_cursor<=? AND NOT EXISTS (SELECT 1 FROM projection_versions newer
+            WHERE newer.feature=v.feature AND newer.aggregate_id=v.aggregate_id
+              AND newer.aggregate_version>v.aggregate_version AND newer.commit_cursor<=?) LIMIT 1`)
+        .get(manifest.scope.sessionId, manifest.boundaryCursor, manifest.boundaryCursor) !== undefined) {
+        this.catalogMetadata.assertStorageUnchanged();
+        return { status: 'reset_required' as const, streamId: this.streamId, reason: 'contract_mismatch' as const };
+      }
+      const result = readProjectionMessageWindow(this.database, manifest, request.window, versionRowAsChange);
+      this.catalogMetadata.assertStorageUnchanged(); return result;
+    });
+  }
+
+  public readScope(value: PublicProjectionScopedReadRequest | unknown): Promise<PublicProjectionScopedReadBatch> {
+    return this.schedule(() => {
+      const request = publicProjectionScopedReadRequestSchema.parse(value);
+      if (request.readContractVersion !== PUBLIC_PROJECTION_SCOPED_READ_VERSION) return {
+        status: 'reset_required', readContractVersion: PUBLIC_PROJECTION_SCOPED_READ_VERSION,
+        streamId: this.streamId, currentCursor: readCurrentCursorState(this.database).cursor,
+        reason: 'contract_mismatch'
+      };
+      const scan = this.readNow({ contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
+        streamId: request.streamId, afterCursor: request.afterCursor,
+        afterDigest: request.afterDigest, limit: request.limit });
+      return filterScopedProjectionRead(this.database, request, scan, versionRowAsChange);
+    });
   }
 
   public readModelProjectionHeads(): Promise<readonly ModelCatalogProjectionHead[]> {
@@ -181,11 +440,11 @@ export class SqlitePublicProjectionStore {
   }
 
   public read(
-    requestValue: PublicProjectionReadRequestV3 | unknown
-  ): Promise<PublicProjectionReadBatchV3> {
+    requestValue: PublicProjectionReadRequest | unknown
+  ): Promise<PublicProjectionReadBatch> {
     if (this.unhealthyCause !== null) return Promise.reject(this.unhealthyError());
     try {
-      const request = assertPublicProjectionReadRequestV3(requestValue);
+      const request = assertPublicProjectionReadRequest(requestValue);
       return this.schedule(() => this.readNow(request));
     } catch (error) {
       return Promise.reject(error);
@@ -200,19 +459,23 @@ export class SqlitePublicProjectionStore {
       else await this.tail;
       if (this.closed) return;
       closeOwnedSqliteDatabase(this.database, this.ownerLease);
+      this.catalogMetadata.clear();
       this.closed = true;
     })();
     return this.closePromise;
   }
 
-  private schedule<T>(operation: () => T): Promise<T> {
+  /** Metadata only for local capacity diagnostics; not a public query or authority. */
+  public catalogMetadataCacheStats() { return this.catalogMetadata.stats(); }
+
+  private schedule<T>(operation: () => T | Promise<T>): Promise<T> {
     if (this.unhealthyCause !== null) {
       return Promise.reject(this.unhealthyError());
     }
     if (!this.accepting || this.closed) {
       return Promise.reject(new Error('public_projection_store_closed'));
     }
-    const result = this.tail.then(() => {
+    const result = this.tail.then(async () => {
       // Work already admitted before close owns its place in the durable
       // queue. Closing only freezes new admissions and waits for this tail.
       if (this.closed) {
@@ -220,7 +483,7 @@ export class SqlitePublicProjectionStore {
       }
       if (this.unhealthyCause !== null) throw this.unhealthyError();
       try {
-        return operation();
+        return await operation();
       } catch (error) {
         if (isProjectionStorageCorruption(error)) {
           this.unhealthyCause ??= error;
@@ -233,101 +496,30 @@ export class SqlitePublicProjectionStore {
   }
 
   private unhealthyError(): Error {
-    return new Error('public_projection_store_unhealthy', {
+    const error = new Error('public_projection_store_unhealthy', {
       cause: this.unhealthyCause ?? undefined
     });
+    return classifySqliteAuthorityFault('projection', this.unhealthyCause) === 'integrity'
+      ? markAuthorityIntegrityError('projection', error) : markAuthorityUnavailableError('projection', error);
   }
 
-  private appendNow(commit: ProjectionCommitV3): PublicProjectionAppendResult {
-    const commitJson = canonicalPublicProjectionJsonV3(commit);
-    const commitDigest = digest(commitJson);
-    this.database.exec('BEGIN IMMEDIATE;');
-    try {
-      const existing = selectCommitByEventId(this.database, commit.eventId);
-      if (existing !== undefined) {
-        const parsed = parseCommitRow(existing);
-        assertCommitHistoryLink(this.database, existing);
-        if (
-          existing.payload_digest !== commitDigest
-          || canonicalPublicProjectionJsonV3(parsed) !== commitJson
-        ) {
-          throw storageCorruption(`event:${commit.eventId}:payload_drift`);
-        }
-        this.database.exec('COMMIT;');
-        return { cursor: existing.cursor, streamId: this.streamId, replayed: true };
-      }
-
-      assertNextSourceCursor(this.database, commit);
-      const current = readCurrentCursorState(this.database);
-      const cursor = current.cursor + 1;
-      if (!Number.isSafeInteger(cursor)) {
-        throw storageCorruption('commit_cursor_exhausted');
-      }
-      const historyDigest = nextHistoryDigest(
-        current.cursorDigest,
-        cursor,
-        commitDigest
-      );
-      const inserted = this.database.prepare(
-        `INSERT INTO projection_commits(
-           cursor, event_id, source_id, source_cursor, contract_version,
-           occurred_at, commit_json, payload_digest, history_digest
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(
-        cursor,
-        commit.eventId,
-        commit.sourceId,
-        commit.sourceCursor,
-        commit.contractVersion,
-        commit.occurredAt,
-        commitJson,
-        commitDigest,
-        historyDigest
-      );
-      const insertedCursor = toSafePositiveInteger(
-        inserted.lastInsertRowid,
-        'commit_cursor'
-      );
-      if (insertedCursor !== cursor) {
-        throw storageCorruption(
-          `commit_cursor_expected_${String(cursor)}:received_${String(insertedCursor)}`
-        );
-      }
-
+  private appendNow(commit: ProjectionCommit): PublicProjectionAppendResult {
+    const result = appendProjectionLedgerCommit(this.database, this.streamId, commit, this.faultInjector);
+    if (!result.replayed) {
+      const cursor = result.cursor, changeDigests = result.changeDigests!;
       commit.changes.forEach((change, changeIndex) => {
-        applyChange(this.database, cursor, changeIndex, change);
+        if (!['sessions', 'runs', 'decisions'].includes(change.feature)) return;
+        this.catalogMetadata.rememberVerified(change, {
+          feature: change.feature, aggregate_id: change.aggregateId, aggregate_version: change.aggregateVersion,
+          operation: change.operation, projected_at: change.projectedAt,
+          payload_digest: changeDigests[changeIndex]!, commit_cursor: cursor, change_index: changeIndex
+        });
       });
-      this.database.prepare(
-        `INSERT INTO projection_source_checkpoints(
-           source_id, source_cursor, event_id, updated_at
-         ) VALUES (?, ?, ?, ?)
-         ON CONFLICT(source_id) DO UPDATE SET
-           source_cursor=excluded.source_cursor,
-           event_id=excluded.event_id,
-           updated_at=excluded.updated_at`
-      ).run(commit.sourceId, commit.sourceCursor, commit.eventId, commit.occurredAt);
-
-      // The full snapshot is the only reset/bootstrap authority. Never make a
-      // commit durable if it would leave that authority unreadable.
-      buildSnapshot(
-        this.database,
-        this.streamId,
-        cursor,
-        historyDigest,
-        canonicalNow(this.clock)
-      );
-
-      this.faultInjector.beforeCommit?.();
-      this.database.exec('COMMIT;');
-      this.faultInjector.afterCommit?.();
-      return { cursor, streamId: this.streamId, replayed: false };
-    } catch (error) {
-      if (this.database.isTransaction) this.database.exec('ROLLBACK;');
-      throw normalizeConstraintError(error);
     }
+    return { cursor: result.cursor, streamId: result.streamId, replayed: result.replayed };
   }
 
-  private snapshotNow(): PublicProjectionSnapshotV3 {
+  private snapshotNow(): PublicProjectionSnapshot {
     this.database.exec('BEGIN;');
     try {
       const current = readCurrentCursorState(this.database);
@@ -346,7 +538,7 @@ export class SqlitePublicProjectionStore {
     }
   }
 
-  private readNow(request: PublicProjectionReadRequestV3): PublicProjectionReadBatchV3 {
+  private readNow(request: PublicProjectionReadRequest): PublicProjectionReadBatch {
     this.database.exec('BEGIN;');
     try {
       const current = readCurrentCursorState(this.database);
@@ -390,7 +582,7 @@ export class SqlitePublicProjectionStore {
       const commits: Array<{
         readonly cursor: number;
         readonly cursorDigest: string;
-        readonly commit: ProjectionCommitV3;
+        readonly commit: ProjectionCommit;
       }> = [];
       let expectedCursor = request.afterCursor + 1;
       let previousDigest = request.afterDigest;
@@ -406,8 +598,13 @@ export class SqlitePublicProjectionStore {
           hasMore = true;
           break;
         }
-        const commit = parseCommitRow(row);
+        const stored = parseStoredCommitRow(row);
         assertHistoryLink(row, previousDigest);
+        if (stored.contractVersion !== PUBLIC_PROJECTION_CONTRACT_VERSION) {
+          const result = resetRequired(this.streamId, current.cursor, 'contract_mismatch');
+          this.database.exec('COMMIT;'); return result;
+        }
+        const commit = stored;
         const entry = {
           cursor: row.cursor,
           cursorDigest: row.history_digest,
@@ -451,7 +648,7 @@ export class SqlitePublicProjectionStore {
         this.database.exec('COMMIT;');
         return result;
       }
-      const result = assertPublicProjectionReadBatchV3({
+      const result = assertPublicProjectionReadBatch({
         status: 'ok',
         contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
         streamId: this.streamId,
@@ -475,13 +672,13 @@ function applyChange(
   database: DatabaseSync,
   commitCursor: number,
   changeIndex: number,
-  change: PublicProjectionChangeV3
-): void {
-  const changeJson = canonicalPublicProjectionJsonV3(change);
+  change: StoredProjectionChange
+): string {
+  const changeJson = canonicalPublicProjectionJson(change);
   const changeDigest = digest(changeJson);
   const dtoJson = change.dto === null
     ? null
-    : canonicalPublicProjectionJsonV3(change.dto);
+    : canonicalPublicProjectionJson(change.dto);
   const historical = database.prepare(
     `SELECT feature, aggregate_id, aggregate_version, operation,
             projected_at, dto_json, payload_digest, commit_cursor, change_index
@@ -493,8 +690,8 @@ function applyChange(
     change.aggregateVersion
   ) as VersionRow | undefined;
   if (historical !== undefined) {
-    const historicalChange = versionRowAsChange(historical);
-    if (canonicalPublicProjectionJsonV3(historicalChange) !== changeJson) {
+    const historicalChange = storedVersionRowAsChange(historical);
+    if (canonicalPublicProjectionJson(historicalChange) !== changeJson) {
       throw storageCorruption(
         `version:${change.feature}:${change.aggregateId}:`
         + `${String(change.aggregateVersion)}:payload_drift`
@@ -507,6 +704,7 @@ function applyChange(
   }
 
   const head = selectHead(database, change.feature, change.aggregateId);
+  assertCurrentHead(database, change.feature, change.aggregateId, head);
   const expectedVersion = (head?.aggregate_version ?? 0) + 1;
   if (change.aggregateVersion !== expectedVersion) {
     throw storageCorruption(
@@ -555,9 +753,10 @@ function applyChange(
     commitCursor,
     changeIndex
   );
+  return changeDigest;
 }
 
-function assertNextSourceCursor(database: DatabaseSync, commit: ProjectionCommitV3): void {
+function assertNextSourceCursor(database: DatabaseSync, commit: StoredProjectionCommit): void {
   const checkpoint = database.prepare(
     `SELECT source_id, source_cursor, event_id, updated_at
      FROM projection_source_checkpoints WHERE source_id=?`
@@ -571,92 +770,133 @@ function assertNextSourceCursor(database: DatabaseSync, commit: ProjectionCommit
   }
 }
 
-function auditStoredProjectionState(database: DatabaseSync): void {
+export function auditStoredProjectionState(database: DatabaseSync,
+  onVerifiedHead?: (head: HeadRow, change: StoredProjectionChange) => void,
+  observedFeatures?: readonly PublicProjectionFeature[]): void {
+  const ownRead = !database.isTransaction;
+  const storageVersion = ownRead ? database.prepare('PRAGMA data_version').get()!.data_version : undefined;
+  if (ownRead) database.exec('BEGIN;');
+  try {
+    auditStoredProjectionSnapshot(database, onVerifiedHead, observedFeatures);
+    if (ownRead) {
+      database.exec('COMMIT;');
+      if (database.prepare('PRAGMA data_version').get()!.data_version !== storageVersion) {
+        throw storageCorruption('audit_external_write');
+      }
+    }
+  } catch (error) {
+    if (ownRead && database.isTransaction) {
+      try { database.exec('ROLLBACK;'); }
+      catch (rollbackError) { throw markAuthorityUnavailableError('projection',
+        new AggregateError([error, rollbackError], 'public_projection_audit_rollback_failed')); }
+    }
+    throw error;
+  }
+}
+function auditStoredProjectionSnapshot(database: DatabaseSync,
+  onVerifiedHead?: (head: HeadRow, change: StoredProjectionChange) => void,
+  observedFeatures?: readonly PublicProjectionFeature[]): void {
   const commits = database.prepare(
     `SELECT cursor, event_id, source_id, source_cursor, contract_version,
             occurred_at, commit_json, payload_digest, history_digest
      FROM projection_commits ORDER BY cursor`
-  ).all() as unknown as CommitRow[];
-  const commitByCursor = new Map<number, ProjectionCommitV3>();
-  const expectedSourceCursor = new Map<string, number>();
+  ).iterate() as unknown as Iterable<CommitRow>;
+  const sourcePredecessor = database.prepare(`SELECT source_cursor, cursor FROM projection_commits
+    WHERE source_id=? AND source_cursor<? ORDER BY source_cursor DESC LIMIT 1`);
+  const commitVersions = database.prepare(`SELECT feature, aggregate_id, aggregate_version, operation,
+    projected_at, dto_json, payload_digest, commit_cursor, change_index
+    FROM projection_versions WHERE commit_cursor=? ORDER BY change_index`);
+  const versionPredecessor = database.prepare(`SELECT aggregate_version, commit_cursor, change_index
+    FROM projection_versions WHERE feature=? AND aggregate_id=? AND aggregate_version<?
+    ORDER BY aggregate_version DESC LIMIT 1`);
+  let expectedChangeCount = 0;
+  let expectedDocumentCount = 0;
   let expectedCursor = 1;
   let previousHistoryDigest: string = PUBLIC_PROJECTION_GENESIS_DIGEST;
   for (const row of commits) {
     if (row.cursor !== expectedCursor) {
       throw storageCorruption(`commit_cursor_gap:${String(expectedCursor)}`);
     }
-    const commit = parseCommitRow(row);
+    const commit = parseStoredCommitRow(row);
     assertHistoryLink(row, previousHistoryDigest);
-    const sourceExpected = (expectedSourceCursor.get(commit.sourceId) ?? 0) + 1;
-    if (commit.sourceCursor !== sourceExpected) {
+    const predecessor = sourcePredecessor.get(commit.sourceId, commit.sourceCursor) as
+      { source_cursor: number; cursor: number } | undefined;
+    const sourceExpected = (predecessor?.source_cursor ?? 0) + 1;
+    if (commit.sourceCursor !== sourceExpected || (predecessor !== undefined && predecessor.cursor >= row.cursor)) {
       throw storageCorruption(`source:${commit.sourceId}:history_gap`);
     }
-    expectedSourceCursor.set(commit.sourceId, commit.sourceCursor);
-    commitByCursor.set(row.cursor, commit);
+    // Only this bounded Commit and its versions are resident during audit.
+    let index = 0;
+    for (const value of commitVersions.iterate(row.cursor)) {
+      const version = value as unknown as VersionRow;
+      const change = commit.changes[index];
+      if (change === undefined || version.change_index !== index) {
+        throw storageCorruption('version_commit_reference_missing');
+      }
+      assertStoredVersionMatchesChange(version, change);
+      if (isRunDocumentChange(change)) {
+        verifyStoredRunDocument(database, change.dto, row.cursor); expectedDocumentCount++;
+      }
+      const previous = versionPredecessor.get(version.feature, version.aggregate_id,
+        version.aggregate_version) as { aggregate_version: number; commit_cursor: number;
+          change_index: number } | undefined;
+      if (version.aggregate_version !== (previous?.aggregate_version ?? 0) + 1
+        || (previous !== undefined && (previous.commit_cursor > row.cursor
+          || (previous.commit_cursor === row.cursor && previous.change_index >= index)))) {
+        throw storageCorruption(`version_history_gap:${identityKey(version.feature, version.aggregate_id)}`);
+      }
+      index += 1;
+    }
+    if (index !== commit.changes.length) throw storageCorruption('commit_change_artifacts_missing');
+    expectedChangeCount += index;
     previousHistoryDigest = row.history_digest;
     expectedCursor += 1;
   }
 
-  const versions = database.prepare(
-    `SELECT feature, aggregate_id, aggregate_version, operation,
-            projected_at, dto_json, payload_digest, commit_cursor, change_index
-     FROM projection_versions ORDER BY commit_cursor, change_index`
-  ).all() as unknown as VersionRow[];
-  const latestByAggregate = new Map<string, VersionRow>();
-  const seenCommitChanges = new Set<string>();
-  for (const row of versions) {
-    const commit = commitByCursor.get(row.commit_cursor);
-    const change = commit?.changes[row.change_index];
-    if (commit === undefined || change === undefined) {
-      throw storageCorruption('version_commit_reference_missing');
-    }
-    assertVersionRowMatchesChange(row, change);
-    const changeKey = `${String(row.commit_cursor)}:${String(row.change_index)}`;
-    if (seenCommitChanges.has(changeKey)) {
-      throw storageCorruption(`version_change_duplicate:${changeKey}`);
-    }
-    seenCommitChanges.add(changeKey);
-    const aggregateKey = identityKey(row.feature, row.aggregate_id);
-    const previous = latestByAggregate.get(aggregateKey);
-    if (row.aggregate_version !== (previous?.aggregate_version ?? 0) + 1) {
-      throw storageCorruption(`version_history_gap:${aggregateKey}`);
-    }
-    latestByAggregate.set(aggregateKey, row);
-  }
-  const expectedChangeCount = commits.reduce(
-    (total, row) => total + parseCommitRow(row).changes.length,
-    0
-  );
-  if (seenCommitChanges.size !== expectedChangeCount) {
+  if (rowCount(database, 'projection_versions') !== expectedChangeCount) {
     throw storageCorruption('commit_change_artifacts_missing');
   }
+  if (Number(database.prepare('PRAGMA user_version').get()!.user_version) >= 4) {
+    const published = database.prepare('SELECT COUNT(*) AS total FROM projection_run_documents WHERE published_cursor IS NOT NULL').get()!;
+    if (published.total !== expectedDocumentCount) throw storageCorruption('run_document_publication_count_mismatch');
+  } else if (expectedDocumentCount !== 0) throw storageCorruption('run_document_schema_missing');
 
   const heads = database.prepare(
     `SELECT feature, aggregate_id, aggregate_version, operation,
             projected_at, dto_json, payload_digest, commit_cursor, change_index
      FROM projection_heads ORDER BY feature, aggregate_id`
-  ).all() as unknown as HeadRow[];
-  if (heads.length !== latestByAggregate.size) {
+  ).iterate() as unknown as Iterable<HeadRow>;
+  const latestVersion = prepareLatestVersion(database);
+  const latestCount = database.prepare(`SELECT count(*) AS total FROM
+    (SELECT feature, aggregate_id FROM projection_versions GROUP BY feature, aggregate_id)`)
+    .get() as { total: number };
+  if (rowCount(database, 'projection_heads') !== latestCount.total) {
     throw storageCorruption('projection_heads_count_mismatch');
   }
   for (const head of heads) {
-    const latest = latestByAggregate.get(identityKey(head.feature, head.aggregate_id));
-    if (latest === undefined || canonicalRow(latest) !== canonicalRow(head)) {
-      throw storageCorruption(
-        `projection_head_mismatch:${head.feature}:${head.aggregate_id}`
-      );
+    // The complete Commit/version pass proved every latest version's Schema,
+    // safety and digest in this same read transaction. Exact durable-field
+    // equality transfers that proof to Head without reparsing all its bodies.
+    assertHeadMatchesLatest(head.feature, head.aggregate_id, head, latestVersion);
+    if (onVerifiedHead && (observedFeatures === undefined || observedFeatures.includes(head.feature))) {
+      onVerifiedHead(head, storedVersionRowAsChange(head));
     }
   }
 
   const checkpoints = database.prepare(
     `SELECT source_id, source_cursor, event_id, updated_at
      FROM projection_source_checkpoints ORDER BY source_id`
-  ).all() as unknown as CheckpointRow[];
-  if (checkpoints.length !== expectedSourceCursor.size) {
+  ).iterate() as unknown as Iterable<CheckpointRow>;
+  const sourceCount = database.prepare('SELECT count(DISTINCT source_id) AS total FROM projection_commits')
+    .get() as { total: number };
+  if (rowCount(database, 'projection_source_checkpoints') !== sourceCount.total) {
     throw storageCorruption('source_checkpoint_count_mismatch');
   }
+  const latestSourceCommit = database.prepare(`SELECT source_cursor, event_id, occurred_at FROM projection_commits
+    WHERE source_id=? ORDER BY source_cursor DESC LIMIT 1`);
   for (const checkpoint of checkpoints) {
-    const last = [...commits].reverse().find((row) => row.source_id === checkpoint.source_id);
+    const last = latestSourceCommit.get(checkpoint.source_id) as
+      { source_cursor: number; event_id: string; occurred_at: string } | undefined;
     if (
       last === undefined
       || checkpoint.source_cursor !== last.source_cursor
@@ -668,71 +908,48 @@ function auditStoredProjectionState(database: DatabaseSync): void {
   }
 }
 
-function parseCommitRow(row: CommitRow): ProjectionCommitV3 {
-  const parsed = parseJson(row.commit_json, `commit:${String(row.cursor)}`);
-  const commit = assertPublicProjectionCommitV3(parsed);
-  const canonical = canonicalPublicProjectionJsonV3(commit);
-  if (
-    !Number.isSafeInteger(row.cursor)
-    || row.cursor <= 0
-    || row.event_id !== commit.eventId
-    || row.source_id !== commit.sourceId
-    || row.source_cursor !== commit.sourceCursor
-    || row.contract_version !== commit.contractVersion
-    || row.occurred_at !== commit.occurredAt
-    || row.commit_json !== canonical
-    || row.payload_digest !== digest(canonical)
-    || !isCanonicalProjectionDigest(row.history_digest)
-  ) {
-    throw storageCorruption(`commit:${String(row.cursor)}:row_mismatch`);
-  }
-  return commit;
-}
-
 function assertVersionRowMatchesChange(
   row: VersionRow,
-  change: PublicProjectionChangeV3
+  change: PublicProjectionChange
 ): void {
-  const dtoJson = change.dto === null ? null : canonicalPublicProjectionJsonV3(change.dto);
-  const canonical = canonicalPublicProjectionJsonV3(change);
-  if (
-    row.feature !== change.feature
-    || row.aggregate_id !== change.aggregateId
-    || row.aggregate_version !== change.aggregateVersion
-    || row.operation !== change.operation
-    || row.projected_at !== change.projectedAt
-    || row.dto_json !== dtoJson
-    || row.payload_digest !== digest(canonical)
-  ) {
-    throw storageCorruption(
-      `version:${row.feature}:${row.aggregate_id}:${String(row.aggregate_version)}:row_mismatch`
-    );
+  assertStoredVersionMatchesChange(row, change);
+}
+
+function versionRowAsChange(row: VersionRow): PublicProjectionChange {
+  const change = storedVersionRowAsChange(row);
+  if (isRunDocumentChange(change)) throw new PublicProjectionRepresentationUpgradeRequired();
+  return change;
+}
+
+function assertCurrentHead(database: DatabaseSync, feature: PublicProjectionFeature,
+  aggregateId: string, head: HeadRow | undefined,
+  latestVersion: StatementSync = prepareLatestVersion(database)): StoredProjectionChange | undefined {
+  assertHeadMatchesLatest(feature, aggregateId, head, latestVersion);
+  return head === undefined ? undefined : storedVersionRowAsChange(head);
+}
+function assertHeadMatchesLatest(feature: PublicProjectionFeature, aggregateId: string,
+  head: HeadRow | undefined, latestVersion: StatementSync): void {
+  const latest = latestVersion.get(feature, aggregateId) as VersionRow | undefined;
+  if (latest === undefined && head === undefined) return;
+  if (latest === undefined || head === undefined || !sameVersionRow(latest, head)) {
+    throw storageCorruption(`projection_head_mismatch:${feature}:${aggregateId}`);
   }
 }
 
-function versionRowAsChange(row: VersionRow): PublicProjectionChangeV3 {
-  return assertPublicProjectionCommitV3({
-    contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
-    eventId: 'stored-version-check',
-    sourceId: 'stored-version-check',
-    sourceCursor: 1,
-    occurredAt: row.projected_at,
-    changes: [{
-      feature: row.feature,
-      aggregateId: row.aggregate_id,
-      aggregateVersion: row.aggregate_version,
-      operation: row.operation,
-      projectedAt: row.projected_at,
-      dto: row.dto_json === null
-        ? null
-        : parseJson(row.dto_json, 'stored_version_dto')
-    }]
-  }).changes[0]!;
+function prepareLatestVersion(database: DatabaseSync): StatementSync {
+  return database.prepare(`SELECT feature, aggregate_id, aggregate_version, operation,
+    projected_at, dto_json, payload_digest, commit_cursor, change_index FROM projection_versions
+    WHERE feature=? AND aggregate_id=? ORDER BY aggregate_version DESC LIMIT 1`);
+}
+
+function rowCount(database: DatabaseSync,
+  table: 'projection_versions' | 'projection_heads' | 'projection_source_checkpoints'): number {
+  return (database.prepare(`SELECT count(*) AS total FROM ${table}`).get() as { total: number }).total;
 }
 
 function readFeatureDtos(
   database: DatabaseSync,
-  feature: PublicProjectionFeatureV3
+  feature: PublicProjectionFeature
 ): unknown[] {
   const rows = database.prepare(
     `SELECT feature, aggregate_id, aggregate_version, operation,
@@ -752,7 +969,7 @@ function readFeatureDtos(
 
 function readProjectionTombstones(
   database: DatabaseSync
-): PublicProjectionTombstoneV3[] {
+): PublicProjectionTombstone[] {
   const rows = database.prepare(
     `SELECT feature, aggregate_id, aggregate_version, operation,
             projected_at, dto_json, payload_digest, commit_cursor, change_index
@@ -843,8 +1060,15 @@ function buildSnapshot(
   cursor: number,
   cursorDigest: string,
   capturedAt: string
-): PublicProjectionSnapshotV3 {
-  return assertPublicProjectionSnapshotV3({
+): PublicProjectionSnapshot {
+  // Scalar ABI remains bounded. Refuse an oversized read before allocating
+  // all DTO bodies; total history is served by the paged query boundary.
+  const bodyBytes = database.prepare(`SELECT COALESCE(sum(length(CAST(dto_json AS BLOB))), 0) AS total
+    FROM projection_heads WHERE operation='upsert'`).get() as { total: number };
+  if (bodyBytes.total > MAX_PUBLIC_PROJECTION_SNAPSHOT_BYTES) {
+    throw new Error('public_projection_snapshot_too_large');
+  }
+  return assertPublicProjectionSnapshot({
     contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
     streamId,
     cursor,
@@ -874,7 +1098,7 @@ function selectCommitByEventId(
 
 function selectHead(
   database: DatabaseSync,
-  feature: PublicProjectionFeatureV3,
+  feature: PublicProjectionFeature,
   aggregateId: string
 ): HeadRow | undefined {
   return database.prepare(
@@ -925,8 +1149,8 @@ function resetRequired(
   streamId: string,
   currentCursor: number,
   reason: 'stream_mismatch' | 'contract_mismatch' | 'cursor_gap' | 'history_mismatch'
-): PublicProjectionReadBatchV3 {
-  return assertPublicProjectionReadBatchV3({
+): PublicProjectionReadBatch {
+  return assertPublicProjectionReadBatch({
     status: 'reset_required',
     contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
     streamId,
@@ -959,14 +1183,7 @@ function nextHistoryDigest(
 }
 
 function assertHistoryLink(row: CommitRow, previousDigest: string): void {
-  const expected = nextHistoryDigest(
-    previousDigest,
-    row.cursor,
-    row.payload_digest
-  );
-  if (row.history_digest !== expected) {
-    throw storageCorruption(`commit:${String(row.cursor)}:history_digest_mismatch`);
-  }
+  assertStoredCommitHistoryLink(row, previousDigest);
 }
 
 function assertCommitHistoryLink(database: DatabaseSync, row: CommitRow): void {
@@ -978,7 +1195,7 @@ function assertCommitHistoryLink(database: DatabaseSync, row: CommitRow): void {
 }
 
 function canonicalJsonByteLength(value: unknown): number {
-  return new TextEncoder().encode(canonicalPublicProjectionJsonV3(value)).byteLength;
+  return new TextEncoder().encode(canonicalPublicProjectionJson(value)).byteLength;
 }
 
 function isCanonicalProjectionDigest(value: unknown): value is string {
@@ -993,21 +1210,17 @@ function parseJson(value: string, source: string): unknown {
   }
 }
 
-function canonicalRow(row: VersionRow): string {
-  return canonicalPublicProjectionJsonV3({
-    feature: row.feature,
-    aggregateId: row.aggregate_id,
-    aggregateVersion: row.aggregate_version,
-    operation: row.operation,
-    projectedAt: row.projected_at,
-    dtoJson: row.dto_json,
-    payloadDigest: row.payload_digest,
-    commitCursor: row.commit_cursor,
-    changeIndex: row.change_index
-  });
+function sameVersionRow(left: VersionRow, right: VersionRow): boolean {
+  // Compare the nine durable fields exactly; serializing dto_json again only
+  // escaped the already canonical body and allocated a second full copy.
+  return left.feature === right.feature && left.aggregate_id === right.aggregate_id
+    && left.aggregate_version === right.aggregate_version && left.operation === right.operation
+    && left.projected_at === right.projected_at && left.dto_json === right.dto_json
+    && left.payload_digest === right.payload_digest && left.commit_cursor === right.commit_cursor
+    && left.change_index === right.change_index;
 }
 
-function identityKey(feature: PublicProjectionFeatureV3, aggregateId: string): string {
+function identityKey(feature: PublicProjectionFeature, aggregateId: string): string {
   return `${feature}\u0000${aggregateId}`;
 }
 
@@ -1022,7 +1235,8 @@ function toSafePositiveInteger(value: number | bigint, field: string): number {
 function normalizeConstraintError(error: unknown): unknown {
   if (
     error instanceof Error
-    && (error.message.includes('constraint failed') || error.message.includes('UNIQUE constraint'))
+    && (error as Error & { code?: unknown }).code === 'ERR_SQLITE_ERROR'
+    && [1555, 2067].includes((error as Error & { errcode?: number }).errcode ?? -1)
   ) {
     return storageCorruption('sqlite_constraint_conflict', error);
   }
@@ -1030,12 +1244,11 @@ function normalizeConstraintError(error: unknown): unknown {
 }
 
 function storageCorruption(message: string, cause?: unknown): Error {
-  return new Error(`public_projection_storage_corruption:${message}`, { cause });
+  return markAuthorityIntegrityError('projection', new Error(`public_projection_storage_corruption:${message}`, { cause }));
 }
 
 function isProjectionStorageCorruption(error: unknown): error is Error {
-  return error instanceof Error
-    && error.message.startsWith('public_projection_storage_corruption:');
+  return error instanceof Error && classifySqliteAuthorityFault('projection', error) !== null;
 }
 
 async function waitForDrain(
@@ -1063,5 +1276,103 @@ async function waitForDrain(
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     if (onAbort !== undefined) context.signal.removeEventListener('abort', onAbort);
+  }
+}
+
+/** Shared final transaction for the single Projection owner. Preparation and
+ * public visibility hooks execute on its supplied connection, never a second
+ * database or business authority. */
+export function appendProjectionLedgerCommit(database: DatabaseSync, streamId: string,
+  value: StoredProjectionCommit, faultInjector: PublicProjectionPersistenceFaultInjector = {},
+  hooks: { beforeChanges?: () => void; afterChanges?: (cursor: number) => void;
+    onReplay?: (commit: StoredProjectionCommit, cursor: number) => void } = {}):
+  PublicProjectionAppendResult & { readonly changeDigests?: readonly string[] } {
+  const commit = assertStoredProjectionCommit(value);
+  if (commit.contractVersion === '6.0' && (!hooks.beforeChanges || !hooks.afterChanges || !hooks.onReplay)) {
+    throw new Error('run_document_publication_owner_required');
+  }
+  const commitJson = canonicalPublicProjectionJson(commit);
+  const commitDigest = digest(commitJson);
+  database.exec('BEGIN IMMEDIATE;');
+  try {
+    hooks.beforeChanges?.();
+    const existing = selectCommitByEventId(database, commit.eventId);
+    if (existing !== undefined) {
+      const identical = existing.commit_json === commitJson;
+      const parsed = identical ? commit : parseStoredCommitRow(existing);
+      if (identical) assertStoredCommitRowBinding(existing, commit, commitJson);
+      assertCommitHistoryLink(database, existing);
+      if (
+        !identical && !storedCommitsEquivalent(parsed, commit)
+      ) {
+        throw storageCorruption(`event:${commit.eventId}:payload_drift`);
+      }
+      hooks.onReplay?.(parsed, existing.cursor);
+      database.exec('COMMIT;');
+      return { cursor: existing.cursor, streamId: streamId, replayed: true };
+    }
+
+    assertNextSourceCursor(database, commit);
+    const current = readCurrentCursorState(database);
+    const cursor = current.cursor + 1;
+    if (!Number.isSafeInteger(cursor)) {
+      throw storageCorruption('commit_cursor_exhausted');
+    }
+    const historyDigest = nextHistoryDigest(
+      current.cursorDigest,
+      cursor,
+      commitDigest
+    );
+    const inserted = database.prepare(
+      `INSERT INTO projection_commits(
+         cursor, event_id, source_id, source_cursor, contract_version,
+         occurred_at, commit_json, payload_digest, history_digest
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      cursor,
+      commit.eventId,
+      commit.sourceId,
+      commit.sourceCursor,
+      commit.contractVersion,
+      commit.occurredAt,
+      commitJson,
+      commitDigest,
+      historyDigest
+    );
+    const insertedCursor = toSafePositiveInteger(
+      inserted.lastInsertRowid,
+      'commit_cursor'
+    );
+    if (insertedCursor !== cursor) {
+      throw storageCorruption(
+        `commit_cursor_expected_${String(cursor)}:received_${String(insertedCursor)}`
+      );
+    }
+
+    const changeDigests = commit.changes.map((change, changeIndex) => applyChange(database, cursor, changeIndex, change));
+    database.prepare(
+      `INSERT INTO projection_source_checkpoints(
+         source_id, source_cursor, event_id, updated_at
+       ) VALUES (?, ?, ?, ?)
+       ON CONFLICT(source_id) DO UPDATE SET
+         source_cursor=excluded.source_cursor,
+         event_id=excluded.event_id,
+         updated_at=excluded.updated_at`
+    ).run(commit.sourceId, commit.sourceCursor, commit.eventId, commit.occurredAt);
+
+    // Each changed head is validated by applyChange. Bootstrap reads use
+    // immutable pages at C; total history size is not a write constraint.
+    hooks.afterChanges?.(cursor);
+    faultInjector.beforeCommit?.();
+    database.exec('COMMIT;');
+    faultInjector.afterCommit?.();
+    return { cursor, streamId: streamId, replayed: false, changeDigests };
+  } catch (error) {
+    if (database.isTransaction) {
+      try { database.exec('ROLLBACK;'); }
+      catch (rollbackError) { throw markAuthorityUnavailableError('projection',
+        new AggregateError([error, rollbackError], 'public_projection_write_rollback_failed')); }
+    }
+    throw normalizeConstraintError(error);
   }
 }

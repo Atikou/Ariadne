@@ -18,6 +18,7 @@ export class RendererCompositionRoot {
   private started = false;
   private disposed = false;
   private lifecycleInstalled = false;
+  private starting: Promise<void> | null = null;
 
   constructor(api: AriadneApi, storage: Storage, applicationProfile: ApplicationProfileView) {
     this.services = createModuleServices(api, storage, applicationProfile);
@@ -25,8 +26,11 @@ export class RendererCompositionRoot {
 
   start(): Promise<void> {
     if (this.disposed) throw new Error('renderer_composition_root_disposed');
+    if (this.starting) return this.starting;
     this.started = true;
-    return this.services.runtime.initialize().then(() => this.services.speech.initialize());
+    this.starting = Promise.all([this.services.drafts.initialize(), this.services.documents.initialize(), this.services.runtime.initialize()])
+      .then(() => { if (!this.disposed) { this.services.draftDelivery.start(); return this.services.speech.initialize(); } });
+    return this.starting;
   }
 
   installWindowLifecycle(target: Window): void {
@@ -39,6 +43,9 @@ export class RendererCompositionRoot {
     if (this.disposed) return;
     this.disposed = true;
     if (this.started) {
+      this.services.draftDelivery.dispose();
+      this.services.drafts.dispose();
+      this.services.documents.dispose();
       this.services.speech.dispose();
       this.services.runtime.dispose();
     }

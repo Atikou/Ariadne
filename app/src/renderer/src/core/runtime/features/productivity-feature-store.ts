@@ -1,31 +1,35 @@
-import {
-  PUBLIC_PROJECTION_CONTRACT_VERSION,
-  type RuntimeResult
-} from '@ariadne/protocol/public';
+import { PUBLIC_PROJECTION_CONTRACT_VERSION, type RuntimeResult } from '@ariadne/protocol/public';
 import type { RuntimeFeatureCommandGateway } from './runtime-feature-command-gateway';
+import { ScheduleOccurrenceFeatureStore } from './schedule-occurrence-feature-store';
+import { ProductivityTaskFaultFeatureStore } from './productivity-task-fault-feature-store';
 
 export type ProductivitySnapshot = Extract<
   RuntimeResult,
-  { kind: 'productivity.query_result.v3' }
+  { kind: 'productivity.query_result' }
 >;
 export type ProductivityGoal = NonNullable<ProductivitySnapshot['goal']>;
 export type ProductivityWorkflow = ProductivitySnapshot['workflows'][number];
 export type ProductivitySchedule = Extract<
   RuntimeResult,
-  { kind: 'schedules.query_result.v3' }
+  { kind: 'schedules.query_result' }
 >['schedules'][number];
 
 export class ProductivityFeatureStore {
-  constructor(private readonly gateway: RuntimeFeatureCommandGateway) {}
+  readonly scheduleOccurrences: ScheduleOccurrenceFeatureStore;
+  readonly taskFaults: ProductivityTaskFaultFeatureStore;
+  constructor(private readonly gateway: RuntimeFeatureCommandGateway) {
+    this.scheduleOccurrences = new ScheduleOccurrenceFeatureStore(gateway);
+    this.taskFaults = new ProductivityTaskFaultFeatureStore(gateway);
+  }
 
   async query(workspaceId: string, sessionId: string): Promise<ProductivitySnapshot> {
     const result = await this.gateway.execute({
-      kind: 'productivity.query.v3',
+      kind: 'productivity.query',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       workspaceId,
       sessionId
     });
-    if (result.kind !== 'productivity.query_result.v3') {
+    if (result.kind !== 'productivity.query_result') {
       throw new Error(`runtime_result_invalid:${result.kind}`);
     }
     return result;
@@ -42,11 +46,11 @@ export class ProductivityFeatureStore {
     roundCap: number;
   }): Promise<ProductivityGoal> {
     const result = await this.gateway.execute({
-      kind: 'goal.put.v3',
+      kind: 'goal.put',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       ...input
     });
-    if (result.kind !== 'goal.updated.v3') {
+    if (result.kind !== 'goal.updated') {
       throw new Error(`runtime_result_invalid:${result.kind}`);
     }
     return result.goal;
@@ -58,22 +62,32 @@ export class ProductivityFeatureStore {
     goalId: string;
     expectedGoalVersion: number;
     expectedRevision: number | null;
-    items: readonly {
-      todoId: string;
-      title: string;
-      status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
-    }[];
+    items: readonly Omit<ProductivitySnapshot['todos'][number], 'ordinal'>[];
   }): Promise<number> {
     const result = await this.gateway.execute({
-      kind: 'todo.snapshot.replace.v3',
+      kind: 'todo.snapshot.replace',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       ...input,
       items: [...input.items]
     });
-    if (result.kind !== 'todo.snapshot.replaced.v3') {
+    if (result.kind !== 'todo.snapshot.replaced') {
       throw new Error(`runtime_result_invalid:${result.kind}`);
     }
     return result.revision;
+  }
+
+  async startGoalAutonomy(input: { workspaceId: string; sessionId: string; goalId: string; expectedVersion: number;
+    criteria: readonly string[]; maxConcurrency: number; deadlineAt: string }): Promise<ProductivityGoal> {
+    const result = await this.gateway.execute({ ...input, criteria: [...input.criteria],
+      kind: 'goal.autonomy.start', contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION });
+    if (result.kind !== 'goal.updated') throw new Error(`runtime_result_invalid:${result.kind}`);
+    return result.goal;
+  }
+  async transitionGoalAutonomy(input: { workspaceId: string; sessionId: string; goalId: string; expectedVersion: number;
+    action: 'pause' | 'resume' }): Promise<ProductivityGoal> {
+    const result = await this.gateway.execute({ ...input, kind: 'goal.autonomy.transition', contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION });
+    if (result.kind !== 'goal.updated') throw new Error(`runtime_result_invalid:${result.kind}`);
+    return result.goal;
   }
 
   async startWorkflow(input: {
@@ -86,15 +100,16 @@ export class ProductivityFeatureStore {
     todoIds: readonly string[];
     maxConcurrency: number;
     maxTransitions: number;
+    executionMode?: 'manual' | 'agent';
     deadlineAt: string;
   }): Promise<ProductivityWorkflow> {
     const result = await this.gateway.execute({
-      kind: 'workflow.start.v3',
+      kind: 'workflow.start',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       ...input,
       todoIds: [...input.todoIds]
     });
-    if (result.kind !== 'workflow.updated.v3') {
+    if (result.kind !== 'workflow.updated') {
       throw new Error(`runtime_result_invalid:${result.kind}`);
     }
     return result.workflow;
@@ -112,12 +127,12 @@ export class ProductivityFeatureStore {
     }[];
   }): Promise<ProductivityWorkflow> {
     const result = await this.gateway.execute({
-      kind: 'workflow.advance.v3',
+      kind: 'workflow.advance',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       ...input,
       completed: [...input.completed]
     });
-    if (result.kind !== 'workflow.updated.v3') {
+    if (result.kind !== 'workflow.updated') {
       throw new Error(`runtime_result_invalid:${result.kind}`);
     }
     return result.workflow;
@@ -130,11 +145,11 @@ export class ProductivityFeatureStore {
     expectedVersion: number;
   }): Promise<ProductivityWorkflow> {
     const result = await this.gateway.execute({
-      kind: 'workflow.cancel.v3',
+      kind: 'workflow.cancel',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       ...input
     });
-    if (result.kind !== 'workflow.updated.v3') {
+    if (result.kind !== 'workflow.updated') {
       throw new Error(`runtime_result_invalid:${result.kind}`);
     }
     return result.workflow;
@@ -145,12 +160,12 @@ export class ProductivityFeatureStore {
     sessionId: string
   ): Promise<readonly ProductivitySchedule[]> {
     const result = await this.gateway.execute({
-      kind: 'schedules.query.v3',
+      kind: 'schedules.query',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       workspaceId,
       sessionId
     });
-    if (result.kind !== 'schedules.query_result.v3') {
+    if (result.kind !== 'schedules.query_result') {
       throw new Error(`runtime_result_invalid:${result.kind}`);
     }
     return result.schedules;
@@ -164,11 +179,11 @@ export class ProductivityFeatureStore {
     timing: ProductivitySchedule['timing'];
   }): Promise<ProductivitySchedule> {
     const result = await this.gateway.execute({
-      kind: 'schedule.create.v3',
+      kind: 'schedule.create',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       ...input
     });
-    if (result.kind !== 'schedule.updated.v3') {
+    if (result.kind !== 'schedule.updated') {
       throw new Error(`runtime_result_invalid:${result.kind}`);
     }
     return result.schedule;
@@ -182,11 +197,11 @@ export class ProductivityFeatureStore {
     action: 'pause' | 'resume' | 'cancel';
   }): Promise<ProductivitySchedule> {
     const result = await this.gateway.execute({
-      kind: 'schedule.transition.v3',
+      kind: 'schedule.transition',
       contractVersion: PUBLIC_PROJECTION_CONTRACT_VERSION,
       ...input
     });
-    if (result.kind !== 'schedule.updated.v3') {
+    if (result.kind !== 'schedule.updated') {
       throw new Error(`runtime_result_invalid:${result.kind}`);
     }
     return result.schedule;

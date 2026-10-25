@@ -5,8 +5,10 @@ import { randomUUID } from "node:crypto";
 
 import type { RuntimeCommand, RuntimeEventMessage, RuntimeRequestMessage } from "./runtimeProtocol.js";
 import { createModelAbortError, ModelTimeoutError } from "../modelCancellation.js";
+import { LocalRuntimeUnavailableError } from './LocalRuntimeUnavailableError.js';
 
 interface PendingRequest {
+  command: RuntimeCommand;
   resolve(value: unknown): void;
   reject(error: Error): void;
   onToken?: (delta: string) => void;
@@ -59,6 +61,7 @@ export class NodeRuntimeProcess {
       timer.unref?.();
 
       const pending: PendingRequest = {
+        command,
         resolve: (value) => resolve(value as T),
         reject,
         onToken: options.onToken,
@@ -91,7 +94,7 @@ export class NodeRuntimeProcess {
       }
       child.send?.(message, (error) => {
         if (!error) return;
-        this.finishWithError(id, error);
+        this.finishWithError(id, new LocalRuntimeUnavailableError('local_worker_transport_failed', error));
       });
     });
   }
@@ -131,13 +134,14 @@ export class NodeRuntimeProcess {
     });
     child.on("message", (raw) => this.handleMessage(raw));
     child.on("error", (error) => {
-      if (this.child === child) this.rejectAll(error);
+      if (this.child === child) this.rejectAll(new LocalRuntimeUnavailableError('local_worker_transport_failed', error));
     });
     child.on("exit", (code, signal) => {
       const wasCurrent = this.child === child;
       if (wasCurrent) this.child = undefined;
       if (wasCurrent && !this.disposed) {
-        this.rejectAll(new Error(`本地模型子进程异常退出（code=${String(code)}, signal=${String(signal)}）`));
+        this.rejectAll(new LocalRuntimeUnavailableError('local_worker_exited',
+          new Error(`本地模型子进程异常退出（code=${String(code)}, signal=${String(signal)}）`)));
       }
     });
     this.child = child;
@@ -176,7 +180,8 @@ export class NodeRuntimeProcess {
     this.clearPending(pending);
     if (pending.cancelError) pending.reject(pending.cancelError);
     else if (message.type === "cancelled") pending.reject(createModelAbortError());
-    else if (message.type === "error") pending.reject(new Error(message.error));
+    else if (message.type === "error") pending.reject(pending.command === 'load'
+      ? new LocalRuntimeUnavailableError('local_model_load_failed', new Error(message.error)) : new Error(message.error));
     else pending.resolve(message.result);
   }
 
@@ -228,7 +233,7 @@ export class NodeRuntimeProcess {
         this.pending.delete(id);
         reject(new Error("关闭本地模型子进程超时"));
       }, timeoutMs);
-      const pending: PendingRequest = { resolve: () => resolve(), reject, timer };
+      const pending: PendingRequest = { command, resolve: () => resolve(), reject, timer };
       this.pending.set(id, pending);
       child.send?.({ id, command } satisfies RuntimeRequestMessage);
     });

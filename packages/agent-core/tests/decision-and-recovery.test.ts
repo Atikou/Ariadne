@@ -157,6 +157,26 @@ describe('exact decisions and effect recovery', () => {
     })).rejects.toThrow(/exact plan ID, version, and hash/);
   });
 
+  it('atomically settles a rejected Plan and cancels its unexecuted work, with exact replay', async () => {
+    const service = new TestAgentRunCommandService(new InMemoryAgentRunUnitOfWork());
+    await service.execute(startCommand()); await begin(service); await registerEffect(service);
+    await service.execute({ kind: 'run.request_decision', commandId: 'request-rejected-plan', runId: 'run-1',
+      expectedVersion: 3, occurredAt: at(3), decision: { kind: 'plan', decisionId: 'decision-plan-reject',
+        requestedAt: at(3), planId: 'rejected-plan', planVersion: 1, planHash: `sha256:${'7'.repeat(64)}` } });
+    const command = { kind: 'run.resolve_decision' as const, commandId: 'resolve-rejected-plan', runId: 'run-1',
+      expectedVersion: 4, occurredAt: at(4), resolution: { kind: 'plan' as const, decisionId: 'decision-plan-reject',
+        checkpoint: { runId: 'run-1', version: 3 }, resolvedAt: at(4), planId: 'rejected-plan',
+        planVersion: 1, planHash: `sha256:${'7'.repeat(64)}`, outcome: 'reject' as const } };
+    const result = await service.execute(command);
+    expect(result.run.state).toMatchObject({ status: 'cancelled', reason: 'plan_rejected' });
+    expect(result.run.effects[0]?.state.status).toBe('cancelled');
+    expect(result.events.map(event => event.payload.type)).toEqual([
+      'decision.resolved', 'effect.transitioned', 'run.cancelled', 'run.state_changed'
+    ]);
+    const replay = await service.execute(command);
+    expect(replay.replayed).toBe(true); expect(replay.run).toEqual(result.run);
+  });
+
   it('commits permission denial and terminal cancellation atomically', async () => {
     const unitOfWork = new InMemoryAgentRunUnitOfWork();
     const service = new TestAgentRunCommandService(unitOfWork);

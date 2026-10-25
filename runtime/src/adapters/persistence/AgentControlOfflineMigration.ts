@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -7,9 +7,10 @@ import {
   acquireSqliteOwnerLease
 } from './SqliteOwnerLease.js';
 import {
-  AGENT_CONTROL_DB_SCHEMA_VERSION,
+  assertAgentControlSchema,
   resolveAgentControlDatabasePath
 } from './agentControlDbSchema.js';
+import { createDurableOfflineBackup } from './OfflineDatabaseBackup.js';
 
 const SOURCE_VERSION = 5;
 const TARGET_VERSION = 6;
@@ -34,15 +35,19 @@ export interface AgentControlOfflineMigrationResult {
 export function migrateEmptyAgentControlV5ToV6(
   dataRoot: string
 ): AgentControlOfflineMigrationResult {
+  if (!path.isAbsolute(dataRoot)) throw new Error('agent_control_offline_absolute_root_required');
   const databasePath = resolveAgentControlDatabasePath(dataRoot);
+  if (!existsSync(databasePath)) throw new Error('agent_control_offline_database_missing');
   const ownerLease = acquireSqliteOwnerLease(databasePath, 'agent-control-migration');
-  const database = new DatabaseSync(databasePath);
+  let database: DatabaseSync;
+  try { database = new DatabaseSync(databasePath); } catch (error) { ownerLease.close(); throw error; }
   let backupPath: string | undefined;
   try {
     database.exec('PRAGMA busy_timeout = 0;');
     assertIntegrity(database);
     const version = readUserVersion(database);
-    if (version === AGENT_CONTROL_DB_SCHEMA_VERSION) {
+    if (version === TARGET_VERSION) {
+      assertAgentControlSchema(database, TARGET_VERSION);
       return {
         databasePath,
         fromVersion: version,
@@ -53,7 +58,7 @@ export function migrateEmptyAgentControlV5ToV6(
     if (version !== SOURCE_VERSION) {
       throw new Error(
         `agent_control_offline_migration_unsupported:${String(version)}:`
-        + String(AGENT_CONTROL_DB_SCHEMA_VERSION)
+        + String(TARGET_VERSION)
       );
     }
     assertSourceMigrationHistory(database);
@@ -64,7 +69,7 @@ export function migrateEmptyAgentControlV5ToV6(
       throw new Error(`agent_control_offline_migration_nonempty:${String(runCount)}`);
     }
 
-    backupPath = createBackup(database, databasePath);
+    backupPath = createDurableOfflineBackup(database, databasePath, 'agent-control.before-schema-upgrade');
     database.exec(`
       PRAGMA foreign_keys = OFF;
       PRAGMA legacy_alter_table = ON;
@@ -152,7 +157,10 @@ export function migrateEmptyAgentControlV5ToV6(
         `INSERT INTO schema_migrations(version, name, applied_at)
          VALUES (?, ?, ?)`
       ).run(TARGET_VERSION, MIGRATION_NAME, new Date().toISOString());
-      database.exec(`PRAGMA user_version = ${String(TARGET_VERSION)}; COMMIT;`);
+      database.exec(`PRAGMA user_version = ${String(TARGET_VERSION)};`);
+      assertIntegrity(database);
+      assertAgentControlSchema(database, TARGET_VERSION);
+      database.exec('COMMIT;');
     } catch (error) {
       if (database.isTransaction) database.exec('ROLLBACK;');
       throw error;
@@ -198,18 +206,6 @@ function assertIntegrity(database: DatabaseSync): void {
   if (foreignKeyFailures.length !== 0) {
     throw new Error('agent_control_offline_migration_foreign_key_failed');
   }
-}
-
-function createBackup(database: DatabaseSync, databasePath: string): string {
-  const backupRoot = path.join(path.dirname(databasePath), 'migration-backups');
-  mkdirSync(backupRoot, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[:.]/gu, '-');
-  const backupPath = path.join(
-    backupRoot,
-    `agent-control.db.v${String(SOURCE_VERSION)}-to-v${String(TARGET_VERSION)}.${stamp}.sqlite`
-  );
-  database.exec(`VACUUM INTO '${backupPath.replace(/'/gu, "''")}';`);
-  return backupPath;
 }
 
 function readUserVersion(database: DatabaseSync): number {

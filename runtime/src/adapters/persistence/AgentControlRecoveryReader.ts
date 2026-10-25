@@ -30,7 +30,7 @@ import {
 } from './AgentControlStorageTypes.js';
 import { decodePayload, decodeTurnInputColumn } from './AgentControlPayloadCodec.js';
 import {
-  checkpointCoversInboxOnlyAdvance,
+  checkpointCoversControlSideChannelAdvance,
   checkpointReference,
   loadTurnInputPayload
 } from './AgentControlPayloadReader.js';
@@ -59,7 +59,7 @@ async function collectControlRecoveryIssues(
 
   if (run.binding.objectiveRef.kind === 'parent_delegation') {
     const row = database.prepare(
-      'SELECT * FROM agent_v3_delegations WHERE child_run_id=?'
+      'SELECT * FROM agent_delegations WHERE child_run_id=?'
     ).get(run.runId) as AgentDelegationRow | undefined;
     if (row === undefined) {
       issues.add('missing_delegation');
@@ -86,7 +86,7 @@ async function collectControlRecoveryIssues(
   ) {
     const decision = run.state.decision;
     const row = database.prepare(
-      `SELECT * FROM agent_v3_plan_versions
+      `SELECT * FROM agent_plan_versions
        WHERE plan_id=? AND plan_version=?`
     ).get(decision.planId, decision.planVersion) as AgentPlanVersionRow | undefined;
     if (row === undefined) {
@@ -101,7 +101,7 @@ async function collectControlRecoveryIssues(
           planId: row.plan_id,
           planVersion: row.plan_version,
           contentHash: row.content_hash
-        }, `agent_v3_plan_versions:${row.plan_id}:${String(row.plan_version)}`);
+        }, `agent_plan_versions:${row.plan_id}:${String(row.plan_version)}`);
         if (
           row.run_id !== run.runId
           || row.content_hash !== decision.planHash
@@ -161,7 +161,7 @@ async function collectControlRecoveryIssues(
       }
       if (expected === null) continue;
       const row = database.prepare(
-        'SELECT * FROM agent_v3_directive_payloads WHERE artifact_id=?'
+        'SELECT * FROM agent_directive_payloads WHERE artifact_id=?'
       ).get(expected.artifactId) as AgentDirectivePayloadRow | undefined;
       if (row === undefined) {
         issues.add('missing_directive_payload');
@@ -175,7 +175,7 @@ async function collectControlRecoveryIssues(
           runVersion: row.run_version,
           directiveDigest: row.directive_digest,
           contentHash: row.content_digest
-        }, `agent_v3_directive_payloads:${row.artifact_id}`);
+        }, `agent_directive_payloads:${row.artifact_id}`);
         if (
           row.run_id !== run.runId
           || row.payload_kind !== expected.kind
@@ -194,14 +194,14 @@ async function collectControlRecoveryIssues(
   if (run.state.status === 'waiting_children' || run.state.status === 'cancelling') {
     try {
       const rows = database.prepare(
-        `SELECT * FROM agent_v3_delegations
+        `SELECT * FROM agent_delegations
          WHERE parent_run_id=? ORDER BY child_run_id`
       ).all(run.runId) as unknown as AgentDelegationRow[];
       const required = rows.filter((row) => row.required === 1).map((row) => row.child_run_id);
       const terminal = rows.filter((row) =>
         row.required === 1
         && database.prepare(
-          'SELECT 1 FROM agent_v3_child_terminals WHERE delegation_id=?'
+          'SELECT 1 FROM agent_child_terminals WHERE delegation_id=?'
         ).get(row.delegation_id) !== undefined
       ).map((row) => row.child_run_id);
       if (
@@ -238,7 +238,7 @@ export async function loadActiveRuns(
   const rows = database.prepare(
     `SELECT run_id, version, state_status, aggregate_json,
             created_at, updated_at
-     FROM agent_v3_runs
+     FROM agent_runs
      WHERE state_status IN (
        'queued', 'running', 'waiting', 'recovering',
        'waiting_children', 'waiting_input', 'cancelling'
@@ -251,15 +251,15 @@ export async function loadActiveRuns(
   const pageRows = rows.slice(0, limit);
   const items: RecoverableAgentRun[] = [];
   for (const row of pageRows) {
-    const run = parseRunRow(row, 'agent_v3_runs');
+    const run = parseRunRow(row, 'agent_runs');
     const controlIssues = await collectControlRecoveryIssues(database, codec, run);
     if (run.state.status === 'queued') {
       const recoveryRows = database.prepare(
         `SELECT
-           (SELECT COUNT(*) FROM agent_v3_checkpoints WHERE run_id=?)
+           (SELECT COUNT(*) FROM agent_checkpoints WHERE run_id=?)
              +
-           (SELECT COUNT(*) FROM agent_v3_effect_payloads WHERE run_id=?) AS other_count,
-           (SELECT COUNT(*) FROM agent_v3_turn_inputs WHERE run_id=?) AS turn_input_count`
+           (SELECT COUNT(*) FROM agent_effect_payloads WHERE run_id=?) AS other_count,
+           (SELECT COUNT(*) FROM agent_turn_inputs WHERE run_id=?) AS turn_input_count`
       ).get(run.runId, run.runId, run.runId) as {
         other_count: number;
         turn_input_count: number;
@@ -296,7 +296,7 @@ export async function loadActiveRuns(
     const issues = new Set<BlockedAgentRunRecovery['issues'][number]>(controlIssues);
     const checkpoint = database.prepare(
       `SELECT run_id, checkpoint_version, run_version, command_id, created_at
-       FROM agent_v3_checkpoints
+       FROM agent_checkpoints
        WHERE run_id=? AND checkpoint_version=?`
     ).get(run.runId, run.state.checkpointVersion) as
       AgentCheckpointMetadataRow | undefined;
@@ -304,14 +304,14 @@ export async function loadActiveRuns(
       issues.add('missing_checkpoint');
     } else if (
       checkpoint.run_version !== run.version
-      && !checkpointCoversInboxOnlyAdvance(database, run, checkpoint.run_version)
+      && !checkpointCoversControlSideChannelAdvance(database, run, checkpoint.run_version)
     ) {
       issues.add('checkpoint_metadata_mismatch');
     }
 
 
     const turnInputRows = database.prepare(
-      'SELECT * FROM agent_v3_turn_inputs WHERE run_id=? ORDER BY turn_id'
+      'SELECT * FROM agent_turn_inputs WHERE run_id=? ORDER BY turn_id'
     ).all(run.runId) as unknown as AgentTurnInputPayloadRow[];
     const turnInputReferences: AgentTurnInputPayloadReference[] = [];
     for (const turn of run.turns) {
@@ -368,7 +368,7 @@ export async function loadActiveRuns(
               result_command_id, result_run_version,
               CASE WHEN result_payload_json IS NULL THEN 0 ELSE 1 END AS has_result,
               created_at, updated_at
-       FROM agent_v3_effect_payloads
+       FROM agent_effect_payloads
        WHERE run_id=? ORDER BY effect_id`
     ).all(run.runId) as unknown as AgentEffectPayloadMetadataRow[];
     const effectReferences: AgentEffectPayloadReference[] = [];
@@ -419,7 +419,7 @@ export async function loadActiveRuns(
     if (effectRows.some((payload) =>
       !run.effects.some((effect) => effect.effectId === payload.effect_id)
     )) {
-      throw storageCorruption(`agent_v3_effect_payloads:${run.runId}:orphaned_effect`);
+      throw storageCorruption(`agent_effect_payloads:${run.runId}:orphaned_effect`);
     }
 
     if (issues.size > 0 || checkpoint === undefined) {
@@ -452,7 +452,7 @@ export async function loadActiveRuns(
 function assertActiveRunMetadataConsistent(database: DatabaseSync): void {
   const row = database.prepare(
     `SELECT run_id
-     FROM agent_v3_runs
+     FROM agent_runs
      WHERE (
        state_status IN (
          'queued', 'running', 'waiting', 'recovering',
@@ -472,6 +472,6 @@ function assertActiveRunMetadataConsistent(database: DatabaseSync): void {
      LIMIT 1`
   ).get() as { run_id: string } | undefined;
   if (row !== undefined) {
-    throw storageCorruption(`agent_v3_runs:${row.run_id}:recovery_metadata_mismatch`);
+    throw storageCorruption(`agent_runs:${row.run_id}:recovery_metadata_mismatch`);
   }
 }
